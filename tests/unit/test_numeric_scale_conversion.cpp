@@ -476,17 +476,36 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultLiteralWidthsRoundingSpecialsRet
       ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY,
           texts[row] ? output.data() + 1 : reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()),
           texts[row] ? width + 1 : 0, &length));
-      if (!texts[row]) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output); }
+      if (!texts[row]) {
+        EXPECT_EQ(SQL_NULL_DATA, length);
+        EXPECT_EQ(before, output);
+      }
       else {
         EXPECT_EQ(width, length);
         if (row == 12) {
           // Owning canonical NaN, not an assertion about a backend wire payload.
-          if (real) { SQLREAL value{}; std::memcpy(&value, output.data() + 1, 4); EXPECT_TRUE(std::isnan(value)); }
-          else { SQLDOUBLE value{}; std::memcpy(&value, output.data() + 1, 8); EXPECT_TRUE(std::isnan(value)); }
-        } else if (real) EXPECT_EQ(0, std::memcmp(&expected_real[row], output.data() + 1, 4));
-        else EXPECT_EQ(0, std::memcmp(&expected_double[row], output.data() + 1, 8));
+          if (real) {
+            SQLREAL value{};
+            std::memcpy(&value, output.data() + 1, 4);
+            EXPECT_TRUE(std::isnan(value));
+          }
+          else {
+            SQLDOUBLE value{};
+            std::memcpy(&value, output.data() + 1, 8);
+            EXPECT_TRUE(std::isnan(value));
+          }
+        } else {
+          if (real) {
+            EXPECT_EQ(0, std::memcmp(&expected_real[row], output.data() + 1, 4));
+          }
+          else {
+            EXPECT_EQ(0, std::memcmp(&expected_double[row], output.data() + 1, 8));
+          }
+        }
         EXPECT_EQ(0xa5, output.front());
-        for (std::size_t byte = width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+        for (std::size_t byte = width + 1; byte < output.size(); ++byte) {
+          EXPECT_EQ(0xa5, output[byte]);
+        }
       }
       const auto completed = output; length = 83;
       ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_BINARY, output.data() + 1, width, &length));
@@ -525,14 +544,31 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultBoundIndicatorOnlyValueValidatio
         EXPECT_EQ(1u, count.value); EXPECT_EQ(failure ? SQL_ROW_ERROR : SQL_ROW_SUCCESS, status.value);
         if (failure) {
           EXPECT_EQ(scenario == 2 ? "22018" : "22003", state()); EXPECT_EQ(before, output); EXPECT_EQ(79, length);
-        } else if (!texts[scenario]) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output); }
-        else {
-          EXPECT_EQ(width, length);
-          if (indicator_only) EXPECT_EQ(before, output);
-          else if (real) { const SQLREAL expected = scenario == 8 ? -0.0f : -42.5f; EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4)); }
-          else { const SQLDOUBLE expected = scenario == 8 ? -0.0 : -42.5; EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8)); }
-          EXPECT_EQ(0xa5, output.front());
-          for (std::size_t byte = width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+        } else {
+          if (!texts[scenario]) {
+            EXPECT_EQ(SQL_NULL_DATA, length);
+            EXPECT_EQ(before, output);
+          }
+          else {
+            EXPECT_EQ(width, length);
+            if (indicator_only) {
+              EXPECT_EQ(before, output);
+            }
+            else {
+              if (real) {
+                const SQLREAL expected = scenario == 8 ? -0.0f : -42.5f;
+                EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4));
+              }
+              else {
+                const SQLDOUBLE expected = scenario == 8 ? -0.0 : -42.5;
+                EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8));
+              }
+            }
+            EXPECT_EQ(0xa5, output.front());
+            for (std::size_t byte = width + 1; byte < output.size(); ++byte) {
+              EXPECT_EQ(0xa5, output[byte]);
+            }
+          }
         }
         EXPECT_EQ(81, status.before); EXPECT_EQ(82, status.after); EXPECT_EQ(83u, count.before); EXPECT_EQ(84u, count.after);
         ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
@@ -563,8 +599,14 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultGetDataErrorsLeaveRetryAndFollow
       ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
       ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, output.data() + 1, width, &length));
       EXPECT_EQ(width, length);
-      if (real) { const SQLREAL expected = 1.5f; EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4)); }
-      else { const SQLDOUBLE expected = 1.5; EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8)); }
+      if (real) {
+        const SQLREAL expected = 1.5f;
+        EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4));
+      }
+      else {
+        const SQLDOUBLE expected = 1.5;
+        EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8));
+      }
       ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
     }
   }
@@ -580,8 +622,9 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultArdNullPrecedencePreparedOwnersh
   struct Owner { SQLHSTMT h; ~Owner() { SQLFreeHandle(SQL_HANDLE_STMT, h); } } owner{sibling};
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT n", SQL_NTS));
   auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
-  for (SQLSMALLINT col = 1; col <= 2; ++col)
+  for (SQLSMALLINT col = 1; col <= 2; ++col) {
     ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, col, SQL_DESC_CONCISE_TYPE, (SQLPOINTER)SQL_C_BINARY, 0));
+  }
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
   SQLREAL input = 1.5f; SQLLEN input_length = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_FLOAT, SQL_REAL, 7, 0, &input, 0, &input_length));
@@ -598,8 +641,14 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultArdNullPrecedencePreparedOwnersh
       EXPECT_STREQ("HY090", reinterpret_cast<char*>(diagnostic)); EXPECT_EQ(before, output); EXPECT_EQ(79, length);
       ASSERT_EQ(SQL_SUCCESS, SQLGetData(handle, col, target, output.data() + 1, width, &length));
       EXPECT_EQ(width, length);
-      if (col == 1) { const SQLREAL expected = -42.5f; EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4)); }
-      else { const SQLDOUBLE expected = 1.5; EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8)); }
+      if (col == 1) {
+        const SQLREAL expected = -42.5f;
+        EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4));
+      }
+      else {
+        const SQLDOUBLE expected = 1.5;
+        EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8));
+      }
       const auto completed = output; length = 83;
       ASSERT_EQ(SQL_NO_DATA, SQLGetData(handle, col, target, output.data() + 1, width, &length));
       EXPECT_EQ(completed, output); EXPECT_EQ(83, length);
@@ -2737,7 +2786,9 @@ TEST_F(NumericScaleApiTest, BitInputPairEffectiveApdSixTargetsRejectBeforeMateri
       status = 71; processed = 91;
       const auto refused = SQLExecute(stmt);
       EXPECT_EQ(SQL_ERROR, refused);
-      if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+      if (refused == SQL_ERROR) {
+        EXPECT_EQ("07006", state());
+      }
       EXPECT_EQ(queries, facts->queries); EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
       ASSERT_EQ(1u, facts->parameters.size());
       EXPECT_EQ(retained.type, facts->parameters[0].type); EXPECT_EQ(retained.value, facts->parameters[0].value);
@@ -2833,16 +2884,23 @@ TEST_F(NumericScaleApiTest, SignedIntegerBinaryResultLiteralWidthsRetryCompletio
       ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY,
           row == 3 ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) : output.data() + 1,
           row == 3 ? 0 : c.width + 1, &length));
-      if (row == 3) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output); }
+      if (row == 3) {
+        EXPECT_EQ(SQL_NULL_DATA, length);
+        EXPECT_EQ(before, output);
+      }
       else {
         std::array<unsigned char, 8> expected{};
         if (c.width == 2) { SQLSMALLINT value = row == 0 ? -32768 : row == 1 ? 0 : 32767; std::memcpy(expected.data(), &value, 2); }
         if (c.width == 4) { SQLINTEGER value = row == 0 ? (std::numeric_limits<SQLINTEGER>::min)() : row == 1 ? 0 : (std::numeric_limits<SQLINTEGER>::max)(); std::memcpy(expected.data(), &value, 4); }
         if (c.width == 8) { SQLBIGINT value = row == 0 ? (std::numeric_limits<SQLBIGINT>::min)() : row == 1 ? 0 : (std::numeric_limits<SQLBIGINT>::max)(); std::memcpy(expected.data(), &value, 8); }
         EXPECT_EQ(c.width, length);
-        for (SQLLEN byte = 0; byte < c.width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
+        for (SQLLEN byte = 0; byte < c.width; ++byte) {
+          EXPECT_EQ(expected[byte], output[byte + 1]);
+        }
         EXPECT_EQ(0xa5, output[0]);
-        for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+        for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) {
+          EXPECT_EQ(0xa5, output[byte]);
+        }
       }
       const auto completed = output; length = 83;
       ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_BINARY, output.data() + 1, c.width, &length));
@@ -2885,19 +2943,27 @@ TEST_F(NumericScaleApiTest, SignedIntegerBinaryResultBoundAndIndicatorOnlyValida
         if (failure) {
           EXPECT_EQ(scenario == 4 ? "22018" : "22003", state());
           EXPECT_EQ(before, output); EXPECT_EQ(79, length);
-        } else if (scenario == 5) {
-          EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output);
         } else {
-          EXPECT_EQ(c.width, length);
-          if (indicator_only) EXPECT_EQ(before, output);
-          else {
-            std::array<unsigned char, 8> expected{};
-            if (c.width == 2) { SQLSMALLINT v = -42; std::memcpy(expected.data(), &v, 2); }
-            if (c.width == 4) { SQLINTEGER v = -42; std::memcpy(expected.data(), &v, 4); }
-            if (c.width == 8) { SQLBIGINT v = -42; std::memcpy(expected.data(), &v, 8); }
-            for (SQLLEN byte = 0; byte < c.width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
-            EXPECT_EQ(0xa5, output[0]);
-            for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+          if (scenario == 5) {
+            EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output);
+          } else {
+            EXPECT_EQ(c.width, length);
+            if (indicator_only) {
+              EXPECT_EQ(before, output);
+            }
+            else {
+              std::array<unsigned char, 8> expected{};
+              if (c.width == 2) { SQLSMALLINT v = -42; std::memcpy(expected.data(), &v, 2); }
+              if (c.width == 4) { SQLINTEGER v = -42; std::memcpy(expected.data(), &v, 4); }
+              if (c.width == 8) { SQLBIGINT v = -42; std::memcpy(expected.data(), &v, 8); }
+              for (SQLLEN byte = 0; byte < c.width; ++byte) {
+                EXPECT_EQ(expected[byte], output[byte + 1]);
+              }
+              EXPECT_EQ(0xa5, output[0]);
+              for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) {
+                EXPECT_EQ(0xa5, output[byte]);
+              }
+            }
           }
         }
         EXPECT_EQ(81, status.before); EXPECT_EQ(82, status.after); EXPECT_EQ(83u, count.before); EXPECT_EQ(84u, count.after);
@@ -2982,7 +3048,9 @@ TEST_F(NumericScaleApiTest, SignedIntegerBinaryResultPreparedOwnsSnapshotSibling
       if (width == 2) { SQLSMALLINT v = -42; std::memcpy(expected.data(), &v, 2); }
       if (width == 4) { SQLINTEGER v = -42; std::memcpy(expected.data(), &v, 4); }
       if (width == 8) { SQLBIGINT v = -42; std::memcpy(expected.data(), &v, 8); }
-      for (SQLLEN byte = 0; byte < width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
+      for (SQLLEN byte = 0; byte < width; ++byte) {
+        EXPECT_EQ(expected[byte], output[byte + 1]);
+      }
       EXPECT_EQ(width, length);
     }
   }
