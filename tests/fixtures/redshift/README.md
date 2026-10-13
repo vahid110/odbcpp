@@ -310,3 +310,29 @@ the complete Redshift denormal range. See [AWS numeric types](https://docs.aws.a
 Signed integer binary results: `RedshiftSignedIntegerBinaryResultRealTest.FixedWidthsWholeBufferNullAndPreparedOwningRefill`, marker `ODBCPP_REDSHIFT_SIGNED_INTEGER_BINARY_RESULT_ADMISSION=signed_integer_binary_result_v1`. One verified TLS login, one fixed direct SELECT returning three signed widths/minimum/zero/maximum/NULL rows, then one Prepare and three owning BIGINT bound-fetch Execute echoes (+42/-42/NULL); conservative API SQL upper5, not a wire capture. No DDL/DML. 40s case/login+operation5s; max1parameter/20normalizedbytes,3columns/4rows/12cells/9metadata entries; SQL bytes must cover the exact fixed union SELECT. GetData has nine local22003 short-capacity refusals without partial writes or indicator/offset advancement, then exact native2/4/8byte values/fixed completion; NULL poison pointer and canaries asserted. Corresponding generic case `PreparedStatementIntegrationTest.SignedIntegerBinaryResultFixedWidthsNullAndOwningRefill`. Native/live executions remain separately protected checkpoint debt, not proved by local source/unit qualification.
 
 Floating binary results: `RedshiftFloatingBinaryResultRealTest.FixedWidthsSpecialsNullAndPreparedOwningRefill`, marker `ODBCPP_REDSHIFT_FLOATING_BINARY_RESULT_ADMISSION=floating_binary_result_v1`. One verified TLS login, fixed 421-byte direct SELECT with two REAL/DOUBLE columns and five finite/signed-zero/canonical-special/NULL rows, then one Prepare and three owning two-parameter bound-fetch Execute echoes. Conservative API SQL upper5, no DDL/DML or wire-statement/payload parity claim. 40s case/login+operation5s; max2parameters/32bytes each/64total,2columns/5rows/10cells/6metadata entries. Every short capacity0..3 or0..7 refuses locally with22003 and unchanged data/indicator/completion, then native4/8byte success and fixedSQL_NO_DATA. NaN is classified without a backend payload promise; native signedzero, infinity and NULL/canaries asserted. Generic counterpart `PreparedStatementIntegrationTest.FloatingBinaryResultFixedWidthsSpecialsNullAndOwningRefill`. Typed floating-input/parser policy remains unchanged; native/live bodies and bitwise storage/provider parity remain separately protected checkpoint debt.
+
+
+Ordinary numeric input binary eligibility: the ten signed/unsigned integer and
+floating C families (including the three signed aliases) cannot bind to
+SQL_BINARY, SQL_VARBINARY or SQL_LONGVARBINARY. Direct binding and effective APD
+materialization return07006 before formatting, provider dispatch or NULL bypass.
+This input restriction does not change signed/floating binary result retrieval,
+BIT/NUMERIC refusals, legal numeric targets, raw/hex/default binary inputs or
+backend VARBYTE qualification. See the [ODBC numeric C conversion table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric?view=sql-server-ver15)
+and [unlisted-pair rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/converting-data-from-c-to-sql-data-types?view=sql-server-ver17).
+
+`RedshiftNumericBinaryInputRealTest.NumericBinaryInputPairsNullApdAndOwningRecovery`,
+marker `ODBCPP_REDSHIFT_NUMERIC_BINARY_INPUT_ADMISSION=numeric_binary_input_v1`,
+authors one verified TLS login, one fixed `SELECT CAST(? AS INTEGER)` Prepare,
+and fifteen Execute attempts: three owning INTEGER44/-42/NULL echoes and twelve
+expected local07006 effective-APD refusals (SLONG/DOUBLE x three targets x
+ordinary/NULL). Twelve direct bind refusals additionally check unchanged status
+and progress; no invalid binary value is sent. Conservative API SQL upper16,
+not wire capture; no DDL/DML. Existing case40s/login+operation5s bounds; one
+parameter16bytes/16total, one column/row/cell and three metadata entries; SQL
+bytes must cover the fixed SELECT. NULL poison pointer, typed output canaries,
+input ownership and same-statement recovery remain asserted. Generic counterpart
+`PreparedStatementIntegrationTest.NumericBinaryInputPairsNullApdAndOwningRecovery`.
+Native/link/list/body and Redshift execution are separately protected checkpoint
+debt; no new raw VARBYTE support, vendor binary parity or application acceptance
+is claimed by local GoogleTests or syntax qualification.

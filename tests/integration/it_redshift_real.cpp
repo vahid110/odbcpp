@@ -10067,3 +10067,103 @@ TEST_F(RedshiftFloatingBinaryResultRealTest, FixedWidthsSpecialsNullAndPreparedO
   }
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+
+class RedshiftNumericBinaryInputRealTest : public RedshiftNegativeNumericScaleRealTest {
+ protected:
+  static constexpr const char* echo_sql = "SELECT CAST(? AS INTEGER)";
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_NUMERIC_BINARY_INPUT_ADMISSION", "numeric_binary_input_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const auto& [key, required] : std::initializer_list<std::pair<const char*, std::size_t>>{
+         {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
+         {"MAXPARAMETERBYTES", 16}, {"MAXPARAMETERTOTALBYTES", 16},
+         {"MAXCOLUMNS", 1}, {"MAXROWS", 1}, {"MAXCELLS", 1}, {"MAXMETADATAENTRIES", 3}}) {
+      const auto found = options.find(key);
+      if (found == options.end()) continue;
+      std::size_t value{}; const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec); ASSERT_EQ(text.data() + text.size(), parsed.ptr);
+      ASSERT_GE(value, required);
+    }
+  }
+};
+
+
+TEST_F(RedshiftNumericBinaryInputRealTest, NumericBinaryInputPairsNullApdAndOwningRecovery) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)echo_sql, SQL_NTS)));
+  struct Input { unsigned char before{0xa5}; SQLINTEGER integer{44};
+                 SQLDOUBLE floating{1.5}; unsigned char after{0x5a}; } input;
+  SQLLEN length = 0; SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  const auto echo = [&](SQLINTEGER value, bool absent) {
+    input.integer = value; length = absent ? SQL_NULL_DATA : 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+        SQL_INTEGER, 10, 0, &input.integer, 0, &length));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+    input.integer = 999;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    SQLINTEGER output = 73; SQLLEN output_length = 79;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_SLONG, &output, 0, &output_length)));
+    if (absent) { EXPECT_EQ(73, output); EXPECT_EQ(SQL_NULL_DATA, output_length); }
+    else { EXPECT_EQ(value, output); EXPECT_EQ(sizeof(output), output_length); }
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+    EXPECT_EQ(0xa5, input.before); EXPECT_EQ(0x5a, input.after);
+  };
+  const auto diagnostic = [&] {
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt_, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+  };
+  ASSERT_NO_FATAL_FAILURE(echo(44, false));
+  unsigned char raw[]{0, 0xff};
+  for (const SQLSMALLINT sql : {SQLSMALLINT(SQL_BINARY), SQLSMALLINT(SQL_VARBINARY),
+                               SQLSMALLINT(SQL_LONGVARBINARY)}) {
+    SCOPED_TRACE(sql);
+    for (const SQLSMALLINT c : {SQLSMALLINT(SQL_C_SLONG), SQLSMALLINT(SQL_C_DOUBLE)}) {
+      SCOPED_TRACE(c);
+      for (const bool absent : {false, true}) {
+        SCOPED_TRACE(absent);
+        length = absent ? SQL_NULL_DATA : 0; input.integer = 44;
+        void* payload = absent ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) :
+            c == SQL_C_SLONG ? static_cast<void*>(&input.integer) : &input.floating;
+        status = 71; processed = 91;
+        ASSERT_TRUE(cap(window_end_, true));
+        ASSERT_EQ(SQL_ERROR, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, c, sql,
+            16, 0, payload, 0, &length));
+        ASSERT_NO_FATAL_FAILURE(diagnostic());
+        EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_BINARY,
+            sql, 16, 0, raw, sizeof(raw), &length));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(c)), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, payload, 0));
+        ASSERT_TRUE(cap(window_end_, true));
+        ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "07006"));
+        ASSERT_NO_FATAL_FAILURE(diagnostic());
+        EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+        EXPECT_EQ(44, input.integer); EXPECT_EQ(1.5, input.floating);
+        EXPECT_EQ(absent ? SQL_NULL_DATA : 0, length);
+        EXPECT_EQ(0xa5, input.before); EXPECT_EQ(0x5a, input.after);
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_CLOSE));
+      }
+    }
+  }
+  ASSERT_NO_FATAL_FAILURE(echo(-42, false));
+  ASSERT_NO_FATAL_FAILURE(echo(0, true));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}
