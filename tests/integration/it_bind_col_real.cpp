@@ -3531,7 +3531,7 @@ TEST_F(BindColIntegrationTest, BoundColumnsResolveSqlCDefault) {
 
 TEST_F(BindColIntegrationTest, GetDataValidatesAndResolvesTargetTypes) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SELECT 42::integer, 43::integer, 44::integer",
+        hstmt, (SQLCHAR*)"SELECT 42::integer, 43::integer, 44::integer, DATE '2024-02-29'",
         SQL_NTS));
     char bound[16]{};
     SQLLEN bound_length = 0;
@@ -3553,8 +3553,37 @@ TEST_F(BindColIntegrationTest, GetDataValidatesAndResolvesTargetTypes) {
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("HY003", reinterpret_cast<char*>(state));
 
+    std::array<unsigned char, sizeof(SQLINTEGER) + 2> binary;
+    binary.fill(0xa5);
+    const auto before = binary;
+    SQLLEN binary_length = 79;
+    for (SQLLEN capacity = 0; capacity < static_cast<SQLLEN>(sizeof(SQLINTEGER)); ++capacity) {
+        SCOPED_TRACE(capacity);
+        ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, 3, SQL_C_BINARY,
+            binary.data() + 1, capacity, &binary_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        EXPECT_EQ(before, binary);
+        EXPECT_EQ(79, binary_length);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_BINARY,
+        binary.data() + 1, sizeof(SQLINTEGER), &binary_length));
+    const SQLINTEGER expected = 44;
+    EXPECT_EQ(sizeof(SQLINTEGER), binary_length);
+    EXPECT_EQ(0, std::memcmp(&expected, binary.data() + 1, sizeof(expected)));
+    EXPECT_EQ(0xa5, binary.front());
+    EXPECT_EQ(0xa5, binary.back());
+    const auto completed = binary;
+    binary_length = 83;
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 3, SQL_C_BINARY,
+        binary.data() + 1, sizeof(SQLINTEGER), &binary_length));
+    EXPECT_EQ(completed, binary);
+    EXPECT_EQ(83, binary_length);
+
+    // Preserve unsupported SQL-family coverage after enabling signed integers.
     EXPECT_EQ(SQL_ERROR, SQLGetData(
-        hstmt, 3, SQL_C_BINARY, value, sizeof(value), &value_length));
+        hstmt, 4, SQL_C_BINARY, value, sizeof(value), &value_length));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));

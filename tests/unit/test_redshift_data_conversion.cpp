@@ -1104,7 +1104,7 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_NUMERIC));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_INTEGER, SQL_C_SLONG));
-    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_INTEGER, SQL_C_BINARY));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARBINARY, SQL_C_BINARY));
@@ -1202,4 +1202,17 @@ TEST_F(RedshiftDataConverterTest, LegacySignedIntegerTargetsUseCheckedFixedWidth
     check_legacy_integer<SQLINTEGER>(SQL_C_LONG, SQL_C_SLONG);
     check_legacy_integer<SQLSMALLINT>(SQL_C_SHORT, SQL_C_SSHORT);
     check_legacy_integer<SQLSCHAR>(SQL_C_TINYINT, SQL_C_STINYINT);
+}
+
+TEST(ResultTypesTest, SignedIntegerBinaryResultPairsAreExplicitAndDefaultsStayNative) {
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_SMALLINT), SQLSMALLINT(SQL_INTEGER), SQLSMALLINT(SQL_BIGINT)}) {
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_TINYINT), SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
+         SQLSMALLINT(SQL_REAL), SQLSMALLINT(SQL_DOUBLE), SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
+    EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
+    EXPECT_EQ(SQL_C_SLONG, rs::odbc::ResultTypes::default_c_type(SQL_INTEGER));
+    EXPECT_EQ(SQL_C_SBIGINT, rs::odbc::ResultTypes::default_c_type(SQL_BIGINT));
 }

@@ -350,6 +350,36 @@ SQLRETURN convert_bit_result_to_binary(std::string_view value, void* buffer,
   return SQL_SUCCESS;
 }
 
+SQLSMALLINT signed_integer_binary_c_type(SQLSMALLINT sql_type) {
+  switch (sql_type) {
+    case SQL_SMALLINT: return SQL_C_SSHORT;
+    case SQL_INTEGER: return SQL_C_SLONG;
+    case SQL_BIGINT: return SQL_C_SBIGINT;
+    default: return 0;
+  }
+}
+
+// Fixed numeric SQL-to-C binary is the host representation, not decimal text
+// or backend wire bytes. Validate into aligned scratch before any publication.
+// A null output serves our existing indicator-only binding contract.
+SQLRETURN convert_signed_integer_result_to_binary(SQLSMALLINT sql_type,
+    const std::string& value, void* buffer, SQLLEN buffer_length,
+    SQLLEN* indicator, ConversionIssue* issue) {
+  alignas(std::max_align_t) unsigned char scratch[sizeof(SQLBIGINT)]{};
+  SQLLEN width = 0;
+  const auto result = TextDataConverter::convert_data(value,
+      signed_integer_binary_c_type(sql_type), scratch, sizeof(scratch),
+      &width, issue);
+  if (result == SQL_ERROR) return result;
+  if (buffer && buffer_length < width) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return SQL_ERROR;
+  }
+  if (buffer) std::memcpy(buffer, scratch, static_cast<std::size_t>(width));
+  if (indicator) store_application_value(indicator, width);
+  return result;
+}
+
 // ODBC indicator-only bindings request a converted byte length, not a data
 // allocation or truncation test. Variable output is counted with SDK decoding;
 // fixed C conversion uses bounded aligned scratch to retain validation/warnings.
@@ -389,6 +419,9 @@ SQLRETURN indicator_only_result_length(SQLSMALLINT sql_type,
     }
     return bytes(units, unit_size);
   }
+  if (target_type == SQL_C_BINARY && signed_integer_binary_c_type(sql_type))
+    return convert_signed_integer_result_to_binary(sql_type, value,
+        nullptr, 0, &length, &issue);
   if (target_type == SQL_C_BINARY)
     return bytes(sql_type == SQL_BIT ? 1 : value.size(), 1); // Character-to-binary is raw bytes.
   alignas(std::max_align_t) unsigned char scratch[
@@ -4766,6 +4799,11 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
           conv_result = convert_bit_result_to_binary(
               value, data_ptr, conversion_length, output_length,
               &conversion_issue);
+        } else if (target_type == SQL_C_BINARY &&
+                   signed_integer_binary_c_type(sql_type)) {
+          conv_result = convert_signed_integer_result_to_binary(sql_type,
+              value, data_ptr, conversion_length, output_length,
+              &conversion_issue);
         } else if (is_character_sql_type(sql_type) &&
                    target_type == SQL_C_BINARY) {
           conv_result = convert_character_result_to_binary(
@@ -5273,6 +5311,14 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   if (effective_target_type == SQL_C_BINARY) {
+    if (signed_integer_binary_c_type(sql_type)) {
+      ConversionIssue issue = ConversionIssue::None;
+      const auto result = convert_signed_integer_result_to_binary(sql_type,
+          value, buffer, buffer_length, indicator, &issue);
+      set_conversion_diagnostic(*this, result, issue);
+      if (result != SQL_ERROR) save_offset(complete);
+      return result;
+    }
     if (sql_type == SQL_BIT) {
       ConversionIssue issue = ConversionIssue::None;
       const auto result = convert_bit_result_to_binary(
