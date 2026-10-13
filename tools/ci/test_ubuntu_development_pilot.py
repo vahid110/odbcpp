@@ -161,6 +161,84 @@ class PilotEvidenceTests(unittest.TestCase):
                     self.assertIn('finish.json', index)
                     self.assertEqual(json.loads((evidence / 'dependency-install.json').read_text()), timing)
 
+    def test_real_change_roles_require_exact_reviewed_product_pair(self):
+        for role in pilot.REAL_ROLES:
+            expected = pilot.SEED_HEAD if role == 'seed-a' else pilot.CHANGED_HEAD
+            self.assertEqual(pilot.real_product_head(role, pilot.SEED_HEAD, pilot.CHANGED_HEAD), expected)
+        for role, seed, changed in (('cold', pilot.SEED_HEAD, pilot.CHANGED_HEAD), ('cached-b', 'a' * 40, pilot.CHANGED_HEAD), ('cold-b', pilot.SEED_HEAD, 'b' * 40)):
+            with self.assertRaises(ValueError):
+                pilot.real_product_head(role, seed, changed)
+
+    def test_cache_compatibility_binds_actual_tools_flags_and_paths_separately(self):
+        deps = {'compiler_hashes': {'g++': 'actual compiler bytes'}, 'fetched_source_trees': {'gtest': 'actual source digest'}, 'runner_image': 'ubuntu24'}
+        commands = [{'command': 'g++ -O3 -c /product/core.cpp', 'directory': '/product/build', 'file': '/product/core.cpp'}]
+        paths = {'product': '/product', 'build': '/product/build', 'workflow': '/workflow'}
+        original = pilot.compatibility_digest(deps, commands, paths)
+        for changed in ((dict(deps, compiler_hashes={'g++': 'different'}), commands, paths), (deps, [{'command': 'g++ -O0'}], paths), (deps, commands, dict(paths, build='/other'))):
+            self.assertNotEqual(original, pilot.compatibility_digest(*changed))
+        first = pilot.real_cache_key(pilot.SEED_HEAD, 'a' * 40, original, '123', '1')
+        for values in ((pilot.SEED_HEAD, 'b' * 40, original, '123', '1'), (pilot.SEED_HEAD, 'a' * 40, original, '124', '1'), (pilot.SEED_HEAD, 'a' * 40, original, '123', '2')):
+            self.assertNotEqual(first, pilot.real_cache_key(*values))
+        with self.assertRaises(ValueError):
+            pilot.real_cache_key(pilot.CHANGED_HEAD, 'a' * 40, original, '123', '1')
+
+    def test_selected_seed_key_rejects_compatibility_or_exact_identity_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
+            compatibility = 'c' * 64
+            key = pilot.real_cache_key(pilot.SEED_HEAD, 'a' * 40, compatibility, '123', '1')
+            env = {'PILOT_WORKFLOW_HEAD': 'a' * 40, 'PILOT_SEED_COMPATIBILITY': compatibility, 'PILOT_SEED_CACHE_KEY': key, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}
+            pilot.write('cache-key.json', {'compatibility_digest': compatibility})
+            with patch.dict(pilot.os.environ, env):
+                pilot.check_seed_cache()
+                for name, value in (('PILOT_SEED_COMPATIBILITY', 'd' * 64), ('PILOT_SEED_CACHE_KEY', key + '-fallback'), ('GITHUB_RUN_ATTEMPT', '2')):
+                    with patch.dict(pilot.os.environ, {name: value}), self.assertRaises(ValueError):
+                        pilot.check_seed_cache()
+
+    def test_empty_cache_refuses_preexisting_objects_or_graph_for_all_roles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'compiler-cache'
+            with patch.dict(pilot.os.environ, {'CCACHE_DIR': str(path)}):
+                pilot.empty_cache()
+                (path / 'existing-object').write_text('object')
+                with self.assertRaises(ValueError):
+                    pilot.empty_cache()
+
+    def test_cache_miss_and_zero_useful_hits_are_inconclusive(self):
+        self.assertIn('inconclusive', pilot.cache_comparison('cached-b', '', 0))
+        self.assertIn('zero useful', pilot.cache_comparison('cached-b', 'true', 0))
+        self.assertIn('independent comparison pending', pilot.cache_comparison('cached-b', 'true', 80))
+        self.assertNotIn('inconclusive', pilot.cache_comparison('cold-b', '', 0))
+
+    def test_actual_inventory_delta_is_seven_cases_and_cached_b_equals_cold_b(self):
+        seed = {'ctests': sorted(pilot.SELECTED), 'google_tests': {suite: [suite + '.Existing'] for suite in pilot.SUITES}}
+        changed = copy.deepcopy(seed)
+        for name in pilot.ADDED_CASES:
+            suite = 'test_backend_contract' if name.startswith('BackendContractTest.') else 'test_numeric_scale_conversion' if name.startswith('NumericScaleApiTest.') else 'test_redshift_data_conversion'
+            changed['google_tests'][suite].append(name)
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
+            self.assertEqual(len(pilot.inventory_delta(seed, changed, pilot.digest(changed))['added']), 7)
+            for bad in (dict(changed, ctests=[]), dict(changed, google_tests=seed['google_tests'])):
+                with self.assertRaises(ValueError):
+                    pilot.inventory_delta(seed, bad)
+            moved = copy.deepcopy(changed)
+            case = moved['google_tests']['test_backend_contract'].pop()
+            moved['google_tests']['test_redshift_data_conversion'].append(case)
+            with self.assertRaises(ValueError):
+                pilot.inventory_delta(seed, moved)
+            with self.assertRaises(ValueError):
+                pilot.inventory_delta(seed, changed, 'wrong cold B digest')
+
+    def test_init_binds_product_and_reviewed_workflow_checkouts_separately(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
+            env = {'PILOT_SEED_HEAD': pilot.SEED_HEAD, 'PILOT_CHANGED_HEAD': pilot.CHANGED_HEAD, 'PILOT_WORKFLOW_HEAD': 'a' * 40, 'PILOT_WORKFLOW_ROOT': '/workflow', 'GITHUB_SHA': 'a' * 40, 'RUNNER_OS': 'Linux'}
+            with patch.dict(pilot.os.environ, env), patch.object(pilot, 'source', side_effect=[{'head': pilot.CHANGED_HEAD, 'tree': 'product tree'}, {'head': 'a' * 40, 'tree': 'workflow tree'}]), patch.object(pilot, 'sha', return_value='c' * 64), patch.object(pilot, 'output', return_value='runner information'), patch.object(pilot.platform, 'machine', return_value='x86_64'), patch.object(Path, 'read_text', return_value='MemTotal: fixture'):
+                pilot.init(pilot.CHANGED_HEAD, '2026-01-01T00:00:00Z', 'cold-b')
+            identity = json.loads((pilot.EVIDENCE / 'identity.json').read_text())
+            self.assertEqual(identity['head'], pilot.CHANGED_HEAD)
+            self.assertEqual(identity['workflow_source']['head'], 'a' * 40)
+            with patch.dict(pilot.os.environ, env), patch.object(pilot, 'source', return_value={'head': pilot.SEED_HEAD, 'tree': 'product tree'}), self.assertRaises(ValueError):
+                pilot.init(pilot.SEED_HEAD, '2026-01-01T00:00:00Z', 'cold-b')
+
     def test_timeout_kills_owned_process_group_and_records_failed_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             process = unittest.mock.Mock(pid=12345)

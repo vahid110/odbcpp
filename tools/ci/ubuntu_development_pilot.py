@@ -2,7 +2,7 @@
 """Finite Linux pilot evidence; orchestration only, never product assertions.
 
 GNU time maximum child RSS is NOT the summed concurrent process-tree peak.
-The job deadline and fixed phase timeouts bound this one cold/warm experiment.
+The job deadline and fixed phase timeouts bound one manually selected comparison.
 """
 import argparse
 from datetime import datetime, timezone
@@ -29,6 +29,18 @@ CHECKS = (
 )
 SELECTED = SUITES + CHECKS
 REGEX = '^(' + '|'.join(SELECTED) + ')$'
+SEED_HEAD = '9c0435d50bb02e0158c54d3abde9423f8d943541'
+CHANGED_HEAD = '196f5b3facd565dfc9a2b767d9dda8107229f453'
+REAL_ROLES = ('seed-a', 'cold-b', 'cached-b')
+ADDED_CASES = (
+    'BackendContractTest.FloatingBinaryResultRowWiseOffsetsPreflightCapacityAndRepair',
+    'BackendContractTest.FloatingBinaryResultColumnWiseStrideUnalignedSplitNullAndSpan',
+    'NumericScaleApiTest.FloatingBinaryResultLiteralWidthsRoundingSpecialsRetryAndNull',
+    'NumericScaleApiTest.FloatingBinaryResultBoundIndicatorOnlyValueValidationAndRecovery',
+    'NumericScaleApiTest.FloatingBinaryResultGetDataErrorsLeaveRetryAndFollowingRowUsable',
+    'NumericScaleApiTest.FloatingBinaryResultArdNullPrecedencePreparedOwnershipAndRefill',
+    'ResultTypesTest.FloatingBinaryResultPairsKeepNativeDefaultsAndOtherRefusals',
+)
 BUILD = Path('build-ubuntu-pilot')
 EVIDENCE = Path('ubuntu-pilot-evidence')
 PROFILE = (
@@ -66,14 +78,82 @@ def output(*cmd):
     return subprocess.check_output(cmd, text=True, timeout=60).strip()
 
 
-def source(expected):
-    head = output('git', 'rev-parse', 'HEAD')
+def source(expected, directory=None):
+    git = ['git'] if directory is None else ['git', '-C', str(directory)]
+    head = output(*git, 'rev-parse', 'HEAD')
     if not re.fullmatch('[0-9a-f]{40}', expected) or head != expected:
         raise ValueError('selected-ref HEAD differs from reviewed immutable HEAD')
     # Untracked owned build/evidence outputs are expected; tracked inputs stay fixed.
-    if output('git', 'status', '--porcelain', '--untracked-files=no'):
+    if output(*git, 'status', '--porcelain', '--untracked-files=no'):
         raise ValueError('tracked source changed')
-    return {'head': head, 'tree': output('git', 'rev-parse', 'HEAD^{tree}')}
+    return {'head': head, 'tree': output(*git, 'rev-parse', 'HEAD^{tree}')}
+
+
+
+def real_product_head(role, seed, changed):
+    if role not in REAL_ROLES or (seed, changed) != (SEED_HEAD, CHANGED_HEAD):
+        raise ValueError('real-change experiment requires the exact reviewed A/B pair and role')
+    return seed if role == 'seed-a' else changed
+
+
+def empty_cache():
+    path = Path(os.environ['CCACHE_DIR'])
+    if path.exists():
+        raise ValueError('fresh runner must start without a compiler cache')
+    path.mkdir(parents=True)
+
+
+def real_cache_key(seed, workflow, compatibility, run, attempt):
+    if seed != SEED_HEAD or not re.fullmatch('[0-9a-f]{40}', workflow) or not re.fullmatch('[0-9a-f]{64}', compatibility):
+        raise ValueError('invalid exact seed/workflow/compatibility cache identity')
+    if not run.isdigit() or not attempt.isdigit():
+        raise ValueError('invalid run/attempt cache identity')
+    return f'ubuntu-real-change-{seed}-{workflow}-{run}-{attempt}-{compatibility}'
+
+
+def compatibility_digest(dependencies, commands, paths):
+    # Product contents/HEAD deliberately excluded; ccache validates changed inputs.
+    return digest({'dependencies': dependencies, 'profile': PROFILE,
+                   'compile_commands': commands, 'paths': paths,
+                   'cache_compiler_check': os.environ.get('CCACHE_COMPILERCHECK', '')})
+
+
+def check_seed_cache():
+    local = json.loads((EVIDENCE / 'cache-key.json').read_text())
+    expected = real_cache_key(SEED_HEAD, os.environ['PILOT_WORKFLOW_HEAD'],
+                              local['compatibility_digest'], os.environ['GITHUB_RUN_ID'],
+                              os.environ['GITHUB_RUN_ATTEMPT'])
+    if os.environ['PILOT_SEED_COMPATIBILITY'] != local['compatibility_digest'] or os.environ['PILOT_SEED_CACHE_KEY'] != expected:
+        raise ValueError('selected A cache key or strict compiler/dependency/flags/profile/path compatibility differs')
+    write('selected-seed-cache.json', {'key': expected, 'seed_head': SEED_HEAD,
+          'workflow_head': os.environ['PILOT_WORKFLOW_HEAD'],
+          'compatibility_digest': local['compatibility_digest']})
+
+
+
+def cache_comparison(role, restored_hit, compiler_hits):
+    if role in ('warm', 'cached-b') and restored_hit != 'true':
+        return 'inconclusive: exact warm cache miss'
+    if role == 'cached-b' and not compiler_hits:
+        return 'inconclusive: cache restored but zero useful compiler hits'
+    return 'evidence collected; independent comparison pending'
+
+
+def inventory_delta(seed, changed, cold_digest=None):
+    if seed['ctests'] != changed['ctests']:
+        raise ValueError('seed and candidate CTest selections differ')
+    flatten = lambda x: {(suite, name) for suite, names in x['google_tests'].items() for name in names}
+    before, after = flatten(seed), flatten(changed)
+    delta = {'added': sorted(after - before), 'removed': sorted(before - after)}
+    expected = {('test_backend_contract' if name.startswith('BackendContractTest.') else
+                 'test_numeric_scale_conversion' if name.startswith('NumericScaleApiTest.') else
+                 'test_redshift_data_conversion', name) for name in ADDED_CASES}
+    write('seed-candidate-inventory-delta.json', delta)
+    if delta['removed'] or set(delta['added']) != expected:
+        raise ValueError('actual inventory delta differs from the seven reviewed FLOAT cases; differences retained')
+    if cold_digest is not None and digest(changed) != cold_digest:
+        raise ValueError('cached B inventory differs from actual cold B')
+    return delta
 
 
 def measure(name, command, timeout):
@@ -153,6 +233,21 @@ def xml_result(path, expected):
 
 def init(expected, submitted_at, mode):
     identity = source(expected)
+    if mode in REAL_ROLES:
+        required = real_product_head(mode, os.environ['PILOT_SEED_HEAD'], os.environ['PILOT_CHANGED_HEAD'])
+        if expected != required:
+            raise ValueError('product checkout differs from selected A/B role')
+        workflow_root = Path(os.environ['PILOT_WORKFLOW_ROOT'])
+        workflow = source(os.environ['PILOT_WORKFLOW_HEAD'], workflow_root)
+        if workflow['head'] != os.environ['GITHUB_SHA']:
+            raise ValueError('workflow checkout differs from selected dispatch workflow HEAD')
+        workflow['files'] = {name: sha(workflow_root / name) for name in (
+            '.github/workflows/ci.yml', '.github/workflows/ubuntu-development-pilot.yml',
+            'tools/ci/ubuntu_development_pilot.py', 'tools/ci/test_ubuntu_development_pilot.py')}
+        identity['workflow_source'] = workflow
+        identity['product_path'] = str(Path.cwd())
+    elif mode not in ('cold', 'warm'):
+        raise ValueError('unknown pilot role')
     submitted = datetime.fromisoformat(submitted_at.replace('Z', '+00:00'))
     if submitted.tzinfo is None or submitted > datetime.now(timezone.utc):
         raise ValueError('submission must be a UTC timestamp preceding this runner')
@@ -197,10 +292,24 @@ def configure():
     identity = json.loads((EVIDENCE / 'identity.json').read_text())
     profile_digest = digest({'dependencies': deps, 'profile': PROFILE, 'head': identity['head'], 'tree': identity['tree']})
     key = f"ubuntu-pilot-{identity['head']}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}-{profile_digest}"
+    cache_identity = {'key': key, 'profile_digest': profile_digest}
+    if identity['mode'] in REAL_ROLES:
+        deps['ccache_config'] = output('ccache', '--show-config')
+        commands = json.loads((BUILD / 'compile_commands.json').read_text())
+        paths = {'product': str(Path.cwd()), 'build': str(BUILD.resolve()),
+                 'workflow': str(Path(os.environ['PILOT_WORKFLOW_ROOT']).resolve())}
+        compatibility = compatibility_digest(deps, commands, paths)
+        key = real_cache_key(SEED_HEAD, identity['workflow_source']['head'], compatibility,
+                             os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'])
+        cache_identity.update({'key': key, 'compatibility_digest': compatibility,
+                               'product_head': identity['head'], 'workflow_head': identity['workflow_source']['head'],
+                               'seed_head': SEED_HEAD, 'paths': paths})
     write('dependencies.json', deps)
-    write('cache-key.json', {'key': key, 'profile_digest': profile_digest})
+    write('cache-key.json', cache_identity)
     with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
         f.write(f'cache_key={key}\nprofile_digest={profile_digest}\n')
+        if 'compatibility_digest' in cache_identity:
+            f.write(f"compatibility_digest={cache_identity['compatibility_digest']}\n")
 
 
 def inventory():
@@ -228,8 +337,18 @@ def inventory():
     semantic = {'ctests': sorted(SELECTED), 'google_tests': {k: v['names'] for k, v in cases.items()}}
     write('executables.json', cases)
     write('semantic-inventory.json', semantic)
+    role = os.environ.get('PILOT_MODE')
+    binary_digest = digest({suite: entry['sha256'] for suite, entry in cases.items()})
+    if role == 'cached-b' and binary_digest != os.environ['PILOT_COLD_BINARY_DIGEST']:
+        raise ValueError('independently rebuilt cached B executable hashes differ from cold B')
+    if role in ('cold-b', 'cached-b'):
+        inventory_delta(json.loads(os.environ['PILOT_SEED_INVENTORY']), semantic,
+                        os.environ['PILOT_COLD_INVENTORY_DIGEST'] if role == 'cached-b' else None)
     with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
         f.write(f'inventory_digest={digest(semantic)}\n')
+        if role in REAL_ROLES:
+            f.write('inventory_json=' + json.dumps(semantic, separators=(',', ':')) + '\n')
+            f.write(f'binary_digest={binary_digest}\n')
 
 
 def test():
@@ -265,10 +384,13 @@ def test():
 def finish():
     identity = json.loads((EVIDENCE / 'identity.json').read_text())
     source(identity['head'])
+    if 'workflow_source' in identity:
+        source(identity['workflow_source']['head'], Path(os.environ['PILOT_WORKFLOW_ROOT']))
     (EVIDENCE / 'ccache-statistics.txt').write_text(output('ccache', '--show-stats', '--verbose') + '\n')
     counters = output('ccache', '--print-stats')
     (EVIDENCE / 'ccache-statistics.tsv').write_text(counters + '\n')
-    write('ccache-statistics.json', {line.split()[0]: int(line.split()[1]) for line in counters.splitlines()})
+    statistics = {line.split()[0]: int(line.split()[1]) for line in counters.splitlines()}
+    write('ccache-statistics.json', statistics)
     subprocess.run(['ccache', '--cleanup'], check=True, timeout=60)
     cache_size = sum(p.stat().st_size for p in Path(os.environ['CCACHE_DIR']).rglob('*') if p.is_file())
     if cache_size > 280 * 1024 * 1024:
@@ -279,9 +401,14 @@ def finish():
         def stamp(name):
             return datetime.fromisoformat((EVIDENCE / name).read_text().strip().replace('Z', '+00:00'))
         restore = (stamp('restore-end.txt') - stamp('restore-start.txt')).total_seconds()
+    if identity['mode'] == 'cached-b' and hit == 'true':
+        selected = json.loads((EVIDENCE / 'selected-seed-cache.json').read_text())
+        if os.environ.get('PILOT_RESTORED_KEY') != selected['key']:
+            raise ValueError('restored cache is not the exact selected A key')
+    comparison = cache_comparison(identity['mode'], hit, statistics.get('direct_cache_hit', 0) + statistics.get('preprocessed_cache_hit', 0))
     write('finish.json', {
         'finished_at': utc(), 'mode': identity['mode'], 'warm_cache_hit': hit,
-        'comparison_status': 'inconclusive: exact warm cache miss' if identity['mode'] == 'warm' and hit != 'true' else 'evidence collected; independent comparison pending',
+        'comparison_status': comparison,
         'restore_step_wall_seconds': restore,
         'submission_to_phase_results_seconds': (datetime.now(timezone.utc) - datetime.fromisoformat(identity['submitted_at'])).total_seconds(),
         'provider_timing_limit': 'runner evidence start includes checkout; coordinator must retain final run/jobs API timestamps for exact queue/dispatch-to-completion', 'cache_bytes': cache_size, 'disk': output('df', '-h', '.'),
@@ -304,7 +431,7 @@ def package():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('init', 'dependencies', 'configure', 'build', 'inventory', 'test', 'finish', 'package'))
+    parser.add_argument('phase', choices=('init', 'dependencies', 'configure', 'build', 'inventory', 'test', 'finish', 'package', 'empty-cache', 'cache-check'))
     args = parser.parse_args()
     if args.phase == 'init':
         init(os.environ['PILOT_EXPECTED_HEAD'], os.environ['PILOT_SUBMITTED_AT'], os.environ['PILOT_MODE'])
@@ -314,7 +441,13 @@ def main():
             'sudo apt-get update; sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev ccache time'], 600)
     elif args.phase == 'configure':
         configure()
+    elif args.phase == 'empty-cache':
+        empty_cache()
+    elif args.phase == 'cache-check':
+        check_seed_cache()
     elif args.phase == 'build':
+        if os.environ.get('PILOT_MODE') in REAL_ROLES:
+            os.environ['CCACHE_LOGFILE'] = str((EVIDENCE / 'compiler-cache.log').resolve())
         subprocess.run(['ccache', '--zero-stats'], check=True, timeout=30)
         measure('build', ['cmake', '--build', str(BUILD), '--parallel', '2', '--target',
                          *SUITES, 'odbcpp_sdk_header_isolation'], 1200)
