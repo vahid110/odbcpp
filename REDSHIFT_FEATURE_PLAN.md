@@ -20,8 +20,10 @@ platform qualification every12h through the existing continuation. At that check
 accumulated new/affected and applicable authorized Redshift live cases together.
 Author live tests with each feature, defer execution/admission to that checkpoint
 and fix actual CI/live failures in coherent batches; restore green CI before
-corrected live execution. Intermediate pushes retain explicit live acceptance debt. Root consolidates implementation, qualification and
-integration with independent review. Other profiles run early only for actual
+corrected live execution. Intermediate pushes retain explicit live acceptance debt.
+Under the 2026-10-13 [parallel workflow](PARALLEL_WORKFLOW.md), package owners
+finish implementation and automated focused qualification; the coordinator
+integrates with independent review. Other profiles run early only for actual
 failure, immediate safety/ABI diagnosis, explicit human request. Intermediate
 reviewed/primary-qualified pushes need not await full CI. Final goal/release
 acceptance still needs its required complete graph and exact-head green full CI.
