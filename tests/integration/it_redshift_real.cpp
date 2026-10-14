@@ -251,6 +251,7 @@ protected:
   void current_database_foreign_key_contract(bool wide);
   void varbyte_catalog_type_classification(bool wide);
   void super_catalog_type_classification(bool wide);
+  void spatial_catalog_type_classification(bool wide);
   void odbc_primary_key_mode_contract(const char* explicit_mode);
   void odbc_primary_key_edge_contract(const char* mode, bool quoted);
   std::string connection_string_;
@@ -10608,4 +10609,134 @@ TEST_F(RedshiftRealTest, SuperCatalogTypeClassificationAnsi) {
 }
 TEST_F(RedshiftRealTest, SuperCatalogTypeClassificationWide) {
   super_catalog_type_classification(true);
+}
+
+void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
+  const char* admission = std::getenv("ODBCPP_REDSHIFT_SPATIAL_CATALOG_TYPE_ADMISSION");
+  if (!admission) {
+    GTEST_SKIP() << "Separately admitted existing spatial table metadata";
+  }
+  ASSERT_EQ(std::string_view("spatial-catalog-type-v1"), std::string_view(admission));
+  const char* schema_input = std::getenv("ODBCPP_REDSHIFT_SPATIAL_CATALOG_SCHEMA");
+  const char* table_input = std::getenv("ODBCPP_REDSHIFT_SPATIAL_CATALOG_TABLE");
+  ASSERT_NE(nullptr, schema_input);
+  ASSERT_NE(nullptr, table_input);
+  const std::string schema{schema_input}, table{table_input};
+  ASSERT_FALSE(schema.empty());
+  ASSERT_FALSE(table.empty());
+  ASSERT_LE(schema.size(), 1024u);
+  ASSERT_LE(table.size(), 1024u);
+  ASSERT_TRUE(rs::odbc::utf8_code_point_count(schema));
+  ASSERT_TRUE(rs::odbc::utf8_code_point_count(table));
+  const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
+  const auto original_connection_string = connection_string_;
+  const auto literal_pattern = [](std::string_view input) {
+    std::string value;
+    for (const char c : input) {
+      if (c == '%' || c == '_' || c == '\\') {
+        value.push_back('\\');
+      }
+      value.push_back(c);
+    }
+    return value;
+  };
+  const auto schema_pattern = literal_pattern(schema), table_pattern = literal_pattern(table);
+  std::array<rs::core::database::ResultRows, 2> owning;
+  for (unsigned mode = 0; mode < 2; ++mode) {
+    connection_string_ = original_connection_string + (mode ? ";RedshiftCatalogMode=LEGACY" : ";RedshiftCatalogMode=SHOW");
+    ASSERT_TRUE(connect());
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT, reinterpret_cast<SQLPOINTER>(5), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_METADATA_ID, reinterpret_cast<SQLPOINTER>(SQL_FALSE), 0));
+    std::array<SQLCHAR, 1025> database_buffer{};
+    SQLSMALLINT database_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc_, SQL_DATABASE_NAME, database_buffer.data(),
+        static_cast<SQLSMALLINT>(database_buffer.size()), &database_length));
+    ASSERT_GT(database_length, 0);
+    ASSERT_LT(static_cast<std::size_t>(database_length), database_buffer.size());
+    const std::string database{reinterpret_cast<char*>(database_buffer.data()), static_cast<std::size_t>(database_length)};
+    const auto capture = [&](rs::core::database::ResultRows& rows) {
+      SQLRETURN status = SQL_ERROR;
+      if (wide) {
+        auto db = rs::odbc::utf8_to_wide(database), sc = rs::odbc::utf8_to_wide(schema_pattern);
+        auto target = rs::odbc::utf8_to_wide(table_pattern);
+        ASSERT_TRUE(db);
+        ASSERT_TRUE(sc);
+        ASSERT_TRUE(target);
+        status = SQLColumnsW(hstmt_, db->data(), static_cast<SQLSMALLINT>(db->size()), sc->data(), static_cast<SQLSMALLINT>(sc->size()),
+            target->data(), static_cast<SQLSMALLINT>(target->size()), nullptr, 0);
+      } else {
+        const auto chars = [](const std::string& text) {
+          return reinterpret_cast<SQLCHAR*>(const_cast<char*>(text.data()));
+        };
+        status = SQLColumns(hstmt_, chars(database), static_cast<SQLSMALLINT>(database.size()), chars(schema_pattern), static_cast<SQLSMALLINT>(schema_pattern.size()),
+            chars(table_pattern), static_cast<SQLSMALLINT>(table_pattern.size()), nullptr, 0);
+      }
+      ASSERT_TRUE(catalog_succeeded(status)) << metadata_diagnostic();
+      SQLSMALLINT columns = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &columns));
+      ASSERT_EQ(18, columns);
+      std::array<bool, 2> spatial_columns{};
+      for (unsigned row = 0; row <= 10000; ++row) {
+        const auto fetched = SQLFetch(hstmt_);
+        if (fetched == SQL_NO_DATA) {
+          EXPECT_TRUE(spatial_columns[0] && spatial_columns[1]) << "Selected existing fixture must contain GEOMETRY and GEOGRAPHY";
+          ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+          return;
+        }
+        ASSERT_EQ(SQL_SUCCESS, fetched);
+        ASSERT_LT(row, 10000u);
+        rs::core::database::ResultRow cells;
+        for (SQLUSMALLINT column = 1; column <= 18; ++column) {
+          std::array<char, 1025> value{};
+          SQLLEN length = 0;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, value.data(), value.size(), &length));
+          if (length == SQL_NULL_DATA) {
+            cells.emplace_back(std::nullopt);
+          } else {
+            ASSERT_GE(length, 0);
+            ASSERT_LT(static_cast<std::size_t>(length), value.size());
+            cells.emplace_back(std::string(value.data(), static_cast<std::size_t>(length)));
+          }
+        }
+        ASSERT_EQ(rs::core::database::ResultCell{database}, cells[0]);
+        ASSERT_EQ(rs::core::database::ResultCell{schema}, cells[1]);
+        ASSERT_EQ(rs::core::database::ResultCell{table}, cells[2]);
+        ASSERT_TRUE(cells[5]);
+        auto label = *cells[5];
+        for (char& c : label) {
+          if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+          }
+        }
+        if (label == "geometry" || label == "geography") {
+          spatial_columns[label == "geography" ? 1 : 0] = true;
+          EXPECT_EQ(rs::core::database::ResultCell{"-4"}, cells[4]);
+          EXPECT_EQ(rs::core::database::ResultCell{"-4"}, cells[13]);
+          for (const unsigned field : {6u, 7u, 8u, 9u, 14u, 15u}) {
+            EXPECT_FALSE(cells[field]) << field;
+          }
+        }
+        rows.push_back(std::move(cells));
+      }
+    };
+    capture(owning[mode]);
+    ASSERT_FALSE(HasFatalFailure());
+    rs::core::database::ResultRows recovered;
+    capture(recovered);
+    ASSERT_FALSE(HasFatalFailure());
+    EXPECT_EQ(owning[mode], recovered);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt_));
+    hstmt_ = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc_));
+    connected_ = false;
+  }
+  EXPECT_EQ(owning[0], owning[1]);
+  RecordProperty("native_scope", "existing-table spatial catalog classification; no DDL");
+}
+TEST_F(RedshiftRealTest, SpatialCatalogTypeClassificationAnsi) {
+  spatial_catalog_type_classification(false);
+}
+TEST_F(RedshiftRealTest, SpatialCatalogTypeClassificationWide) {
+  spatial_catalog_type_classification(true);
 }
