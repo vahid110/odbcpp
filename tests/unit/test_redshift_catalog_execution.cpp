@@ -655,6 +655,7 @@ TEST(RedshiftCatalogExecution, RealWireMalformedCatalogCompletionRetiresWithoutF
 #include "core/database/postgres/redshift_catalog_query.h"
 #include <functional>
 #include <limits>
+#include <set>
 
 namespace {
 TablesCatalogRequest schemas_request() {
@@ -5272,5 +5273,372 @@ TEST(RedshiftSpatialCatalogTypes, LiteralOwningByteBoundaryAndDestroyedRawKeepPe
     }
     EXPECT_EQ(ResultCell{"p"}, first->rows[0][2]);
     expect_varbyte_catalog_row(first->rows[0], "GEOMETRY", true);
+  }
+}
+
+namespace {
+void current_schema_replies(RoutineExecutionSession& session, QueryResult show = schemas_response()) {
+  session.replies.emplace_back(schema_lookup_fixture(), session.snapshot);
+  session.replies.emplace_back(std::move(show), session.snapshot);
+}
+void current_schema_limit(const BackendResult<QueryResult>& result, SessionSnapshot snapshot) {
+  ASSERT_FALSE(result);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+  EXPECT_EQ(BackendOperation::ExecuteCatalog, result.backend_error().operation);
+  EXPECT_EQ(snapshot, result.session_snapshot());
+}
+}  // namespace
+
+TEST(RedshiftCurrentSchemaStorage, FiveFieldsOwnershipExactMetadataBoundaryAndTransactionSnapshot) {
+  for (const auto snapshot : {SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable},
+      SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}}) {
+    RoutineExecutionSession session;
+    session.snapshot = snapshot;
+    ResultLimits limits;
+    limits.max_metadata_entries = 13; // Seven raw + one identity set entry + five output descriptors.
+    ASSERT_TRUE(session.budgets(limits));
+    auto show = schemas_response();
+    show.rows.resize(1);
+    show.columns[1].normalized_type->column_size = 0;
+    current_schema_replies(session, std::move(show));
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = session.execute_catalog(schemas_request(), deadline);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(snapshot, result.session_snapshot());
+    EXPECT_EQ((ResultRows{{std::nullopt, "z", std::nullopt, std::nullopt, std::nullopt}}), result->rows);
+    ASSERT_EQ(5u, result->columns.size());
+    EXPECT_EQ("TABLE_SCHEM", result->columns[1].name);
+    EXPECT_EQ(0u, result->columns[1].normalized_type->column_size);
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        "SHOW SCHEMAS FROM DATABASE \"selected\";"}), session.commands);
+    EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline}), session.deadlines);
+    session.replies.clear();
+    session.connected = false;
+    EXPECT_EQ(ResultCell{"z"}, result->rows[0][1]);
+  }
+}
+
+TEST(RedshiftCurrentSchemaStorage, SimultaneousRawSetAndOutputBoundRowsCellsMetadataNamesAndBytes) {
+  for (unsigned variant = 0; variant < 6; ++variant) {
+    SCOPED_TRACE(variant);
+    RoutineExecutionSession session;
+    ResultLimits limits;
+    ResponseLimits response;
+    auto show = schemas_response();
+    show.rows.resize(1);
+    switch (variant) {
+      case 0: limits.max_metadata_entries = 7; break; // Raw alone fits.
+      case 1: limits.max_metadata_entries = 12; break; // Exact thirteen-entry peak minus one.
+      case 2: limits.max_rows = 1; break; // Raw plus published row need two.
+      case 3: limits.max_cells = 11; break; // Seven raw plus five output need twelve.
+      case 4: limits.max_column_name_bytes = 13; show.rows[0][1] = std::string(14, 's'); break;
+      case 5: response.max_wire_bytes = 5; break; // Valid setting, insufficient decoded containers.
+    }
+    ASSERT_TRUE(session.budgets(limits, response));
+    current_schema_replies(session, std::move(show));
+    auto result = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+    current_schema_limit(result, session.snapshot);
+    EXPECT_EQ(variant == 5 ? 1u : 2u, session.commands.size());
+  }
+  RoutineExecutionSession exact;
+  ResultLimits limits;
+  limits.max_rows = 2;
+  limits.max_cells = 12;
+  limits.max_metadata_entries = 13;
+  ASSERT_TRUE(exact.budgets(limits));
+  auto show = schemas_response();
+  show.rows.resize(1);
+  current_schema_replies(exact, std::move(show));
+  ASSERT_TRUE(exact.execute_catalog(schemas_request(), rs::util::Deadline::max()));
+  // Literal one-schema model: live database + native vector/string capacities
+  // + one set node/name + five descriptors and one five-cell owning output.
+  auto byte_source = schemas_response();
+  byte_source.rows.resize(1);
+  std::size_t raw_bytes = sizeof(QueryResult) + byte_source.columns.capacity() * sizeof(ResultColumnMetadata) +
+      byte_source.rows.capacity() * sizeof(ResultRow) + byte_source.rows[0].capacity() * sizeof(ResultCell);
+  for (const auto& column : byte_source.columns) {
+    raw_bytes += column.name.capacity() + 1;
+  }
+  for (const auto& cell : byte_source.rows[0]) {
+    if (cell) {
+      raw_bytes += cell->capacity() + 1;
+    }
+  }
+  const std::size_t peak_bytes = sizeof(std::string) + 2 * (8 + 1) + raw_bytes +
+      sizeof(std::set<std::string>) + sizeof(std::string) + 4 * sizeof(void*) + 2 * (1 + 1) +
+      sizeof(QueryResult) + 5 * sizeof(ResultColumnMetadata) + sizeof(ResultRow) + 5 * sizeof(ResultCell) +
+      2 * ((9 + 1) + (11 + 1) + (10 + 1) + (10 + 1) + (7 + 1)) + 2 * (1 + 1);
+  for (const auto cap : {peak_bytes - 1, peak_bytes}) {
+    RoutineExecutionSession bytes;
+    ResponseLimits response;
+    response.max_wire_bytes = cap;
+    ASSERT_TRUE(bytes.budgets(ResultLimits{}, response));
+    auto copy = byte_source;
+    copy.columns.reserve(byte_source.columns.capacity());
+    copy.rows.reserve(byte_source.rows.capacity());
+    current_schema_replies(bytes, std::move(copy));
+    auto result = bytes.execute_catalog(schemas_request(), rs::util::Deadline::max());
+    if (cap == peak_bytes - 1) {
+      current_schema_limit(result, bytes.snapshot);
+    } else {
+      ASSERT_TRUE(result);
+    }
+    EXPECT_EQ(2u, bytes.commands.size());
+  }
+  const auto max = std::numeric_limits<std::size_t>::max();
+  ResultLimits huge;
+  huge.max_metadata_entries = max;
+  ResponseLimits enormous;
+  enormous.max_wire_bytes = max;
+  RedshiftRoutineBudget overflow{enormous, huge};
+  ASSERT_TRUE(overflow.retain({0, 0, max, max, 0}));
+  EXPECT_FALSE(overflow.retain({0, 0, 1, 0, 0}));
+  EXPECT_FALSE(overflow.retain({0, 0, 0, 1, 0}));
+}
+
+TEST(RedshiftCurrentSchemaStorage, ValidationAndNativeErrorsPrecedeProjectionLimitsAndKeepLateRetirement) {
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    SCOPED_TRACE(variant);
+    RoutineExecutionSession session;
+    ResultLimits limits;
+    limits.max_metadata_entries = 7;
+    ASSERT_TRUE(session.budgets(limits));
+    auto show = schemas_response();
+    switch (variant) {
+      case 0: show.rows[1][1] = show.rows[0][1]; break;
+      case 1: show.rows[1][0] = "foreign"; break;
+      case 2: show.rows[1][1] = std::string("\xff", 1); break;
+      case 3: show.rows[1][1].reset(); break;
+    }
+    current_schema_replies(session, std::move(show));
+    schema_error(session.execute_catalog(schemas_request(), rs::util::Deadline::max()));
+    EXPECT_EQ(2u, session.commands.size());
+  }
+  for (const bool deferred : {false, true}) {
+    RoutineExecutionSession session;
+    session.snapshot = {SessionState::Transaction, SessionDisposition::ResetRequired};
+    ResultLimits limits;
+    limits.max_metadata_entries = 7;
+    ASSERT_TRUE(session.budgets(limits));
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owning native error"};
+    error.native_state = "42501";
+    error.session_state = session.snapshot.state;
+    error.disposition = session.snapshot.disposition;
+    session.replies.emplace_back(schema_lookup_fixture(), session.snapshot);
+    if (deferred) {
+      auto show = schemas_response();
+      QueryResult extra;
+      extra.error = error;
+      show.additional_results.push_back(std::move(extra));
+      session.replies.emplace_back(std::move(show), session.snapshot);
+    } else {
+      session.replies.emplace_back(error);
+    }
+    auto result = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(error.message, result.error_message());
+    EXPECT_EQ(error.native_state, result.backend_error().native_state);
+    EXPECT_EQ(session.snapshot, result.session_snapshot());
+  }
+  for (const std::size_t cap : {12u, 13u}) {
+    RoutineExecutionSession session;
+    ResultLimits limits;
+    limits.max_metadata_entries = cap;
+    ASSERT_TRUE(session.budgets(limits));
+    session.replies.emplace_back(schema_lookup_fixture(), session.snapshot);
+    auto show = schemas_response();
+    show.rows.resize(1);
+    const SessionSnapshot retired{SessionState::Disconnected, SessionDisposition::Retire};
+    session.replies.emplace_back(std::move(show), retired);
+    auto result = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+    if (cap == 12) {
+      current_schema_limit(result, retired);
+    } else {
+      ASSERT_TRUE(result);
+      EXPECT_EQ(retired, result.session_snapshot()); // Existing late-retired success remains truthful.
+    }
+  }
+}
+
+TEST(RedshiftCurrentSchemaStorage, TwoExchangePreflightOriginalDeadlineAndCapabilityRefusal) {
+  RoutineExecutionSession insufficient;
+  insufficient.snapshot = {SessionState::Transaction, SessionDisposition::ResetRequired};
+  ResultLimits limits;
+  limits.max_results = 1;
+  ASSERT_TRUE(insufficient.budgets(limits));
+  current_schema_replies(insufficient);
+  current_schema_limit(insufficient.execute_catalog(schemas_request(), rs::util::Deadline::max()),
+      insufficient.snapshot);
+  EXPECT_TRUE(insufficient.commands.empty());
+  EXPECT_EQ(2u, insufficient.replies.size());
+  RoutineExecutionSession unavailable;
+  unavailable.capability = "3";
+  auto refused = unavailable.execute_catalog(schemas_request(), rs::util::Deadline::max());
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(BackendErrorClass::Unsupported, refused.backend_error().error_class);
+  EXPECT_TRUE(unavailable.commands.empty());
+  RoutineExecutionSession late;
+  const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{10});
+  late.callback = [deadline] { while (rs::util::Clock::now() < deadline) {} };
+  current_schema_replies(late);
+  auto expired = late.execute_catalog(schemas_request(), deadline);
+  ASSERT_FALSE(expired);
+  EXPECT_EQ(BackendErrorClass::Timeout, expired.backend_error().error_class);
+  EXPECT_EQ(1u, late.commands.size());
+  EXPECT_EQ(deadline, late.deadlines[0]);
+}
+
+TEST(RedshiftCurrentSchemaStorage, DestroyedIdentityStorageEmptyOutputAndFreshRequestRecovery) {
+  RoutineExecutionSession session;
+  ResultLimits limits;
+  limits.max_metadata_entries = 13;
+  limits.max_results = 2;
+  ASSERT_TRUE(session.budgets(limits));
+  auto over = schemas_response(); // Two set identities need fourteen simultaneous metadata entries.
+  current_schema_replies(session, std::move(over));
+  current_schema_limit(session.execute_catalog(schemas_request(), rs::util::Deadline::max()), session.snapshot);
+  auto show = schemas_response();
+  show.rows.resize(1);
+  current_schema_replies(session, std::move(show));
+  auto recovered = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(recovered); // Destroyed one-column lookup storage is not charged alongside the thirteen-entry SHOW peak.
+  EXPECT_EQ(ResultCell{"z"}, recovered->rows[0][1]);
+  auto empty = schemas_response();
+  empty.rows.clear();
+  current_schema_replies(session, std::move(empty));
+  auto final = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(final);
+  EXPECT_TRUE(final->rows.empty());
+  EXPECT_EQ(5u, final->columns.size());
+  EXPECT_EQ(6u, session.commands.size());
+  EXPECT_EQ(ResultCell{"z"}, recovered->rows[0][1]);
+}
+
+namespace {
+std::size_t current_schema_literal_raw_bytes(const QueryResult& source) {
+  std::size_t bytes = sizeof(QueryResult) + source.columns.capacity() * sizeof(ResultColumnMetadata) +
+      source.rows.capacity() * sizeof(ResultRow) + source.additional_results.capacity() * sizeof(QueryResult) +
+      source.normalized_parameter_types.capacity() * sizeof(NativeTypeInfo) +
+      source.cell_errors.capacity() * sizeof(CellEncodingError);
+  for (const auto& column : source.columns) {
+    bytes += column.name.capacity() + 1;
+  }
+  for (const auto& row : source.rows) {
+    bytes += row.capacity() * sizeof(ResultCell);
+    for (const auto& cell : row) {
+      if (cell) {
+        bytes += cell->capacity() + 1;
+      }
+    }
+  }
+  return bytes;
+}
+void current_schema_quoted_replies(RoutineExecutionSession& session, const std::string& database,
+    QueryResult show, SessionSnapshot final_snapshot) {
+  auto identity = schema_lookup_fixture();
+  identity.rows[0][0] = database;
+  session.replies.emplace_back(std::move(identity), session.snapshot);
+  session.replies.emplace_back(std::move(show), final_snapshot);
+}
+}  // namespace
+
+TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCommandRelease) {
+  const std::string database(300, '"'); // Exact native identity: every quote doubles in the command.
+  const auto database_bytes = sizeof(std::string) + 2 * (database.size() + 1);
+  const auto command_bytes = sizeof(std::string) +
+      2 * (2 * database.size() + std::string_view("SHOW SCHEMAS FROM DATABASE \"\";").size() + 1);
+  for (const bool empty : {true, false}) {
+    auto show = schemas_response(database);
+    show.rows.resize(empty ? 0 : 1);
+    const auto raw_bytes = current_schema_literal_raw_bytes(show);
+    const auto set_bytes = sizeof(std::set<std::string>) +
+        show.rows.size() * (sizeof(std::string) + 4 * sizeof(void*) + 2 * (1 + 1));
+    const auto output_bytes = sizeof(QueryResult) + 5 * sizeof(ResultColumnMetadata) +
+        show.rows.size() * (sizeof(ResultRow) + 5 * sizeof(ResultCell) + 2 * (1 + 1)) +
+        2 * ((9 + 1) + (11 + 1) + (10 + 1) + (10 + 1) + (7 + 1));
+    ASSERT_GT(command_bytes, set_bytes + output_bytes);
+    ASSERT_GT(raw_bytes + set_bytes + output_bytes, command_bytes); // Double raw would fail the exact boundary.
+    const auto omitted_overlap_cap = std::max(database_bytes + command_bytes,
+        database_bytes + raw_bytes + set_bytes + output_bytes);
+    const auto simultaneous_peak = database_bytes + command_bytes + raw_bytes;
+    ASSERT_LT(omitted_overlap_cap, simultaneous_peak);
+    for (const auto cap : {omitted_overlap_cap, simultaneous_peak - 1, simultaneous_peak}) {
+      SCOPED_TRACE(cap);
+      RoutineExecutionSession session;
+      session.snapshot = {SessionState::Transaction, SessionDisposition::ResetRequired};
+      ResponseLimits response;
+      response.max_wire_bytes = cap;
+      ASSERT_TRUE(session.budgets(ResultLimits{}, response));
+      auto copy = show;
+      copy.columns.reserve(show.columns.capacity());
+      copy.rows.reserve(show.rows.capacity());
+      current_schema_quoted_replies(session, database, std::move(copy), session.snapshot);
+      auto result = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+      if (cap < simultaneous_peak) {
+        current_schema_limit(result, session.snapshot);
+      } else {
+        ASSERT_TRUE(result);
+        EXPECT_EQ(session.snapshot, result.session_snapshot());
+        EXPECT_EQ(empty ? 0u : 1u, result->rows.size());
+        EXPECT_EQ(5u, result->columns.size());
+      }
+      ASSERT_EQ(2u, session.commands.size());
+      EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"" + std::string(600, '"') + "\";", session.commands[1]);
+    }
+  }
+}
+
+TEST(RedshiftCurrentSchemaStorage, QuotedOverlapRefusalPreservesNativeValidationAndLateSnapshot) {
+  const std::string database(300, '"');
+  auto source = schemas_response(database);
+  source.rows.clear();
+  const auto cap = sizeof(std::string) + 2 * (database.size() + 1) + sizeof(std::string) +
+      2 * (2 * database.size() + std::string_view("SHOW SCHEMAS FROM DATABASE \"\";").size() + 1) +
+      current_schema_literal_raw_bytes(source) - 1;
+  for (unsigned variant = 0; variant < 5; ++variant) {
+    SCOPED_TRACE(variant);
+    RoutineExecutionSession session;
+    session.snapshot = {SessionState::Transaction, SessionDisposition::ResetRequired};
+    ResponseLimits response;
+    response.max_wire_bytes = cap;
+    ASSERT_TRUE(session.budgets(ResultLimits{}, response));
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "quoted native failure"};
+    error.native_state = "42501";
+    error.session_state = session.snapshot.state;
+    error.disposition = session.snapshot.disposition;
+    if (variant == 0) {
+      auto identity = schema_lookup_fixture();
+      identity.rows[0][0] = database;
+      session.replies.emplace_back(std::move(identity), session.snapshot);
+      session.replies.emplace_back(error);
+    } else {
+      auto show = source;
+      show.columns.reserve(source.columns.capacity());
+      show.rows.reserve(source.rows.capacity());
+      if (variant == 1) {
+        QueryResult extra;
+        extra.error = error;
+        show.additional_results.push_back(std::move(extra));
+      } else if (variant == 2) {
+        show.columns[1].name = "database_name";
+      } else if (variant == 3) {
+        show.rows = {{"foreign", "z", "1", "local", std::nullopt, std::nullopt, std::nullopt}};
+      }
+      const auto snapshot = variant == 4 ?
+          SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire} : session.snapshot;
+      current_schema_quoted_replies(session, database, std::move(show), snapshot);
+    }
+    auto result = session.execute_catalog(schemas_request(), rs::util::Deadline::max());
+    if (variant < 2) {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(error.message, result.error_message());
+      EXPECT_EQ(error.native_state, result.backend_error().native_state);
+      EXPECT_EQ(session.snapshot, result.session_snapshot());
+    } else if (variant < 4) {
+      schema_error(result); // Full borrowed metadata validation precedes the insufficient byte cap.
+    } else {
+      current_schema_limit(result, {SessionState::Disconnected, SessionDisposition::Retire});
+    }
+    EXPECT_EQ(2u, session.commands.size());
   }
 }

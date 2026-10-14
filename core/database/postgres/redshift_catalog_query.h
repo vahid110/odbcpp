@@ -3,6 +3,7 @@
 #include "odbcpp/database/catalog_request.h"
 #include "odbcpp/database/query_result.h"
 #include "odbcpp/database/i_database_connection.h"
+#include <array>
 #include <string>
 #include <utility>
 
@@ -28,6 +29,8 @@ std::optional<CatalogRequest> redshift_identifier_show_request(const CatalogRequ
 std::string redshift_schemas_query(bool visible_databases = false);
 // Fixed current-database discovery and owning SHOW normalization. No SQL fallback.
 BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> input);
+// Borrowed validated lookup, for admission before allocating its owning copy.
+BackendResult<std::string_view> redshift_schema_database_view(const BackendResult<QueryResult>& input);
 std::string redshift_show_schemas_command(std::string_view validated_database);
 BackendResult<QueryResult> normalize_redshift_schemas(
     std::string_view database, BackendResult<QueryResult> input);
@@ -81,6 +84,25 @@ class RedshiftRoutineBudget {
   std::size_t exchanges_{0};
 };
 RedshiftRoutineUsage redshift_routine_usage(const QueryResult& result);
+// Current-database SQL_ALL_SCHEMAS only. Existing pure and Visible callers stay
+// on their unchanged entry; raw storage is released by its actual owner.
+BackendError redshift_current_schema_limit(SessionSnapshot snapshot);
+std::optional<RedshiftRoutineUsage> redshift_current_schema_raw_storage(const QueryResult& source);
+std::optional<RedshiftRoutineUsage> redshift_current_schema_database_storage(std::string_view database);
+// Closed validated SHOW layout/charge, borrowed from the caller's unchanged
+// native response. Admission occurs while its quoted command remains live;
+// projection follows actual command destruction, without a second raw charge.
+struct RedshiftCurrentSchemaSource {
+  std::array<std::size_t, 7> indexes;
+  RedshiftRoutineUsage raw_retained;
+};
+BackendResult<RedshiftCurrentSchemaSource> admit_redshift_current_schemas(std::string_view database,
+    const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget,
+    rs::util::Deadline deadline);
+BackendResult<QueryResult> normalize_redshift_current_schemas(
+    const BackendResult<QueryResult>& input, const RedshiftCurrentSchemaSource& admitted,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+
 // Exact native identity/signature/token charges retained by the routine
 // normalizer. Release only after the owning routine vector is destroyed.
 RedshiftRoutineUsage redshift_routine_storage_usage(const std::vector<RedshiftRoutine>& routines);

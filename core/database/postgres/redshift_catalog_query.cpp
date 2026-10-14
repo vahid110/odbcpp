@@ -81,7 +81,7 @@ bool clean_schema_result(const QueryResult& source) {
 }
 }  // namespace
 
-BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> input) {
+BackendResult<std::string_view> redshift_schema_database_view(const BackendResult<QueryResult>& input) {
   if (!input) return input.backend_error();
   const auto& source = *input;
   if (source.error) return *source.error;
@@ -102,7 +102,13 @@ BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> i
     return invalid_schema_metadata("lookup-identifier");
   if (input.session_snapshot().disposition == SessionDisposition::Retire)
     return invalid_schema_metadata("lookup-snapshot");
-  return BackendResult<std::string>{*source.rows[0][0], input.session_snapshot()};
+  return BackendResult<std::string_view>{*source.rows[0][0], input.session_snapshot()};
+}
+
+BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> input) {
+  auto identity = redshift_schema_database_view(input);
+  if (!identity) return identity.backend_error();
+  return BackendResult<std::string>{std::string(*identity), identity.session_snapshot()};
 }
 
 BackendResult<std::vector<std::string>> normalize_redshift_databases(
@@ -198,6 +204,180 @@ BackendResult<QueryResult> normalize_redshift_schemas(
   for (const auto& schema : schemas)
     output.rows.push_back({std::nullopt, schema, std::nullopt, std::nullopt, std::nullopt});
   return BackendResult<QueryResult>{std::move(output), input.session_snapshot()};
+}
+
+
+namespace {
+// Closed current-schema admission arithmetic, not an allocator/RSS estimate.
+bool current_schema_add(std::size_t& total, std::size_t count, std::size_t width = 1) {
+  const auto max = std::numeric_limits<std::size_t>::max();
+  if (width && count > max / width) return false;
+  const auto bytes = count * width;
+  if (bytes > max - total) return false;
+  total += bytes;
+  return true;
+}
+bool current_schema_string(std::size_t& bytes, std::size_t length) {
+  return current_schema_add(bytes, length, 2) && current_schema_add(bytes, 2);
+}
+}  // namespace
+
+BackendError redshift_current_schema_limit(SessionSnapshot snapshot) {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),
+      "Redshift schema enumeration storage budget exceeded"};
+  error.operation = BackendOperation::ExecuteCatalog;
+  error.session_state = snapshot.state;
+  error.disposition = snapshot.disposition;
+  return error;
+}
+
+std::optional<RedshiftRoutineUsage> redshift_current_schema_raw_storage(const QueryResult& source) {
+  RedshiftRoutineUsage used{source.rows.size(), 0, sizeof(QueryResult), source.columns.size(), 0};
+  if (!current_schema_add(used.bytes, source.columns.capacity(), sizeof(ResultColumnMetadata)) ||
+      !current_schema_add(used.bytes, source.rows.capacity(), sizeof(ResultRow)) ||
+      !current_schema_add(used.bytes, source.additional_results.capacity(), sizeof(QueryResult)) ||
+      !current_schema_add(used.bytes, source.normalized_parameter_types.capacity(), sizeof(NativeTypeInfo)) ||
+      !current_schema_add(used.bytes, source.cell_errors.capacity(), sizeof(CellEncodingError))) return std::nullopt;
+  for (const auto& column : source.columns) {
+    if (!current_schema_add(used.bytes, column.name.capacity()) || !current_schema_add(used.bytes, 1) ||
+        !current_schema_add(used.name_bytes, column.name.size())) return std::nullopt;
+  }
+  for (const auto& row : source.rows) {
+    if (!current_schema_add(used.cells, row.size()) ||
+        !current_schema_add(used.bytes, row.capacity(), sizeof(ResultCell))) return std::nullopt;
+    for (std::size_t c = 0; c < row.size(); ++c) {
+      if (!row[c]) continue;
+      if (!current_schema_add(used.bytes, row[c]->capacity()) || !current_schema_add(used.bytes, 1))
+        return std::nullopt;
+      if ((source.columns[c].name == "database_name" || source.columns[c].name == "schema_name") &&
+          !current_schema_add(used.name_bytes, row[c]->size())) return std::nullopt;
+    }
+  }
+  return used;
+}
+
+std::optional<RedshiftRoutineUsage> redshift_current_schema_database_storage(std::string_view database) {
+  RedshiftRoutineUsage used{0, 0, sizeof(std::string), 0, database.size()};
+  if (!current_schema_string(used.bytes, database.size())) return std::nullopt;
+  return used;
+}
+
+BackendResult<RedshiftCurrentSchemaSource> admit_redshift_current_schemas(std::string_view database,
+    const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget,
+    rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  const auto& source = *input;
+  if (source.error) return *source.error;
+  for (const auto& extra : source.additional_results) {
+    if (extra.error) return *extra.error;
+  }
+  if (!schema_identifier(database)) return invalid_schema_metadata("show-database");
+  if (!clean_schema_result(source)) return invalid_schema_metadata("show-structure");
+  if (source.columns.size() != 7) return invalid_schema_metadata("show-columns");
+  if (source.rows.size() > 10000) return invalid_schema_metadata("show-rows");
+  if (source.affected_rows != 0 && source.affected_rows != source.rows.size())
+    return invalid_schema_metadata("show-completion");
+  const auto layout = show_schema_indexes(source);
+  if (!layout) return invalid_schema_metadata("show-layout");
+  const auto& indexes = *layout;
+  if (!schema_text(source.columns[indexes[0]]) || !schema_text(source.columns[indexes[1]]))
+    return invalid_schema_metadata("show-type");
+  const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+  const auto timeout = [] {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+        "Schema enumeration normalization deadline expired"};
+    error.operation = BackendOperation::ExecuteCatalog;
+    return error;
+  };
+  // Borrowed validation precedes both budget refusal and duplicate-index
+  // allocation. No malformed hidden row becomes a prefix or an empty success.
+  for (std::size_t r = 0; r < source.rows.size(); ++r) {
+    if (expired()) return timeout();
+    const auto& row = source.rows[r];
+    if (!row[indexes[0]] || !row[indexes[1]]) return invalid_schema_metadata("show-null-identity");
+    if (*row[indexes[0]] != database) return invalid_schema_metadata("show-foreign-database");
+    if (!schema_identifier(*row[indexes[1]])) return invalid_schema_metadata("show-identifier");
+    for (std::size_t previous = 0; previous < r; ++previous) {
+      if (expired()) return timeout();
+      if (source.rows[previous][indexes[1]] == row[indexes[1]]) return invalid_schema_metadata("show-duplicate");
+    }
+  }
+  const auto limit = [&] { return redshift_current_schema_limit(input.session_snapshot()); };
+  if (expired()) return timeout();
+  if (!budget.description(source.columns.size()) || !budget.description(5)) return limit();
+  for (const auto& column : source.columns) {
+    if (!budget.name(column.name)) return limit();
+  }
+  for (const auto& row : source.rows) {
+    if (!budget.name(*row[indexes[0]]) || !budget.name(*row[indexes[1]])) return limit();
+  }
+  const auto raw = redshift_current_schema_raw_storage(source);
+  // The caller still holds the quoted-command reservation: this is the D+C+R
+  // peak, before any destruction makes those bytes available to projection.
+  if (!raw || !budget.retain(*raw)) return limit();
+  return BackendResult<RedshiftCurrentSchemaSource>{{indexes, *raw}, input.session_snapshot()};
+}
+
+BackendResult<QueryResult> normalize_redshift_current_schemas(
+    const BackendResult<QueryResult>& input, const RedshiftCurrentSchemaSource& admitted,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
+  const auto& source = *input;
+  const auto& indexes = admitted.indexes;
+  const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+  const auto timeout = [] {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+        "Schema enumeration normalization deadline expired"};
+    error.operation = BackendOperation::ExecuteCatalog;
+    return error;
+  };
+  const auto limit = [&] { return redshift_current_schema_limit(input.session_snapshot()); };
+  if (expired()) return timeout();
+  RedshiftRoutineUsage scratch{0, 0, sizeof(std::set<std::string>), source.rows.size(), 0};
+  RedshiftRoutineUsage output{source.rows.size(), 0, sizeof(QueryResult), 5, 0};
+  constexpr std::array<std::string_view, 5> headers{
+      "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"};
+  if (!current_schema_add(scratch.bytes, source.rows.size(), sizeof(std::string) + 4 * sizeof(void*)) ||
+      !current_schema_add(output.cells, source.rows.size(), 5) ||
+      !current_schema_add(output.bytes, 5, sizeof(ResultColumnMetadata)) ||
+      !current_schema_add(output.bytes, source.rows.size(), sizeof(ResultRow)) ||
+      !current_schema_add(output.bytes, source.rows.size(), 5 * sizeof(ResultCell))) return limit();
+  for (const auto name : headers) {
+    if (!budget.name(name) || !current_schema_string(output.bytes, name.size()) ||
+        !current_schema_add(output.name_bytes, name.size())) return limit();
+  }
+  for (const auto& row : source.rows) {
+    const auto length = row[indexes[1]]->size();
+    if (!current_schema_string(scratch.bytes, length) || !current_schema_add(scratch.name_bytes, length) ||
+        !current_schema_string(output.bytes, length) || !current_schema_add(output.name_bytes, length)) return limit();
+  }
+  // Raw is already charged by admission. Command storage has actually died;
+  // its released bytes can now hold set/output, without charging raw twice.
+  if (!budget.retain(scratch) || !budget.retain(output)) return limit();
+  QueryResult result;
+  {
+    std::set<std::string> schemas;
+    for (const auto& row : source.rows) {
+      if (expired()) return timeout();
+      schemas.insert(*row[indexes[1]]);
+    }
+    result.columns.resize(headers.size());
+    for (std::size_t n = 0; n < headers.size(); ++n) {
+      result.columns[n].name = headers[n];
+      result.columns[n].normalized_type = NativeTypeInfo{ScalarType::VarChar, 0, 0, true};
+    }
+    result.columns[1].normalized_type->column_size =
+        declared_character_metadata(*source.columns[indexes[1]].normalized_type).column_size;
+    result.rows.reserve(schemas.size());
+    for (const auto& schema : schemas) {
+      if (expired()) return timeout();
+      result.rows.emplace_back();
+      result.rows.back().resize(5);
+      result.rows.back()[1] = schema;
+    }
+  }
+  budget.release(scratch); // All set nodes/names are destroyed, owning output remains live and charged.
+  if (expired()) return timeout();
+  return BackendResult<QueryResult>{std::move(result), input.session_snapshot()};
 }
 
 
