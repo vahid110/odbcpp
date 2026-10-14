@@ -1,4 +1,6 @@
 #include "redshift_foreign_key_contract.h"
+#include "redshift_catalog_query.h"
+#include <limits>
 #include "core/database/result_validation.h"
 #include <array>
 #include <algorithm>
@@ -136,5 +138,252 @@ BackendResult<QueryResult> normalize_redshift_foreign_keys(
   for (auto& row : normalized)
     if (plan.direction != RedshiftForeignKeyDirection::Both || matches(row, 0, *plan.primary)) output.rows.push_back(std::move(row));
   return BackendResult<QueryResult>{std::move(output), input.session_snapshot()};
+}
+}  // namespace rs::core::database::postgres
+
+
+namespace rs::core::database::postgres {
+namespace {
+BackendError current_fk_invalid(const char* reason, SessionSnapshot snapshot) {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      std::string("Invalid current-database foreign-key metadata: ") + reason};
+  error.error_class = BackendErrorClass::InvalidMetadata;
+  error.operation = BackendOperation::ExecuteCatalog;
+  error.session_state = snapshot.state;
+  error.disposition = SessionDisposition::Retire;
+  return error;
+}
+BackendError current_fk_timeout() {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+      "Foreign-key catalog deadline expired"};
+  error.operation = BackendOperation::ExecuteCatalog;
+  return error;
+}
+BackendError current_fk_limit() {
+  auto error = redshift_routine_limit();
+  error.message = "Foreign-key catalog budget exceeded";
+  return error;
+}
+// Closed native allocation equation components, not a provider-neutral allocator.
+bool current_fk_add(std::size_t& total, std::size_t count, std::size_t size = 1) {
+  const auto maximum = (std::numeric_limits<std::size_t>::max)();
+  if (count > maximum / size || count * size > maximum - total) return false;
+  total += count * size;
+  return true;
+}
+std::optional<RedshiftRoutineUsage> current_fk_storage(const QueryResult& source) {
+  auto used = redshift_routine_schema_usage(source);
+  if (!current_fk_add(used.bytes, source.normalized_parameter_types.capacity(), sizeof(NativeTypeInfo)) ||
+      !current_fk_add(used.metadata, source.normalized_parameter_types.size())) return {};
+  for (const auto& column : source.columns) {
+    if (!current_fk_add(used.bytes, column.name.capacity() + 1 - column.name.size())) return {};
+  }
+  for (const auto& row : source.rows) {
+    for (const auto& cell : row) {
+      if (cell && (!current_fk_add(used.bytes, cell->capacity() + 1 - cell->size()) ||
+                   !current_fk_add(used.name_bytes, cell->size()))) return {};
+    }
+  }
+  return used;
+}
+constexpr std::array<std::string_view, 14> current_fk_fields{
+    "pk_database_name", "pk_schema_name", "pk_table_name", "pk_column_name",
+    "fk_database_name", "fk_schema_name", "fk_table_name", "fk_column_name",
+    "key_seq", "update_rule", "delete_rule", "fk_name", "pk_name", "deferrability"};
+constexpr std::array<std::string_view, 14> current_fk_output{
+    "PKTABLE_CAT", "PKTABLE_SCHEM", "PKTABLE_NAME", "PKCOLUMN_NAME",
+    "FKTABLE_CAT", "FKTABLE_SCHEM", "FKTABLE_NAME", "FKCOLUMN_NAME",
+    "KEY_SEQ", "UPDATE_RULE", "DELETE_RULE", "FK_NAME", "PK_NAME", "DEFERRABILITY"};
+}
+
+BackendResult<std::string> redshift_foreign_key_database(BackendResult<QueryResult> input,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra : input->additional_results) {
+    if (extra.error) return *extra.error;
+  }
+  const auto snapshot = input.session_snapshot();
+  const auto& raw = *input;
+  if (snapshot != SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable} ||
+      !valid_result_structure(raw) || !raw.additional_results.empty() ||
+      !raw.cell_errors.empty() || !raw.normalized_parameter_types.empty() ||
+      raw.columns.size() != 1 || raw.columns[0].name != "database_name" ||
+      !raw.columns[0].normalized_type || !raw.columns[0].normalized_type->known ||
+      !text(raw.columns[0].normalized_type->type) || raw.rows.size() != 1 ||
+      raw.statement_kind != StatementKind::SelectCursor || raw.affected_rows > 1 ||
+      !raw.rows[0][0] || !name(*raw.rows[0][0])) {
+    return current_fk_invalid("identity", snapshot);
+  }
+  if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+  auto storage = current_fk_storage(raw);
+  RedshiftRoutineUsage owning{0, 0, raw.rows[0][0]->size() + 1 + sizeof(std::string),
+      1, raw.rows[0][0]->size()};
+  if (!storage || !budget.description(1) || !budget.name(raw.columns[0].name) ||
+      !budget.name(*raw.rows[0][0]) || !budget.retain(*storage) || !budget.retain(owning)) {
+    return current_fk_limit();
+  }
+  auto database = redshift_schema_database(std::move(input));
+  budget.release(*storage); // Consumed native owning storage has been destroyed.
+  if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+  return database;
+}
+
+BackendResult<QueryResult> redshift_foreign_key_part(const RedshiftForeignKeyCommandPlan& plan,
+    BackendResult<QueryResult> input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra : input->additional_results) {
+    if (extra.error) return *extra.error;
+  }
+  const auto snapshot = input.session_snapshot();
+  const auto bad = [&](const char* reason) { return current_fk_invalid(reason, snapshot); };
+  const auto& source = *input;
+  if (snapshot != SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable} ||
+      !valid(plan) || !valid_result_structure(source) || source.columns.size() != 14 ||
+      source.rows.size() > 10000 || !source.additional_results.empty() ||
+      !source.cell_errors.empty() || source.affected_rows != 0 || !source.statement_kind ||
+      (*source.statement_kind != StatementKind::Unknown &&
+       *source.statement_kind != StatementKind::SelectCursor) ||
+      (!source.normalized_parameter_types.empty() &&
+       (source.normalized_parameter_types.size() != 3 ||
+        !std::all_of(source.normalized_parameter_types.begin(), source.normalized_parameter_types.end(),
+            [](const NativeTypeInfo& type) { return type.known && text(type.type); })))) {
+    return bad("completion");
+  }
+  std::size_t groups = 0, selected = 0, characters = 0;
+  {
+    // Borrowed validation has no growing index/group allocation. This fixed index
+    // dies before the pure normalizer's own fourteen-entry index becomes live.
+    std::array<std::size_t, 14> index{};
+    for (std::size_t field = 0; field < current_fk_fields.size(); ++field) {
+      std::size_t matches = 0;
+      for (std::size_t column = 0; column < source.columns.size(); ++column) {
+        if (source.columns[column].name != current_fk_fields[field]) continue;
+        ++matches;
+        index[field] = column;
+        const auto& type = source.columns[column].normalized_type;
+        if (!type || !type->known) return bad("type");
+        if (numeric(field)) {
+          if (type->type != ScalarType::SmallInt && type->type != ScalarType::Integer &&
+              !(field != 8 && text(type->type) &&
+                std::all_of(source.rows.begin(), source.rows.end(),
+                    [column](const ResultRow& row) { return !row[column]; }))) return bad("type");
+        } else if (!text(type->type)) return bad("type");
+      }
+      if (matches != 1) return bad("layout");
+    }
+    const auto cell = [&](const ResultRow& row, std::size_t field) -> const ResultCell& {
+      return row[index[field]];
+    };
+    const auto matches_table = [&](const ResultRow& row, std::size_t offset,
+        const RedshiftForeignKeyTable& target) {
+      return *cell(row, offset) == target.database && *cell(row, offset + 1) == target.schema &&
+          *cell(row, offset + 2) == target.table;
+    };
+    const auto rule = [&](const ResultRow& row, std::size_t field) {
+      return cell(row, field) ? integer(cell(row, field), field == 13 ? 5 : 0, field == 13 ? 7 : 4) :
+          std::optional<int>{field == 13 ? 7 : 3};
+    };
+    // Validate every native row before Both filtering or budget admission.
+    for (const auto& row : source.rows) {
+      if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+      for (std::size_t field = 0; field < 8; ++field) {
+        if (!cell(row, field) || !name(*cell(row, field))) return bad("identity");
+      }
+      if (!cell(row, 11) || !name(*cell(row, 11)) ||
+          (cell(row, 12) && !name(*cell(row, 12))) ||
+          !integer(cell(row, 8), 1, 32767) || !rule(row, 9) ||
+          !rule(row, 10) || !rule(row, 13)) return bad("constraint");
+      if ((plan.foreign && !matches_table(row, 4, *plan.foreign)) ||
+          (plan.direction == RedshiftForeignKeyDirection::Exported &&
+           !matches_table(row, 0, *plan.primary))) return bad("target");
+    }
+    for (std::size_t r = 0; r < source.rows.size(); ++r) {
+      if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+      const auto& row = source.rows[r];
+      std::size_t count = 0;
+      int maximum = 0;
+      bool first = true;
+      for (std::size_t q = 0; q < source.rows.size(); ++q) {
+        if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+        const auto& other = source.rows[q];
+        if (cell(row, 4) != cell(other, 4) || cell(row, 5) != cell(other, 5) ||
+            cell(row, 6) != cell(other, 6) || cell(row, 11) != cell(other, 11)) continue;
+        ++count;
+        if (q < r) first = false;
+        if (cell(row, 0) != cell(other, 0) || cell(row, 1) != cell(other, 1) ||
+            cell(row, 2) != cell(other, 2) || cell(row, 12) != cell(other, 12) ||
+            rule(row, 9) != rule(other, 9) || rule(row, 10) != rule(other, 10) ||
+            rule(row, 13) != rule(other, 13)) return bad("reference");
+        const auto sequence = *integer(cell(other, 8), 1, 32767);
+        maximum = (std::max)(maximum, sequence);
+        if (q != r && (*integer(cell(row, 8), 1, 32767) == sequence ||
+            (cell(row, 3) == cell(other, 3) && cell(row, 7) == cell(other, 7)))) {
+          return bad("duplicate");
+        }
+      }
+      if (maximum != static_cast<int>(count)) return bad("sequence");
+      if (first) ++groups;
+      if (plan.direction != RedshiftForeignKeyDirection::Both || matches_table(row, 0, *plan.primary)) {
+        ++selected;
+      }
+    }
+    // Name/capacity admission follows full borrowed shape/group validation.
+    for (const auto& column : source.columns) {
+      if (!budget.name(column.name) || !current_fk_add(characters, column.name.capacity() + 1)) {
+        return current_fk_limit();
+      }
+    }
+    for (const auto& row : source.rows) {
+      for (const auto& value : row) {
+        if (value && (!budget.name(*value) || !current_fk_add(characters, value->capacity() + 1))) {
+          return current_fk_limit();
+        }
+      }
+    }
+  }
+  if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+  if (!budget.description(14)) return current_fk_limit();
+  auto raw = current_fk_storage(source);
+  const auto rows = source.rows.size();
+  RedshiftRoutineUsage peak{rows + selected, rows * 14, 8192, 28 + 2 * groups + 2 * rows};
+  if (!raw || !current_fk_add(peak.bytes, characters, 6) ||
+      !current_fk_add(peak.bytes, rows, 6 * sizeof(ResultRow)) ||
+      !current_fk_add(peak.bytes, rows, 32 * sizeof(ResultCell)) ||
+      !current_fk_add(peak.bytes, groups, sizeof(GroupKey) + sizeof(Group) + 256) ||
+      !current_fk_add(peak.bytes, rows, sizeof(int) + sizeof(std::pair<std::string, std::string>) + 128) ||
+      !current_fk_add(peak.bytes, 14, sizeof(std::size_t)) ||
+      !current_fk_add(peak.name_bytes, characters, 6) ||
+      !current_fk_add(peak.name_bytes, rows, 16)) return current_fk_limit();
+  for (const auto field : current_fk_output) {
+    if (!budget.name(field) || !current_fk_add(peak.name_bytes, field.size())) return current_fk_limit();
+  }
+  if (!budget.retain(*raw) || !budget.retain(peak)) return current_fk_limit();
+  auto normalized = normalize_redshift_foreign_keys(plan, std::move(input));
+  // Native raw/group storage is now destroyed. Keep its conservative reservation
+  // through sorting, including the pure normalizer's moved-from row containers.
+  if (!normalized) return normalized.backend_error();
+  const std::size_t start = plan.direction == RedshiftForeignKeyDirection::Exported ? 4 : 0;
+  std::stable_sort(normalized->rows.begin(), normalized->rows.end(),
+      [start](const ResultRow& left, const ResultRow& right) {
+        for (std::size_t field = start; field < start + 3; ++field) {
+          if (*left[field] != *right[field]) return *left[field] < *right[field];
+        }
+        unsigned l = 0, r = 0;
+        std::from_chars(left[8]->data(), left[8]->data() + left[8]->size(), l);
+        std::from_chars(right[8]->data(), right[8]->data() + right[8]->size(), r);
+        return l < r;
+      });
+  if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+  auto owning = current_fk_storage(*normalized);
+  if (!owning || owning->rows > peak.rows || owning->cells > peak.cells ||
+      owning->bytes > peak.bytes || owning->metadata > peak.metadata ||
+      owning->name_bytes > peak.name_bytes) return bad("allocation-model");
+  budget.release(*raw);
+  budget.release({peak.rows - owning->rows, peak.cells - owning->cells,
+      peak.bytes - owning->bytes, peak.metadata - owning->metadata,
+      peak.name_bytes - owning->name_bytes});
+  return normalized;
 }
 }  // namespace rs::core::database::postgres

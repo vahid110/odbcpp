@@ -1,5 +1,6 @@
 #pragma once
 #include "odbcpp/database/query_result.h"
+#include "odbcpp/util/deadline.h"
 #include <optional>
 #include <string>
 
@@ -32,3 +33,13 @@ BackendResult<RedshiftForeignKeyCommandPlan> redshift_foreign_key_plan(
 BackendResult<QueryResult> normalize_redshift_foreign_keys(
     const RedshiftForeignKeyCommandPlan& plan, BackendResult<QueryResult> input);
 }  // namespace rs::core::database::postgres
+
+namespace rs::core::database::postgres {
+class RedshiftRoutineBudget;
+// Bounded native current-database identity/foreign-key publication. The strict
+// value plan and pure normalizer above retain their original contracts.
+BackendResult<std::string> redshift_foreign_key_database(BackendResult<QueryResult> input,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+BackendResult<QueryResult> redshift_foreign_key_part(const RedshiftForeignKeyCommandPlan& plan,
+    BackendResult<QueryResult> input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+}

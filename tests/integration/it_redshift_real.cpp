@@ -248,6 +248,7 @@ protected:
   
   void modern_primary_key_contract(bool use_executor, bool invalid_names = false, bool legacy = false);
   void current_database_primary_key_contract(bool wide);
+  void current_database_foreign_key_contract(bool wide);
   void odbc_primary_key_mode_contract(const char* explicit_mode);
   void odbc_primary_key_edge_contract(const char* mode, bool quoted);
   std::string connection_string_;
@@ -10232,4 +10233,110 @@ TEST_F(RedshiftRealTest, CurrentDatabasePrimaryKeyNullCatalogAnsi) {
 }
 TEST_F(RedshiftRealTest, CurrentDatabasePrimaryKeyNullCatalogWide) {
   current_database_primary_key_contract(true);
+}
+
+
+void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
+  const auto* enabled = std::getenv("ODBCPP_REDSHIFT_CURRENT_FK_NATIVE");
+  if (!enabled || std::string_view(enabled) != "1") {
+    GTEST_SKIP() << "Separately admitted current-database foreign-key fixture";
+  }
+  const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
+  connection_string_ += ";RedshiftCatalogMode=SHOW";
+  ASSERT_TRUE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(5), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_METADATA_ID,
+      reinterpret_cast<SQLPOINTER>(SQL_FALSE), 0));
+  std::array<SQLCHAR, 1025> name{};
+  SQLSMALLINT length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc_, SQL_DATABASE_NAME, name.data(), name.size(), &length));
+  ASSERT_GT(length, 0);
+  ASSERT_LT(static_cast<std::size_t>(length), name.size());
+  const std::string database(reinterpret_cast<char*>(name.data()), length);
+  const std::string schema = "odbcpp_fixture";
+  const std::string parent = "m2_catalog_parent_20261003_c01";
+  const std::string child = "m2_catalog_child_20261003_c01";
+  constexpr std::array<CatalogField, 14> fields{{
+      {"pktable_cat", SQL_VARCHAR}, {"pktable_schem", SQL_VARCHAR},
+      {"pktable_name", SQL_VARCHAR}, {"pkcolumn_name", SQL_VARCHAR},
+      {"fktable_cat", SQL_VARCHAR}, {"fktable_schem", SQL_VARCHAR},
+      {"fktable_name", SQL_VARCHAR}, {"fkcolumn_name", SQL_VARCHAR},
+      {"key_seq", SQL_SMALLINT}, {"update_rule", SQL_SMALLINT},
+      {"delete_rule", SQL_SMALLINT}, {"fk_name", SQL_VARCHAR},
+      {"pk_name", SQL_VARCHAR}, {"deferrability", SQL_SMALLINT}}};
+  for (unsigned direction = 0; direction < 3; ++direction) {
+    SCOPED_TRACE(direction);
+    std::array<rs::core::database::ResultRows, 2> owned;
+    for (bool explicit_catalog : {false, true}) {
+      SQLRETURN result = SQL_ERROR;
+      const bool primary = direction != 0, foreign = direction != 1;
+      if (wide) {
+        auto db = rs::odbc::utf8_to_wide(database), sc = rs::odbc::utf8_to_wide(schema);
+        auto pk = rs::odbc::utf8_to_wide(parent), fk = rs::odbc::utf8_to_wide(child);
+        ASSERT_TRUE(db);
+        ASSERT_TRUE(sc);
+        ASSERT_TRUE(pk);
+        ASSERT_TRUE(fk);
+        result = SQLForeignKeysW(hstmt_,
+            primary && explicit_catalog ? db->data() : nullptr, primary && explicit_catalog ? db->size() : 0,
+            primary ? sc->data() : nullptr, primary ? sc->size() : 0,
+            primary ? pk->data() : nullptr, primary ? pk->size() : 0,
+            foreign && explicit_catalog ? db->data() : nullptr, foreign && explicit_catalog ? db->size() : 0,
+            foreign ? sc->data() : nullptr, foreign ? sc->size() : 0,
+            foreign ? fk->data() : nullptr, foreign ? fk->size() : 0);
+      } else {
+        const auto chars = [](const std::string& text) {
+          return reinterpret_cast<SQLCHAR*>(const_cast<char*>(text.data()));
+        };
+        result = SQLForeignKeys(hstmt_,
+            primary && explicit_catalog ? chars(database) : nullptr, primary && explicit_catalog ? database.size() : 0,
+            primary ? chars(schema) : nullptr, primary ? schema.size() : 0,
+            primary ? chars(parent) : nullptr, primary ? parent.size() : 0,
+            foreign && explicit_catalog ? chars(database) : nullptr, foreign && explicit_catalog ? database.size() : 0,
+            foreign ? chars(schema) : nullptr, foreign ? schema.size() : 0,
+            foreign ? chars(child) : nullptr, foreign ? child.size() : 0);
+      }
+      ASSERT_TRUE(catalog_succeeded(result)) << metadata_diagnostic();
+      expect_catalog_fields(fields);
+      ASSERT_FALSE(HasFatalFailure());
+      for (unsigned row = 0; row < 2; ++row) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+        rs::core::database::ResultRow cells;
+        for (SQLUSMALLINT column = 1; column <= 14; ++column) {
+          std::array<char, 1025> value{};
+          SQLLEN indicator = 0;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, value.data(), value.size(), &indicator));
+          if (indicator == SQL_NULL_DATA) {
+            cells.emplace_back(std::nullopt);
+          } else {
+            ASSERT_GE(indicator, 0);
+            ASSERT_LT(static_cast<std::size_t>(indicator), value.size());
+            cells.emplace_back(std::string(value.data(), indicator));
+          }
+        }
+        EXPECT_EQ(rs::core::database::ResultCell{database}, cells[0]);
+        EXPECT_EQ(rs::core::database::ResultCell{schema}, cells[1]);
+        EXPECT_EQ(rs::core::database::ResultCell{parent}, cells[2]);
+        EXPECT_EQ(rs::core::database::ResultCell{row ? "key_a" : "key_b"}, cells[3]);
+        EXPECT_EQ(rs::core::database::ResultCell{database}, cells[4]);
+        EXPECT_EQ(rs::core::database::ResultCell{child}, cells[6]);
+        EXPECT_EQ(rs::core::database::ResultCell{row ? "ref_a" : "ref_b"}, cells[7]);
+        EXPECT_EQ(rs::core::database::ResultCell{std::to_string(row + 1)}, cells[8]);
+        ASSERT_TRUE(cells[11]);
+        EXPECT_FALSE(cells[11]->empty());
+        owned[explicit_catalog].push_back(std::move(cells));
+      }
+      ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+    }
+    EXPECT_EQ(owned[0], owned[1]);
+  }
+}
+TEST_F(RedshiftRealTest, CurrentDatabaseForeignKeyNullCatalogAnsi) {
+  current_database_foreign_key_contract(false);
+}
+TEST_F(RedshiftRealTest, CurrentDatabaseForeignKeyNullCatalogWide) {
+  current_database_foreign_key_contract(true);
 }

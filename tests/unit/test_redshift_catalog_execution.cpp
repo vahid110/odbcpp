@@ -5,6 +5,7 @@
 #include <functional>
 #include "core/database/postgres/redshift_catalog_query.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
+#include "core/database/postgres/redshift_foreign_key_contract.h"
 
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
@@ -23,6 +24,7 @@ TEST(RedshiftMetadataDatabaseScope, AuthenticatedFlagsFollowCompleteNativeTruthT
     }
   }
 }
+
 
 TEST(RedshiftMetadataDatabaseScope, InvalidFlagsAreRedactedEvenWhenOtherFlagDeterminesScopeAndRecoveryIsPure) {
   for (const auto& invalid : std::vector<std::string>{"", "ON", "true", "1", " off", "secret", std::string("on\0", 3)}) {
@@ -1610,7 +1612,10 @@ TEST(RedshiftForeignKeyExecution, PassiveSelectionRefusesUnavailableExactInputsB
     if (variant==3) spy.capability.clear();
     if (variant==4) spy.snapshot={SessionState::Transaction,SessionDisposition::ResetRequired};
     if (variant==5) spy.snapshot={SessionState::Unknown,SessionDisposition::Retire};
-    if (variant==6) input.foreign_catalog.reset();
+    if (variant==6) {
+      input.foreign_catalog.reset();
+      spy.mode=RedshiftCatalogMode::Legacy; // Retain the omitted-catalog no-I/O refusal in Legacy.
+    }
     if (variant==7) input.foreign_schema="";
     if (variant==8) input.foreign_table="";
     if (variant==9) input.foreign_table=std::string("bad\0name",8);
@@ -4026,4 +4031,493 @@ TEST(RedshiftCurrentPrimaryKeys, RowCellByteAndNameBoundsAdmitOnlySimultaneousOw
     ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
     EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
   }
+}
+
+
+namespace {
+QueryResult current_fk_rows(unsigned count = 2) {
+  QueryResult raw;
+  constexpr std::array<const char*, 14> fields{
+      "pk_database_name", "pk_schema_name", "pk_table_name", "pk_column_name",
+      "fk_database_name", "fk_schema_name", "fk_table_name", "fk_column_name",
+      "key_seq", "update_rule", "delete_rule", "fk_name", "pk_name", "deferrability"};
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    const bool numeric = i == 8 || i == 9 || i == 10 || i == 13;
+    raw.columns.push_back({fields[i], NativeTypeInfo{
+        numeric ? ScalarType::SmallInt : ScalarType::VarChar, 0, 0, true}});
+  }
+  raw.statement_kind = StatementKind::Unknown;
+  raw.rows = {{"db", "s", "parent", "second", "db", "s", "child", "ref_second",
+               "2", std::nullopt, std::nullopt, "fk", std::nullopt, std::nullopt},
+              {"db", "s", "parent", "first", "db", "s", "child", "ref_first",
+               "1", std::nullopt, std::nullopt, "fk", std::nullopt, std::nullopt}};
+  if (count == 1) {
+    raw.rows.erase(raw.rows.begin());
+  } else if (count == 0) {
+    raw.rows.clear();
+  }
+  return raw;
+}
+ForeignKeysCatalogRequest current_fk_request(unsigned direction = 0) {
+  ForeignKeysCatalogRequest request;
+  if (direction != 0) {
+    request.primary_schema = "s";
+    request.primary_table = "parent";
+  }
+  if (direction != 1) {
+    request.foreign_schema = "s";
+    request.foreign_table = "child";
+  }
+  return request;
+}
+class CurrentForeignKeySession final : public RoutineExecutionSession {
+ public:
+  std::optional<std::string> share, external;
+  bool lost_scope{false};
+  std::vector<QueryParameter> bound;
+  std::optional<std::string> get_parameter_status(std::string_view key) const override {
+    if (lost_scope) {
+      throw std::runtime_error("Fixture scope observation loss");
+    }
+    if (key == "datashare_enabled") return share;
+    if (key == "external_database") return external;
+    return std::nullopt;
+  }
+  BackendResult<QueryResult> execute_prepared(std::string_view query,
+      std::span<const QueryParameter> values, rs::util::Deadline deadline) override {
+    bound.assign(values.begin(), values.end());
+    return execute_query(query, deadline);
+  }
+  void ready(QueryResult raw = current_fk_rows()) {
+    replies.emplace_back(routine_identity(), snapshot);
+    replies.emplace_back(std::move(raw), snapshot);
+  }
+};
+RedshiftForeignKeyCommandPlan current_fk_plan() {
+  return {RedshiftForeignKeyDirection::Imported, std::nullopt,
+      RedshiftForeignKeyTable{"db", "s", "child"}};
+}
+}
+
+TEST(RedshiftCurrentForeignKeys, ThreeDirectionsResolveOnceKeepFourteenOwningFieldsAndOriginalDeadline) {
+  for (unsigned direction = 0; direction < 3; ++direction) {
+    SCOPED_TRACE(direction);
+    CurrentForeignKeySession session;
+    session.ready();
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = session.execute_catalog(current_fk_request(direction), deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(14u, result->columns.size());
+    ASSERT_EQ(2u, result->rows.size());
+    EXPECT_EQ("PKTABLE_CAT", result->columns[0].name);
+    EXPECT_EQ("DEFERRABILITY", result->columns[13].name);
+    EXPECT_EQ(ResultCell{"first"}, result->rows[0][3]);
+    EXPECT_EQ(ResultCell{"1"}, result->rows[0][8]);
+    EXPECT_EQ(ResultCell{"2"}, result->rows[1][8]);
+    EXPECT_EQ(ResultCell{"3"}, result->rows[0][9]);
+    EXPECT_EQ(ResultCell{"3"}, result->rows[0][10]);
+    EXPECT_EQ(ResultCell{"7"}, result->rows[0][13]);
+    EXPECT_FALSE(result->rows[0][12]);
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        direction == 1 ? "SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;" :
+                         "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;"}), session.commands);
+    EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline}), session.deadlines);
+    ASSERT_EQ(3u, session.bound.size());
+    EXPECT_EQ(ResultCell{"db"}, session.bound[0].value);
+    EXPECT_EQ(ResultCell{"s"}, session.bound[1].value);
+    EXPECT_EQ(ResultCell{direction == 1 ? "parent" : "child"}, session.bound[2].value);
+    for (const auto& parameter : session.bound) {
+      EXPECT_EQ(QueryParameterType::Unspecified, parameter.type);
+    }
+    session.replies.clear();
+    session.bound.clear();
+    session.connected = false;
+    EXPECT_EQ(ResultCell{"ref_first"}, result->rows[0][7]);
+  }
+}
+
+TEST(RedshiftCurrentForeignKeys, LiteralNamesEmptyAndBothHiddenGroupsRemainExact) {
+  const std::string schema = "s\"_%\\雪", child = "child'_%\\é";
+  CurrentForeignKeySession literal;
+  auto input = current_fk_request();
+  input.foreign_schema = schema;
+  input.foreign_table = child;
+  auto raw = current_fk_rows();
+  for (auto& row : raw.rows) {
+    row[5] = schema;
+    row[6] = child;
+  }
+  literal.ready(std::move(raw));
+  auto result = literal.execute_catalog(input, rs::util::Deadline::max());
+  ASSERT_TRUE(result) << result.error_message();
+  EXPECT_EQ(ResultCell{schema}, literal.bound[1].value);
+  EXPECT_EQ(ResultCell{child}, literal.bound[2].value);
+  EXPECT_EQ(ResultCell{child}, result->rows[0][6]);
+
+  CurrentForeignKeySession empty;
+  empty.ready(current_fk_rows(0));
+  result = empty.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(result) << result.error_message();
+  EXPECT_TRUE(result->rows.empty());
+  ASSERT_EQ(14u, result->columns.size());
+  EXPECT_EQ(0u, result->columns[0].normalized_type->column_size);
+
+  for (bool malformed : {false, true}) {
+    CurrentForeignKeySession hidden;
+    auto both = current_fk_request(2);
+    both.primary_table = "not_this_parent";
+    auto rows = current_fk_rows();
+    if (malformed) {
+      rows.rows[0][8] = "3";
+    }
+    hidden.ready(std::move(rows));
+    result = hidden.execute_catalog(both, rs::util::Deadline::max());
+    if (malformed) {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    } else {
+      ASSERT_TRUE(result) << result.error_message();
+      EXPECT_TRUE(result->rows.empty());
+    }
+    EXPECT_EQ(2u, hidden.commands.size());
+  }
+}
+
+TEST(RedshiftCurrentForeignKeys, RefusalGuardsNeverDispatchAndExplicitCatalogControlsStayIndependent) {
+  for (unsigned guard = 0; guard < 13; ++guard) {
+    SCOPED_TRACE(guard);
+    CurrentForeignKeySession session;
+    auto input = current_fk_request();
+    if (guard == 0) session.mode = RedshiftCatalogMode::Legacy;
+    if (guard == 1) session.capability = "3";
+    if (guard == 2) session.capability = "4suffix";
+    if (guard == 3) session.snapshot = {SessionState::Transaction, SessionDisposition::ResetRequired};
+    if (guard == 4) session.external = "on";
+    if (guard == 5) session.external = "invalid";
+    if (guard == 6) session.lost_scope = true;
+    if (guard == 7) input.foreign_schema.reset();
+    if (guard == 8) input.foreign_schema = "";
+    if (guard == 9) input.foreign_table = std::string("bad\0name", 8);
+    if (guard == 10) input.foreign_table = std::string("\xff", 1);
+    if (guard == 11) input.foreign_table.reset();
+    if (guard == 12) {
+      input.name_matches.catalog = CatalogNameMatch::IdentifierUnquoted;
+      input.name_matches.schema = CatalogNameMatch::IdentifierUnquoted;
+      input.name_matches.object = CatalogNameMatch::IdentifierUnquoted;
+    }
+    auto result = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_TRUE(session.commands.empty());
+    if (guard == 4) {
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
+    }
+    if (guard == 5 || guard == 6) {
+      EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+      EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    }
+  }
+  CurrentForeignKeySession expired;
+  EXPECT_FALSE(expired.execute_catalog(current_fk_request(), rs::util::Clock::now()));
+  EXPECT_TRUE(expired.commands.empty());
+
+  CurrentForeignKeySession explicit_catalog;
+  auto input = imported_request();
+  explicit_catalog.replies.emplace_back(current_fk_rows(), explicit_catalog.snapshot);
+  auto result = explicit_catalog.execute_catalog(input, rs::util::Deadline::max());
+  ASSERT_TRUE(result) << result.error_message();
+  EXPECT_EQ(1u, explicit_catalog.commands.size());
+}
+
+TEST(RedshiftCurrentForeignKeys, LiteralPeakAndDestroyedScratchKeepOwningFourteenDescriptorsCharged) {
+  // One row/group: 14 raw + 14 header-index + 14 output descriptors
+  // + one group + one reference + one sequence + one pair = 46 live entries.
+  for (const auto cap : {45u, 46u}) {
+    SCOPED_TRACE(cap);
+    ResultLimits limits;
+    limits.max_metadata_entries = cap;
+    RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+    auto result = redshift_foreign_key_part(current_fk_plan(),
+        {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    if (cap == 45) {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+    } else {
+      ASSERT_TRUE(result) << result.error_message();
+      EXPECT_EQ(ResultCell{"first"}, result->rows[0][3]);
+    }
+  }
+  // A second projection needs 46 plus the first fourteen owning descriptors.
+  for (const auto cap : {59u, 60u}) {
+    SCOPED_TRACE(cap);
+    ResultLimits limits;
+    limits.max_metadata_entries = cap;
+    RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+    auto first = redshift_foreign_key_part(current_fk_plan(),
+        {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    ASSERT_TRUE(first) << first.error_message();
+    auto second = redshift_foreign_key_part(current_fk_plan(),
+        {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    if (cap == 59) {
+      ASSERT_FALSE(second);
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), second.error());
+    } else {
+      ASSERT_TRUE(second) << second.error_message();
+    }
+    EXPECT_EQ(ResultCell{"first"}, first->rows[0][3]);
+  }
+  ResultLimits limits;
+  limits.max_metadata_entries = 1;
+  RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+  const SessionSnapshot terminal{SessionState::Unknown, SessionDisposition::Retire};
+  auto rejected = redshift_foreign_key_part(current_fk_plan(), {current_fk_rows(1), terminal},
+      budget, rs::util::Deadline::max());
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, rejected.backend_error().error_class);
+  EXPECT_EQ(terminal, rejected.session_snapshot());
+}
+
+TEST(RedshiftCurrentForeignKeys, NativeErrorsTwoExchangePreflightAndFreshRecoveryNeverReplay) {
+  CurrentForeignKeySession limited;
+  ResultLimits limits;
+  limits.max_results = 1;
+  ASSERT_TRUE(limited.budgets(limits));
+  auto refused = limited.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), refused.error());
+  EXPECT_TRUE(limited.commands.empty());
+
+  CurrentForeignKeySession session;
+  session.replies.emplace_back(routine_identity(), session.snapshot);
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned FK denial"};
+  denied.native_state = "42501";
+  denied.operation = BackendOperation::ExecuteCatalog;
+  denied.session_state = SessionState::Idle;
+  denied.disposition = SessionDisposition::Reusable;
+  session.replies.emplace_back(denied);
+  auto result = session.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_FALSE(result);
+  EXPECT_EQ("42501", result.backend_error().native_state);
+  EXPECT_EQ("owned FK denial", result.error_message());
+  EXPECT_EQ(2u, session.commands.size());
+  session.ready();
+  result = session.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(result) << result.error_message();
+  EXPECT_EQ(4u, session.commands.size());
+
+  CurrentForeignKeySession mismatch;
+  auto both = current_fk_request(2);
+  both.primary_catalog = "elsewhere";
+  mismatch.ready();
+  result = mismatch.execute_catalog(both, rs::util::Deadline::max());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(1u, mismatch.commands.size());
+  EXPECT_TRUE(mismatch.bound.empty());
+}
+
+
+TEST(RedshiftCurrentForeignKeys, BothMixedCatalogsAndImportedGroupOrderingNeverRetarget) {
+  for (unsigned catalogs = 0; catalogs < 4; ++catalogs) {
+    CurrentForeignKeySession session;
+    auto input = current_fk_request(2);
+    if (catalogs & 1) input.primary_catalog = "db";
+    if (catalogs & 2) input.foreign_catalog = "db";
+    if (catalogs == 3) {
+      session.replies.emplace_back(current_fk_rows(), session.snapshot);
+    } else {
+      session.ready();
+    }
+    auto result = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_TRUE(result) << result.error_message();
+    EXPECT_EQ(catalogs == 3 ? 1u : 2u, session.commands.size());
+    ASSERT_EQ(2u, result->rows.size());
+    EXPECT_EQ(ResultCell{"1"}, result->rows[0][8]);
+    EXPECT_EQ(ResultCell{"db"}, result->rows[0][0]);
+    EXPECT_EQ(ResultCell{"db"}, result->rows[0][4]);
+  }
+  CurrentForeignKeySession ordered;
+  auto raw = foreign_key_response();
+  raw.statement_kind = StatementKind::Unknown;
+  ordered.ready(std::move(raw));
+  auto result = ordered.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(result) << result.error_message();
+  ASSERT_EQ(3u, result->rows.size());
+  EXPECT_EQ(ResultCell{"a_parent"}, result->rows[0][2]);
+  EXPECT_EQ(ResultCell{"z_parent"}, result->rows[1][2]);
+  EXPECT_EQ(ResultCell{"1"}, result->rows[1][8]);
+  EXPECT_EQ(ResultCell{"2"}, result->rows[2][8]);
+}
+
+TEST(RedshiftCurrentForeignKeys, HiddenMalformedGroupsAndDescriptionsPrecedeOverflow) {
+  for (unsigned bad = 0; bad < 8; ++bad) {
+    SCOPED_TRACE(bad);
+    auto raw = current_fk_rows();
+    if (bad == 0) raw.columns[1].name = raw.columns[0].name;
+    if (bad == 1) raw.rows[1][6] = "foreign_child";
+    if (bad == 2) raw.rows[1][0] = "inconsistent_reference";
+    if (bad == 3) raw.rows[0][8] = "3";
+    if (bad == 4) raw.rows[0][8] = "01";
+    if (bad == 5) raw.rows[0][11].reset();
+    if (bad == 6) raw.statement_kind.reset();
+    if (bad == 7) raw.normalized_parameter_types.assign(1, NativeTypeInfo{ScalarType::VarChar});
+    ResultLimits limits;
+    limits.max_metadata_entries = 1;
+    limits.max_column_name_bytes = 1;
+    RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+    auto plan = current_fk_plan();
+    plan.direction = RedshiftForeignKeyDirection::Both;
+    plan.primary = RedshiftForeignKeyTable{"db", "s", "not_this_parent"};
+    auto result = redshift_foreign_key_part(plan,
+        {std::move(raw), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+  }
+}
+
+TEST(RedshiftCurrentForeignKeys, IdentitySnapshotAndMalformedTextCannotBecomeReusableLimitErrors) {
+  for (unsigned bad = 0; bad < 5; ++bad) {
+    auto raw = routine_identity();
+    SessionSnapshot snapshot{SessionState::Idle, SessionDisposition::Reusable};
+    if (bad == 0) snapshot = {SessionState::Unknown, SessionDisposition::Retire};
+    if (bad == 1) raw.columns[0].name = "wrong";
+    if (bad == 2) raw.rows[0][0] = std::string("bad\0name", 8);
+    if (bad == 3) raw.rows[0][0] = std::string("\xff", 1);
+    if (bad == 4) raw.statement_kind.reset();
+    ResultLimits limits;
+    limits.max_metadata_entries = 1;
+    RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+    auto result = redshift_foreign_key_database({std::move(raw), snapshot},
+        budget, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(snapshot.state, result.session_snapshot().state);
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+  }
+  CurrentForeignKeySession session;
+  auto identity = routine_identity();
+  identity.rows[0][0] = "";
+  session.replies.emplace_back(std::move(identity), session.snapshot);
+  auto result = session.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(1u, session.commands.size());
+  EXPECT_TRUE(session.bound.empty());
+}
+
+TEST(RedshiftCurrentForeignKeys, RowsCellsAndHiddenRowsAdmitAllLiveContainersThenReleaseScratch) {
+  for (unsigned bound = 0; bound < 2; ++bound) {
+    for (bool admit : {false, true}) {
+      ResultLimits limits;
+      if (bound == 0) limits.max_rows = admit ? 3 : 2;
+      if (bound == 1) limits.max_cells = admit ? 28 : 27;
+      RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+      auto result = redshift_foreign_key_part(current_fk_plan(),
+          {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+          budget, rs::util::Deadline::max());
+      if (admit) {
+        ASSERT_TRUE(result) << result.error_message();
+      } else {
+        ASSERT_FALSE(result);
+        EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+      }
+    }
+  }
+  for (bool admit : {false, true}) {
+    ResultLimits limits;
+    limits.max_rows = admit ? 4 : 3;
+    limits.max_cells = admit ? 42 : 41;
+    RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+    auto first = redshift_foreign_key_part(current_fk_plan(),
+        {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    ASSERT_TRUE(first) << first.error_message();
+    auto second = redshift_foreign_key_part(current_fk_plan(),
+        {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    if (admit) {
+      ASSERT_TRUE(second) << second.error_message();
+    } else {
+      ASSERT_FALSE(second);
+    }
+    EXPECT_EQ(ResultCell{"first"}, first->rows[0][3]);
+  }
+  auto plan = current_fk_plan();
+  plan.direction = RedshiftForeignKeyDirection::Both;
+  plan.primary = RedshiftForeignKeyTable{"db", "s", "not_this_parent"};
+  ResultLimits limits;
+  limits.max_cells = 27;
+  RedshiftRoutineBudget budget{ResponseLimits{}, limits};
+  auto hidden = redshift_foreign_key_part(plan,
+      {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+      budget, rs::util::Deadline::max());
+  ASSERT_FALSE(hidden);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), hidden.error());
+}
+
+TEST(RedshiftCurrentForeignKeys, DescriptionByteAndOwningNameAdmissionRefuseBeforeProjection) {
+  for (unsigned bound = 0; bound < 3; ++bound) {
+    ResultLimits limits;
+    ResponseLimits response;
+    if (bound == 0) limits.max_columns_per_description = 13;
+    if (bound == 1) response.max_wire_bytes = 8191;
+    if (bound == 2) limits.max_metadata_name_bytes = 1;
+    RedshiftRoutineBudget budget{response, limits};
+    auto result = redshift_foreign_key_part(current_fk_plan(),
+        {current_fk_rows(1), {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+  }
+  auto raw = current_fk_rows(1);
+  raw.rows[0][3]->reserve(32768); // Held native spare capacity is real live storage.
+  ResponseLimits response;
+  response.max_wire_bytes = 16384;
+  RedshiftRoutineBudget budget{response, ResultLimits{}};
+  auto result = redshift_foreign_key_part(current_fk_plan(),
+      {std::move(raw), {SessionState::Idle, SessionDisposition::Reusable}},
+      budget, rs::util::Deadline::max());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+}
+
+TEST(RedshiftCurrentForeignKeys, LateLookupOrShowAndDeferredNativeFailureNeverPublishPrefix) {
+  for (unsigned late = 1; late <= 2; ++late) {
+    CurrentForeignKeySession session;
+    session.ready();
+    const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{100});
+    session.callback = [&] {
+      if (session.commands.size() == late) {
+        std::this_thread::sleep_until(deadline + std::chrono::milliseconds{1});
+      }
+    };
+    auto result = session.execute_catalog(current_fk_request(), deadline);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), result.error());
+    EXPECT_EQ(late, session.commands.size());
+    for (const auto used : session.deadlines) {
+      EXPECT_EQ(deadline, used);
+    }
+    CurrentForeignKeySession fresh;
+    fresh.ready();
+    EXPECT_TRUE(fresh.execute_catalog(current_fk_request(), rs::util::Deadline::max()));
+  }
+  CurrentForeignKeySession session;
+  auto raw = current_fk_rows();
+  QueryResult extra;
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "deferred native failure"};
+  error.native_state = "42501";
+  error.session_state = SessionState::Unknown;
+  error.disposition = SessionDisposition::Retire;
+  extra.error = error;
+  raw.additional_results.push_back(std::move(extra));
+  session.ready(std::move(raw));
+  auto result = session.execute_catalog(current_fk_request(), rs::util::Deadline::max());
+  ASSERT_FALSE(result);
+  EXPECT_EQ("42501", result.backend_error().native_state);
+  EXPECT_EQ((SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire}), result.session_snapshot());
+  EXPECT_EQ(2u, session.commands.size());
 }

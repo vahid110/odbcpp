@@ -1151,6 +1151,101 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
                         !valid_name(foreign->foreign_table))))
         return local_backend_error(LocalFailure::InvalidInput, "Invalid foreign-key catalog name",
             BackendOperation::ExecuteCatalog, session_state());
+      const bool omitted = (primary && !foreign->primary_catalog) ||
+          (imported && !foreign->foreign_catalog);
+      if (omitted && foreign->name_matches.existing()) {
+        const auto valid_selected = [&](bool selected, const auto& catalog,
+            const auto& schema, const auto& target) {
+          return !selected || (schema && target && !schema->empty() && !target->empty() &&
+              (!catalog || !catalog->empty()));
+        };
+        if (!valid_selected(primary, foreign->primary_catalog, foreign->primary_schema, foreign->primary_table) ||
+            !valid_selected(imported, foreign->foreign_catalog, foreign->foreign_schema, foreign->foreign_table)) {
+          return local_backend_error(LocalFailure::InvalidInput,
+              "Exact nonempty foreign-key schema and table identifiers are required",
+              BackendOperation::ExecuteCatalog, session_state());
+        }
+        const auto capability = get_parameter("show_discovery");
+        std::uint32_t version = 0;
+        const auto parsed = std::from_chars(capability.data(), capability.data() + capability.size(), version);
+        if (capability.empty() || capability.size() > 10 || parsed.ec != std::errc{} ||
+            parsed.ptr != capability.data() + capability.size() || version < 4) return unavailable();
+        auto scope = [&]() -> rs::util::Result<CatalogDatabaseScope> {
+          try {
+            return redshift_catalog_database_scope(catalog_database_scope(),
+                get_parameter_status("datashare_enabled"), get_parameter_status("external_database"));
+          } catch (...) {
+            return {rs::util::DbErrorCode::ProtocolError, "Metadata scope observation failed"};
+          }
+        }();
+        if (!scope) {
+          BackendError error{scope.error(), scope.error_message()};
+          error.operation = BackendOperation::ExecuteCatalog;
+          error.error_class = BackendErrorClass::InvalidMetadata;
+          error.session_state = session_state();
+          error.disposition = SessionDisposition::Retire;
+          return error;
+        }
+        if (*scope != CatalogDatabaseScope::CurrentDatabase) return unavailable();
+        const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+        const auto timeout = [] {
+          BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+              "Foreign-key catalog deadline expired"};
+          error.operation = BackendOperation::ExecuteCatalog;
+          return BackendResult<QueryResult>{std::move(error)};
+        };
+        if (expired()) return timeout();
+        RedshiftRoutineBudget budget{catalog_response_limits(), catalog_result_limits()};
+        // Caller/plan/temporary table/parameter copies coexist through the native
+        // exchange. These are closed native identity costs, not an SDK allocator.
+        const auto retain_names = [&](std::string_view value) {
+          const auto maximum = (std::numeric_limits<std::size_t>::max)();
+          if (!budget.name(value) || value.size() > maximum / 6) return false;
+          return budget.retain({0, 0, value.size() * 6, 0, value.size() * 6});
+        };
+        if (!budget.exchanges_available(2) ||
+            !budget.retain({0, 0, sizeof(RedshiftForeignKeyCommandPlan) +
+                4 * sizeof(RedshiftForeignKeyTable) + 6 * sizeof(QueryParameter) + 1024, 0, 0})) {
+          return redshift_routine_limit();
+        }
+        for (const auto* value : {primary ? &foreign->primary_catalog : nullptr,
+                                 primary ? &foreign->primary_schema : nullptr,
+                                 primary ? &foreign->primary_table : nullptr,
+                                 imported ? &foreign->foreign_catalog : nullptr,
+                                 imported ? &foreign->foreign_schema : nullptr,
+                                 imported ? &foreign->foreign_table : nullptr}) {
+          if (value && *value && !retain_names(**value)) return redshift_routine_limit();
+        }
+        if (!budget.exchange()) return redshift_routine_limit();
+        auto database = redshift_foreign_key_database(
+            execute_query("SELECT current_database() AS database_name", deadline), budget, deadline);
+        if (!database) return database.backend_error();
+        if (expired()) return timeout();
+        if ((primary && foreign->primary_catalog && *foreign->primary_catalog != *database) ||
+            (imported && foreign->foreign_catalog && *foreign->foreign_catalog != *database)) return unavailable();
+        if (!retain_names(*database)) return redshift_routine_limit();
+        const auto resolve = [&](bool selected, const auto& schema, const auto& target)
+            -> std::optional<RedshiftForeignKeyTable> {
+          if (!selected) return std::nullopt;
+          return RedshiftForeignKeyTable{*database, *schema, *target};
+        };
+        const auto direction = primary && imported ? RedshiftForeignKeyDirection::Both :
+            (imported ? RedshiftForeignKeyDirection::Imported : RedshiftForeignKeyDirection::Exported);
+        auto current = redshift_foreign_key_plan(direction,
+            resolve(primary, foreign->primary_schema, foreign->primary_table),
+            resolve(imported, foreign->foreign_schema, foreign->foreign_table));
+        if (!current) return current.backend_error();
+        const auto& target = imported ? *current->foreign : *current->primary;
+        const std::vector<QueryParameter> parameters{
+            {target.database, QueryParameterType::Unspecified},
+            {target.schema, QueryParameterType::Unspecified},
+            {target.table, QueryParameterType::Unspecified}};
+        if (!budget.exchange()) return redshift_routine_limit();
+        return redshift_foreign_key_part(*current, execute_prepared(imported ?
+            "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;" :
+            "SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;", parameters, deadline),
+            budget, deadline);
+      }
       const auto table = [](const auto& database, const auto& schema, const auto& name)
           -> std::optional<RedshiftForeignKeyTable> {
         if (!database || !schema || !name) return std::nullopt;
