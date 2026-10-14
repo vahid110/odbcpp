@@ -316,6 +316,102 @@ class OwnedDescendantLifecycleSafety(unittest.TestCase):
         self.assertEqual(events, ['closed'])
 
 
+class OwnedDescendantReapSafety(unittest.TestCase):
+    def exercise(self, signals, active_until=0, wait_error=None, close_error=None,
+                 initially_active=True):
+        clock, events = [0.0], []
+        class Held:
+            def __init__(self, index, signal_at):
+                self.index, self.signal_at = index, signal_at
+                self.evidence = {'pid': 301 + index, 'image_path': r'C:\tool\child.exe',
+                                 'creation_filetime': 123456 + index,
+                                 'job_member': True, 'held_handle': True}
+            def terminal(self):
+                if self.index == wait_error:
+                    raise OSError('held process wait failed')
+                return clock[0] >= self.signal_at
+            def close(self):
+                events.append(('close', self.index, clock[0]))
+                if self.index == close_error:
+                    raise OSError('held process close failed')
+        class Job:
+            terminated = False
+            def capture_owned(self, direct_pid, known_pids=()):
+                return [Held(i, signal_at) for i, signal_at in enumerate(signals)
+                        if 301 + i not in known_pids], []
+            def active(self):
+                if not self.terminated:
+                    return int(initially_active)
+                return int(clock[0] < active_until)
+            def terminate(self):
+                self.terminated = True
+                events.append(('terminate', clock[0]))
+        def advance(seconds):
+            self.assertGreater(seconds, 0)
+            self.assertLessEqual(clock[0] + seconds, 1.000001)
+            clock[0] += seconds
+        with patch.object(w.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(w.time, 'sleep', side_effect=advance):
+            result = w.owned_exit_cleanup(Job(), 123, grace_seconds=0, cleanup_seconds=1)
+        return result, clock[0], events
+
+    def test_empty_job_waits_for_all_held_process_signals_before_close(self):
+        (cleanup, unexpected, invalid), elapsed, events = self.exercise([0.2, 0.4])
+        self.assertTrue(unexpected)  # A reaped lingering child still refuses command success.
+        self.assertFalse(invalid)
+        self.assertEqual(cleanup['active_after_cleanup'], 0)
+        self.assertGreaterEqual(elapsed, 0.4)
+        self.assertLess(elapsed, 1)
+        self.assertTrue(all(r['terminal_after_cleanup'] and r['held_handle_closed']
+                            for r in cleanup['owned_descendants']))
+        self.assertEqual([e[:2] for e in events], [('terminate', 0.0), ('close', 0), ('close', 1)])
+        self.assertTrue(all(e[2] >= 0.4 for e in events if e[0] == 'close'))
+
+    def test_job_and_multiple_held_processes_share_one_cleanup_deadline(self):
+        (cleanup, unexpected, invalid), elapsed, events = self.exercise([0.6, 1.2], active_until=0.4)
+        self.assertTrue(unexpected)
+        self.assertTrue(invalid)
+        self.assertAlmostEqual(elapsed, 1)
+        self.assertEqual(cleanup['active_after_cleanup'], 0)
+        self.assertTrue(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+        self.assertFalse(cleanup['owned_descendants'][1]['terminal_after_cleanup'])
+        self.assertTrue(all(r['held_handle_closed'] for r in cleanup['owned_descendants']))
+        self.assertTrue(all(e[2] <= 1.000001 for e in events if e[0] == 'close'))
+
+    def test_held_terminal_proof_is_required_even_without_job_termination(self):
+        (cleanup, unexpected, invalid), elapsed, events = self.exercise([0.2], initially_active=False)
+        self.assertFalse(unexpected)
+        self.assertFalse(invalid)
+        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertEqual(cleanup['active_after_cleanup'], 0)
+        self.assertTrue(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+        self.assertEqual([e[:2] for e in events], [('close', 0)])
+
+    def test_wait_and_close_failure_stay_failed_while_other_handles_are_reaped(self):
+        (cleanup, unexpected, invalid), elapsed, events = self.exercise(
+            [0, 0.2], wait_error=0, close_error=0)
+        self.assertTrue(unexpected)
+        self.assertTrue(invalid)
+        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertEqual(cleanup['active_after_cleanup'], 0)
+        self.assertIsNone(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+        self.assertFalse(cleanup['owned_descendants'][0]['held_handle_closed'])
+        self.assertTrue(cleanup['owned_descendants'][1]['terminal_after_cleanup'])
+        self.assertTrue(cleanup['owned_descendants'][1]['held_handle_closed'])
+        self.assertEqual([e['stage'] for e in cleanup['identity_errors']],
+                         ['held_process_reap', 'close_held_handle'])
+        self.assertEqual([e[:2] for e in events if e[0] == 'close'], [('close', 0), ('close', 1)])
+
+    def test_signaled_handles_do_not_replace_nonzero_job_count_refusal(self):
+        (cleanup, unexpected, invalid), elapsed, events = self.exercise([0.2], active_until=2)
+        self.assertTrue(unexpected)
+        self.assertTrue(invalid)
+        self.assertAlmostEqual(elapsed, 1)
+        self.assertEqual(cleanup['active_after_cleanup'], 1)
+        self.assertTrue(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+        self.assertTrue(cleanup['owned_descendants'][0]['held_handle_closed'])
+
+
 @unittest.skipUnless(os.name == 'nt', 'actual Windows process APIs unrun on non-Windows host')
 class WindowsChildProcessRegression(unittest.TestCase):
     def test_native_suspension_prevents_execution_before_assignment(self):

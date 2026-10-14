@@ -355,25 +355,29 @@ def owned_exit_cleanup(job, direct_pid, grace_seconds=5, cleanup_seconds=5):
         grace_elapsed = time.monotonic() - grace_start
         if unexpected_children:
             capture('after_grace')
-            cleanup_start = time.monotonic()
+        cleanup_start = time.monotonic()
+        deadline = cleanup_start + cleanup_seconds  # Shared by the job count and every held handle.
+        if unexpected_children:
             try:
                 job.terminate()  # Job only; never kill a recorded PID or a nonmember.
             except Exception as exc:
                 errors.append({'stage': 'terminate_owned_job', 'error': str(exc)})
-            deadline = cleanup_start + cleanup_seconds
+        records = [dict(item.evidence, terminal_after_cleanup=False) for item in held]
+        while True:
             count = active('cleanup')
-            while count and time.monotonic() < deadline:
-                time.sleep(0.05)
-                count = active('cleanup')
+            for item, record in zip(held, records):
+                if record['terminal_after_cleanup'] is False:
+                    try:
+                        record['terminal_after_cleanup'] = item.terminal()
+                    except Exception as exc:
+                        record['terminal_after_cleanup'] = None
+                        errors.append({'stage': 'held_process_reap', 'pid': record['pid'], 'error': str(exc)})
+            pending = count != 0 or any(r['terminal_after_cleanup'] is False for r in records)
+            left = deadline - time.monotonic()
+            if not pending or left <= 0:
+                break
+            time.sleep(min(0.05, left))
         final = active('after_cleanup')
-        for item in held:
-            record = dict(item.evidence)
-            try:
-                record['terminal_after_cleanup'] = item.terminal()
-            except Exception as exc:
-                record['terminal_after_cleanup'] = None
-                errors.append({'stage': 'held_process_reap', 'pid': record['pid'], 'error': str(exc)})
-            records.append(record)
     finally:
         for index, item in enumerate(held):
             try:
