@@ -1353,9 +1353,9 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
   if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
     return SQL_INVALID_HANDLE;
   }
-  if (rec_number < 0 || buffer_length < 0) return SQL_ERROR;
 
   auto copy_string = [&](const std::string& str) -> SQLRETURN {
+    if (buffer_length < 0) return SQL_ERROR;
     if (string_length_ptr) {
       const auto length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
           str.length(), static_cast<std::size_t>(
@@ -1382,35 +1382,36 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
     return SQL_SUCCESS;
   };
   
-  // Header fields (rec_number = 0)
-  if (rec_number == 0) {
-    const auto header = obj->get_diagnostic_header();
-    switch (diag_identifier) {
-      case SQL_DIAG_CURSOR_ROW_COUNT:
-        if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        return copy_numeric(header.cursor_row_count);
-      case SQL_DIAG_DYNAMIC_FUNCTION:
-        if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        return copy_string(header.dynamic_function);
-      case SQL_DIAG_DYNAMIC_FUNCTION_CODE:
-        if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        return copy_numeric(header.dynamic_function_code);
-      case SQL_DIAG_NUMBER: {
-        return copy_numeric(
-            static_cast<SQLINTEGER>(obj->get_diagnostic_count()));
-      }
-      case SQL_DIAG_RETURNCODE: {
-        return copy_numeric(obj->get_last_return_code());
-      }
-      case SQL_DIAG_ROW_COUNT:
-        if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        return copy_numeric(header.row_count);
-      default:
-        return SQL_ERROR;
-    }
+  // Header identifiers ignore RecNumber, and numeric fields ignore BufferLength.
+  switch (diag_identifier) {
+    case SQL_DIAG_CURSOR_ROW_COUNT:
+      if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
+      return copy_numeric(obj->get_diagnostic_header().cursor_row_count);
+    case SQL_DIAG_DYNAMIC_FUNCTION:
+      if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
+      return copy_string(obj->get_diagnostic_header().dynamic_function);
+    case SQL_DIAG_DYNAMIC_FUNCTION_CODE:
+      if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
+      return copy_numeric(obj->get_diagnostic_header().dynamic_function_code);
+    case SQL_DIAG_NUMBER:
+      return copy_numeric(static_cast<SQLINTEGER>(obj->get_diagnostic_count()));
+    case SQL_DIAG_RETURNCODE:
+      return copy_numeric(obj->get_last_return_code());
+    case SQL_DIAG_ROW_COUNT:
+      if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
+      return copy_numeric(obj->get_diagnostic_header().row_count);
+    default:
+      break;
   }
-  
-  // Record fields (rec_number > 0)
+
+  // Only record fields require a positive index. Keep string-length errors
+  // ahead of record lookup, while numeric capacities are ignored.
+  if (rec_number < 1 ||
+      (buffer_length < 0 && diag_identifier != SQL_DIAG_NATIVE &&
+       diag_identifier != SQL_DIAG_COLUMN_NUMBER &&
+       diag_identifier != SQL_DIAG_ROW_NUMBER)) {
+    return SQL_ERROR;
+  }
   const auto record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
   
@@ -1448,29 +1449,31 @@ static SQLRETURN SQLGetDiagFieldW_impl(
   if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
     return SQL_INVALID_HANDLE;
   }
-  if (rec_number < 0 || buffer_length < 0) return SQL_ERROR;
-  if (rec_number == 0) {
-    if (diag_identifier == SQL_DIAG_DYNAMIC_FUNCTION) {
-      if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-      const auto header = obj->get_diagnostic_header();
-      const auto result = write_wide_bytes_output(
-          static_cast<ODBCHandle*>(nullptr), header.dynamic_function,
-          static_cast<SQLWCHAR*>(diag_info_ptr), buffer_length,
-          string_length_ptr, "Diagnostic field was truncated", false);
-      if (result == SQL_SUCCESS && diag_info_ptr && buffer_length == 0) {
-        return SQL_SUCCESS_WITH_INFO;
-      }
-      return result;
+  if (diag_identifier == SQL_DIAG_DYNAMIC_FUNCTION) {
+    if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
+    const auto header = obj->get_diagnostic_header();
+    const auto result = write_wide_bytes_output(
+        static_cast<ODBCHandle*>(nullptr), header.dynamic_function,
+        static_cast<SQLWCHAR*>(diag_info_ptr), buffer_length,
+        string_length_ptr, "Diagnostic field was truncated", false);
+    if (result == SQL_SUCCESS && diag_info_ptr && buffer_length == 0) {
+      return SQL_SUCCESS_WITH_INFO;
     }
-    return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
-                           diag_info_ptr, buffer_length, string_length_ptr);
+    return result;
   }
-  if (diag_identifier == SQL_DIAG_NATIVE ||
+  // Numeric fields have the same typed publication and ignored arguments in A/W.
+  if (diag_identifier == SQL_DIAG_CURSOR_ROW_COUNT ||
+      diag_identifier == SQL_DIAG_DYNAMIC_FUNCTION_CODE ||
+      diag_identifier == SQL_DIAG_NUMBER ||
+      diag_identifier == SQL_DIAG_RETURNCODE ||
+      diag_identifier == SQL_DIAG_ROW_COUNT ||
+      diag_identifier == SQL_DIAG_NATIVE ||
       diag_identifier == SQL_DIAG_COLUMN_NUMBER ||
       diag_identifier == SQL_DIAG_ROW_NUMBER) {
     return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
                            diag_info_ptr, buffer_length, string_length_ptr);
   }
+  if (rec_number < 1 || buffer_length < 0) return SQL_ERROR;
 
   const auto record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
