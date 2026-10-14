@@ -1,0 +1,97 @@
+name: Focused Windows product qualification (NOT full acceptance)
+
+on:
+  workflow_call:
+    inputs:
+      workflow_head:
+        required: true
+        type: string
+      product_head:
+        required: true
+        type: string
+      product_base:
+        required: true
+        type: string
+      product_targets:
+        type: string
+        default: test_backend_contract
+      submitted_at:
+        required: true
+        type: string
+      conflicting_mode:
+        type: boolean
+        default: false
+      cache_request:
+        type: string
+        default: "{}"
+
+permissions:
+  contents: read
+
+# ci.yml holds the separate global noncancelling Windows group. No secrets,
+# services, registry, MSI, native SQL or restored objects/binaries/graphs.
+jobs:
+  product:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: product
+    env:
+      WINDOWS_WORKFLOW_HEAD: ${{ inputs.workflow_head }}
+      WINDOWS_PRODUCT_HEAD: ${{ inputs.product_head }}
+      WINDOWS_PRODUCT_BASE: ${{ inputs.product_base }}
+      WINDOWS_PRODUCT_TARGETS: ${{ inputs.product_targets }}
+      WINDOWS_SUBMITTED_AT: ${{ inputs.submitted_at }}
+      WINDOWS_CONFLICTING_MODE: ${{ inputs.conflicting_mode }}
+      WINDOWS_CACHE_REQUEST: ${{ inputs.cache_request }}
+      WINDOWS_WORKFLOW_ROOT: ${{ github.workspace }}/windows-workflow
+      GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.private == false && 'public' || 'private' }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact dispatch workflow and helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: windows-workflow
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out immutable product and exact batch history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.product_head }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind public free runner, separate W and P, cold mode and literal selection
+        id: identity
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" init
+      - name: Check orchestration safety offline
+        run: python -B -m unittest discover -s "$env:WINDOWS_WORKFLOW_ROOT/tools/ci" -p test_windows_product_qualification.py -v
+      - name: Cheap changed-GTest control preflight before expensive commands
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" preflight
+      - name: Inspect actual Visual Studio and OpenSSL and configure fresh x64 graph
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" configure
+      - name: Compile selected owning tests, SDK23 and fresh driver links j2
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" build
+      - name: Bind actual compiler and dependency tlogs, new objects and DLL/exe inventories
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" inventory
+      - name: Run complete owning suites and six applicable architecture checks
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" test
+      - name: Preserve failures, source guards, completion and cleanup evidence
+        if: always()
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" finish
+      - name: Bound source-only text evidence even on failure
+        id: package
+        if: always()
+        run: python -B "$env:WINDOWS_WORKFLOW_ROOT/tools/ci/windows_product_qualification.py" package
+      - name: Retain bounded Windows owning evidence
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-product-${{ inputs.product_head }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: product/windows-product-evidence/
+          retention-days: 3
+          compression-level: 9
+          if-no-files-found: error

@@ -41,8 +41,8 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
   applicable architecture/public-first-include checks. These mechanical checks
   support, but do not replace, the semantic ownership review.
 - One coordinator owns the integration branch, integration commits/pushes,
-  combined qualification, live admission/accounting and cleanup. Three continuing product
-  owners (`odbcpp-2`, `odbcpp-3`, `odbcpp-4`) may implement, test, investigate failures and commit/push their assigned
+  combined qualification, live admission/accounting and cleanup. Four continuing product
+  owners (`odbcpp-2`, `odbcpp-3`, `odbcpp-4`, `odbcpp-5`) may implement, test, investigate failures and commit/push their assigned
   worker branches and open candidate PRs. Finite assignments state exact baseline,
   leased files/contracts, permitted actions, checks, deliverable and stop condition.
   SDK/CMake/CI/crypto/ODBC authorship is allowed in a bounded package with an exact
@@ -101,7 +101,9 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
 - Use distinct owned build directories. For Redshift, follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md):
   owned incremental macOS/iODBC UCS4 builds for owners 2/3 where needed and
   12-hour full qualification. Owner 4 uses the reviewed normal Ubuntu owning-job
-  workflow under coordinator dispatch, not a local heavy graph. This 8 GiB Mac has one heavy-build
+  workflow under coordinator dispatch, not a local heavy graph. Owner 5 uses the
+  separate default-off Windows owning job described in `PARALLEL_WORKFLOW.md`;
+  it is a continuing product owner, not a permanent qualifier. This 8 GiB Mac has one heavy-build
   slot, acquired through `tools/development/with_build_slot.py`; migration product
   builds require the legacy owner's recorded resource release. Run focused checks during
   development and relevant primary regression once per coherent batch. Keep full final acceptance gates.
