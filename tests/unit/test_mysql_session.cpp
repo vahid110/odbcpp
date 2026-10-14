@@ -1301,3 +1301,86 @@ TEST(MySqlSessionTest, DateCharsetUnknownOrKnownWidthContradictionRetiresAtRecei
     EXPECT_EQ(rejected,f.transport->offset);EXPECT_LT(rejected,f.transport->input.size());
   }
 }
+
+TEST(MySqlTextIntegerDomainTest, DirectSessionDrainsBadCellsRecoversAndRetiresOnlyFramingFaults) {
+  for (const unsigned status : {1u, 2u}) {
+    Fixture f;
+    append(*f.transport, Bytes{std::byte{4}}, 1);
+    append(*f.transport, column_packet("tiny", 1), 2);
+    append(*f.transport, column_packet("short", 2, 63, 32), 3);
+    append(*f.transport, column_packet("integer", 3, 63, 32), 4);
+    append(*f.transport, column_packet("binary", 252), 5);
+    append(*f.transport, eof_packet(), 6);
+    Bytes invalid;
+    len_text(invalid, "-129");
+    len_text(invalid, "65536");
+    len_text(invalid, "4294967296");
+    len_text(invalid, std::string_view{"\0\xff", 2});
+    append(*f.transport, invalid, 7);
+    Bytes valid;
+    len_text(valid, "127");
+    len_text(valid, "65535");
+    len_text(valid, "4294967295");
+    len_text(valid, "");
+    append(*f.transport, valid, 8);
+    append(*f.transport, Bytes{std::byte{251}, std::byte{251}, std::byte{251}, std::byte{0}}, 9);
+    append(*f.transport, eof_packet(status), 10);
+    auto result = f.execute();
+    ASSERT_TRUE(result);
+    ASSERT_EQ(3u, result->rows.size());
+    EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{0, 0}, {0, 1}, {0, 2}}), result->cell_errors);
+    for (const auto i : {0u, 1u, 2u}) {
+      ASSERT_TRUE(result->rows[0][i]);
+      EXPECT_TRUE(result->rows[0][i]->empty());
+      EXPECT_FALSE(result->rows[2][i]);
+    }
+    EXPECT_EQ(std::string("\0\xff", 2), *result->rows[0][3]);
+    EXPECT_EQ("127", *result->rows[1][0]);
+    EXPECT_EQ("65535", *result->rows[1][1]);
+    EXPECT_EQ("4294967295", *result->rows[1][2]);
+    EXPECT_TRUE(result->rows[1][3]->empty());
+    EXPECT_TRUE(result->rows[2][3]->empty());
+    EXPECT_EQ(f.transport->input.size(), f.transport->offset);
+    EXPECT_EQ(0u, f.transport->closes);
+    EXPECT_TRUE(f.session->is_connected());
+    EXPECT_EQ(status == 1 ? rs::core::database::SessionState::Transaction :
+        rs::core::database::SessionState::Idle, result.session_snapshot().state);
+    EXPECT_EQ(status == 1 ? rs::core::database::SessionDisposition::ResetRequired :
+        rs::core::database::SessionDisposition::Reusable, result.session_snapshot().disposition);
+    for (const auto deadline : f.transport->deadlines) {
+      EXPECT_EQ(f.transport->expected, deadline);
+    }
+    append(*f.transport, ok(), 1);
+    ASSERT_TRUE(f.execute("SET @x=1"));
+    EXPECT_EQ((std::vector<unsigned>{3, 3}), commands(f.transport->output));
+    f.session->disconnect();
+    EXPECT_EQ(1u, f.transport->closes);
+    EXPECT_EQ("4294967295", *result->rows[1][2]);
+    EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{0, 0}, {0, 1}, {0, 2}}), result->cell_errors);
+  }
+  for (const bool trailing : {false, true}) {
+    Fixture f;
+    append(*f.transport, Bytes{std::byte{1}}, 1);
+    append(*f.transport, column_packet("integer", 3, 63, 32), 2);
+    append(*f.transport, eof_packet(), 3);
+    Bytes malformed;
+    if (trailing) {
+      len_text(malformed, "4294967296");
+      malformed.push_back(std::byte{0});
+    } else {
+      malformed = {std::byte{252}};
+    }
+    append(*f.transport, malformed, 4);
+    append(*f.transport, eof_packet(), 5); // Remains unread after structural refusal.
+    auto rejected = f.execute();
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(DbErrorCode::ProtocolError, rejected.error());
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire, rejected.session_snapshot().disposition);
+    EXPECT_FALSE(f.session->is_connected());
+    EXPECT_EQ(1u, f.transport->closes);
+    EXPECT_LT(f.transport->offset, f.transport->input.size());
+    auto again = f.execute();
+    EXPECT_FALSE(again);
+    EXPECT_EQ(1u, f.transport->closes);
+  }
+}
