@@ -4422,7 +4422,7 @@ TEST_F(BackendContractTest, WideNativeSqlAndDiagnosticsPreserveScalarBoundariesA
   EXPECT_EQ(required,text_length);EXPECT_EQ(91,native_error);const SQLWCHAR expected_state[]{'H','Y','0','0','0',0};EXPECT_EQ(0,std::memcmp(sqlstate,expected_state,sizeof(expected_state)));
   for(const SQLSMALLINT capacity:{SQLSMALLINT{0},SQLSMALLINT{1},required}) {
     std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));
-    const auto expected_result=capacity==0?SQL_SUCCESS:SQL_SUCCESS_WITH_INFO;
+    const auto expected_result=SQL_SUCCESS_WITH_INFO;
     ASSERT_EQ(expected_result,SQLGetDiagRecW(SQL_HANDLE_DBC,dbc,1,sqlstate,&native_error,output,capacity,&text_length));
     EXPECT_EQ(required,text_length);EXPECT_EQ(91,native_error);EXPECT_EQ(1u,connection->get_diagnostic_count());
     const auto record=connection->get_diagnostic_record(1);ASSERT_TRUE(record);EXPECT_EQ("HY000",record->sqlstate);EXPECT_EQ(message,record->message_text);
