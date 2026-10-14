@@ -637,7 +637,7 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultArdNullPrecedencePreparedOwnersh
   for (auto handle : {stmt, sibling}) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(handle));
     for (SQLUSMALLINT col = 1; col <= 2; ++col) {
-      const SQLLEN width = col == 1 ? 4 : 8; const auto target = handle == stmt ? SQL_ARD_TYPE : SQL_C_BINARY;
+      const SQLLEN width = col == 1 ? 4 : 8; const SQLSMALLINT target = handle == stmt ? SQLSMALLINT{SQL_ARD_TYPE} : SQLSMALLINT{SQL_C_BINARY};
       std::array<unsigned char, 12> output; output.fill(0xa5); const auto before = output; SQLLEN length = 79;
       ASSERT_EQ(SQL_ERROR, SQLGetData(handle, col, target, output.data() + 1, -1, &length));
       SQLCHAR diagnostic[6]{}; ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, handle, 1, diagnostic, nullptr, nullptr, 0, nullptr));
@@ -658,7 +658,7 @@ TEST_F(NumericScaleApiTest, FloatingBinaryResultArdNullPrecedencePreparedOwnersh
     }
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(handle));
     for (SQLUSMALLINT col = 1; col <= 2; ++col) {
-      const auto target = handle == stmt ? SQL_ARD_TYPE : SQL_C_BINARY; SQLLEN length = 79;
+      const SQLSMALLINT target = handle == stmt ? SQLSMALLINT{SQL_ARD_TYPE} : SQLSMALLINT{SQL_C_BINARY}; SQLLEN length = 79;
       ASSERT_EQ(SQL_ERROR, SQLGetData(handle, col, target, nullptr, 0, &length));
       SQLCHAR diagnostic[6]{}; ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, handle, 1, diagnostic, nullptr, nullptr, 0, nullptr));
       EXPECT_STREQ("HY009", reinterpret_cast<char*>(diagnostic));
@@ -3365,9 +3365,9 @@ TEST_F(NumericScaleApiTest, TinyintBinaryResultSyntheticIndicatorOnlyValidationA
   ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
   EXPECT_EQ(SQL_SMALLINT, type); // Ordinary refill removed the synthetic projection.
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
-  SQLSMALLINT small{};
-  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DEFAULT, &small, 0, &length));
-  EXPECT_EQ(7, small);
+  SQLSMALLINT small_value{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DEFAULT, &small_value, 0, &length));
+  EXPECT_EQ(7, small_value);
   EXPECT_EQ(2, length);
   EXPECT_EQ(0u, facts->disconnects);
 }
