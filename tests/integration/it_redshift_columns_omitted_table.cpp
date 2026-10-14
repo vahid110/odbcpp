@@ -92,6 +92,36 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     return SQLColumnsW(stmt,db->data(),db->size(),schema_data,
         schema_pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),nullptr,0);
   }
+  SQLRETURN schema_tables(const std::optional<std::string>& pattern,const std::string& table) {
+    SQLFreeStmt(stmt,SQL_CLOSE);
+    const auto setting=SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_FALSE)),0);
+    if (setting!=SQL_SUCCESS) return setting;
+    const auto catalog=literal_pattern(database),object=literal_pattern(table);
+    const std::string types="TABLE";
+    if (!GetParam()) return SQLTables(stmt,chars(catalog),catalog.size(),
+        pattern?chars(*pattern):nullptr,pattern?static_cast<SQLSMALLINT>(pattern->size()):0,
+        chars(object),object.size(),chars(types),types.size());
+    auto c=rs::odbc::utf8_to_wide(catalog),sc=rs::odbc::utf8_to_wide(pattern.value_or("")),
+        tb=rs::odbc::utf8_to_wide(object),ty=rs::odbc::utf8_to_wide(types);
+    if (!c || !sc || !tb || !ty) return SQL_ERROR;
+    SQLWCHAR empty=0;auto* schema_data=pattern?(sc->empty()?&empty:sc->data()):nullptr;
+    return SQLTablesW(stmt,c->data(),c->size(),schema_data,
+        pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),ty->data(),ty->size());
+  }
+  std::vector<std::string> table_rows() {
+    SQLSMALLINT count=0;EXPECT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(5,count);
+    std::vector<std::string> result;SQLRETURN fetched=SQL_NO_DATA;
+    for (unsigned bound=0;bound<8;++bound) {
+      fetched=SQLFetch(stmt);
+      if (fetched==SQL_NO_DATA) { break; }
+      EXPECT_EQ(SQL_SUCCESS,fetched);
+      if (fetched!=SQL_SUCCESS) { break; }
+      EXPECT_EQ(database,text(1));EXPECT_EQ(schema,text(2));EXPECT_EQ("TABLE",text(4));
+      result.push_back(text(3));
+    }
+    EXPECT_EQ(SQL_NO_DATA,fetched);return result;
+  }
   std::string text(SQLUSMALLINT column) {
     std::array<char,4096> value{};SQLLEN indicator=0;
     EXPECT_EQ(SQL_SUCCESS,SQLGetData(stmt,column,SQL_C_CHAR,value.data(),value.size(),&indicator));
@@ -162,6 +192,24 @@ TEST_P(ColumnsOmittedTableNative, SchemaNullUniversalUtf8PrefixEmptyAndFreshReco
   ASSERT_EQ(SQL_ERROR,schema_columns(literal_pattern(schema)+"\\",table));
   ASSERT_EQ(SQL_SUCCESS,schema_columns(literal_pattern(schema)+"%",table));
   EXPECT_EQ(expected,rows());
+}
+TEST_P(ColumnsOmittedTableNative, SqlTablesSchemaNullUniversalPatternEmptyAndRecovery) {
+  // This newly authored SQLTables body requires its own protected exact-case
+  // checkpoint admission; the existing fixture marker is only an execution guard.
+  const auto table=schema+"_tables_schema_pattern_only";
+  const auto ddl="CREATE TABLE "+quoted_identifier(schema)+"."+quoted_identifier(table)+"(id integer);";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(stmt,chars(ddl),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  const std::vector<std::string> expected{table};
+  for (const auto& pattern:std::vector<std::optional<std::string>>{std::nullopt,"%",
+      literal_pattern(schema)+"%",literal_pattern(schema.substr(0,schema.size()-3))+"_"}) {
+    ASSERT_EQ(SQL_SUCCESS,schema_tables(pattern,table));EXPECT_EQ(expected,table_rows());
+  }
+  for (const auto* pattern:{"","missing_schema_pattern%"}) {
+    ASSERT_EQ(SQL_SUCCESS,schema_tables(std::string{pattern},table));EXPECT_TRUE(table_rows().empty());
+  }
+  ASSERT_EQ(SQL_ERROR,schema_tables(literal_pattern(schema)+"\\",table));
+  ASSERT_EQ(SQL_SUCCESS,schema_tables(literal_pattern(schema)+"%",table));EXPECT_EQ(expected,table_rows());
 }
 INSTANTIATE_TEST_SUITE_P(AnsiAndWide,ColumnsOmittedTableNative,testing::Values(false,true));
 } // namespace

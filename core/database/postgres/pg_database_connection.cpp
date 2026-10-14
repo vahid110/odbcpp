@@ -218,7 +218,8 @@ bool PgDatabaseConnection::selects_catalog_request(const CatalogRequest& request
     }
   }
   return tables && catalog_mode() == RedshiftCatalogMode::Show &&
-      (tables->mode == TablesCatalogRequest::Mode::Schemas || redshift_table_schema_is_literal(*tables));
+      (tables->mode == TablesCatalogRequest::Mode::Schemas || redshift_table_schema_is_literal(*tables) ||
+       redshift_tables_schema_wide(*tables));
 }
 
 BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
@@ -267,6 +268,123 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
   const auto* tables = std::get_if<TablesCatalogRequest>(&request);
   const auto* columns = std::get_if<ColumnsCatalogRequest>(&request);
   if (!tables && !columns) return unavailable();
+  if (tables && redshift_tables_schema_wide(*tables)) {
+    const auto& original=std::get<TablesCatalogRequest>(semantic_request);
+    if (!redshift_tables_patterns_valid(*tables))
+      return local_backend_error(LocalFailure::InvalidInput,"Invalid table catalog patterns",
+          BackendOperation::ExecuteCatalog,session_state());
+    const auto catalog_pattern=original.name_matches.catalog==CatalogNameMatch::Existing;
+    auto valid_catalog=redshift_database_matches({},original.catalog,catalog_pattern);
+    if (!valid_catalog) return local_backend_error(LocalFailure::InvalidInput,valid_catalog.error_message(),
+        BackendOperation::ExecuteCatalog,session_state());
+    for (const auto* pattern:{&tables->catalog,&tables->schema,&tables->table})
+      if (*pattern && (!budget.name(**pattern) ||
+          !budget.retain({0,0,(*pattern)->size()+sizeof(std::string),0,(*pattern)->size()}))) return redshift_routine_limit();
+    if (tables->types) {
+      if (tables->types->size()>std::numeric_limits<std::size_t>::max()/sizeof(std::string))
+        return redshift_routine_limit();
+      if (!budget.retain({0,0,tables->types->size()*sizeof(std::string),tables->types->size(),0}))
+        return redshift_routine_limit();
+      for (const auto& type:*tables->types)
+        if (!budget.name(type) || !budget.retain({0,0,type.size(),0,type.size()})) return redshift_routine_limit();
+    }
+    const auto native_exchange=[&](std::string_view database,std::string_view schema={}) -> BackendResult<QueryResult> {
+      std::size_t bytes=64;const auto max=std::numeric_limits<std::size_t>::max();
+      for (const auto name:{database,schema}) {
+        if (name.size()>(max-bytes)/2) return redshift_routine_limit();
+        bytes+=name.size()*2;
+      }
+      if (!budget.retain({0,0,bytes,0,0})) return redshift_routine_limit();
+      BackendResult<QueryResult> result=malformed();
+      {
+        if (expired()) return timeout();
+        const auto command=schema.empty()?redshift_show_schemas_command(database):
+            redshift_show_tables_command(database,schema);
+        result=exchange(command);
+      }
+      budget.release({0,0,bytes,0,0});return result;
+    };
+    RedshiftColumnSchemas databases;
+    {
+      auto response=exchange(scope==CatalogDatabaseScope::CurrentDatabase?
+          "SELECT current_database() AS database_name":"SHOW DATABASES;");
+      if (!response) return response.backend_error();
+      auto selected=redshift_table_databases(scope==CatalogDatabaseScope::VisibleDatabases,response,budget,deadline);
+      if (!selected) return selected.backend_error();
+      databases=std::move(*selected);
+    } // Raw database response destroyed; selected owning database names stay live.
+    budget.release(databases.raw_retained);
+    auto headers=redshift_tables_headers(budget);if (!headers) return headers.backend_error();
+    QueryResult output=std::move(*headers);bool first=true;std::size_t remaining=0;
+    for (const auto& database:databases.names) {
+      auto matched=redshift_database_matches(database,original.catalog,catalog_pattern);
+      if (!matched) return local_backend_error(LocalFailure::InvalidInput,matched.error_message(),
+          BackendOperation::ExecuteCatalog,session_state());
+      if (*matched) ++remaining;
+    }
+    if (!budget.exchanges_available(remaining)) return redshift_routine_limit();
+    for (const auto& database:databases.names) {
+      auto matched=redshift_database_matches(database,original.catalog,catalog_pattern);
+      if (!matched || !*matched) continue;
+      if (expired()) return timeout();
+      --remaining;RedshiftRoutineUsage schemas_usage;
+      {
+        RedshiftColumnSchemas schemas;
+        {
+          auto response=native_exchange(database);if (!response) return response.backend_error();
+          auto selected=redshift_column_schemas(database,tables->schema,response,budget,deadline);
+          if (!selected) return selected.backend_error();
+          schemas=std::move(*selected);
+        } // Raw schemas destroyed before releasing their charge.
+        budget.release(schemas.raw_retained);schemas_usage=schemas.retained;
+        if (schemas.names.size()>std::numeric_limits<std::size_t>::max()-remaining ||
+            !budget.exchanges_available(schemas.names.size()+remaining)) return redshift_routine_limit();
+        for (const auto& schema:schemas.names) {
+          if (expired()) return timeout();
+          RedshiftRoutineUsage destroyed;
+          {
+            auto response=native_exchange(database,schema);if (!response) return response.backend_error();
+            auto part=redshift_tables_part(database,schema,*tables,std::move(response),budget,deadline,
+                catalog_detailed_table_types());
+            if (!part) return part.backend_error();
+            QueryResult old_headers;
+            if (first) {
+              old_headers.columns=std::move(output.columns);output.columns=std::move(part->columns);first=false;
+            } else {
+              if (part->columns.size()!=output.columns.size()) return malformed();
+              for (std::size_t i=0;i<output.columns.size();++i) {
+                const auto& incoming=part->columns[i];auto& retained=output.columns[i];
+                if (incoming.name!=retained.name || !incoming.normalized_type || !retained.normalized_type) return malformed();
+                const auto& from=*incoming.normalized_type;auto& to=*retained.normalized_type;
+                if (from.type!=to.type || from.known!=to.known || from.decimal_digits!=to.decimal_digits ||
+                    from.declared_type!=to.declared_type || from.declared_column_size!=to.declared_column_size) return malformed();
+                to.column_size=from.column_size==0 || to.column_size==0?0:std::max(to.column_size,from.column_size);
+              }
+              old_headers.columns=std::move(part->columns);
+            }
+            const auto count=output.rows.size()+part->rows.size();
+            if (count<output.rows.size() || count>std::numeric_limits<std::size_t>::max()/sizeof(ResultRow)) return redshift_routine_limit();
+            if (count>output.rows.capacity()) {
+              const auto old_capacity=output.rows.capacity();
+              if (!budget.retain({0,0,count*sizeof(ResultRow),0,0})) return redshift_routine_limit();
+              if (expired()) return timeout();
+              output.rows.reserve(count);budget.release({0,0,old_capacity*sizeof(ResultRow),0,0});
+            }
+            destroyed=redshift_routine_schema_usage(old_headers);
+            destroyed.bytes+=part->rows.capacity()*sizeof(ResultRow);
+            for (auto& row:part->rows) output.rows.push_back(std::move(row));
+          } // Per-schema raw, scratch, replaced headers and moved row index destroyed.
+          budget.release(destroyed);
+        }
+      } // Selected schema names destroyed; accumulated owning output remains charged.
+      budget.release(schemas_usage);
+    }
+    std::sort(output.rows.begin(),output.rows.end(),[](const ResultRow& a,const ResultRow& b) {
+      return std::tie(a[3],a[0],a[1],a[2])<std::tie(b[3],b[0],b[1],b[2]);
+    });
+    if (expired()) return timeout();
+    return BackendResult<QueryResult>{std::move(output),{SessionState::Idle,SessionDisposition::Reusable}};
+  }
   if (columns && redshift_columns_schema_wide(*columns)) {
     // Selected intent never falls back after capability/state validation or after
     // a native exchange. Returned names are exact identifiers, not patterns.
@@ -890,6 +1008,9 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
         error.disposition = SessionDisposition::Retire;
         return error;
       }
+      if (catalog_mode()==RedshiftCatalogMode::Show && scoped_tables &&
+          redshift_tables_schema_wide(*scoped_tables))
+        return execute_database_discovery(*native,semantic_request,*scope,deadline);
       if (catalog_mode() == RedshiftCatalogMode::Show && scoped_columns &&
           redshift_columns_schema_wide(*scoped_columns))
         return execute_database_discovery(*native, semantic_request, *scope, deadline);

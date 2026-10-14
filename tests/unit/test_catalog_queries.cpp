@@ -506,7 +506,7 @@ TEST(CatalogQueryTest, ShowSchemaSelectionDoesNotAlterGeneratedLegacyQueryContra
   ASSERT_FALSE(sql.has_error());
   EXPECT_NE(std::string::npos, sql->find("FROM svv_redshift_schemas"));
   EXPECT_EQ(std::string::npos, sql->find("SHOW"));
-  EXPECT_FALSE(redshift.selects_catalog_request(TablesCatalogRequest{}));
+  EXPECT_TRUE(redshift.selects_catalog_request(TablesCatalogRequest{}));
   EXPECT_TRUE(redshift.selects_catalog_request(ColumnsCatalogRequest{}));
 }
 
@@ -546,15 +546,18 @@ TEST(CatalogQueryTest, RedshiftUnicodeMetadataPatternsPreserveUtf8AndEscapes) {
   EXPECT_FALSE(redshift.is_connected()); EXPECT_FALSE(postgres.is_connected());
 }
 
-TEST(CatalogQueryTest, ShowTablesOnlyLiteralSchemaSelectionPreservesGeneratedQueries) {
+TEST(CatalogQueryTest, ShowTablesSchemaPatternSelectionPreservesGeneratedQueries) {
   using namespace rs::core::database::postgres;
   PgDatabaseConnection redshift(nullptr,std::nullopt,PgCatalogProfile::Redshift),pg;
   TablesCatalogRequest request;request.schema="literal\\_schema";
   EXPECT_TRUE(redshift.selects_catalog_request(request));EXPECT_FALSE(pg.selects_catalog_request(request));
   const auto generated=redshift.catalog_query(request);ASSERT_FALSE(generated.has_error());
   EXPECT_NE(std::string::npos,generated->find("FROM information_schema.tables"));EXPECT_EQ(std::string::npos,generated->find("SHOW"));
-  for(const auto& schema:{"wild%","wild_","trailing\\",""}){request.schema=schema;EXPECT_FALSE(redshift.selects_catalog_request(request));}
-  request.schema.reset();EXPECT_FALSE(redshift.selects_catalog_request(request));
+  // Invalid pattern intent is also selected, to refuse before I/O instead of fallback.
+  for (const auto& schema:{"wild%","wild_","trailing\\",""}) {
+    request.schema=schema;EXPECT_TRUE(redshift.selects_catalog_request(request));
+  }
+  request.schema.reset();EXPECT_TRUE(redshift.selects_catalog_request(request));
   for(auto mode:{TablesCatalogRequest::Mode::Catalogs,TablesCatalogRequest::Mode::Schemas,TablesCatalogRequest::Mode::TableTypes}){
     request.mode=mode;request.schema="literal";EXPECT_EQ(mode==TablesCatalogRequest::Mode::Schemas,redshift.selects_catalog_request(request));
   }
