@@ -14330,3 +14330,155 @@ TEST_F(BackendContractTest, TinyintBinaryResultSyntheticColumnStrideSplitNullAnd
   EXPECT_EQ(queries, seen->queries);
   EXPECT_EQ(0, seen->disconnects);
 }
+
+TEST_F(BackendContractTest, NumericInfoNullOutputReturnsRequiredScalarBytes) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  struct InfoSize {
+    SQLUSMALLINT type;
+    SQLSMALLINT bytes;
+  };
+  const std::array<InfoSize, 4> fields{{
+      {SQL_MAX_DRIVER_CONNECTIONS, sizeof(SQLUSMALLINT)},
+      {SQL_MAX_IDENTIFIER_LEN, sizeof(SQLUSMALLINT)},
+      {SQL_GETDATA_EXTENSIONS, sizeof(SQLUINTEGER)},
+      {SQL_TXN_ISOLATION_OPTION, sizeof(SQLUINTEGER)},
+  }};
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    for (const auto& field : fields) {
+      SCOPED_TRACE(field.type);
+      for (SQLSMALLINT capacity : {SQLSMALLINT{0}, SQLSMALLINT{-1},
+                                  SQLSMALLINT{-32768}, SQLSMALLINT{32767}}) {
+        SQLSMALLINT length = -73;
+        EXPECT_EQ(SQL_SUCCESS, api(dbc, field.type, nullptr, capacity, &length));
+        EXPECT_EQ(field.bytes, length);
+        SQLINTEGER count = -1;
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+            SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+        EXPECT_EQ(0, count);
+      }
+    }
+  }
+  EXPECT_EQ(queries, seen->queries);
+}
+
+TEST_F(BackendContractTest, NumericInfoNullOutputLengthPublicationIsUnalignedAndBounded) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    for (SQLUSMALLINT type : {SQLUSMALLINT{SQL_MAX_DRIVER_CONNECTIONS},
+                             SQLUSMALLINT{SQL_GETDATA_EXTENSIONS}}) {
+      EXPECT_EQ(SQL_ERROR, api(dbc, 0xffff, nullptr, 0, nullptr));
+      EXPECT_EQ("HY096", state(SQL_HANDLE_DBC, dbc));
+      alignas(SQLSMALLINT) std::array<unsigned char, sizeof(SQLSMALLINT) + 2> bytes{};
+      bytes.fill(0xa5);
+      auto* length = reinterpret_cast<SQLSMALLINT*>(bytes.data() + 1);
+      const SQLSMALLINT initial = -73;
+      std::memcpy(bytes.data() + 1, &initial, sizeof(initial));
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, type, nullptr, -1, length));
+      SQLSMALLINT actual = -1;
+      std::memcpy(&actual, bytes.data() + 1, sizeof(actual));
+      EXPECT_EQ(type == SQL_MAX_DRIVER_CONNECTIONS
+                    ? sizeof(SQLUSMALLINT) : sizeof(SQLUINTEGER),
+                static_cast<std::size_t>(actual));
+      EXPECT_EQ(0xa5, bytes.front());
+      EXPECT_EQ(0xa5, bytes.back());
+      SQLINTEGER count = -1;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+          SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+      EXPECT_EQ(0, count);
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, type, nullptr, 0, length));
+      EXPECT_EQ(0xa5, bytes.front());
+      EXPECT_EQ(0xa5, bytes.back());
+    }
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, NumericInfoLengthQueriesPreserveOrdinaryScalarPublication) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    SQLUSMALLINT small = 73;
+    SQLUINTEGER large = 79;
+    SQLSMALLINT length = -1;
+    EXPECT_EQ(SQL_SUCCESS, api(
+        dbc, SQL_MAX_DRIVER_CONNECTIONS, &small, -1, &length));
+    EXPECT_EQ(0, small);
+    EXPECT_EQ(sizeof(small), static_cast<std::size_t>(length));
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_GETDATA_EXTENSIONS, &large, 0, &length));
+    EXPECT_EQ(static_cast<SQLUINTEGER>(
+                  SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER | SQL_GD_BLOCK), large);
+    EXPECT_EQ(sizeof(large), static_cast<std::size_t>(length));
+    for (SQLUSMALLINT type : {SQLUSMALLINT{SQL_MAX_DRIVER_CONNECTIONS},
+                             SQLUSMALLINT{SQL_GETDATA_EXTENSIONS}}) {
+      SCOPED_TRACE(type);
+      const auto expected_bytes = type == SQL_MAX_DRIVER_CONNECTIONS
+          ? sizeof(SQLUSMALLINT) : sizeof(SQLUINTEGER);
+      alignas(SQLUINTEGER) std::array<unsigned char, sizeof(SQLUINTEGER) + 2> output{};
+      output.fill(0xa5);
+      length = -1;
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, type, output.data() + 1, -1, &length));
+      EXPECT_EQ(expected_bytes, static_cast<std::size_t>(length));
+      if (type == SQL_MAX_DRIVER_CONNECTIONS) {
+        SQLUSMALLINT actual = 73;
+        std::memcpy(&actual, output.data() + 1, sizeof(actual));
+        EXPECT_EQ(small, actual);
+      } else {
+        SQLUINTEGER actual = 79;
+        std::memcpy(&actual, output.data() + 1, sizeof(actual));
+        EXPECT_EQ(large, actual);
+      }
+      EXPECT_EQ(0xa5, output.front());
+      for (std::size_t i = 1 + expected_bytes; i < output.size(); ++i) {
+        EXPECT_EQ(0xa5, output[i]);
+      }
+      const auto published = output;
+      length = -1;
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, type, nullptr, -32768, &length));
+      EXPECT_EQ(expected_bytes, static_cast<std::size_t>(length));
+      EXPECT_EQ(published, output);
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, type, output.data() + 1, 0, nullptr));
+      EXPECT_EQ(published, output);
+    }
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, NumericInfoNullOutputKeepsValidationAndStringQueryControls) {
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    SQLSMALLINT length = -73;
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(
+        nullptr, SQL_MAX_DRIVER_CONNECTIONS, nullptr, 0, &length));
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(
+        env, SQL_MAX_DRIVER_CONNECTIONS, nullptr, 0, &length));
+    EXPECT_EQ(SQL_ERROR, api(
+        dbc, SQL_MAX_DRIVER_CONNECTIONS, nullptr, 0, &length));
+    EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+  }
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    SQLSMALLINT length = -73;
+    EXPECT_EQ(SQL_ERROR, api(dbc, 0xffff, nullptr, -1, &length));
+    EXPECT_EQ("HY096", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_SUCCESS, api(
+        dbc, SQL_GETDATA_EXTENSIONS, nullptr, 0, &length));
+    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+  }
+  SQLSMALLINT length = -1;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_ODBC_VER, nullptr, 0, &length));
+  EXPECT_EQ(5, length);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfoW(dbc, SQL_ODBC_VER, nullptr, 0, &length));
+  EXPECT_EQ(5 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+  SQLINTEGER count = -1;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+      SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+  EXPECT_EQ(0, count);
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}

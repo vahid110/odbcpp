@@ -1619,12 +1619,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   }
 
   const auto write_usmallint = [&](SQLUSMALLINT value) -> SQLRETURN {
-    if (!info_value) {
-      conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
-                      "Information output pointer is null");
-      return SQL_ERROR;
+    if (info_value) {
+      std::memcpy(info_value, &value, sizeof(value));
     }
-    std::memcpy(info_value, &value, sizeof(value));
     if (string_length) {
       const auto length = static_cast<SQLSMALLINT>(sizeof(value));
       std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
@@ -1633,12 +1630,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     return SQL_SUCCESS;
   };
   const auto write_uinteger = [&](SQLUINTEGER value) -> SQLRETURN {
-    if (!info_value) {
-      conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
-                      "Information output pointer is null");
-      return SQL_ERROR;
+    if (info_value) {
+      std::memcpy(info_value, &value, sizeof(value));
     }
-    std::memcpy(info_value, &value, sizeof(value));
     if (string_length) {
       const auto length = static_cast<SQLSMALLINT>(sizeof(value));
       std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,

@@ -474,12 +474,16 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
                         &wide_required));
   EXPECT_EQ(static_cast<SQLSMALLINT>((sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1) * sizeof(SQLWCHAR)), wide_required);
 
-  SQLSMALLINT untouched_length = 41;
-  EXPECT_EQ(SQL_ERROR,
+  SQLSMALLINT numeric_length = 41;
+  EXPECT_EQ(SQL_SUCCESS,
             SQLGetInfo(connection_, SQL_TXN_CAPABLE, nullptr, 0,
-                       &untouched_length));
-  EXPECT_EQ(41, untouched_length);
-  EXPECT_EQ("HY009", diagnostic_state(connection_));
+                       &numeric_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(SQLUSMALLINT)), numeric_length);
+  SQLINTEGER diagnostic_count = -1;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+      SQL_HANDLE_DBC, connection_, 0, SQL_DIAG_NUMBER,
+      &diagnostic_count, 0, nullptr));
+  EXPECT_EQ(0, diagnostic_count);
 
   SQLWCHAR misaligned[2]{};
   EXPECT_EQ(SQL_ERROR,
