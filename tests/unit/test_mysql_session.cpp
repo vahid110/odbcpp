@@ -1384,3 +1384,114 @@ TEST(MySqlTextIntegerDomainTest, DirectSessionDrainsBadCellsRecoversAndRetiresOn
     EXPECT_EQ(1u, f.transport->closes);
   }
 }
+
+namespace {
+TEST(MySqlMediumIntDomainTest, DirectAndPreparedDrainRecoverOwnRowsAndRetireFramingOnly) {
+  using rs::core::database::CellEncodingError;
+  const std::array params{rs::core::database::QueryParameter{"42",
+      rs::core::database::QueryParameterType::Int32}};
+  for (const bool binary : {false, true}) {
+    for (const unsigned status : {1u, 2u}) {
+      Fixture f;
+      if (binary) {
+        prepared_metadata(*f.transport, 1, 3);
+      }
+      append(*f.transport, Bytes{std::byte{3}}, 1);
+      append(*f.transport, column_packet("signed", 9), 2);
+      append(*f.transport, column_packet("unsigned", 9, 63, 32), 3);
+      append(*f.transport, column_packet("binary", 252), 4);
+      append(*f.transport, eof_packet(), 5);
+      Bytes bad, good, nulls;
+      if (binary) {
+        bad = {std::byte{0}, std::byte{0}};
+        number(bad, 0x00800000u, 4);
+        number(bad, 0x01000000u, 4);
+        good = {std::byte{0}, std::byte{0}};
+        number(good, 0xff800000u, 4);
+        number(good, 0x00ffffffu, 4);
+        nulls = {std::byte{0}, std::byte{12}};
+      } else {
+        len_text(bad, "8388608");
+        len_text(bad, "16777216");
+        len_text(good, "-8388608");
+        len_text(good, "16777215");
+        nulls = {std::byte{251}, std::byte{251}};
+      }
+      len_text(bad, std::string_view{"\0\xff", 2});
+      len_text(good, "");
+      len_text(nulls, "");
+      append(*f.transport, bad, 6);
+      append(*f.transport, good, 7);
+      append(*f.transport, nulls, 8);
+      append(*f.transport, eof_packet(status), 9);
+      const auto deadline = rs::util::make_deadline(std::chrono::seconds(10));
+      f.transport->expected = deadline;
+      auto result = binary ? f.session->execute_prepared("SELECT ?", params, deadline) :
+          f.session->execute_query("SELECT 1", deadline);
+      ASSERT_TRUE(result);
+      ASSERT_EQ(3u, result->rows.size());
+      EXPECT_EQ((std::vector<CellEncodingError>{{0, 0}, {0, 1}}), result->cell_errors);
+      EXPECT_TRUE(result->rows[0][0]->empty());
+      EXPECT_TRUE(result->rows[0][1]->empty());
+      EXPECT_EQ(std::string("\0\xff", 2), *result->rows[0][2]);
+      EXPECT_EQ("-8388608", *result->rows[1][0]);
+      EXPECT_EQ("16777215", *result->rows[1][1]);
+      EXPECT_FALSE(result->rows[2][0]);
+      EXPECT_FALSE(result->rows[2][1]);
+      EXPECT_TRUE(result->rows[2][2]->empty());
+      EXPECT_EQ(f.transport->input.size(), f.transport->offset);
+      EXPECT_EQ(0u, f.transport->closes);
+      EXPECT_EQ(status == 1 ? rs::core::database::SessionDisposition::ResetRequired :
+          rs::core::database::SessionDisposition::Reusable, result.session_snapshot().disposition);
+      for (const auto observed : f.transport->deadlines) {
+        EXPECT_EQ(deadline, observed);
+      }
+      EXPECT_EQ(binary ? (std::vector<unsigned>{22, 23, 25}) :
+          (std::vector<unsigned>{3}), commands(f.transport->output));
+      append(*f.transport, ok(), 1);
+      ASSERT_TRUE(f.execute());
+      EXPECT_EQ(binary ? (std::vector<unsigned>{22, 23, 25, 3}) :
+          (std::vector<unsigned>{3, 3}), commands(f.transport->output));
+      f.session->disconnect();
+      EXPECT_EQ(1u, f.transport->closes);
+      EXPECT_EQ("16777215", *result->rows[1][1]);
+      EXPECT_EQ(std::string("\0\xff", 2), *result->rows[0][2]);
+      EXPECT_EQ((std::vector<CellEncodingError>{{0, 0}, {0, 1}}), result->cell_errors);
+    }
+    for (const bool trailing : {false, true}) {
+      Fixture f;
+      if (binary) {
+        prepared_metadata(*f.transport);
+      }
+      append(*f.transport, Bytes{std::byte{1}}, 1);
+      append(*f.transport, column_packet("medium", 9, 63, 32), 2);
+      append(*f.transport, eof_packet(), 3);
+      Bytes malformed;
+      if (binary) {
+        malformed = {std::byte{0}, std::byte{0}};
+        number(malformed, 0x01000000u, trailing ? 4 : 3);
+      } else if (trailing) {
+        len_text(malformed, "16777216");
+      } else {
+        malformed = {std::byte{252}};
+      }
+      if (trailing) {
+        malformed.push_back(std::byte{0});
+      }
+      append(*f.transport, malformed, 4);
+      append(*f.transport, eof_packet(), 5);
+      const auto deadline = rs::util::make_deadline(std::chrono::seconds(10));
+      auto rejected = binary ? f.session->execute_prepared("SELECT ?", params, deadline) :
+          f.session->execute_query("SELECT 1", deadline);
+      ASSERT_FALSE(rejected);
+      EXPECT_EQ(DbErrorCode::ProtocolError, rejected.error());
+      EXPECT_EQ(rs::core::database::SessionDisposition::Retire, rejected.session_snapshot().disposition);
+      EXPECT_FALSE(f.session->is_connected());
+      EXPECT_EQ(1u, f.transport->closes);
+      EXPECT_LT(f.transport->offset, f.transport->input.size());
+      EXPECT_EQ(binary ? (std::vector<unsigned>{22, 23}) :
+          (std::vector<unsigned>{3}), commands(f.transport->output));
+    }
+  }
+}
+}

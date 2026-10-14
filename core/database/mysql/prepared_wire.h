@@ -474,7 +474,8 @@ inline rs::util::Result<ResultRow> binary_row(
     std::span<const std::byte> value;
     if (!cursor.bytes(width, value)) return {DbErrorCode::ProtocolError};
     auto owned=detail::decimal(detail::little(value),width,native[i].unsigned_value);
-    if (!query_detail::valid_cell(owned,columns[i].normalized_type->type)) {
+    if (!query_detail::valid_cell(owned,columns[i].normalized_type->type,
+        native[i].type==9?&native[i]:nullptr)) {
       owned.clear();errors.push_back({row_index,i});
     }
     row.emplace_back(std::move(owned));

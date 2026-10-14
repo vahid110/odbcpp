@@ -153,7 +153,7 @@ inline bool valid_cell(std::string_view value,ScalarType type,const NativeColumn
     if (type==ScalarType::Integer && (number<-2147483648LL || number>2147483647LL)) return false;
     if (type==ScalarType::SmallInt && (number<-32768 || number>32767)) return false;
     // SDK widening preserves representable values, not permission to exceed
-    // the original MySQL TINY/SHORT/LONG domain. Keep accepted text bytes.
+    // the original MySQL TINY/SHORT/LONG/MEDIUM domain. Keep accepted text bytes.
     if (native) {
       std::int64_t minimum=std::numeric_limits<std::int64_t>::min();
       std::int64_t maximum=std::numeric_limits<std::int64_t>::max();
@@ -161,6 +161,7 @@ inline bool valid_cell(std::string_view value,ScalarType type,const NativeColumn
         case 1: minimum=native->unsigned_value?0:-128;maximum=native->unsigned_value?255:127;break;
         case 2: minimum=native->unsigned_value?0:-32768;maximum=native->unsigned_value?65535:32767;break;
         case 3: minimum=native->unsigned_value?0:-2147483648LL;maximum=native->unsigned_value?4294967295LL:2147483647LL;break;
+        case 9: minimum=native->unsigned_value?0:-8388608;maximum=native->unsigned_value?16777215:8388607;break;
         default: break;
       }
       if (number<minimum || number>maximum) return false;

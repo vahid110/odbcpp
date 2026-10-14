@@ -220,3 +220,48 @@ TEST(MySqlTextIntegerDomainTest, PreparedBinaryNativeWidthsSignsNullAndFramingRe
     EXPECT_FALSE(binary_row(bytes, native, columns, 8, errors));
   }
 }
+
+TEST(MySqlMediumIntDomainTest, BinaryFourByteValuesEnforceLogicalDomainWithoutMasking) {
+  struct Value { std::uint32_t bits; const char* text; bool valid; };
+  const std::array<Value, 7> signed_values{{
+      {0xff800000u, "-8388608", true}, {0x007fffffu, "8388607", true},
+      {0u, "0", true}, {0xffffffffu, "-1", true},
+      {0xff7fffffu, "-8388609", false}, {0x00800000u, "8388608", false},
+      {0x00ffffffu, "16777215", false}}};
+  const std::array<Value, 7> unsigned_values{{
+      {0u, "0", true}, {0x00ffffffu, "16777215", true}, {7u, "7", true},
+      {0x01000000u, "16777216", false}, {0xff800000u, "4286578688", false},
+      {0xffffffffu, "4294967295", false}, {0x80000000u, "2147483648", false}}};
+  const std::array<ResultColumnMetadata, 2> columns{{
+      {"medium", NativeTypeInfo{ScalarType::Integer, 8, 0, true}},
+      {"neighbor", NativeTypeInfo{ScalarType::SmallInt, 3, 0, true}}}};
+  for (const bool unsigned_value : {false, true}) {
+    const std::array<NativeColumn, 2> native{{{9, unsigned_value}, {1, false}}};
+    for (const auto& value : unsigned_value ? unsigned_values : signed_values) {
+      Bytes bytes{std::byte{0}, std::byte{0}};
+      little(bytes, value.bits, 4);
+      little(bytes, 127, 1);
+      std::vector<CellEncodingError> errors;
+      auto result = binary_row(bytes, native, columns, 6, errors);
+      ASSERT_TRUE(result);
+      ASSERT_TRUE((*result)[0]);
+      EXPECT_EQ(value.valid ? value.text : "", *(*result)[0]);
+      EXPECT_EQ("127", *(*result)[1]);
+      EXPECT_EQ(value.valid ? std::vector<CellEncodingError>{} :
+          (std::vector<CellEncodingError>{{6, 0}}), errors);
+      for (std::size_t size = 0; size < bytes.size(); ++size) {
+        errors.clear();
+        EXPECT_FALSE(binary_row(std::span(bytes).first(size), native, columns, 6, errors));
+      }
+      bytes.push_back(std::byte{0});
+      EXPECT_FALSE(binary_row(bytes, native, columns, 6, errors));
+    }
+    std::vector<CellEncodingError> errors;
+    auto null = binary_row(Bytes{std::byte{0}, std::byte{4}, std::byte{127}},
+        native, columns, 6, errors);
+    ASSERT_TRUE(null);
+    EXPECT_FALSE((*null)[0]);
+    EXPECT_EQ("127", *(*null)[1]);
+    EXPECT_TRUE(errors.empty());
+  }
+}
