@@ -1271,6 +1271,16 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
       record->message_text.length(), static_cast<std::size_t>(
                                          std::numeric_limits<SQLSMALLINT>::max())));
   
+  // A requested zero-capacity buffer cannot hold even the terminator.
+  // NULL is the distinct length-only query and remains successful.
+  if (message_text && buffer_length == 0) {
+    if (text_length) {
+      std::memcpy(reinterpret_cast<std::byte*>(text_length),
+                  &required_length, sizeof(required_length));
+    }
+    return SQL_SUCCESS_WITH_INFO;
+  }
+
   // Copy message text with proper truncation handling
   if (message_text && buffer_length > 0) {
     const auto msg_len = record->message_text.length();
@@ -1326,9 +1336,14 @@ static SQLRETURN SQLGetDiagRecW_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
                 &record->native_error, sizeof(SQLINTEGER));
   }
 
-  return write_wide_output(
-      obj, record->message_text, message_text, buffer_length, text_length,
-      "Diagnostic message was truncated", false);
+  // Diagnostic retrieval must not post records, including conversion failures.
+  const auto result = write_wide_output(
+      static_cast<ODBCHandle*>(nullptr), record->message_text, message_text,
+      buffer_length, text_length, "Diagnostic message was truncated", false);
+  if (result == SQL_SUCCESS && message_text && buffer_length == 0) {
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return result;
 }
 
 static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
