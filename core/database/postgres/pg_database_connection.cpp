@@ -283,6 +283,11 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
     if (!valid_catalog) return local_backend_error(LocalFailure::InvalidInput,
         valid_catalog.error_message(),BackendOperation::ExecuteCatalog,session_state());
     if (original.catalog && !budget.name(*original.catalog)) return redshift_routine_limit();
+    // The validated caller pattern remains live throughout discovery/fanout;
+    // it is never substituted for a returned exact native table identity.
+    if (columns->table && (!budget.name(*columns->table) ||
+        !budget.retain({0,0,columns->table->size()+sizeof(std::string),0,columns->table->size()})))
+      return redshift_routine_limit();
     const auto native_exchange=[&](std::string_view database,std::string_view schema,
         const std::string* table=nullptr) -> BackendResult<QueryResult> {
       const auto max=std::numeric_limits<std::size_t>::max();
@@ -363,7 +368,7 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
       {
         auto response=native_exchange(database,*schema_name);
         if (!response) return response.backend_error();
-        auto tables_selected=redshift_column_tables(database,*schema_name,response,budget,deadline);
+        auto tables_selected=redshift_column_tables(database,*schema_name,columns->table,response,budget,deadline);
         if (!tables_selected) return tables_selected.backend_error();
         selected=std::move(*tables_selected);
       } // Raw table rows have actually been destroyed.

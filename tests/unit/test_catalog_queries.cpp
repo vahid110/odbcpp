@@ -566,7 +566,14 @@ TEST(CatalogQueryTest, ShowColumnsLiteralSchemaAndTableKeepOtherGeneratedQueries
   ColumnsCatalogRequest input{std::nullopt,"literal\\_schema","literal\\%table",std::nullopt};
   EXPECT_TRUE(redshift.selects_catalog_request(input));EXPECT_FALSE(postgres.selects_catalog_request(input));
   auto generated=redshift.catalog_query(input);ASSERT_FALSE(generated.has_error());EXPECT_NE(std::string::npos,generated->find("FROM svv_columns AS columns"));EXPECT_EQ(std::string::npos,generated->find("SHOW"));
-  for(const auto* pattern:{"wild%","wild_","dangling\\",""}){auto other=input;other.schema=pattern;EXPECT_FALSE(redshift.selects_catalog_request(other));other=input;other.table=pattern;EXPECT_FALSE(redshift.selects_catalog_request(other));}
+  for (const auto* pattern:{"wild%","wild_","dangling\\",""}) {
+    auto other=input;other.schema=pattern;
+    EXPECT_FALSE(redshift.selects_catalog_request(other));
+    other=input;other.table=pattern;
+    // Literal-schema table patterns select the guarded SHOW executor before
+    // availability/argument validation; generated SVV query API remains intact.
+    EXPECT_TRUE(redshift.selects_catalog_request(other));
+  }
   input.schema.reset();EXPECT_FALSE(redshift.selects_catalog_request(input));input.schema="literal";input.table.reset();EXPECT_TRUE(redshift.selects_catalog_request(input));
 }
 
@@ -657,4 +664,20 @@ TEST(CatalogQueryTest, RedshiftIdentifierLoweringIsOwningLiteralAndLeavesPgAndEn
   EXPECT_EQ("t%",std::get<ColumnsCatalogRequest>(*partial).table);EXPECT_EQ("c\\_",std::get<ColumnsCatalogRequest>(*partial).column);
   auto pg=std::make_unique<PgDatabaseConnection>();auto generated=pg->catalog_queries()->catalog_query(input);ASSERT_TRUE(generated);
   EXPECT_NE(std::string::npos,generated->find(" = "));EXPECT_EQ(std::string::npos,generated->find(" LIKE "));
+}
+
+TEST(CatalogQueryTest, ShowColumnsTablePatternsPreserveGeneratedLegacyAndExactIdentifierSurfaces) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr,std::nullopt,PgCatalogProfile::Redshift),postgres;
+  for (const auto& table:{"a%","a_","a\\_%","a\\\\%","雪_","","dangling\\"}) {
+    ColumnsCatalogRequest request{std::nullopt,"literal",table,std::nullopt};
+    EXPECT_TRUE(redshift.selects_catalog_request(request));EXPECT_FALSE(postgres.selects_catalog_request(request));
+    auto generated=redshift.catalog_query(request);ASSERT_TRUE(generated)<<generated.error_message();
+    EXPECT_NE(std::string::npos,generated->find("FROM svv_columns AS columns"));
+    EXPECT_EQ(std::string::npos,generated->find("SHOW"));
+  }
+  ColumnsCatalogRequest literal{std::nullopt,"literal","escaped\\%",std::nullopt};
+  EXPECT_TRUE(redshift_column_names_are_literal(literal));EXPECT_FALSE(redshift_columns_schema_wide(literal));
+  literal.table="a%";literal.name_matches.object=CatalogNameMatch::IdentifierQuoted;
+  EXPECT_FALSE(redshift_columns_schema_wide(literal));
 }

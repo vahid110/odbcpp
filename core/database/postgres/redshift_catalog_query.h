@@ -44,7 +44,8 @@ std::optional<std::pair<std::string,std::string>> redshift_column_names(const Co
 std::string redshift_show_columns_command(std::string_view database,std::string_view schema,std::string_view table);
 BackendResult<QueryResult> normalize_redshift_columns(std::string_view database,std::string_view schema,
     std::string_view table,const ColumnsCatalogRequest& request,BackendResult<QueryResult> input);
-// Schema-wide selection is intentionally narrower than arbitrary table patterns.
+// Ordinary table-pattern discovery stays within one literal schema. Exact
+// tables retain the direct path; metadata-ID requests are lowered separately.
 bool redshift_columns_schema_wide(const ColumnsCatalogRequest& request) noexcept;
 std::optional<std::string> redshift_columns_schema(const ColumnsCatalogRequest& request);
 // Backend-owned routine identities and budget accounting, not a new SDK facet.
@@ -100,7 +101,8 @@ struct RedshiftColumnTables {
   RedshiftRoutineUsage retained, raw_retained;
 };
 BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view database,
-    std::string_view schema, const BackendResult<QueryResult>& input,
+    std::string_view schema, const std::optional<std::string>& table_pattern,
+    const BackendResult<QueryResult>& input,
     RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
 BackendResult<QueryResult> redshift_columns_headers(RedshiftRoutineBudget& budget);
 BackendResult<QueryResult> redshift_columns_part(std::string_view database, std::string_view schema,
