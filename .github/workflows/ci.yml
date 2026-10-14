@@ -8,6 +8,11 @@ on:
       - codex/transport-foundation
   workflow_dispatch:
     inputs:
+      run_sanitizer_only:
+        description: Cold sanitizer-only qualification on separate reviewed W/P (NOT full acceptance)
+        required: false
+        type: boolean
+        default: false
       run_development_pilot:
         description: Experimental Linux focused cold/warm pilot (NOT full acceptance)
         required: false
@@ -94,14 +99,93 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification && 'windows-product-qualification' || github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification) && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification && 'windows-product-qualification' || github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_sanitizer_only) && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
   cancel-in-progress: false
   queue: max
 
 jobs:
+  sanitizer-only:
+    name: Cold sanitizer-only qualification - NOT full acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.run_sanitizer_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: sanitizer-product
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      SANITIZER_ONLY: ${{ inputs.run_sanitizer_only }}
+      SANITIZER_CONFLICT: ${{ inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_linked_server }}
+      SANITIZER_WORKFLOW_HEAD: ${{ inputs.product_workflow_head }}
+      SANITIZER_PRODUCT_HEAD: ${{ inputs.product_head }}
+      SANITIZER_PRODUCT_BASE: ${{ inputs.product_base }}
+      SANITIZER_SUBMITTED_AT: ${{ inputs.product_submitted_at }}
+      SANITIZER_CACHE: ${{ inputs.product_cache }}
+      SANITIZER_WORKFLOW_ROOT: ${{ github.workspace }}/sanitizer-workflow
+      SANITIZER_PRODUCT_ROOT: ${{ github.workspace }}/sanitizer-product
+      GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.private == false && 'public' || 'private' }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact workflow and evidence helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: sanitizer-workflow
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse conflicting modes, mutable refs or private/paid profiles before product work
+        working-directory: sanitizer-workflow
+        run: python3 -B tools/ci/sanitizer_evidence.py request
+      - name: Check out frozen immutable product
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.product_head }}
+          path: sanitizer-product
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind clean W/P and cold graph
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" init
+      - name: Check scheduling and evidence safety offline
+        run: python3 -B -m unittest discover -s "$SANITIZER_WORKFLOW_ROOT/tools/ci" -p test_sanitizer_workflow.py -v
+      - name: Install existing sanitizer dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+      - name: Cheap changed-GTest control preflight
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" preflight
+      - name: Configure the existing Debug ASan UBSan profile
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" configure
+      - name: Build the complete existing graph j2
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" build
+      - name: Bind compiler flags dependencies new objects links and every owning inventory
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" inventory
+      - name: Run every unit CTest with original 60-second timeout and per-binary XML
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" test
+      - name: Retain completion source guards and original failures
+        working-directory: sanitizer-workflow
+        if: always()
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" finish
+      - name: Bound text evidence and closed index on failure too
+        working-directory: sanitizer-workflow
+        id: package
+        if: always()
+        run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" package
+      - name: Preserve original sanitizer-only evidence
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sanitizer-only-${{ inputs.product_head }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: sanitizer-evidence/
+          retention-days: 3
+          compression-level: 9
+          if-no-files-found: error
+
   ubuntu-development-pilot:
     name: Experimental Linux pilot - NOT full acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification && !inputs.run_sanitizer_only
     uses: ./.github/workflows/ubuntu-development-pilot.yml
     with:
       expected_head: ${{ inputs.pilot_expected_head }}
@@ -112,7 +196,7 @@ jobs:
 
   ubuntu-product-qualification:
     name: Owning Linux product qualification - NOT full acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.run_product_qualification && !inputs.run_windows_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_product_qualification && !inputs.run_windows_product_qualification && !inputs.run_sanitizer_only
     uses: ./.github/workflows/ubuntu-development-pilot.yml
     with:
       expected_head: ${{ inputs.product_workflow_head }}
@@ -126,7 +210,7 @@ jobs:
 
   windows-product-qualification:
     name: Owning Windows product qualification - NOT full acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification && !inputs.run_sanitizer_only
     uses: ./.github/workflows/windows-product-qualification.yml
     with:
       workflow_head: ${{ inputs.product_workflow_head }}
@@ -138,7 +222,7 @@ jobs:
       cache_request: ${{ inputs.product_cache }}
 
   build-and-test:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: ubuntu-latest
 
     services:
@@ -343,7 +427,7 @@ jobs:
           if-no-files-found: error
 
   redshift-build:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -383,7 +467,7 @@ jobs:
             "$RUNNER_TEMP/redshift-missing-endpoint.log"
 
   windows-live:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: windows-2025
 
     env:
@@ -542,7 +626,7 @@ jobs:
           retention-days: 7
 
   windows-package:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     timeout-minutes: 15
     needs: windows-live
     runs-on: windows-2025
@@ -573,7 +657,7 @@ jobs:
             ${{ runner.temp }}/odbcpp-postgres.log
 
   windows-linked-server:
-    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification && !inputs.run_sanitizer_only
     timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
@@ -603,7 +687,7 @@ jobs:
           retention-days: 7
 
   linux-sanitizers:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: ubuntu-latest
 
     env:
@@ -645,7 +729,7 @@ jobs:
           --timeout 60 --output-on-failure
 
   linux-openssl-static:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: ubuntu-latest
 
     services:
@@ -963,7 +1047,7 @@ jobs:
           if-no-files-found: error
 
   awslc-adapter-proof:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -1040,7 +1124,7 @@ jobs:
           if-no-files-found: error
 
   iodbc-unicode:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
     runs-on: macos-latest
 
     strategy:
