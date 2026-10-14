@@ -105,5 +105,22 @@ TEST_P(ColumnsOmittedTableNative, NullUniversalExactIdentifiersEmptyAndRecovery)
   EXPECT_STREQ("HY009",reinterpret_cast<char*>(state.data()));
   ASSERT_EQ(SQL_SUCCESS,columns(std::nullopt));EXPECT_EQ(omitted,rows());
 }
+TEST_P(ColumnsOmittedTableNative, TableLikePrefixEscapesUnicodeNoMatchAndRecovery) {
+  // Existing opt-in setup/5s statement budget and exact-principal cleanup apply;
+  // source authorship/compile-link is not execution or live admission.
+  for (const auto& pattern:std::vector<std::string>{"a\\_%",
+      literal_pattern(tables[0].substr(0,tables[0].size()-3))+"_"}) {
+    ASSERT_EQ(SQL_SUCCESS,columns(pattern));
+    EXPECT_EQ((std::vector<std::pair<std::string,std::string>>{{tables[0],"id"},{tables[0],"value"}}),rows());
+  }
+  ASSERT_EQ(SQL_SUCCESS,columns(std::string{"z\\_%"}));
+  EXPECT_EQ((std::vector<std::pair<std::string,std::string>>{{tables[1],"id"},{tables[1],"value"}}),rows());
+  ASSERT_EQ(SQL_SUCCESS,columns(std::string{"v\\_%"}));
+  EXPECT_EQ((std::vector<std::pair<std::string,std::string>>{{tables[2],"id"}}),rows());
+  ASSERT_EQ(SQL_SUCCESS,columns(std::string{"missing%"}));EXPECT_TRUE(rows().empty());
+  ASSERT_EQ(SQL_SUCCESS,columns(std::string{}));EXPECT_TRUE(rows().empty());
+  ASSERT_EQ(SQL_SUCCESS,columns(std::string{"z\\_%"}));
+  EXPECT_EQ((std::vector<std::pair<std::string,std::string>>{{tables[1],"id"},{tables[1],"value"}}),rows());
+}
 INSTANTIATE_TEST_SUITE_P(AnsiAndWide,ColumnsOmittedTableNative,testing::Values(false,true));
 } // namespace

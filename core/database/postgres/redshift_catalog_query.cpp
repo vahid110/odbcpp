@@ -454,10 +454,11 @@ bool redshift_column_names_are_literal(const ColumnsCatalogRequest& request) noe
 }
 bool redshift_columns_schema_wide(const ColumnsCatalogRequest& request) noexcept {
   return request.name_matches.existing() && column_literal_pattern(request.schema) &&
-      (!request.table || *request.table == "%");
+      !column_literal_pattern(request.table);
 }
 std::optional<std::string> redshift_columns_schema(const ColumnsCatalogRequest& request) {
-  if (!redshift_columns_schema_wide(request) || !table_pattern_valid(request.column)) return std::nullopt;
+  if (!redshift_columns_schema_wide(request) || !table_pattern_valid(request.table) ||
+      !table_pattern_valid(request.column)) return std::nullopt;
   auto schema = column_literal_name(*request.schema);
   return schema_identifier(schema) ? std::optional<std::string>{std::move(schema)} : std::nullopt;
 }
@@ -865,7 +866,8 @@ std::string wide_literal(std::string_view identifier) {
 }
 }
 BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view database,
-    std::string_view schema, const BackendResult<QueryResult>& input,
+    std::string_view schema, const std::optional<std::string>& table_pattern,
+    const BackendResult<QueryResult>& input,
     RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
   if (!input) return input.backend_error();
   if (input->error) return *input->error;
@@ -888,7 +890,6 @@ BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view data
     if (!seen[n] || !schema_text(input->columns[index[n]])) return bad("table-type");
   // No allocations or budget classification until every identity is validated.
   // The closed native row bound makes the borrowed duplicate check finite.
-  RedshiftRoutineUsage payload;
   const auto types=catalog_table_types();
   for (std::size_t r=0;r<input->rows.size();++r) {
     if (rs::util::Clock::now()>=deadline) return routine_timeout();
@@ -904,22 +905,32 @@ BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view data
       if (rs::util::Clock::now()>=deadline) return routine_timeout();
       if (input->rows[prior][index[2]]==row[index[2]]) return bad("table-duplicate");
     }
+  }
+  // Match only after ALL native identities/completion have been validated.
+  // Reuse the existing backend UTF8 LIKE contract unchanged. The raw response
+  // remains live and charged, even for identities that are not selected.
+  RedshiftRoutineUsage payload;
+  std::size_t count=0;
+  for (const auto& row:input->rows) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    if (!table_like(*row[index[2]],table_pattern)) continue;
+    ++count;
     if (!wide_storage_component(payload,row[index[2]]->size())) return redshift_routine_limit();
   }
   // Admission covers the simultaneous raw native response and owning selection.
   RedshiftColumnTables selected;
   selected.raw_retained=redshift_routine_schema_usage(*input);
-  selected.retained={input->rows.size(),input->rows.size(),payload.bytes,input->rows.size(),payload.bytes};
-  if (!wide_storage_component(selected.retained,input->rows.size(),sizeof(std::string)+1) ||
+  selected.retained={count,count,payload.bytes,count,payload.bytes};
+  if (!wide_storage_component(selected.retained,count,sizeof(std::string)+1) ||
       !budget.description(input->columns.size())) return redshift_routine_limit();
   for (const auto& column:input->columns) if (!budget.name(column.name)) return redshift_routine_limit();
   for (const auto& row:input->rows) if (!budget.name(*row[index[2]])) return redshift_routine_limit();
   if (!budget.retain(selected.raw_retained) || !budget.retain(selected.retained)) return redshift_routine_limit();
   if (rs::util::Clock::now()>=deadline) return routine_timeout();
-  selected.names.reserve(input->rows.size());
+  selected.names.reserve(count);
   for (const auto& row:input->rows) {
     if (rs::util::Clock::now()>=deadline) return routine_timeout();
-    selected.names.push_back(*row[index[2]]);
+    if (table_like(*row[index[2]],table_pattern)) selected.names.push_back(*row[index[2]]);
   }
   std::sort(selected.names.begin(),selected.names.end());
   if (rs::util::Clock::now()>=deadline) return routine_timeout();
