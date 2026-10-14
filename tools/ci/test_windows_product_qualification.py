@@ -229,6 +229,209 @@ class ReviewRepairSafety(unittest.TestCase):
                 self.assertEqual(events, ['kill', 'wait', 'close_process', 'close_job'])
 
 
+class ConfigureAuxiliarySafety(unittest.TestCase):
+    def facts(self):
+        compiler = 'C:/VS/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe'
+        auxiliary = compiler.replace('/cl.exe', '/vctip.exe')
+        context = {'installation_root': 'C:/VS', 'compiler_path': compiler,
+                   'compiler_sha256': 'a' * 64, 'auxiliary_path': auxiliary,
+                   'auxiliary_sha256': 'b' * 64, 'cache_sha256': 'c' * 64,
+                   'compiler_configuration_sha256': 'd' * 64, 'profile': list(w.PROFILE)}
+        child = {'pid': 6392, 'image_path': auxiliary, 'image_sha256': 'b' * 64,
+                 'creation_filetime': 134364503295670202, 'creation_unit': '100ns since1601 UTC',
+                 'job_member': True, 'held_handle': True, 'terminal_after_cleanup': True,
+                 'held_handle_closed': True}
+        record = {'phase': 'configure', 'argv': ['cmake', '-S', '.', '-B', str(w.BUILD), *w.PROFILE],
+                  'exit': 0, 'timed_out': False, 'direct_terminal': True, 'direct_pid': 1212,
+                  'started_at': '2026-10-14T11:18:42.669203+00:00',
+                  'direct_exited_at': '2026-10-14T11:23:02.829463+00:00',
+                  'launch_order': ['created_suspended', 'assigned_to_job', 'resumed'],
+                  'fresh_graph_before_launch': True, 'pipe_drained': True,
+                  'unexpected_children': True,
+                  'cleanup': {'active_after_grace': 1, 'active_after_cleanup': 0,
+                              'tree_owned_by_job': True, 'kill_on_job_close': True,
+                              'excluded_direct_pid': 1212, 'owned_descendants': [child],
+                              'identity_errors': [], 'termination_requested': True,
+                              'termination_succeeded': True, 'cleanup_seconds': 5,
+                              'cleanup_elapsed_seconds': 0.046,
+                              'identity_stages': [{'stage': 'after_grace', 'member_pids': [6392]}]}}
+        return record, context
+
+    def test_exact_configure_auxiliary_cleanup_is_named_and_raw_failure_fact_survives(self):
+        record, context = self.facts()
+        result = w.configure_auxiliary_disposition(record, context)
+        self.assertTrue(result['accepted'])
+        self.assertEqual(result['disposition'], 'expected_owned_compiler_auxiliary_cleaned')
+        self.assertTrue(record['unexpected_children'])
+        self.assertEqual(record['cleanup']['active_after_grace'], 1)
+
+    def test_default_other_phases_direct_failure_and_missing_proof_stay_refused(self):
+        record, context = self.facts()
+        for field, bad in [('phase', 'build'), ('phase', 'test'), ('phase', 'preflight'),
+                           ('phase', 'owned-child'), ('exit', 1), ('exit', False), ('timed_out', True),
+                           ('direct_terminal', False), ('pipe_drained', False),
+                           ('fresh_graph_before_launch', False), ('argv', ['cmake', '--version']),
+                           ('launch_order', ['popen']), ('direct_exited_at', None)]:
+            with self.subTest(field=field, bad=bad):
+                changed = deepcopy(record)
+                changed[field] = bad
+                self.assertFalse(w.configure_auxiliary_disposition(changed, context)['accepted'])
+        self.assertFalse(w.configure_auxiliary_disposition(record, None)['accepted'])
+        self.assertFalse(w.configure_auxiliary_disposition({}, context)['accepted'])
+
+    def test_other_mixed_unknown_image_hash_creation_and_membership_stay_refused(self):
+        record, context = self.facts()
+        for field, bad in [('image_path', 'C:/other/vctip.exe'), ('image_path', 'C:/VS-evil/vctip.exe'),
+                           ('image_path', context['auxiliary_path'].replace('Hostx64', 'Hostx86')),
+                           ('image_sha256', 'e' * 64), ('image_sha256', None),
+                           ('creation_filetime', 0), ('creation_filetime', 1),
+                           ('creation_filetime', 999999999999999999), ('creation_unit', None),
+                           ('job_member', False), ('held_handle', False), ('pid', 1212)]:
+            with self.subTest(field=field, bad=bad):
+                changed = deepcopy(record)
+                changed['cleanup']['owned_descendants'][0][field] = bad
+                self.assertFalse(w.configure_auxiliary_disposition(changed, context)['accepted'])
+        changed = deepcopy(record)
+        changed['cleanup']['owned_descendants'].append({'pid': 123, 'image_path': 'C:/python.exe'})
+        self.assertFalse(w.configure_auxiliary_disposition(changed, context)['accepted'])
+
+    def test_termination_shared_deadline_wait_close_query_and_nonzero_refuse(self):
+        record, context = self.facts()
+        for field, bad in [('active_after_cleanup', 1), ('identity_errors', [{'error': 'query failed'}]),
+                           ('termination_requested', False), ('termination_succeeded', False),
+                           ('cleanup_seconds', 6), ('cleanup_elapsed_seconds', 5.01),
+                           ('identity_stages', []), ('active_after_grace', 2),
+                           ('active_after_cleanup', False), ('cleanup_elapsed_seconds', float('nan'))]:
+            with self.subTest(field=field):
+                changed = deepcopy(record)
+                changed['cleanup'][field] = bad
+                self.assertFalse(w.configure_auxiliary_disposition(changed, context)['accepted'])
+        for field in ['terminal_after_cleanup', 'held_handle_closed']:
+            for bad in [False, None]:
+                changed = deepcopy(record)
+                changed['cleanup']['owned_descendants'][0][field] = bad
+                self.assertFalse(w.configure_auxiliary_disposition(changed, context)['accepted'])
+        for field in context:
+            changed = dict(context)
+            del changed[field]
+            self.assertFalse(w.configure_auxiliary_disposition(record, changed)['accepted'])
+        changed = deepcopy(record)
+        changed['cleanup']['identity_stages'][0]['member_pids'] = [9999]
+        self.assertFalse(w.configure_auxiliary_disposition(changed, context)['accepted'])
+
+    def test_measure_permits_only_private_configure_context_and_preserves_raw_fact(self):
+        facts, context = self.facts()
+        for phase, code, supplied in [('configure', 0, True), ('configure', 0, False),
+                                      ('configure', 1, True), ('build', 0, True),
+                                      ('owned-child', 0, True)]:
+            with self.subTest(phase=phase, code=code, supplied=supplied), tempfile.TemporaryDirectory() as tmp:
+                class Process:
+                    pid, _handle = 1212, 1
+                    def __init__(self, argv):
+                        self.stdout = BytesIO(b'original command output\n')
+                        self.launch_order = ['created_suspended']
+                    def resume(self): self.launch_order.append('resumed')
+                    def wait(self, timeout): return code
+                    def poll(self): return code
+                    def close(self): pass
+                class Job:
+                    def attach(self, process): pass
+                    def close(self): pass
+                accepted = phase == 'configure' and code == 0 and supplied
+                with patch.object(w, 'os', SimpleNamespace(name='nt')), \
+                     patch.object(w, 'EVIDENCE', Path(tmp) / 'evidence'), \
+                     patch.object(w, 'BUILD', Path(tmp) / 'cold-graph'), \
+                     patch.object(w, 'WindowsSuspendedProcess', Process), \
+                     patch.object(w, 'WindowsProcessJob', Job), patch.object(w, 'direct_peak', return_value=1), \
+                     patch.object(w, 'utc', side_effect=[facts['started_at'], facts['direct_exited_at'], facts['direct_exited_at']]), \
+                     patch.object(w, 'owned_exit_cleanup', return_value=(deepcopy(facts['cleanup']), True, False)), \
+                     patch.object(w, 'configure_auxiliary_context', return_value=context) as validator:
+                    kwargs = {'configure_installation': {'private': 'installation'}} if supplied else {}
+                    if accepted:
+                        w.measure(phase, w.configure_command(), 10, **kwargs)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'command failed'):
+                            w.measure(phase, w.configure_command(), 10, **kwargs)
+                    self.assertEqual(validator.call_count, int(accepted))
+                record = json.loads((Path(tmp) / 'evidence' / (phase + '-command.json')).read_text())
+                self.assertEqual(record['exit'], code)
+                self.assertTrue(record['unexpected_children'])
+                self.assertEqual(record['cleanup']['active_after_grace'], 1)
+                self.assertEqual(record['auxiliary_disposition']['accepted'], accepted)
+
+    def graph(self, root):
+        install = root / 'VS'
+        tool = install / 'VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64'
+        tool.mkdir(parents=True)
+        compiler, auxiliary = tool / 'cl.exe', tool / 'vctip.exe'
+        compiler.write_bytes(b'offline compiler identity')
+        auxiliary.write_bytes(b'offline auxiliary identity')
+        build = root / 'build'
+        config = build / 'CMakeFiles/4.2/CMakeCXXCompiler.cmake'
+        config.parent.mkdir(parents=True)
+        config.write_text('set(CMAKE_CXX_COMPILER_ID "MSVC")\nset(CMAKE_CXX_COMPILER "' + compiler.as_posix() + '")\n')
+        cache = {'CMAKE_GENERATOR_PLATFORM': 'x64', 'CMAKE_CONFIGURATION_TYPES': 'Debug;Release',
+                 'CMAKE_GENERATOR': 'Visual Studio 18 2026'}
+        cache.update(dict(flag[2:].split('=', 1) for flag in w.PROFILE if flag.startswith('-D')))
+        (build / 'CMakeCache.txt').write_text(''.join(k + ':STRING=' + v + '\n' for k, v in cache.items()))
+        installation = {'installationPath': str(install), 'resolvedInstallationPath': str(install),
+                        'isComplete': True, 'isLaunchable': True}
+        return installation, build, compiler, auxiliary, config
+
+    def test_context_binds_generated_msvc_cache_and_exact_sibling_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            installation, build, compiler, auxiliary, config = self.graph(Path(tmp))
+            context = w.configure_auxiliary_context(installation, build)
+            self.assertEqual(context['compiler_path'], compiler.resolve().as_posix())
+            self.assertEqual(context['auxiliary_path'], auxiliary.resolve().as_posix())
+            self.assertEqual(context['compiler_sha256'], w.sha(compiler))
+            self.assertEqual(context['auxiliary_sha256'], w.sha(auxiliary))
+            self.assertEqual(context['compiler_configuration_sha256'], w.sha(config))
+
+    def test_context_refuses_false_root_missing_cache_wrong_profile_and_compiler(self):
+        for defect in ['root', 'incomplete', 'cache', 'profile', 'compiler', 'auxiliary',
+                       'other_tool_root', 'aux_redirect', 'duplicate_cache', 'duplicate_compiler']:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as tmp:
+                installation, build, compiler, auxiliary, config = self.graph(Path(tmp))
+                if defect == 'root':
+                    installation['installationPath'] += '-evil'
+                elif defect == 'incomplete':
+                    installation['isComplete'] = False
+                elif defect == 'cache':
+                    (build / 'CMakeCache.txt').unlink()
+                elif defect == 'profile':
+                    cache = build / 'CMakeCache.txt'
+                    cache.write_text(cache.read_text().replace('BUNDLED_SHARED', 'SYSTEM_SHARED'))
+                elif defect == 'compiler':
+                    config.write_text(config.read_text().replace('"MSVC"', '"GNU"'))
+                elif defect == 'auxiliary':
+                    auxiliary.unlink()
+                elif defect == 'other_tool_root':
+                    foreign = Path(tmp) / 'VS-evil' / 'cl.exe'
+                    foreign.parent.mkdir()
+                    foreign.write_bytes(b'foreign')
+                    config.write_text(config.read_text().replace(compiler.as_posix(), foreign.as_posix()))
+                elif defect == 'aux_redirect':
+                    foreign = Path(tmp) / 'other-vctip.exe'
+                    foreign.write_bytes(b'foreign')
+                elif defect == 'duplicate_cache':
+                    cache = build / 'CMakeCache.txt'
+                    cache.write_text(cache.read_text() + 'TARGET_DATABASE:STRING=POSTGRESQL\n')
+                elif defect == 'duplicate_compiler':
+                    duplicate = build / 'CMakeFiles/other/CMakeCXXCompiler.cmake'
+                    duplicate.parent.mkdir()
+                    duplicate.write_text(config.read_text())
+                original_resolve = Path.resolve
+                redirected_auxiliary = original_resolve(auxiliary) if defect == 'aux_redirect' else None
+                def resolve(path, *args, **kwargs):
+                    resolved = original_resolve(path, *args, **kwargs)
+                    return original_resolve(foreign, *args, **kwargs) if resolved == redirected_auxiliary else resolved
+                # Exercise redirected canonical identity without requiring Windows symlink privileges.
+                with patch.object(w.Path, 'resolve', autospec=True, side_effect=resolve), \
+                     self.assertRaises((ValueError, OSError)):
+                    w.configure_auxiliary_context(installation, build)
+
+
 class OwnedDescendantLifecycleSafety(unittest.TestCase):
     def test_successful_direct_exit_with_owned_child_still_refuses_and_retains_identity(self):
         events = []
