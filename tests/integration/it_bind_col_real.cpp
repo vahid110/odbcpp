@@ -4134,3 +4134,76 @@ TEST_F(BindColIntegrationTest, CharacterNonfiniteFloatingRefusalAndNativeIeeeRec
     }
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(60));
 }
+
+TEST_F(BindColIntegrationTest, CharacterNonfiniteIntegralRefusalAndNumericRecovery) {
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)5, 0));
+    const char* query = "SELECT 'NaN'::varchar(16), 'Infinity'::varchar(16), "
+        "'-Infinity'::varchar(16), 'NaN'::real, '1'::varchar(16), CAST(NULL AS varchar(16))";
+    const auto state = [&]() {
+        SQLCHAR value[6]{};
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            value, nullptr, nullptr, 0, nullptr));
+        return std::string(reinterpret_cast<char*>(value));
+    };
+    for (SQLSMALLINT target : {SQLSMALLINT(SQL_C_SLONG), SQLSMALLINT(SQL_C_BIT)}) {
+        const std::size_t width = target == SQL_C_SLONG ? sizeof(SQLINTEGER) : sizeof(SQLCHAR);
+        std::array<unsigned char, sizeof(SQLDOUBLE) + 2> bytes;
+        bytes.fill(0xa5);
+        const auto before = bytes;
+        SQLLEN length = 79;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)query, SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        const char* tokens[] = {"NaN", "Infinity", "-Infinity"};
+        for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+            SQLSMALLINT source_type{};
+            ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, column, nullptr, 0,
+                nullptr, &source_type, nullptr, nullptr, nullptr));
+            EXPECT_EQ(SQL_VARCHAR, source_type);
+            length = 79;
+            ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target, bytes.data() + 1, 0, &length));
+            EXPECT_EQ("22018", state());
+            EXPECT_EQ(before, bytes);
+            EXPECT_EQ(79, length);
+            char text[16]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_CHAR, text, sizeof(text), &length));
+            EXPECT_STREQ(tokens[column - 1], text);
+            ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, column, target, bytes.data() + 1, 0, &length));
+        }
+        length = 79;
+        ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, 4, target, bytes.data() + 1, 0, &length));
+        EXPECT_EQ("22003", state()); // Normalized REAL retains its numeric-source policy.
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 5, target, bytes.data() + 1, 0, &length));
+        if (target == SQL_C_SLONG) {
+            SQLINTEGER finite{};
+            std::memcpy(&finite, bytes.data() + 1, sizeof(finite));
+            EXPECT_EQ(1, finite);
+        } else {
+            SQLCHAR finite{};
+            std::memcpy(&finite, bytes.data() + 1, sizeof(finite));
+            EXPECT_EQ(1, finite);
+        }
+        EXPECT_EQ(width, length);
+        const auto finite_bytes = bytes;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 6, target, bytes.data() + 1, 0, &length));
+        EXPECT_EQ(SQL_NULL_DATA, length);
+        EXPECT_EQ(finite_bytes, bytes);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        for (bool indicator_only : {false, true}) {
+            bytes.fill(0xa5);
+            length = 79;
+            ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, target,
+                indicator_only ? nullptr : bytes.data() + 1, 0, &length));
+            ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)query, SQL_NTS));
+            ASSERT_EQ(SQL_ERROR, SQLFetch(hstmt));
+            EXPECT_EQ("22018", state());
+            EXPECT_EQ(before, bytes);
+            EXPECT_EQ(79, length);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+            ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_UNBIND));
+        }
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(60));
+}

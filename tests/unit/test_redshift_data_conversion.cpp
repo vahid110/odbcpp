@@ -1514,3 +1514,52 @@ TEST_F(RedshiftDataConverterTest, CharacterNonfiniteAdapterPolicyKeepsRawFloatin
         }
     }
 }
+
+TEST_F(RedshiftDataConverterTest, CharacterNonfiniteIntegralAdapterPolicyKeepsRawRangeAndFiniteControls) {
+    using rs::odbc::ConversionIssue;
+    const auto check = [&]<typename T>(SQLSMALLINT target) {
+        for (const char* text : {"NaN", "Infinity", "-Infinity", " \tNaN\r\n", " Infinity ", "\t-Infinity\n"}) {
+            SCOPED_TRACE(target);
+            SCOPED_TRACE(text);
+            std::array<unsigned char, sizeof(SQLUBIGINT) + 2> bytes;
+            bytes.fill(0xa5);
+            const auto before = bytes;
+            SQLLEN length = 79;
+            ConversionIssue issue{};
+            ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+                text, target, bytes.data() + 1, 0, &length, &issue));
+            EXPECT_EQ(ConversionIssue::NumericValueOutOfRange, issue);
+            EXPECT_EQ(before, bytes);
+            EXPECT_EQ(79, length);
+        }
+        for (const char* text : {"1", "1.5", "1e0", " \t1 "}) {
+            std::array<unsigned char, sizeof(SQLUBIGINT) + 2> bytes;
+            bytes.fill(0xa5);
+            SQLLEN length = 79;
+            ConversionIssue issue{};
+            const bool fraction = std::string_view(text) == "1.5";
+            ASSERT_EQ(fraction ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS,
+                RedshiftDataConverter::convert_data(text, target,
+                    bytes.data() + 1, 0, &length, &issue));
+            T actual{};
+            std::memcpy(&actual, bytes.data() + 1, sizeof(actual));
+            EXPECT_EQ(T{1}, actual);
+            EXPECT_EQ(sizeof(T), length);
+            EXPECT_EQ(fraction ? ConversionIssue::FractionalTruncation : ConversionIssue::None, issue);
+            EXPECT_EQ(0xa5, bytes.front());
+            EXPECT_TRUE(std::all_of(bytes.begin() + 1 + sizeof(T), bytes.end(), [](auto b) { return b == 0xa5; }));
+        }
+    };
+    check.operator()<SQLSCHAR>(SQL_C_STINYINT);
+    check.operator()<SQLCHAR>(SQL_C_UTINYINT);
+    check.operator()<SQLSMALLINT>(SQL_C_SSHORT);
+    check.operator()<SQLUSMALLINT>(SQL_C_USHORT);
+    check.operator()<SQLINTEGER>(SQL_C_SLONG);
+    check.operator()<SQLUINTEGER>(SQL_C_ULONG);
+    check.operator()<SQLBIGINT>(SQL_C_SBIGINT);
+    check.operator()<SQLUBIGINT>(SQL_C_UBIGINT);
+    check.operator()<SQLCHAR>(SQL_C_BIT);
+    check.operator()<SQLSCHAR>(SQL_C_TINYINT);
+    check.operator()<SQLSMALLINT>(SQL_C_SHORT);
+    check.operator()<SQLINTEGER>(SQL_C_LONG);
+}

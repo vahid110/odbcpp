@@ -429,3 +429,22 @@ configured-row syntax only, with no login or SQL execution; native provider
 exposure, current-driver/link-list/platform/full/live/final acceptance remains
 pending. This does not change numeric grammar, raw floating parsing or input
 parameter behavior, nor claim official-driver binary parity.
+
+### Character nonfinite integer/BIT diagnostic queue
+
+`BindColIntegrationTest.CharacterNonfiniteIntegralRefusalAndNumericRecovery`
+checks VARCHAR NaN/Infinity/-Infinity to C SLONG and BIT as 22018 with unchanged
+payload/length, same-row text retry and NO_DATA. Normalized REAL NaN retains
+22003; finite VARCHAR 1 and NULL recover. Bound and indicator-only fetch repeat
+the refusal. Six fixed one-row/six-column SELECTs maximum, no DDL/DML, 5-second
+statement timeout and 60-second case assertion excluding login. Canonical text
+cells are at most nine bytes. Native bodies remain UNRUN locally; configured
+compile-row syntax is distinct from current-driver/link-list/live acceptance.
+
+Primary ODBC character numeric-literal classification governs these closed three
+tokens. Retained AWS source maps the same character tokens to 22003; this is an
+explicit diagnostic divergence requiring independent candidate spec disposition,
+not an official-driver binary parity claim. Raw scalar parsing, REAL/DOUBLE range
+policy, existing BIT text aliases, broader noncanonical spelling/hex grammar,
+input/default/SDK/backend behavior and protected full/platform/live/final debt
+remain unchanged. This ledger grants no login/SQL/spending authority.
