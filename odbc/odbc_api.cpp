@@ -1608,13 +1608,13 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   if (is_dynamic_string_info(info_type)) {
     return write_narrow_output(
         conn, dynamic_string_info_value(*conn, info_type),
-        static_cast<SQLCHAR*>(info_value), buffer_length, string_length,
-        "Driver information was truncated");
+        static_cast<SQLCHAR*>(info_value), info_value ? buffer_length : 0,
+        string_length, "Driver information was truncated");
   }
 
   if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session())) {
     return write_narrow_output(
-        conn, *value, static_cast<SQLCHAR*>(info_value), buffer_length,
+        conn, *value, static_cast<SQLCHAR*>(info_value), info_value ? buffer_length : 0,
         string_length, "Driver information was truncated");
   }
 
@@ -1901,13 +1901,13 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
   if (is_dynamic_string_info(info_type)) {
     return write_wide_bytes_output(
         conn, dynamic_string_info_value(*conn, info_type),
-        static_cast<SQLWCHAR*>(info_value), buffer_length, string_length,
-        "Driver information was truncated");
+        static_cast<SQLWCHAR*>(info_value), info_value ? buffer_length : 0,
+        string_length, "Driver information was truncated");
   }
   if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session())) {
     return write_wide_bytes_output(
         conn, *value, static_cast<SQLWCHAR*>(info_value),
-        buffer_length, string_length, "Driver information was truncated");
+        info_value ? buffer_length : 0, string_length, "Driver information was truncated");
   }
   return SQLGetInfo(connection_handle, info_type, info_value, buffer_length,
                     string_length);
