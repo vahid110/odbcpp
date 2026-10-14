@@ -516,6 +516,11 @@ std::optional<ColumnDimensions> column_dimensions(std::string_view type,
     std::optional<std::int32_t> length,std::optional<std::int32_t> precision,std::optional<std::int32_t> scale) {
   std::string normalized(type);for(char& ch:normalized)if(ch>='A' && ch<='Z')ch=static_cast<char>(ch-'A'+'a');
   // Closed server catalog labels, not an OID/result codec or DDL-size claim.
+  if (normalized == "super") {
+    ColumnDimensions result;
+    result.code = result.sql_type = -1; // SQL_LONGVARCHAR; SUPER is unsized catalog metadata.
+    return result;
+  }
   if (normalized == "varbyte" || normalized == "varbinary" || normalized == "binary varying") {
     ColumnDimensions result;
     result.code = result.sql_type = -4; // SQL_LONGVARBINARY; dimensions remain unknown.
@@ -1563,6 +1568,7 @@ std::string redshift_columns_query(const ColumnsCatalogRequest& input, bool visi
       "WHEN 'double precision' THEN 8 WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
       "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
       "WHEN 'varbyte' THEN -4 WHEN 'varbinary' THEN -4 WHEN 'binary varying' THEN -4 "
+      "WHEN 'super' THEN -1 "
       "WHEN 'date' THEN 91 WHEN 'time without time zone' THEN 92 "
       "WHEN 'time with time zone' THEN 92 WHEN 'timestamp without time zone' THEN 93 "
       "WHEN 'timestamp with time zone' THEN 93 ELSE 0 END";

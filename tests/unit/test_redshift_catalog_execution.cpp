@@ -1269,7 +1269,7 @@ TEST(RedshiftShowColumns, CommonDimensionsUnknownNullAndExplicitTemporalPrecisio
   auto result=normalize_redshift_columns("selected","fixture","rows",column_request(),BackendResult<QueryResult>{source,{SessionState::Idle,SessionDisposition::Reusable}});ASSERT_TRUE(result);
   EXPECT_EQ("38",result->rows[0][6]);EXPECT_EQ("40",result->rows[0][7]);EXPECT_EQ("6",result->rows[0][8]);EXPECT_EQ("10",result->rows[0][9]);
   EXPECT_EQ("93",result->rows[1][4]);EXPECT_EQ("24",result->rows[1][6]);EXPECT_EQ("16",result->rows[1][7]);EXPECT_EQ("4",result->rows[1][8]);EXPECT_EQ("9",result->rows[1][13]);EXPECT_EQ("3",result->rows[1][14]);
-  EXPECT_EQ("SUPER",result->rows[2][5]);EXPECT_EQ("0",result->rows[2][4]);EXPECT_FALSE(result->rows[2][6]);EXPECT_FALSE(result->rows[2][7]);EXPECT_EQ("2",result->rows[2][10]);EXPECT_EQ("",result->rows[2][17]);
+  EXPECT_EQ("SUPER",result->rows[2][5]);EXPECT_EQ("-1",result->rows[2][4]);EXPECT_FALSE(result->rows[2][6]);EXPECT_FALSE(result->rows[2][7]);EXPECT_EQ("2",result->rows[2][10]);EXPECT_EQ("",result->rows[2][17]);
   struct Sample {const char* type;const char* code;const char* size;const char* buffer;const char* scale;};
   for(const auto& sample:std::array<Sample,10>{{{"boolean","-7","1","1",nullptr},{"smallint","5","5","2","0"},
       {"bigint","-5","19","8","0"},{"real","7","7","4",nullptr},{"double precision","8","15","8",nullptr},
@@ -2296,7 +2296,7 @@ TEST(RedshiftRoutineSchemaPatterns, ProcedureColumnsKeepUnknownTypesAndPartialDi
       "SHOW PROCEDURES FROM SCHEMA \"db\".\"z\";", "SHOW FUNCTIONS FROM SCHEMA \"db\".\"z\";",
       "SHOW PARAMETERS OF PROCEDURE \"db\".\"z\".\"same\"();"}), session.commands);
   EXPECT_EQ(ResultCell{"a"}, result->rows[0][1]); EXPECT_EQ(ResultCell{"super"}, result->rows[0][6]);
-  EXPECT_EQ(ResultCell{"0"}, result->rows[0][5]); EXPECT_FALSE(result->rows[0][7]);
+  EXPECT_EQ(ResultCell{"-1"}, result->rows[0][5]); EXPECT_FALSE(result->rows[0][7]);
   EXPECT_FALSE(result->rows[0][8]); EXPECT_FALSE(result->rows[0][9]);
   EXPECT_EQ(ResultCell{"z"}, result->rows[1][1]); EXPECT_EQ(ResultCell{"2"}, result->rows[1][5]);
   EXPECT_EQ(ResultCell{"18"}, result->rows[1][7]); EXPECT_EQ(ResultCell{"20"}, result->rows[1][8]);
@@ -4579,8 +4579,10 @@ TEST(RedshiftVarbyteCatalogTypes, NearMissAndUnrelatedFamiliesRemainUnknown) {
             {SessionState::Idle, SessionDisposition::Reusable}});
     ASSERT_TRUE(result);
     ASSERT_EQ(1u, result->rows.size());
-    EXPECT_EQ(ResultCell{"0"}, result->rows[0][4]);
-    EXPECT_EQ(ResultCell{"0"}, result->rows[0][13]);
+    // SUPER is now a separately selected catalog contract; all original near-misses stay unknown.
+    const ResultCell expected_type{std::string_view(label) == "SUPER" ? "-1" : "0"};
+    EXPECT_EQ(expected_type, result->rows[0][4]);
+    EXPECT_EQ(expected_type, result->rows[0][13]);
     EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
     EXPECT_FALSE(result->rows[0][6]);
     EXPECT_FALSE(result->rows[0][15]);
@@ -4776,4 +4778,238 @@ TEST(RedshiftVarbyteCatalogTypes, SchemaPatternFanoutKeepsClosedClassification) 
         "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
     EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
   }
+}
+
+namespace {
+// Backend catalog expectations only; no SUPER wire codec or storage-size claim.
+void expect_super_catalog_row(const ResultRow& row, std::string_view label, bool parameter = false) {
+  ASSERT_EQ(parameter ? 19u : 18u, row.size());
+  EXPECT_EQ(ResultCell{"-1"}, row[parameter ? 5 : 4]);
+  EXPECT_EQ(ResultCell{"-1"}, row[parameter ? 14 : 13]);
+  EXPECT_EQ(ResultCell{std::string(label)}, row[parameter ? 6 : 5]);
+  const unsigned offset = parameter ? 1 : 0;
+  for (const unsigned field : {6u, 7u, 8u, 9u, 14u, 15u}) {
+    EXPECT_FALSE(row[field + offset]) << field + offset;
+  }
+}
+}
+
+TEST(RedshiftSuperCatalogTypes, ExactAsciiLabelsKeepUnsizedOwningEighteenFields) {
+  for (const auto* label : {"super", "SUPER", "SuPeR"}) {
+    for (const ResultCell& dimension : {ResultCell{}, ResultCell{"0"}, ResultCell{"1"}, ResultCell{"65535"}}) {
+      SCOPED_TRACE(label);
+      auto source = varbyte_catalog_rows(label, dimension);
+      auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+          BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}});
+      ASSERT_TRUE(result) << result.error_message();
+      ASSERT_EQ(18u, result->columns.size());
+      ASSERT_EQ(1u, result->rows.size());
+      EXPECT_EQ((ResultRow{"selected", "fixture", "rows", "payload", "-1", label,
+          std::nullopt, std::nullopt, std::nullopt, std::nullopt, "1", "owning binary remark",
+          "'owning default'", "-1", std::nullopt, std::nullopt, "1", "YES"}), result->rows[0]);
+      source.rows.clear();
+      EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
+      EXPECT_EQ(ResultCell{"owning binary remark"}, result->rows[0][11]);
+      EXPECT_EQ(ResultCell{"'owning default'"}, result->rows[0][12]);
+    }
+  }
+}
+
+TEST(RedshiftSuperCatalogTypes, NearMissesStayUnknownAndVarbyteKeepsItsClosedContract) {
+  for (const auto* label : {"super[]", "super_domain", " super", "super ", "super(1)",
+      "supers", "s\xc3\xbcper", "geometry", "text"}) {
+    SCOPED_TRACE(label);
+    auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{varbyte_catalog_rows(label), {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(result);
+    ASSERT_EQ(1u, result->rows.size());
+    EXPECT_EQ(ResultCell{"0"}, result->rows[0][4]);
+    EXPECT_EQ(ResultCell{"0"}, result->rows[0][13]);
+    EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
+    EXPECT_FALSE(result->rows[0][6]);
+    EXPECT_FALSE(result->rows[0][15]);
+  }
+  for (const auto* label : {"varbyte", "VARBINARY", "binary varying"}) {
+    auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{varbyte_catalog_rows(label), {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(result);
+    ASSERT_EQ(1u, result->rows.size());
+    expect_varbyte_catalog_row(result->rows[0], label);
+  }
+}
+
+TEST(RedshiftSuperCatalogTypes, RoutineInOutInoutAndReturnKeepUnsizedNineteenFields) {
+  RoutineExecutionSession session;
+  session.discovery({{"db", "s", "p", "2", "super, super", std::nullopt, "owning"}},
+      {{"db", "s", "f", "0", "", "super", std::nullopt}});
+  session.replies.erase(session.replies.begin()); // Explicit catalog skips identity lookup.
+  session.replies.emplace_back(routine_parameters(true,
+      {{"db", "s", "f", "", "0", "RETURN", "super", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+  session.replies.emplace_back(routine_parameters(false, {
+      {"db", "s", "p", "out", "3", "OUT", "SuPeR", "65535", "0", "0"},
+      {"db", "s", "p", "inout", "2", "INOUT", "SUPER", "0", "0", "0"},
+      {"db", "s", "p", "input", "1", "IN", "super", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto result = session.execute_catalog(ProcedureColumnsCatalogRequest{"db", "s", std::nullopt, std::nullopt}, deadline);
+  ASSERT_TRUE(result) << result.error_message();
+  ASSERT_EQ(19u, result->columns.size());
+  ASSERT_EQ(4u, result->rows.size());
+  const std::array<const char*, 4> labels{"super", "super", "SUPER", "SuPeR"};
+  const std::array<const char*, 4> modes{"5", "1", "2", "4"};
+  for (unsigned i = 0; i < 4; ++i) {
+    expect_super_catalog_row(result->rows[i], labels[i], true);
+    EXPECT_EQ(ResultCell{modes[i]}, result->rows[i][4]);
+    EXPECT_EQ(ResultCell{std::to_string(i)}, result->rows[i][17]);
+  }
+  EXPECT_EQ(4u, session.commands.size());
+  EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+  session.replies.clear();
+  session.connected = false;
+  EXPECT_EQ(ResultCell{"SuPeR"}, result->rows[3][6]);
+}
+
+TEST(RedshiftSuperCatalogTypes, ExactIdentifiersAndSchemaPatternFanoutKeepOriginalDeadline) {
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  SchemaSpy exact;
+  exact.show = varbyte_catalog_rows("SUPER");
+  auto identifiers = column_request();
+  identifiers.catalog = "selected";
+  identifiers.column = "payload";
+  identifiers.name_matches.catalog = CatalogNameMatch::IdentifierQuoted;
+  identifiers.name_matches.schema = CatalogNameMatch::IdentifierQuoted;
+  identifiers.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+  identifiers.name_matches.member = CatalogNameMatch::IdentifierQuoted;
+  auto direct = exact.execute_catalog(identifiers, deadline);
+  ASSERT_TRUE(direct) << direct.error_message();
+  ASSERT_EQ(1u, direct->rows.size());
+  expect_super_catalog_row(direct->rows[0], "SUPER");
+  EXPECT_EQ(std::vector<rs::util::Deadline>(2, deadline), exact.deadlines);
+  EXPECT_EQ(0u, exact.catalog_builds);
+  EXPECT_EQ(0u, exact.prepared_calls);
+  for (const auto& schema : {std::optional<std::string>{}, std::optional<std::string>{"%"},
+      std::optional<std::string>{"fixt%"}}) {
+    WideColumnsSession session;
+    session.replies.emplace_back(routine_identity(), session.snapshot);
+    session.replies.emplace_back(routine_schema_rows({
+        {"db", "fixture", "owner", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+    auto tables = tables_response("db");
+    tables.rows = {{"db", "fixture", "a", "TABLE", std::nullopt, std::nullopt}};
+    session.replies.emplace_back(std::move(tables), session.snapshot);
+    session.replies.emplace_back(varbyte_catalog_rows("SuPeR", std::nullopt, "db", "a"), session.snapshot);
+    auto input = wide_columns("a%");
+    input.schema = schema;
+    auto result = session.execute_catalog(input, deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(1u, result->rows.size());
+    expect_super_catalog_row(result->rows[0], "SuPeR");
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+        "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+  }
+}
+
+TEST(RedshiftSuperCatalogTypes, HiddenMalformedRowsAndLateErrorRefuseWithoutPartialAndRecover) {
+  for (unsigned bad = 0; bad < 5; ++bad) {
+    WideColumnsSession session;
+    session.current({"a", "z"});
+    session.replies[2] = BackendResult<QueryResult>{varbyte_catalog_rows("SUPER", std::nullopt, "db", "a"), session.snapshot};
+    auto source = varbyte_catalog_rows("super", std::nullopt, "db", "z");
+    if (bad == 0) {
+      source.rows[0][2] = "foreign";
+    } else if (bad == 1) {
+      source.rows[0][8] = "not-a-number";
+    } else if (bad == 2) {
+      source.rows[0][7] = std::string("SUPER\0bad", 9);
+    } else if (bad == 3) {
+      source.rows[0][11] = std::string("\xff", 1);
+    }
+    session.replies[3] = BackendResult<QueryResult>{std::move(source), session.snapshot};
+    if (bad == 4) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "late SUPER metadata denial"};
+      error.native_state = "42501";
+      error.session_state = SessionState::Idle;
+      error.disposition = SessionDisposition::Reusable;
+      session.replies[3] = error;
+    }
+    auto input = wide_columns();
+    if (bad != 4) {
+      input.column = "no-match";
+    }
+    auto failed = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(4u, session.commands.size());
+    if (bad == 4) {
+      EXPECT_EQ("42501", failed.backend_error().native_state);
+    } else {
+      EXPECT_EQ(BackendErrorClass::InvalidMetadata, failed.backend_error().error_class);
+    }
+    session.current({"a"});
+    session.replies.back() = BackendResult<QueryResult>{varbyte_catalog_rows("SUPER", std::nullopt, "db", "a"), session.snapshot};
+    auto recovered = session.execute_catalog(wide_columns(), rs::util::Deadline::max());
+    ASSERT_TRUE(recovered) << recovered.error_message();
+    ASSERT_EQ(1u, recovered->rows.size());
+    expect_super_catalog_row(recovered->rows[0], "SUPER");
+  }
+}
+
+TEST(RedshiftSuperCatalogTypes, InvalidSnapshotExchangeCapEmptyAndExpiredControlsRemainStrict) {
+  WideColumnsSession retired;
+  retired.current({"a"});
+  retired.replies.back() = BackendResult<QueryResult>{varbyte_catalog_rows("super", std::nullopt, "db", "a"),
+      {SessionState::Unknown, SessionDisposition::Retire}};
+  auto failed = retired.execute_catalog(wide_columns(), rs::util::Deadline::max());
+  ASSERT_FALSE(failed);
+  EXPECT_EQ(SessionState::Unknown, failed.backend_error().session_state);
+  EXPECT_EQ(SessionDisposition::Retire, failed.backend_error().disposition);
+  WideColumnsSession limited;
+  ResultLimits limits;
+  limits.max_results = 2;
+  ASSERT_TRUE(limited.budgets(limits));
+  limited.current({"a"});
+  auto capped = limited.execute_catalog(wide_columns(), rs::util::Deadline::max());
+  wide_resource(capped);
+  EXPECT_EQ(2u, limited.commands.size());
+  EXPECT_EQ(1u, limited.replies.size());
+  SchemaSpy empty;
+  empty.show = varbyte_catalog_rows("super");
+  empty.show.rows.clear();
+  auto result = empty.execute_catalog(column_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(result);
+  EXPECT_EQ(18u, result->columns.size());
+  EXPECT_TRUE(result->rows.empty());
+  SchemaSpy expired;
+  expired.show = varbyte_catalog_rows("super");
+  auto timeout = expired.execute_catalog(column_request(), rs::util::Clock::now());
+  ASSERT_FALSE(timeout);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), timeout.error());
+  EXPECT_EQ(0u, expired.direct_calls);
+}
+
+TEST(RedshiftSuperCatalogTypes, TwoNegativeTypeCellsUseExactSimultaneousRawAndOwningByteBoundary) {
+  RedshiftRoutine routine;
+  routine.name = "p";
+  routine.arguments = {"super"};
+  auto source = routine_parameters(false,
+      {{"d", "s", "p", "v", "1", "IN", "SUPER", std::nullopt, std::nullopt, std::nullopt}});
+  const auto raw = redshift_routine_usage(source);
+  ASSERT_EQ(157u, raw.bytes); // Ten native header names145 + native cell bytes12.
+  for (const std::size_t cap : {404u, 405u}) {
+    ResponseLimits response;
+    response.max_wire_bytes = cap;
+    RedshiftRoutineBudget budget{response, ResultLimits{}};
+    ASSERT_TRUE(budget.retain(raw));
+    auto result = normalize_redshift_parameters("d", "s", routine,
+        ProcedureColumnsCatalogRequest{"d", "s", "p", std::nullopt},
+        BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}},
+        budget, rs::util::Deadline::max());
+    if (cap == 404) {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+    } else {
+      ASSERT_TRUE(result) << result.error_message();
+      ASSERT_EQ(1u, result->rows.size());
+      expect_super_catalog_row(result->rows[0], "SUPER", true);
+    }
+  } // Native157 + owning descriptor names232 + full owning row16 =405 bytes.
 }
