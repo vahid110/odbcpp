@@ -2948,7 +2948,7 @@ static SQLRETURN SQLGetDescField_impl(
   auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
   if (!descriptor) return SQL_INVALID_HANDLE;
   return descriptor->get_field(record_number, field_identifier, value,
-                               buffer_length, string_length);
+                               value ? buffer_length : 0, string_length);
 }
 
 static SQLRETURN SQLGetDescFieldW_impl(
@@ -2959,7 +2959,7 @@ static SQLRETURN SQLGetDescFieldW_impl(
   if (!descriptor) return SQL_INVALID_HANDLE;
   const bool character_field = is_character_column_attribute(
       static_cast<SQLUSMALLINT>(field_identifier));
-  if (character_field && buffer_length < 0) {
+  if (character_field && value && buffer_length < 0) {
     descriptor->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                           "Invalid descriptor output buffer length");
     return SQL_ERROR;
@@ -2987,7 +2987,7 @@ static SQLRETURN SQLGetDescFieldW_impl(
   return write_wide_bytes_output(
       descriptor,
       std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
-      static_cast<SQLWCHAR*>(value), buffer_length, string_length,
+      static_cast<SQLWCHAR*>(value), value ? buffer_length : 0, string_length,
       "Descriptor text was truncated");
 }
 
