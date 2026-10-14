@@ -1,7 +1,10 @@
 """Offline orchestration safety checks; these are not Windows product proof."""
 from copy import deepcopy
+import ast
 import importlib.util
+import itertools
 import json
+import hashlib
 import os
 from pathlib import Path, PureWindowsPath
 import subprocess
@@ -975,11 +978,101 @@ class WindowsChildProcessRegression(unittest.TestCase):
                 self.assertFalse(marker.exists())
 
 
+class SDKScopeSafety(unittest.TestCase):
+    def fixture(self, head=None):
+        def source(name):
+            if head:
+                return subprocess.check_output(['git', '-C', str(ROOT), 'show', head + ':' + name])
+            return (ROOT/name).read_bytes()
+        manifest = source('sdk/contract_headers.txt').decode()
+        headers = manifest.splitlines()
+        owners = source('sdk/header_owners.txt').decode()
+        original = {h: hashlib.sha256(source('sdk/include/'+h)).hexdigest() for h in headers}
+        objects = {'sdk/odbcpp_sdk_header_isolation.dir/Release/'+h.replace('/', '_')+'.obj':
+                   {'bytes': 17, 'sha256': 'a'*64} for h in headers}
+        return manifest, owners, original, dict(original), objects
+
+    def test_original23_and_integrated24_have_exact_owners_staging_and_one_object_each(self):
+        for head, count, digest in [(w.FIRST_PRODUCT, 23, '20c54a37f72e79d566b03eba312e6469e92217528065bc3b169b7d276e7f3bb4'),
+                                    (None, 24, 'ede15fe5cb19bebf56a6cb02eb5080bd1505b83db94f087cba0fc46df85d342f')]:
+            args = self.fixture(head)
+            for manifest in [args[0], args[0].replace('\n', '\r\n')]:
+                with self.subTest(count=count):
+                    result = w.validate_sdk_inventory(manifest, *args[1:])
+                    self.assertEqual(result['manifest_sha256'], digest)
+                    self.assertEqual(len(result['headers']), count)
+                    self.assertEqual(len(result['objects']), count)
+                    self.assertEqual(result['owners'], {h: 'sdk/include/'+h for h in args[0].splitlines()})
+
+    def test_count_preserving_unknown_duplicate_reordered_and_noncanonical_manifests_refuse(self):
+        for head in [w.FIRST_PRODUCT, None]:
+            manifest, *rest = self.fixture(head)
+            headers = manifest.splitlines()
+            variants = [headers[:-1], headers+['odbcpp/database/unknown.h'],
+                        headers[:-1]+[headers[0]], ['odbcpp/database/unknown.h']+headers[1:],
+                        list(reversed(headers)), headers[:1]+['']+headers[1:]]
+            for lines in variants:
+                with self.subTest(head=head, lines=lines), self.assertRaises(ValueError):
+                    w.validate_sdk_inventory('\n'.join(lines)+'\n', *rest)
+            with self.assertRaises(ValueError):
+                w.validate_sdk_inventory(manifest.rstrip('\n'), *rest)
+
+    def test_wrong_missing_duplicate_extra_owner_staging_or_object_binding_refuse(self):
+        manifest, owners, original, staged, objects = self.fixture()
+        header = manifest.splitlines()[0]
+        row = header+'|sdk/include/'+header
+        for changed in [owners.replace(row+'\n', ''), owners+row+'\n',
+                        owners.replace(row, header+'|sdk/internal/'+header),
+                        owners+'odbcpp/database/unknown.h|sdk/include/odbcpp/database/unknown.h\n']:
+            with self.subTest(owners=changed), self.assertRaises(ValueError):
+                w.validate_sdk_inventory(manifest, changed, original, staged, objects)
+        for part in ['original', 'staged', 'objects']:
+            for mutation in ['missing', 'extra', 'changed']:
+                values = {'original': dict(original), 'staged': dict(staged), 'objects': deepcopy(objects)}
+                key = next(iter(values[part]))
+                if mutation == 'missing':
+                    values[part].pop(key)
+                elif mutation == 'extra':
+                    values[part]['unknown'] = values[part][key]
+                elif part == 'objects':
+                    values[part][key]['bytes'] = 0
+                else:
+                    values[part][key] = 'b'*64
+                with self.subTest(part=part, mutation=mutation), self.assertRaises(ValueError):
+                    w.validate_sdk_inventory(manifest, owners, values['original'], values['staged'], values['objects'])
+        alias = dict(objects)
+        key = next(iter(alias))
+        alias[key+'.alias'] = alias.pop(key)
+        with self.assertRaises(ValueError):
+            w.validate_sdk_inventory(manifest, owners, original, staged, alias)
+
+
 class WorkflowSafety(unittest.TestCase):
-    def test_default_off_mutual_modes_and_full_body_preservation(self):
-        # No YAML dependency: compare actual baseline full-job bodies byte for byte.
-        ci = (ROOT / '.github/workflows/ci.yml').read_text()
-        old = subprocess.check_output(['git', '-C', str(ROOT), 'show', w.FIRST_PRODUCT + ':.github/workflows/ci.yml'], text=True)
+    def test_reviewed_full_job_reference_refuses_unreviewed_body_changes(self):
+        ci = (ROOT/'.github/workflows/ci.yml').read_text()
+        self.assert_compatible_workflow(ci)
+        for before, after in [("'it_redshift_routine_schema_patterns.cpp', ", ''),
+                              ('if ($reports.Count -ne $expectedReports)', 'if ($reports.Count -lt $expectedReports)'),
+                              ('--output-on-failure', '--output-on-failure --no-tests=ignore')]:
+            self.assertIn(before, ci)
+            with self.subTest(before=before), self.assertRaises(AssertionError):
+                self.assert_compatible_workflow(ci.replace(before, after, 1))
+
+    def test_sanitizer_defaultoff_and_windows_full_guards_cannot_be_removed(self):
+        ci = (ROOT/'.github/workflows/ci.yml').read_text()
+        block = ci.split('\n  windows-product-qualification:', 1)[1].split('\n  build-and-test:', 1)[0]
+        self.assertIn('!inputs.run_sanitizer_only', block)
+        with self.assertRaises(AssertionError):
+            self.assert_compatible_workflow(ci.replace(block, block.replace(' && !inputs.run_sanitizer_only', '')))
+        selector = ci.split('      run_sanitizer_only:', 1)[1].split('      run_development_pilot:', 1)[0]
+        with self.assertRaises(AssertionError):
+            self.assert_compatible_workflow(ci.replace(selector, selector.replace('default: false', 'default: true')))
+
+    def assert_compatible_workflow(self, ci):
+        # CI56's independently reviewed producer exclusions are the current full-job contract.
+        # FIRST_PRODUCT remains the unchanged numeric-product sentinel in the helper.
+        reference = '40d1f2038b94a7336bf63702db470dbebeeb61df'
+        old = subprocess.check_output(['git', '-C', str(ROOT), 'show', reference + ':.github/workflows/ci.yml'], text=True)
         jobs = ('build-and-test', 'redshift-build', 'windows-live', 'windows-package',
                 'windows-linked-server', 'linux-sanitizers', 'linux-openssl-static',
                 'awslc-adapter-proof', 'iodbc-unicode')
@@ -995,12 +1088,41 @@ class WorkflowSafety(unittest.TestCase):
         for name in jobs:
             guard = ci.split('\n  ' + name + ':', 1)[1].splitlines()[1]
             self.assertIn('run_windows_product_qualification', guard)
+            self.assertIn('inputs.run_sanitizer_only', guard)
+        def enabled(text, name, event, flags):
+            block = re.search(r'^  ' + name + r':\n(.*?)(?=^  [a-z][a-z-]*:|\Z)', text, re.M | re.S)[1]
+            expression = re.search(r'^    if: (.*)$', block, re.M)[1]
+            expression = expression.replace('${{', '').replace('}}', '').replace('github.event_name', repr(event))
+            expression = re.sub(r'inputs\.([a-z_]+)', lambda m: repr(flags[m[1]]), expression)
+            expression = expression.replace('&&', ' and ').replace('||', ' or ')
+            expression = re.sub(r'!(?!=)', ' not ', expression).strip()
+            tree = ast.parse(expression, mode='eval')
+            allowed = (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not,
+                       ast.Compare, ast.Eq, ast.NotEq, ast.Constant, ast.Load)
+            self.assertTrue(all(isinstance(n, allowed) for n in ast.walk(tree)))
+            return bool(eval(compile(tree, '<literal workflow guard>', 'eval'), {'__builtins__': {}}, {}))
+        modes = ['run_development_pilot', 'run_product_qualification',
+                 'run_windows_product_qualification', 'run_linked_server']
+        for event in ['pull_request', 'workflow_dispatch']:
+            for values in itertools.product([False, True], repeat=4):
+                flags = dict(zip(modes, values), run_sanitizer_only=False)
+                for name in jobs:
+                    self.assertEqual(enabled(ci, name, event, flags), enabled(old, name, event, flags), name)
+                    if event == 'workflow_dispatch':
+                        self.assertFalse(enabled(ci, name, event, dict(flags, run_sanitizer_only=True)), name)
+        sanitizer_input = ci.split('      run_sanitizer_only:', 1)[1].split('      run_development_pilot:', 1)[0]
+        self.assertIn('default: false', sanitizer_input)
+        windows_guard = ci.split('\n  windows-product-qualification:', 1)[1].splitlines()[2]
+        self.assertIn('!inputs.run_sanitizer_only', windows_guard)
         self.assertIn("'windows-product-qualification'", ci)
         self.assertIn("'ubuntu-development-pilot'", ci)
         self.assertIn('cancel-in-progress: false', ci)
         self.assertIn('inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_linked_server', ci)
         self.assertIn('inputs.run_product_qualification && !inputs.run_windows_product_qualification', ci)
         self.assertIn('inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification', ci)
+
+    def test_default_off_mutual_modes_and_full_body_preservation(self):
+        self.assert_compatible_workflow((ROOT / '.github/workflows/ci.yml').read_text())
 
     def test_windows_job_has_no_restores_services_native_or_secret_steps(self):
         workflow = (ROOT / '.github/workflows/windows-product-qualification.yml').read_text()

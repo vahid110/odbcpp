@@ -34,6 +34,25 @@ NUMERIC_CASES = (
     'BackendContractTest.NumericInfoLengthQueriesPreserveOrdinaryScalarPublication',
     'BackendContractTest.NumericInfoNullOutputKeepsValidationAndStringQueryControls',
 )
+# Closed reviewed contract manifests; this is not a count-only scope expansion.
+SDK_HEADERS_23 = (
+    'odbcpp/database/backend_capabilities.h', 'odbcpp/database/backend_provider.h',
+    'odbcpp/database/backend_result.h', 'odbcpp/database/catalog_queries.h',
+    'odbcpp/database/catalog_execution.h', 'odbcpp/database/catalog_request.h',
+    'odbcpp/database/error_policy.h', 'odbcpp/database/i_database_connection.h',
+    'odbcpp/database/native_type_info.h', 'odbcpp/database/query_parameter.h',
+    'odbcpp/database/query_result.h', 'odbcpp/database/session_health.h',
+    'odbcpp/database/session_reset.h', 'odbcpp/database/sql_dialect.h',
+    'odbcpp/database/sql_translation.h', 'odbcpp/database/statement_description.h',
+    'odbcpp/database/statement_kind.h', 'odbcpp/database/transaction.h',
+    'odbcpp/database/transaction_session.h', 'odbcpp/database/type_definition.h',
+    'odbcpp/transport/i_transport.h', 'odbcpp/util/deadline.h', 'odbcpp/util/result.h',
+)
+SDK_HEADERS_24 = SDK_HEADERS_23[:11] + ('odbcpp/database/result_validation.h',) + SDK_HEADERS_23[11:]
+SDK_MANIFEST_SHA256 = {
+    23: '20c54a37f72e79d566b03eba312e6469e92217528065bc3b169b7d276e7f3bb4',
+    24: 'ede15fe5cb19bebf56a6cb02eb5080bd1505b83db94f087cba0fc46df85d342f',
+}
 BUILD = Path('build-windows-product')
 EVIDENCE = Path('windows-product-evidence')
 PROFILE = ('-A', 'x64', '-DBUILD_EXAMPLES=OFF', '-DBUILD_TESTING=ON',
@@ -999,6 +1018,44 @@ def xml_result(path, expected):
     return {'count': len(cases), 'names': sorted(names), 'xml_sha256': sha(path)}
 
 
+def sdk_headers(manifest):
+    normalized = manifest.replace('\r\n', '\n')
+    headers = tuple(normalized.splitlines())
+    if headers not in (SDK_HEADERS_23, SDK_HEADERS_24) or normalized != '\n'.join(headers) + '\n':
+        raise ValueError('SDK manifest must be exactly the reviewed ordered 23 or 24 headers')
+    manifest_sha = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+    if manifest_sha != SDK_MANIFEST_SHA256[len(headers)]:
+        raise ValueError('canonical SDK manifest identity differs')
+    return headers, manifest_sha
+
+
+def validate_sdk_inventory(manifest, owner_text, original, staged, objects):
+    headers, manifest_sha = sdk_headers(manifest)
+    owners = {}
+    for row in owner_text.splitlines():
+        parts = row.split('|')
+        if len(parts) != 2 or any(not p or p != p.strip() for p in parts) or parts[0] in owners:
+            raise ValueError('SDK header owner row missing, noncanonical or duplicate')
+        owners[parts[0]] = parts[1]
+    expected_owners = {h: 'sdk/include/' + h for h in headers}
+    public_owners = {h: owner for h, owner in owners.items() if owner.startswith('sdk/include/') or h in headers}
+    if public_owners != expected_owners:
+        raise ValueError('SDK public header owners differ from exact canonical membership')
+    if set(original) != set(headers) or staged != original or any(
+            not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value) for value in original.values()):
+        raise ValueError('SDK staged/source header hash membership differs')
+    # Exact MSVC Release object spelling observed for these generated first-include units.
+    expected_objects = {'sdk/odbcpp_sdk_header_isolation.dir/Release/' + h.replace('/', '_') + '.obj'
+                        for h in headers}
+    if set(objects) != expected_objects or any(
+            type(v.get('bytes')) is not int or v['bytes'] <= 0 or
+            not isinstance(v.get('sha256'), str) or not re.fullmatch('[0-9a-f]{64}', v['sha256'])
+            for v in objects.values()):
+        raise ValueError('one fresh bound MSVC object per exact SDK header required')
+    return {'manifest_sha256': manifest_sha, 'owners': expected_owners,
+            'headers': staged, 'objects': objects}
+
+
 def inventory():
     listing = json.loads(output('ctest', '--test-dir', str(BUILD), '-C', 'Release', '-R', selected_regex(), '--show-only=json-v1'))
     if sorted(t['name'] for t in listing['tests']) != sorted(selected() + list(CHECKS)):
@@ -1016,16 +1073,13 @@ def inventory():
     write('executables.json', binaries)
     objects = {relative_key(p, BUILD): {'bytes': p.stat().st_size, 'sha256': sha(p)}
                for p in sorted(BUILD.rglob('*.obj')) if 'Release' in p.parts}
-    headers = Path('sdk/contract_headers.txt').read_text().splitlines()
-    if len(headers) != 23:
-        raise ValueError('SDK23 manifest changed; requires reviewed scope update')
+    manifest = Path('sdk/contract_headers.txt').read_text(encoding='utf-8')
+    headers, _ = sdk_headers(manifest)
     staged = {h: sha(BUILD / 'sdk/contract-include' / h) for h in headers}
-    if any(staged[h] != sha(Path('sdk/include') / h) for h in headers):
-        raise ValueError('SDK staged headers differ from product source')
+    original = {h: sha(Path('sdk/include') / h) for h in headers}
     sdk_objects = {p: v for p, v in objects.items() if 'odbcpp_sdk_header_isolation.dir' in p}
-    if len(sdk_objects) != len(headers):
-        raise ValueError('missing fresh SDK first-only-include objects')
-    write('sdk-header-isolation.json', {'headers': staged, 'objects': sdk_objects})
+    write('sdk-header-isolation.json', validate_sdk_inventory(
+        manifest, Path('sdk/header_owners.txt').read_text(encoding='utf-8'), original, staged, sdk_objects))
     write('objects.json', objects)
     links = {relative_key(p, BUILD): {'bytes': p.stat().st_size, 'sha256': sha(p)}
              for p in sorted(BUILD.rglob('*')) if p.is_file() and 'Release' in p.parts and p.suffix.lower() in ('.lib', '.dll', '.exe', '.map')}
