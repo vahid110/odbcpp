@@ -11,6 +11,7 @@ import resource
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -305,6 +306,70 @@ def validate_compile_commands(commands):
             raise ValueError('actual C++ sanitizer instrumentation differs')
 
 
+def bind_compile_object(command, objects):
+    build = BUILD.resolve(strict=True)
+    directory = Path(command['directory'])
+    if not directory.is_absolute():
+        raise ValueError('absolute compiler working directory required')
+    resolved_directory = directory.resolve(strict=True)
+    if (resolved_directory != Path(os.path.abspath(directory)) or not resolved_directory.is_dir()
+            or not resolved_directory.is_relative_to(build)):
+        raise ValueError('compiler working directory substituted or outside fresh graph')
+    directory = resolved_directory
+    if 'arguments' in command:
+        args = command['arguments']
+        if not isinstance(args, list) or not args or not all(isinstance(a, str) for a in args):
+            raise ValueError('actual compiler argument array required')
+        if 'command' in command and shlex.split(command['command']) != args:
+            raise ValueError('compiler command/arguments contradict')
+    else:
+        args = shlex.split(command['command'])
+    outputs = [i for i, arg in enumerate(args) if arg == '-o']
+    if (len(outputs) != 1 or outputs[0] + 1 >= len(args)
+            or not args[outputs[0] + 1] or args[outputs[0] + 1].startswith('-')
+            or any(a.startswith('-o') and a != '-o' for a in args)):
+        raise ValueError('one explicit compiler -o output required')
+
+    def regular_output(value, base):
+        if not isinstance(value, str) or not value or '\0' in value:
+            raise ValueError('nonempty compiler object path required')
+        path = Path(value)
+        if not path.is_absolute():
+            path = base / path
+        resolved = path.resolve(strict=True)
+        if (resolved != Path(os.path.abspath(path)) or not resolved.is_relative_to(build)
+                or resolved.suffix != '.o' or not stat.S_ISREG(resolved.stat().st_mode)):
+            raise ValueError('regular nonsymlink object inside fresh graph required')
+        return resolved
+
+    # The actual argv -o is relative to its compiler working directory.
+    path = regular_output(args[outputs[0] + 1], directory)
+    if 'output' in command:
+        # CMake3.31 Makefiles export home-relative relativeObj as optional output,
+        # separately from the current-binary-directory command (upstream generator).
+        # Interpret that metadata once against BUILD; never search alternative roots.
+        if regular_output(command['output'], build) != path:
+            raise ValueError('CMake output metadata contradicts actual compiler -o')
+    key = path.relative_to(build).as_posix()
+    actual = {'bytes': path.stat().st_size, 'sha256': sha(path)}
+    if actual['bytes'] <= 0 or objects.get(key) != actual:
+        raise ValueError('actual compiler object missing or changed from fresh inventory')
+    return {'path': key, **actual}
+
+
+def bind_compile_commands(objects):
+    # Preserve the exact original export even if validation or the first binding fails.
+    raw = (BUILD / 'compile_commands.json').read_bytes()
+    (EVIDENCE / 'compile-commands-raw.json').write_bytes(raw)
+    commands = json.loads(raw)
+    validate_compile_commands(commands)
+    for command in commands:
+        path = Path(command['file']).resolve(strict=True)
+        command['source_sha256'] = sha(path)
+        command['object'] = bind_compile_object(command, objects)
+    return commands
+
+
 def validate_sdk(headers, staged, objects):
     if len(headers) != 23 or staged != headers or len(objects) != 23:
         raise ValueError('SDK23 isolated header/object proof missing or changed')
@@ -327,20 +392,8 @@ def inventory():
         raise ValueError('fresh core/driver/objects missing')
     write('objects.json', objects)
     write('links.json', links)
-    commands = json.loads((BUILD / 'compile_commands.json').read_text())
-    validate_compile_commands(commands)
+    commands = bind_compile_commands(objects)
     dependencies = {}
-    for command in commands:
-        path = Path(command['file']).resolve(strict=True)
-        command['source_sha256'] = sha(path)
-        args = command.get('arguments') or shlex.split(command['command'])
-        object_path = Path(command.get('output') or args[args.index('-o') + 1])
-        if not object_path.is_absolute():
-            object_path = Path(command['directory']) / object_path
-        key = object_path.resolve(strict=True).relative_to(BUILD.resolve()).as_posix()
-        if key not in objects:
-            raise ValueError('compile command has no fresh bound object')
-        command['object'] = {'path': key, **objects[key]}
     for path in BUILD.rglob('*.o.d'):
         raw = path.read_text().replace('\\\n', '')
         if ': ' not in raw:

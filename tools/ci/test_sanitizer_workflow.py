@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -281,6 +282,110 @@ class EvidenceSafety(unittest.TestCase):
                         ('-fno-omit-frame-pointer',''),('-g','-g -fno-sanitize=undefined')]:
             with self.subTest(old=old), self.assertRaises(ValueError):
                 h.validate_compile_commands([dict(good,command=good['command'].replace(old,new))])
+
+    @contextmanager
+    def compile_object_fixture(self):
+        with tempfile.TemporaryDirectory(prefix='sanitizer object ') as tmp:
+            root = Path(tmp).resolve()
+            build = root/'build-sanitize'
+            key = 'sdk/CMakeFiles/odbcpp_sdk_header_isolation.dir/odbcpp_database_backend_capabilities.h.cpp.o'
+            obj = build/key
+            obj.parent.mkdir(parents=True)
+            obj.write_bytes(b'new offline object identity fixture')
+            source = build/'sdk/odbcpp_database_backend_capabilities.h.cpp'
+            source.write_text('#include <odbcpp/database/backend_capabilities.h>\n')
+            # Exact retained SDK argv layout from run386063 build.log, with only the root relocated.
+            args = ['/usr/bin/c++', '-DDEBUG', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                    '-g', '-MD', '-MT', key, '-MF', key.removeprefix('sdk/')+'.d',
+                    '-o', key.removeprefix('sdk/'), '-c', str(source)]
+            # CMake3.31 Makefile export uses root-relative relativeObj for optional output;
+            # the original raw JSON row was not retained by the failing producer.
+            command = {'directory': str(build/'sdk'), 'file': str(source),
+                       'command': shlex.join(args), 'output': key}
+            objects = {key: {'bytes': obj.stat().st_size, 'sha256': h.sha(obj)}}
+            evidence = root/'evidence'
+            evidence.mkdir()
+            with patch.object(h, 'BUILD', build), patch.object(h, 'EVIDENCE', evidence):
+                yield build, obj, command, objects
+
+    def test_sdk_output_binding_reproduces_original_duplicate_sdk_and_uses_real_argv(self):
+        with self.compile_object_fixture() as (build, obj, command, objects):
+            wrong = Path(command['directory'])/command['output']
+            self.assertEqual(wrong.relative_to(build).parts[:2], ('sdk', 'sdk'))
+            self.assertFalse(wrong.exists())
+            with self.assertRaises(FileNotFoundError):
+                wrong.resolve(strict=True)
+            self.assertEqual(h.bind_compile_object(command, objects), dict(path=obj.relative_to(build).as_posix(), **objects[obj.relative_to(build).as_posix()]))
+
+    def test_compile_object_absolute_relative_root_and_sdk_outputs_agree(self):
+        with self.compile_object_fixture() as (build, obj, command, objects):
+            key = obj.relative_to(build).as_posix()
+            for directory, output, metadata in [(build/'sdk', key.removeprefix('sdk/'), key),
+                                               (build/'sdk', str(obj), str(obj)),
+                                               (build, key, key), (build, str(obj), None)]:
+                for representation in ['command', 'arguments']:
+                    row = dict(command, directory=str(directory))
+                    args = shlex.split(row.pop('command'))
+                    args[args.index('-o')+1] = output
+                    if representation == 'command':
+                        row['command'] = shlex.join(args)
+                    else:
+                        row['arguments'] = args
+                    if metadata is None:
+                        row.pop('output')
+                    else:
+                        row['output'] = metadata
+                    with self.subTest(directory=str(directory), representation=representation, metadata=metadata):
+                        self.assertEqual(h.bind_compile_object(row, objects)['path'], key)
+
+    def test_compile_object_missing_outside_contradictory_multi_changed_and_symlink_refused(self):
+        with self.compile_object_fixture() as (build, obj, command, objects):
+            args = shlex.split(command['command'])
+            oi = args.index('-o')
+            other = obj.with_name('other.cpp.o')
+            other.write_bytes(obj.read_bytes())
+            outside = build.parent/'outside.o'
+            outside.write_bytes(obj.read_bytes())
+            link = obj.with_name('alias.o')
+            link.symlink_to(obj)
+            directory_alias = build/'sdk-alias'
+            directory_alias.symlink_to(build/'sdk', target_is_directory=True)
+            variants = [dict(command, arguments=args[:oi]+args[oi+2:]),
+                        dict(command, arguments=args[:oi+1]),
+                        dict(command, arguments=args[:oi+1]+['']+args[oi+2:]),
+                        dict(command, arguments=args+['-o', str(obj)]),
+                        dict(command, output=other.relative_to(build).as_posix()),
+                        dict(command, output=''), dict(command, output=str(outside)),
+                        dict(command, output=command['output'].removeprefix('sdk/')),
+                        dict(command, directory=str(directory_alias)),
+                        dict(command, directory=str(build.parent)),
+                        dict(command, arguments=args[:oi+1]+[str(outside)]+args[oi+2:]),
+                        dict(command, arguments=args[:oi+1]+[str(obj.with_name('missing.o'))]+args[oi+2:]),
+                        dict(command, arguments=args[:oi+1]+[str(link)]+args[oi+2:])]
+            for i, row in enumerate(variants):
+                if 'arguments' in row:
+                    row.pop('command')
+                with self.subTest(variant=i), self.assertRaises((ValueError, OSError)):
+                    h.bind_compile_object(row, objects)
+            with self.assertRaises(ValueError):
+                h.bind_compile_object(command, {})
+            obj.write_bytes(b'changed after object inventory')
+            with self.assertRaises(ValueError):
+                h.bind_compile_object(command, objects)
+
+    def test_raw_compile_export_is_preserved_before_failed_binding_without_partial_success(self):
+        with self.compile_object_fixture() as (build, obj, command, objects):
+            raw = json.dumps([dict(command, output='sdk/does-not-exist.o')], indent=3).encode()+b'\n'
+            (build/'compile_commands.json').write_bytes(raw)
+            with self.assertRaises((ValueError, OSError)):
+                h.bind_compile_commands(objects)
+            self.assertEqual((h.EVIDENCE/'compile-commands-raw.json').read_bytes(), raw)
+            self.assertFalse((h.EVIDENCE/'compile-commands.json').exists())
+            self.assertFalse((h.EVIDENCE/'inventory.json').exists())
+            (build/'compile_commands.json').write_bytes(b'[]\n')
+            with self.assertRaises(ValueError):
+                h.bind_compile_commands(objects)
+            self.assertEqual((h.EVIDENCE/'compile-commands-raw.json').read_bytes(), b'[]\n')
 
     def test_sdk_objects_and_staged_headers_require_complete_proof(self):
         headers = {'header'+str(i): 'a'*64 for i in range(23)}
