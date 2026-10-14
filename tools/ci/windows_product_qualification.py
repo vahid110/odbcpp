@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import platform
 import re
 import shutil
@@ -53,6 +53,7 @@ AUTHORITY_SHA256 = {
     'workflow_lease': 'f1a8c1f89d05b7497c0ade93ea53dbab963eabf13603c1c62279bc38a48cb32e',
     'first_product_lease': 'b9127de0b411df08dfae5f1ca4a0984ba0c04efdd58e328264fec0b6e3914262',
     'owned_child_identity_lease': '80432afe8935bac045c9c43556feb28d5a8561cf0cb27a4e3e60d3d684e42bc8',
+    'configure_owned_auxiliary_lease': '8c43877fd9cbd2b26b03b99f615e0ccb1affa28a16be6ef72a64ad124273d1fb',
 }
 TEXT_SUFFIXES = {'.json', '.txt', '.xml', '.log'}
 MAX_BYTES = 20 * 1024 * 1024
@@ -298,6 +299,122 @@ def relative_key(path, root):
     return path.relative_to(root).as_posix()
 
 
+def configure_command():
+    return ['cmake', '-S', '.', '-B', str(BUILD), *PROFILE]
+
+
+def configure_auxiliary_context(installation, build):
+    """Read fresh generated tool/profile proof; no environment or basename opt-in."""
+    if installation.get('isComplete') is not True or installation.get('isLaunchable') is not True:
+        raise ValueError('selected Visual Studio installation is incomplete')
+    root = Path(installation['installationPath']).resolve(strict=True)
+    if root != Path(installation['resolvedInstallationPath']).resolve(strict=True):
+        raise ValueError('Visual Studio resolved installation differs')
+    build = Path(build)
+    cache_file = build / 'CMakeCache.txt'
+    cache = {}
+    for line in cache_file.read_text(encoding='utf-8-sig').splitlines():
+        match = re.fullmatch(r'([^/#][^:=]*):[^=]+=(.*)', line)
+        if match:
+            key, value = match.groups()
+            if key in cache:
+                raise ValueError('duplicate cache key')
+            cache[key] = value
+    expected = dict(flag[2:].split('=', 1) for flag in PROFILE if flag.startswith('-D'))
+    expected['CMAKE_GENERATOR_PLATFORM'] = 'x64'
+    if any(cache.get(key) != value for key, value in expected.items()):
+        raise ValueError('fresh configured profile differs')
+    if not re.fullmatch(r'Visual Studio \d+ \d{4}', cache.get('CMAKE_GENERATOR', '')) or \
+            'Release' not in cache.get('CMAKE_CONFIGURATION_TYPES', '').split(';'):
+        raise ValueError('configured Visual Studio multiconfig Release proof missing')
+    configs = list((build / 'CMakeFiles').glob('*/CMakeCXXCompiler.cmake'))
+    if len(configs) != 1:
+        raise ValueError('one generated compiler configuration required')
+    config = configs[0].read_text(encoding='utf-8-sig')
+    ids = re.findall(r'set\(CMAKE_CXX_COMPILER_ID "([^"]+)"\)', config)
+    paths = re.findall(r'set\(CMAKE_CXX_COMPILER "([^"]+)"\)', config)
+    if ids != ['MSVC'] or len(paths) != 1:
+        raise ValueError('generated compiler is not one MSVC tool')
+    compiler = Path(paths[0]).resolve(strict=True)
+    relative = compiler.relative_to(root).parts
+    if len(relative) != 8 or tuple(p.casefold() for p in relative[:3]) != ('vc', 'tools', 'msvc') or \
+            not re.fullmatch(r'\d+\.\d+\.\d+', relative[3]) or \
+            tuple(p.casefold() for p in relative[4:]) != ('bin', 'hostx64', 'x64', 'cl.exe'):
+        raise ValueError('compiler differs from selected installation x64 MSVC tool root')
+    auxiliary = (compiler.parent / 'vctip.exe').resolve(strict=True)
+    if auxiliary.parent != compiler.parent or auxiliary.name.casefold() != 'vctip.exe' or \
+            not compiler.is_file() or not auxiliary.is_file():
+        raise ValueError('exact configured compiler sibling auxiliary missing')
+    return {'installation_root': root.as_posix(), 'compiler_path': compiler.as_posix(),
+            'compiler_sha256': sha(compiler), 'auxiliary_path': auxiliary.as_posix(),
+            'auxiliary_sha256': sha(auxiliary), 'cache_sha256': sha(cache_file),
+            'compiler_configuration_sha256': sha(configs[0]), 'profile': list(PROFILE)}
+
+
+def configure_auxiliary_disposition(record, context):
+    """Explicit configure-only harness policy, not a vendor shutdown protocol."""
+    refused = {'accepted': False, 'disposition': 'unexpected_owned_child_refused'}
+    try:
+        if not context or record['phase'] != 'configure' or record['argv'] != configure_command() or \
+                type(record['exit']) is not int or record['exit'] != 0 or \
+                type(record['direct_pid']) is not int or record['direct_pid'] <= 0 or record['timed_out'] is not False or \
+                record['direct_terminal'] is not True or record['pipe_drained'] is not True or \
+                record['fresh_graph_before_launch'] is not True or record['unexpected_children'] is not True or \
+                record['launch_order'] != ['created_suspended', 'assigned_to_job', 'resumed']:
+            return refused
+        if context['profile'] != list(PROFILE) or any(not re.fullmatch('[0-9a-f]{64}', context[key]) for key in
+                ('compiler_sha256', 'auxiliary_sha256', 'cache_sha256', 'compiler_configuration_sha256')):
+            return refused
+        compiler, auxiliary = PureWindowsPath(context['compiler_path']), PureWindowsPath(context['auxiliary_path'])
+        root = PureWindowsPath(context['installation_root'])
+        if not compiler.is_absolute() or not auxiliary.is_absolute() or not root.is_absolute():
+            return refused
+        relative = compiler.relative_to(root).parts
+        if len(relative) != 8 or tuple(p.casefold() for p in relative[:3]) != ('vc', 'tools', 'msvc') or \
+                not re.fullmatch(r'\d+\.\d+\.\d+', relative[3]) or \
+                tuple(p.casefold() for p in relative[4:]) != ('bin', 'hostx64', 'x64', 'cl.exe') or \
+                auxiliary != compiler.parent / 'vctip.exe':
+            return refused
+        def filetime(value):
+            stamp = datetime.fromisoformat(value)
+            if stamp.utcoffset() is None or stamp.utcoffset().total_seconds() != 0:
+                raise ValueError('command timestamps must be UTC')
+            delta = stamp - datetime(1601, 1, 1, tzinfo=timezone.utc)
+            return (delta.days * 86400 + delta.seconds) * 10000000 + delta.microseconds * 10
+        start, exited = filetime(record['started_at']), filetime(record['direct_exited_at'])
+        if exited < start:
+            return refused
+        cleanup = record['cleanup']
+        if cleanup['tree_owned_by_job'] is not True or cleanup['kill_on_job_close'] is not True or \
+                cleanup['excluded_direct_pid'] != record['direct_pid'] or cleanup['identity_errors'] or \
+                cleanup['termination_requested'] is not True or cleanup['termination_succeeded'] is not True or \
+                type(cleanup['active_after_cleanup']) is not int or cleanup['active_after_cleanup'] != 0 or \
+                type(cleanup['active_after_grace']) is not int or type(cleanup['cleanup_seconds']) is not int or \
+                cleanup['cleanup_seconds'] != 5 or type(cleanup['cleanup_elapsed_seconds']) not in (int, float) or \
+                not 0 <= cleanup['cleanup_elapsed_seconds'] <= 5:
+            return refused
+        children = cleanup['owned_descendants']
+        snapshots = [s for s in cleanup['identity_stages'] if s['stage'] == 'after_grace']
+        if not children or not snapshots:
+            return refused
+        pids = [child['pid'] for child in children]
+        members = snapshots[-1]['member_pids']
+        if len(pids) != len(set(pids)) or cleanup['active_after_grace'] != len(pids) or \
+                not isinstance(members, list) or sorted(members) != sorted(pids):
+            return refused
+        for child in children:
+            if type(child['pid']) is not int or child['pid'] <= 0 or child['pid'] == record['direct_pid'] or \
+                    PureWindowsPath(child['image_path']) != auxiliary or child['image_sha256'] != context['auxiliary_sha256'] or \
+                    type(child['creation_filetime']) is not int or not start <= child['creation_filetime'] <= exited or \
+                    child['creation_unit'] != '100ns since1601 UTC' or any(child[key] is not True for key in
+                        ('job_member', 'held_handle', 'terminal_after_cleanup', 'held_handle_closed')):
+                return refused
+        return {'accepted': True, 'disposition': 'expected_owned_compiler_auxiliary_cleaned',
+                'member_pids': pids, 'policy': 'configure-only exact compiler sibling; verified owned termination and reap'}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return refused
+
+
 class HeldOwnedProcess:
     """A job-verified process handle retained through cleanup, never a PID target."""
     def __init__(self, api, handle, evidence):
@@ -327,7 +444,8 @@ def owned_exit_cleanup(job, direct_pid, grace_seconds=5, cleanup_seconds=5):
                 item.evidence['observed_stage'] = stage
             held.extend(found)
             errors.extend(dict(item, stage=stage) for item in issues)
-            stages.append({'stage': stage, 'at': utc(), 'new_held_identities': len(found)})
+            stages.append({'stage': stage, 'at': utc(), 'new_held_identities': len(found),
+                           'member_pids': getattr(job, 'last_capture_pids', None)})
         except Exception as exc:
             errors.append({'stage': stage, 'error': str(exc)})
     def active(stage):
@@ -344,6 +462,7 @@ def owned_exit_cleanup(job, direct_pid, grace_seconds=5, cleanup_seconds=5):
     grace_start = time.monotonic()
     cleanup_start = None
     records = []
+    termination_requested = termination_succeeded = False
     try:
         deadline = grace_start + grace_seconds
         remaining = active('grace')
@@ -358,8 +477,10 @@ def owned_exit_cleanup(job, direct_pid, grace_seconds=5, cleanup_seconds=5):
         cleanup_start = time.monotonic()
         deadline = cleanup_start + cleanup_seconds  # Shared by the job count and every held handle.
         if unexpected_children:
+            termination_requested = True
             try:
                 job.terminate()  # Job only; never kill a recorded PID or a nonmember.
+                termination_succeeded = True
             except Exception as exc:
                 errors.append({'stage': 'terminate_owned_job', 'error': str(exc)})
         records = [dict(item.evidence, terminal_after_cleanup=False) for item in held]
@@ -395,6 +516,7 @@ def owned_exit_cleanup(job, direct_pid, grace_seconds=5, cleanup_seconds=5):
                'identity_errors': errors, 'identity_stages': stages,
                'grace_seconds': grace_seconds, 'grace_elapsed_seconds': grace_elapsed,
                'cleanup_seconds': cleanup_seconds,
+               'termination_requested': termination_requested, 'termination_succeeded': termination_succeeded,
                'cleanup_elapsed_seconds': time.monotonic() - cleanup_start if cleanup_start is not None else 0,
                'identity_limit': 'only current owned job members, at most 64 per snapshot; handles held through reap'}
     invalid_cleanup = final != 0 or bool(errors) or any(r.get('terminal_after_cleanup') is not True or r.get('held_handle_closed') is not True for r in records)
@@ -459,6 +581,7 @@ class WindowsProcessJob:
         No VM process enumeration, PID-directed termination or guessed tool name.
         """
         limit = 64
+        self.last_capture_pids = None
         class PidList(ctypes.Structure):
             _fields_ = [('assigned', ctypes.c_ulong), ('listed', ctypes.c_ulong),
                         ('pids', ctypes.c_size_t * limit)]
@@ -467,6 +590,7 @@ class WindowsProcessJob:
             return [], [{'error': 'owned PID list query failed', 'winerror': ctypes.get_last_error(), 'limit': limit}]
         if info.assigned > limit or info.listed > limit or info.listed != info.assigned:
             return [], [{'error': 'owned PID list incomplete/over bound', 'assigned': info.assigned, 'listed': info.listed, 'limit': limit}]
+        self.last_capture_pids = [pid for pid in info.pids[:info.listed] if pid != direct_pid]
         self.api.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
         self.api.OpenProcess.restype = ctypes.c_void_p
         self.api.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
@@ -506,7 +630,7 @@ class WindowsProcessJob:
                 stamp = (creation.high << 32) | creation.low
                 if not image.value or stamp <= 0:
                     raise ValueError('missing owned image/creation identity')
-                held.append(HeldOwnedProcess(self.api, handle, {'pid': pid, 'image_path': image.value,
+                held.append(HeldOwnedProcess(self.api, handle, {'pid': pid, 'image_path': image.value, 'image_sha256': sha(image.value),
                             'creation_filetime': stamp, 'creation_unit': '100ns since1601 UTC',
                             'job_member': True, 'held_handle': True, 'captured_at': utc()}))
                 keep = True
@@ -528,9 +652,11 @@ class WindowsProcessJob:
             self.handle = None
 
 
-def measure(name, command, timeout):
+def measure(name, command, timeout, *, configure_installation=None):
     EVIDENCE.mkdir(exist_ok=True)
     start, tick = utc(), time.monotonic()
+    fresh_graph = name == 'configure' and command == configure_command() and \
+        configure_installation is not None and not BUILD.exists()
     job = WindowsProcessJob() if os.name == 'nt' else None
     try:
         if job:
@@ -582,6 +708,13 @@ def measure(name, command, timeout):
         else:
             process.kill()
         code = process.wait(timeout=30)
+    direct_exited_at = utc()
+    context, context_error = None, None
+    if fresh_graph and code == 0 and not timed_out:
+        try:
+            context = configure_auxiliary_context(configure_installation, BUILD)
+        except Exception as exc:
+            context_error = str(exc)
     peak = direct_peak(process._handle) if os.name == 'nt' else None
     unexpected_children = invalid_cleanup = False
     if job:
@@ -605,6 +738,9 @@ def measure(name, command, timeout):
     if job:
         process.close()
     record = {'argv': command, 'started_at': start, 'finished_at': utc(),
+              'phase': name, 'direct_exited_at': direct_exited_at, 'fresh_graph_before_launch': fresh_graph,
+              'pipe_drained': not reader.is_alive(), 'unexpected_children': unexpected_children,
+              'configure_auxiliary_context': context, 'configure_auxiliary_context_error': context_error,
               'elapsed_seconds': time.monotonic() - tick, 'exit': code,
               'timed_out': timed_out, 'direct_pid': process.pid,
               'direct_terminal': terminal, 'cleanup': cleanup, 'launch_order': launch_order,
@@ -612,8 +748,10 @@ def measure(name, command, timeout):
               'memory_limit': 'direct child peak only, not summed process-tree peak',
               'disk_free_bytes_after': shutil.disk_usage('.').free,
               'log_bytes_emitted': total[0], 'log_truncated': total[0] > LOG_BYTES}
+    disposition = configure_auxiliary_disposition(record, context)
+    record['auxiliary_disposition'] = disposition
     write(name + '-command.json', record)
-    if code or timed_out or reader.is_alive() or unexpected_children or invalid_cleanup:
+    if code or timed_out or reader.is_alive() or (unexpected_children and not disposition['accepted']) or invalid_cleanup:
         raise RuntimeError(f'{name} command failed; original exit/log/cleanup retained')
     return record
 
@@ -673,7 +811,7 @@ def configure():
                     'openssl_files': {str(p.relative_to(openssl_root)): sha(p) for p in sorted(openssl_root.rglob('*'))
                                       if p.is_file() and p.suffix.lower() in ('.h', '.lib', '.dll', '.exe')}}
     write('dependencies.json', dependencies)
-    measure('configure', ['cmake', '-S', '.', '-B', str(BUILD), *PROFILE], 300)
+    measure('configure', configure_command(), 300, configure_installation=installations[0])
     cache = (BUILD / 'CMakeCache.txt').read_text()
     for needle in ('CMAKE_GENERATOR_PLATFORM:INTERNAL=x64', 'TARGET_DATABASE:STRING=POSTGRESQL',
                    'ODBCPP_CRYPTO_LINKAGE:STRING=BUNDLED_SHARED', 'ODBCPP_CRYPTO_PROFILE_LIVE_TESTS:BOOL=OFF',
