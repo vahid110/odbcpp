@@ -229,6 +229,93 @@ class ReviewRepairSafety(unittest.TestCase):
                 self.assertEqual(events, ['kill', 'wait', 'close_process', 'close_job'])
 
 
+class OwnedDescendantLifecycleSafety(unittest.TestCase):
+    def test_successful_direct_exit_with_owned_child_still_refuses_and_retains_identity(self):
+        events = []
+        class Held:
+            evidence = {'pid': 301, 'image_path': r'C:\tool\child.exe', 'creation_filetime': 123456,
+                        'job_member': True, 'held_handle': True}
+            def terminal(self):
+                return 'terminate_owned_job' in events
+            def close(self):
+                events.append('close_held_handle')
+        class Job:
+            def capture_owned(self, direct_pid, known_pids=()):
+                self.direct_pid = direct_pid
+                return ([] if 301 in known_pids else [Held()]), []
+            def active(self):
+                return 0 if 'terminate_owned_job' in events else 1
+            def terminate(self):
+                events.append('terminate_owned_job')
+        cleanup, unexpected, invalid = w.owned_exit_cleanup(Job(), 123, grace_seconds=0, cleanup_seconds=0)
+        self.assertTrue(unexpected)  # Original successful-command/remaining-child guard stays strict.
+        self.assertFalse(invalid)
+        self.assertEqual(cleanup['active_after_direct_exit'], 1)
+        self.assertEqual(cleanup['active_after_cleanup'], 0)
+        self.assertEqual(cleanup['owned_descendants'][0]['pid'], 301)
+        self.assertEqual(cleanup['owned_descendants'][0]['creation_filetime'], 123456)
+        self.assertTrue(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+        self.assertTrue(cleanup['owned_descendants'][0]['held_handle_closed'])
+        self.assertEqual(events, ['terminate_owned_job', 'close_held_handle'])
+
+    def test_unknown_and_uncontained_identity_refuse_even_when_owned_job_is_empty(self):
+        for error in ('unknown image/creation identity', 'process no longer belongs to owned job'):
+            with self.subTest(error=error):
+                job = SimpleNamespace(capture_owned=lambda direct_pid, known_pids=(): ([], [{'pid': 301, 'error': error}]),
+                                      active=lambda: 0, terminate=lambda: self.fail('empty job must not target any PID'))
+                cleanup, unexpected, invalid = w.owned_exit_cleanup(job, 123, grace_seconds=0, cleanup_seconds=0)
+                self.assertFalse(unexpected)
+                self.assertTrue(invalid)
+                self.assertEqual(cleanup['identity_errors'][0]['error'], error)
+                self.assertEqual(cleanup['active_after_cleanup'], 0)
+
+    def test_surviving_owned_process_or_unverified_held_terminal_refuses(self):
+        class Held:
+            evidence = {'pid': 301, 'job_member': True, 'held_handle': True}
+            def terminal(self): return False
+            def close(self): pass
+        for remaining in (0, 1):
+            with self.subTest(remaining=remaining):
+                job = SimpleNamespace(capture_owned=lambda direct_pid, known_pids=(): ([Held()], []),
+                                      active=lambda: remaining, terminate=lambda: None)
+                cleanup, unexpected, invalid = w.owned_exit_cleanup(job, 123, grace_seconds=0, cleanup_seconds=0)
+                self.assertTrue(invalid)
+                self.assertFalse(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+
+    def test_snapshot_and_held_handle_close_errors_are_not_success(self):
+        def broken_snapshot(direct_pid, known_pids=()):
+            raise OSError('identity query unavailable')
+        job = SimpleNamespace(capture_owned=broken_snapshot, active=lambda: 0, terminate=lambda: None)
+        cleanup, unexpected, invalid = w.owned_exit_cleanup(job, 123, grace_seconds=0, cleanup_seconds=0)
+        self.assertTrue(invalid)
+        self.assertEqual(cleanup['identity_errors'][0]['error'], 'identity query unavailable')
+        class Held:
+            evidence = {'pid': 301, 'job_member': True, 'held_handle': True}
+            def terminal(self): return True
+            def close(self): raise OSError('handle close failed')
+        job.capture_owned = lambda direct_pid, known_pids=(): ([Held()], [])
+        cleanup, unexpected, invalid = w.owned_exit_cleanup(job, 123, grace_seconds=0, cleanup_seconds=0)
+        self.assertTrue(invalid)
+        self.assertFalse(cleanup['owned_descendants'][0]['held_handle_closed'])
+        self.assertEqual(cleanup['identity_errors'][0]['stage'], 'close_held_handle')
+
+    def test_known_child_finishing_during_grace_retains_creation_and_reap_proof(self):
+        events = []
+        class Held:
+            evidence = {'pid': 301, 'image_path': r'C:\tool\child.exe', 'creation_filetime': 123456,
+                        'job_member': True, 'held_handle': True}
+            def terminal(self): return True
+            def close(self): events.append('closed')
+        job = SimpleNamespace(capture_owned=lambda direct_pid, known_pids=(): ([Held()], []), active=lambda: 0,
+                              terminate=lambda: self.fail('already completed child must not be killed'))
+        cleanup, unexpected, invalid = w.owned_exit_cleanup(job, 123, grace_seconds=0, cleanup_seconds=0)
+        self.assertFalse(unexpected)
+        self.assertFalse(invalid)
+        self.assertTrue(cleanup['owned_descendants'][0]['terminal_after_cleanup'])
+        self.assertTrue(cleanup['owned_descendants'][0]['held_handle_closed'])
+        self.assertEqual(events, ['closed'])
+
+
 @unittest.skipUnless(os.name == 'nt', 'actual Windows process APIs unrun on non-Windows host')
 class WindowsChildProcessRegression(unittest.TestCase):
     def test_native_suspension_prevents_execution_before_assignment(self):
@@ -296,6 +383,33 @@ class WindowsChildProcessRegression(unittest.TestCase):
             if child_handle:
                 job.api.CloseHandle(child_handle)
             job.close()
+
+    def test_successful_parent_exit_retains_child_identity_and_still_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(w, 'EVIDENCE', Path(tmp)):
+            marker = Path(tmp) / 'owned-child-pid.txt'
+            script = ('import subprocess,sys; from pathlib import Path; '
+                      'child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"], '
+                      'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); '
+                      'Path(' + repr(str(marker)) + ').write_text(str(child.pid))')
+            with self.assertRaisesRegex(RuntimeError, 'command failed'):
+                w.measure('owned-child', [os.sys.executable, '-c', script], 10)
+            record = json.loads((Path(tmp) / 'owned-child-command.json').read_text())
+            self.assertEqual(record['exit'], 0)
+            self.assertFalse(record['timed_out'])
+            self.assertTrue(record['direct_terminal'])
+            cleanup = record['cleanup']
+            self.assertEqual(cleanup['active_after_direct_exit'], 1)
+            self.assertEqual(cleanup['active_after_cleanup'], 0)
+            self.assertFalse(cleanup['identity_errors'])
+            self.assertEqual(len(cleanup['owned_descendants']), 1)
+            identity = cleanup['owned_descendants'][0]
+            self.assertEqual(identity['pid'], int(marker.read_text()))
+            self.assertEqual(os.path.normcase(identity['image_path']), os.path.normcase(os.sys.executable))
+            self.assertGreater(identity['creation_filetime'], 0)
+            self.assertTrue(identity['job_member'])
+            self.assertTrue(identity['held_handle'])
+            self.assertTrue(identity['terminal_after_cleanup'])
+            self.assertTrue(identity['held_handle_closed'])
 
     def test_native_assignment_and_resume_failures_never_execute_command(self):
         for method, owner in (('attach', w.WindowsProcessJob), ('resume', w.WindowsSuspendedProcess)):

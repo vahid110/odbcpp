@@ -52,6 +52,7 @@ AUTHORITY_SHA256 = {
     'human_request': '2e47224e077958248d5ff93cd415723f334b5c1a106f27d48362cb034cc98354',
     'workflow_lease': 'f1a8c1f89d05b7497c0ade93ea53dbab963eabf13603c1c62279bc38a48cb32e',
     'first_product_lease': 'b9127de0b411df08dfae5f1ca4a0984ba0c04efdd58e328264fec0b6e3914262',
+    'owned_child_identity_lease': '80432afe8935bac045c9c43556feb28d5a8561cf0cb27a4e3e60d3d684e42bc8',
 }
 TEXT_SUFFIXES = {'.json', '.txt', '.xml', '.log'}
 MAX_BYTES = 20 * 1024 * 1024
@@ -297,6 +298,105 @@ def relative_key(path, root):
     return path.relative_to(root).as_posix()
 
 
+class HeldOwnedProcess:
+    """A job-verified process handle retained through cleanup, never a PID target."""
+    def __init__(self, api, handle, evidence):
+        self.api, self.handle, self.evidence = api, handle, evidence
+
+    def terminal(self):
+        result = self.api.WaitForSingleObject(self.handle, 0)
+        if result not in (0, 258):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return result == 0
+
+    def close(self):
+        if self.handle:
+            handle, self.handle = self.handle, None
+            if not self.api.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
+def owned_exit_cleanup(job, direct_pid, grace_seconds=5, cleanup_seconds=5):
+    """Capture bounded owned identities; retain original remaining-child refusal."""
+    held, errors = [], []
+    stages = []
+    def capture(stage):
+        try:
+            found, issues = job.capture_owned(direct_pid, known_pids=tuple(h.evidence['pid'] for h in held))
+            for item in found:
+                item.evidence['observed_stage'] = stage
+            held.extend(found)
+            errors.extend(dict(item, stage=stage) for item in issues)
+            stages.append({'stage': stage, 'at': utc(), 'new_held_identities': len(found)})
+        except Exception as exc:
+            errors.append({'stage': stage, 'error': str(exc)})
+    def active(stage):
+        try:
+            count = job.active()
+            if not isinstance(count, int) or count < 0:
+                raise ValueError('invalid owned active-process count')
+            return count
+        except Exception as exc:
+            errors.append({'stage': stage, 'error': str(exc)})
+            return None
+    initial = active('direct_exit')
+    capture('direct_exit')
+    grace_start = time.monotonic()
+    cleanup_start = None
+    records = []
+    try:
+        deadline = grace_start + grace_seconds
+        remaining = active('grace')
+        while remaining and time.monotonic() < deadline:
+            time.sleep(0.05)
+            remaining = active('grace')
+        remaining = active('after_grace')
+        unexpected_children = remaining != 0  # Preserved original guard, including unknown counts.
+        grace_elapsed = time.monotonic() - grace_start
+        if unexpected_children:
+            capture('after_grace')
+            cleanup_start = time.monotonic()
+            try:
+                job.terminate()  # Job only; never kill a recorded PID or a nonmember.
+            except Exception as exc:
+                errors.append({'stage': 'terminate_owned_job', 'error': str(exc)})
+            deadline = cleanup_start + cleanup_seconds
+            count = active('cleanup')
+            while count and time.monotonic() < deadline:
+                time.sleep(0.05)
+                count = active('cleanup')
+        final = active('after_cleanup')
+        for item in held:
+            record = dict(item.evidence)
+            try:
+                record['terminal_after_cleanup'] = item.terminal()
+            except Exception as exc:
+                record['terminal_after_cleanup'] = None
+                errors.append({'stage': 'held_process_reap', 'pid': record['pid'], 'error': str(exc)})
+            records.append(record)
+    finally:
+        for index, item in enumerate(held):
+            try:
+                item.close()
+                if index < len(records):
+                    records[index]['held_handle_closed'] = True
+            except Exception as exc:
+                if index < len(records):
+                    records[index]['held_handle_closed'] = False
+                errors.append({'stage': 'close_held_handle', 'pid': item.evidence['pid'], 'error': str(exc)})
+    cleanup = {'active_at_direct_exit': initial, 'active_after_grace': remaining,
+               'active_after_direct_exit': remaining, 'active_after_cleanup': final,
+               'tree_owned_by_job': True, 'kill_on_job_close': True,
+               'excluded_direct_pid': direct_pid, 'owned_descendants': records,
+               'identity_errors': errors, 'identity_stages': stages,
+               'grace_seconds': grace_seconds, 'grace_elapsed_seconds': grace_elapsed,
+               'cleanup_seconds': cleanup_seconds,
+               'cleanup_elapsed_seconds': time.monotonic() - cleanup_start if cleanup_start is not None else 0,
+               'identity_limit': 'only current owned job members, at most 64 per snapshot; handles held through reap'}
+    invalid_cleanup = final != 0 or bool(errors) or any(r.get('terminal_after_cleanup') is not True or r.get('held_handle_closed') is not True for r in records)
+    return cleanup, unexpected_children, invalid_cleanup
+
+
 class WindowsProcessJob:
     """Own one command tree; kill-on-close prevents escaped child continuations."""
     def __init__(self):
@@ -347,6 +447,72 @@ class WindowsProcessJob:
         if not self.api.QueryInformationJobObject(self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
             raise ctypes.WinError(ctypes.get_last_error())
         return accounting.ActiveProcesses
+
+    def capture_owned(self, direct_pid, known_pids=()):
+        """Only this job's PID list; image/creation/membership through held handles.
+
+        QueryInformationJobObject(JobObjectBasicProcessIdList) is bounded to64.
+        No VM process enumeration, PID-directed termination or guessed tool name.
+        """
+        limit = 64
+        class PidList(ctypes.Structure):
+            _fields_ = [('assigned', ctypes.c_ulong), ('listed', ctypes.c_ulong),
+                        ('pids', ctypes.c_size_t * limit)]
+        info = PidList()
+        if not self.api.QueryInformationJobObject(self.handle, 3, ctypes.byref(info), ctypes.sizeof(info), None):
+            return [], [{'error': 'owned PID list query failed', 'winerror': ctypes.get_last_error(), 'limit': limit}]
+        if info.assigned > limit or info.listed > limit or info.listed != info.assigned:
+            return [], [{'error': 'owned PID list incomplete/over bound', 'assigned': info.assigned, 'listed': info.listed, 'limit': limit}]
+        self.api.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        self.api.OpenProcess.restype = ctypes.c_void_p
+        self.api.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+        self.api.IsProcessInJob.restype = ctypes.c_int
+        self.api.GetProcessId.argtypes = [ctypes.c_void_p]
+        self.api.GetProcessId.restype = ctypes.c_ulong
+        self.api.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
+        self.api.QueryFullProcessImageNameW.restype = ctypes.c_int
+        self.api.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.api.WaitForSingleObject.restype = ctypes.c_ulong
+        class FileTime(ctypes.Structure):
+            _fields_ = [('low', ctypes.c_ulong), ('high', ctypes.c_ulong)]
+        self.api.GetProcessTimes.argtypes = [ctypes.c_void_p, *([ctypes.POINTER(FileTime)] * 4)]
+        self.api.GetProcessTimes.restype = ctypes.c_int
+        held, errors = [], []
+        for pid in info.pids[:info.listed]:
+            if pid == direct_pid or pid in known_pids:
+                continue  # The direct/known process handle remains held, preventing PID reuse.
+            handle = self.api.OpenProcess(0x100000 | 0x1000, False, pid)  # SYNCHRONIZE / limited query only
+            if not handle:
+                errors.append({'pid': pid, 'error': 'owned process could not be opened', 'winerror': ctypes.get_last_error()})
+                continue
+            keep = False
+            try:
+                belongs = ctypes.c_int()
+                if not self.api.IsProcessInJob(handle, self.handle, ctypes.byref(belongs)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not belongs.value or self.api.GetProcessId(handle) != pid:
+                    raise ValueError('process no longer belongs to owned job or PID/handle mismatch')
+                image = ctypes.create_unicode_buffer(4096)
+                length = ctypes.c_ulong(len(image))
+                if not self.api.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                creation, exit_time, kernel, user = FileTime(), FileTime(), FileTime(), FileTime()
+                if not self.api.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time), ctypes.byref(kernel), ctypes.byref(user)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                stamp = (creation.high << 32) | creation.low
+                if not image.value or stamp <= 0:
+                    raise ValueError('missing owned image/creation identity')
+                held.append(HeldOwnedProcess(self.api, handle, {'pid': pid, 'image_path': image.value,
+                            'creation_filetime': stamp, 'creation_unit': '100ns since1601 UTC',
+                            'job_member': True, 'held_handle': True, 'captured_at': utc()}))
+                keep = True
+            except Exception as exc:
+                errors.append({'pid': pid, 'error': str(exc)})
+            finally:
+                if not keep:
+                    if not self.api.CloseHandle(handle):
+                        errors.append({'pid': pid, 'error': 'failed to close unverified process handle', 'winerror': ctypes.get_last_error()})
+        return held, errors
 
     def terminate(self):
         if not self.api.TerminateJobObject(self.handle, 124):
@@ -413,22 +579,11 @@ def measure(name, command, timeout):
             process.kill()
         code = process.wait(timeout=30)
     peak = direct_peak(process._handle) if os.name == 'nt' else None
-    unexpected_children = False
+    unexpected_children = invalid_cleanup = False
     if job:
         try:
-            deadline = time.monotonic() + 5
-            while job.active() and time.monotonic() < deadline:
-                time.sleep(0.05)
-            remaining = job.active()
-            unexpected_children = remaining != 0
-            if remaining:
-                job.terminate()
-                deadline = time.monotonic() + 5
-                while job.active() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-            cleanup = {'prior': cleanup, 'active_after_direct_exit': remaining,
-                       'active_after_cleanup': job.active(), 'tree_owned_by_job': True,
-                       'kill_on_job_close': True}
+            owned, unexpected_children, invalid_cleanup = owned_exit_cleanup(job, process.pid)
+            cleanup = dict(owned, prior=cleanup)
         finally:
             job.close()
     reader.join(timeout=5)
@@ -454,7 +609,7 @@ def measure(name, command, timeout):
               'disk_free_bytes_after': shutil.disk_usage('.').free,
               'log_bytes_emitted': total[0], 'log_truncated': total[0] > LOG_BYTES}
     write(name + '-command.json', record)
-    if code or timed_out or reader.is_alive() or unexpected_children:
+    if code or timed_out or reader.is_alive() or unexpected_children or invalid_cleanup:
         raise RuntimeError(f'{name} command failed; original exit/log/cleanup retained')
     return record
 
