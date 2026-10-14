@@ -2780,7 +2780,9 @@ TEST(RedshiftSchemaWideColumns, VisibleDatabaseCollisionsCatalogSelectionAndEmpt
     EXPECT_EQ(catalog?(*catalog=="%"?0u:2u):4u,result->rows.size());
     EXPECT_EQ("SHOW DATABASES;",session.commands.front());
     if (!catalog) {EXPECT_EQ("a_雪",result->rows[0][0]);EXPECT_EQ("z_db",result->rows[2][0]);}
-    if (catalog && *catalog=="%") EXPECT_EQ(1u,session.commands.size()); // Catalog is a literal for SQLColumns.
+    if (catalog && *catalog=="%") {
+      EXPECT_EQ(1u,session.commands.size()); // Catalog is a literal for SQLColumns.
+    }
   }
   WideColumnsSession empty;empty.current({});auto result=empty.execute_catalog(wide_columns(),rs::util::Deadline::max());
   ASSERT_TRUE(result);EXPECT_TRUE(result->rows.empty());EXPECT_EQ(18u,result->columns.size());EXPECT_EQ(2u,empty.commands.size());
@@ -2862,7 +2864,9 @@ TEST(RedshiftSchemaWideColumns, LateNativeErrorMalformedColumnsAndFreshRecoveryN
     if (variant==1) session.replies[3]->rows[0][2]="foreign";
     if (variant==2) session.replies[3]->additional_results.emplace_back();
     auto failed=session.execute_catalog(wide_columns(),rs::util::Deadline::max());ASSERT_FALSE(failed);EXPECT_EQ(4u,session.commands.size());
-    if (variant==0) EXPECT_EQ("42501",failed.backend_error().native_state);
+    if (variant==0) {
+      EXPECT_EQ("42501",failed.backend_error().native_state);
+    }
     session.replies.clear();session.commands.clear();session.current({"fresh"});
     auto recovered=session.execute_catalog(wide_columns(),rs::util::Deadline::max());ASSERT_TRUE(recovered);
     ASSERT_EQ(2u,recovered->rows.size());EXPECT_EQ("fresh",recovered->rows[0][2]);EXPECT_EQ(3u,session.commands.size());

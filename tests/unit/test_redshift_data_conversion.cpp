@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <ctime>
 #include <cstring>
