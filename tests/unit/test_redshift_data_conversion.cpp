@@ -2,6 +2,7 @@
 #include "odbc/result_types.h"
 #include "odbc/text_data_converter.h"
 #include "odbc/unicode.h"
+#include "core/database/postgres/pg_value.h"
 #include "tests/test_time_helpers.h"
 
 #include <algorithm>
@@ -1562,4 +1563,28 @@ TEST_F(RedshiftDataConverterTest, CharacterNonfiniteIntegralAdapterPolicyKeepsRa
     check.operator()<SQLSCHAR>(SQL_C_TINYINT);
     check.operator()<SQLSMALLINT>(SQL_C_SHORT);
     check.operator()<SQLINTEGER>(SQL_C_LONG);
+}
+
+// Raw converters and the backend Boolean codec are deliberately source neutral.
+// Genuine SQL character word refusal belongs in the ODBC result adapter.
+TEST_F(RedshiftDataConverterTest, CharacterBooleanWordsRawConverterAndNativeCodecStayDistinct) {
+    for (const char* text : {"t", "true", "f", "false"}) {
+        SCOPED_TRACE(text);
+        const SQLCHAR expected = text[0] == 't' ? 1 : 0;
+        std::array<unsigned char, 3> bytes{0xa5, 0xa5, 0xa5};
+        SQLLEN length = 79;
+        rs::odbc::ConversionIssue issue{};
+        ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+            text, SQL_C_BIT, bytes.data() + 1, 0, &length, &issue));
+        EXPECT_EQ(expected, bytes[1]);
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes.back());
+        EXPECT_EQ(1, length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+        using namespace rs::core::database;
+        EXPECT_EQ(std::optional<std::string>{expected ? "1" : "0"},
+            postgres::normalize_pg_result_value(ScalarType::Boolean, text));
+        EXPECT_EQ(std::optional<std::string>{text},
+            postgres::normalize_pg_result_value(ScalarType::VarChar, text));
+    }
 }

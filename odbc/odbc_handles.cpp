@@ -429,9 +429,9 @@ bool nonfinite_numeric_result(SQLSMALLINT sql_type, SQLSMALLINT target_type,
       (value == "NaN" || value == "Infinity" || value == "-Infinity");
 }
 
-// Raw scalar converters also serve normalized REAL/DOUBLE values. Their IEEE
-// tokens are not numeric literals when the SQL source is character data.
-bool character_nonfinite_numeric_result(SQLSMALLINT sql_type,
+// Raw scalar converters also serve normalized numeric/Boolean sources. IEEE
+// tokens and Boolean words are not numeric literals for SQL character data.
+bool invalid_character_numeric_result(SQLSMALLINT sql_type,
     SQLSMALLINT target_type, std::string_view value) {
   if (!is_character_sql_type(sql_type)) return false;
   switch (target_type) {
@@ -458,7 +458,9 @@ bool character_nonfinite_numeric_result(SQLSMALLINT sql_type,
   while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
     value.remove_suffix(1);
   }
-  return value == "NaN" || value == "Infinity" || value == "-Infinity";
+  return value == "NaN" || value == "Infinity" || value == "-Infinity" ||
+      (target_type == SQL_C_BIT &&
+          (value == "t" || value == "true" || value == "f" || value == "false"));
 }
 
 // ODBC indicator-only bindings request a converted byte length, not a data
@@ -478,7 +480,7 @@ SQLRETURN indicator_only_result_length(SQLSMALLINT sql_type,
     length = static_cast<SQLLEN>(units * unit_size);
     return SQL_SUCCESS;
   };
-  if (character_nonfinite_numeric_result(sql_type, target_type, value)) {
+  if (invalid_character_numeric_result(sql_type, target_type, value)) {
     issue = ConversionIssue::InvalidCharacterValue;
     return SQL_ERROR;
   }
@@ -4823,7 +4825,7 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
       ConversionIssue conversion_issue = ConversionIssue::None;
       auto* output_length = octet_length_ptr ? octet_length_ptr : indicator_ptr;
       SQLRETURN conv_result;
-      if (data_ptr && character_nonfinite_numeric_result(sql_type, target_type, value)) {
+      if (data_ptr && invalid_character_numeric_result(sql_type, target_type, value)) {
         conversion_issue = ConversionIssue::InvalidCharacterValue;
         conv_result = SQL_ERROR;
       } else if (data_ptr && nonfinite_numeric_result(sql_type, target_type, value)) {
@@ -5235,7 +5237,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
   }
   const auto& character_cell = formatted_text ? *formatted_text : value;
-  if (character_nonfinite_numeric_result(sql_type, effective_target_type, character_cell)) {
+  if (invalid_character_numeric_result(sql_type, effective_target_type, character_cell)) {
     set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
               "Character result is not a numeric literal");
     return SQL_ERROR;
