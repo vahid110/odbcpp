@@ -180,3 +180,43 @@ TEST(MySqlPreparedWireAdditionalTest, TextBlobUtf8AndIntegerRangeFollowNormalize
   EXPECT_TRUE((*result)[0]->empty());EXPECT_TRUE((*result)[1]->empty());
   EXPECT_EQ((std::vector<CellEncodingError>{{3,0},{3,1}}),errors);
 }
+
+TEST(MySqlTextIntegerDomainTest, PreparedBinaryNativeWidthsSignsNullAndFramingRemainUnchanged) {
+  const std::array<NativeColumn, 6> native{{{1, false}, {1, true}, {2, false},
+      {2, true}, {3, false}, {3, true}}};
+  const std::array<ResultColumnMetadata, 6> columns{{metadata(ScalarType::SmallInt),
+      metadata(ScalarType::SmallInt), metadata(ScalarType::SmallInt),
+      metadata(ScalarType::Integer), metadata(ScalarType::Integer), metadata(ScalarType::BigInt)}};
+  const std::array<std::string, 6> expected{"-128", "255", "-32768", "65535",
+      "-2147483648", "4294967295"};
+  for (const bool null_short : {false, true}) {
+    Bytes bytes{std::byte{0}, null_short ? std::byte{0x10} : std::byte{0}};
+    little(bytes, 0x80, 1);
+    little(bytes, 0xff, 1);
+    if (!null_short) {
+      little(bytes, 0x8000, 2);
+    }
+    little(bytes, 0xffff, 2);
+    little(bytes, 0x80000000, 4);
+    little(bytes, 0xffffffff, 4);
+    std::vector<CellEncodingError> errors;
+    auto decoded = binary_row(bytes, native, columns, 8, errors);
+    ASSERT_TRUE(decoded);
+    ASSERT_EQ(6u, decoded->size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      if (null_short && i == 2) {
+        EXPECT_FALSE((*decoded)[i]);
+      } else {
+        ASSERT_TRUE((*decoded)[i]);
+        EXPECT_EQ(expected[i], *(*decoded)[i]);
+      }
+    }
+    EXPECT_TRUE(errors.empty());
+    for (std::size_t size = 0; size < bytes.size(); ++size) {
+      errors.clear();
+      EXPECT_FALSE(binary_row(std::span(bytes).first(size), native, columns, 8, errors));
+    }
+    bytes.push_back(std::byte{0});
+    EXPECT_FALSE(binary_row(bytes, native, columns, 8, errors));
+  }
+}

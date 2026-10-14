@@ -73,3 +73,122 @@ TEST(MySqlQueryWireTest, CompletionUsesFullLengthEncodedCountAndRejectsMalformed
   for (std::size_t n=0;n<eof.size();++n) EXPECT_FALSE(query_detail::completion(std::span(eof).first(n),true));
 }
 }
+
+namespace {
+TEST(MySqlTextIntegerDomainTest, MetadataDerivedDomainsPreserveValidBytesAndDeferImpossibleValues) {
+  struct Bound {
+    unsigned type, flags;
+    const char *minimum, *maximum, *below, *above;
+  };
+  const std::array<Bound, 6> bounds{{
+      {1, 0, "-128", "127", "-129", "128"},
+      {1, 32, "0", "255", "-1", "256"},
+      {2, 0, "-32768", "32767", "-32769", "32768"},
+      {2, 32, "0", "65535", "-1", "65536"},
+      {3, 0, "-2147483648", "2147483647", "-2147483649", "2147483648"},
+      {3, 32, "0", "4294967295", "-1", "4294967296"},
+  }};
+  for (const auto& bound : bounds) {
+    std::uint8_t type = 0;
+    bool unsigned_value = false;
+    auto meta = query_detail::column(column(bound.type, 63, bound.flags), ResultLimits{},
+        nullptr, &type, &unsigned_value);
+    ASSERT_TRUE(meta);
+    EXPECT_EQ(bound.type, type);
+    EXPECT_EQ(bound.flags == 32, unsigned_value);
+    const std::vector<ResultColumnMetadata> columns{*meta};
+    const std::array<query_detail::NativeColumn, 1> native{{{type, unsigned_value}}};
+    for (const auto value : {bound.minimum, bound.maximum, "0", "-0", "0007", "-0000"}) {
+      Bytes bytes;
+      text(bytes, value);
+      std::vector<CellEncodingError> errors;
+      auto decoded = query_detail::row(bytes, columns, 5, errors, native);
+      ASSERT_TRUE(decoded);
+      ASSERT_EQ(1u, decoded->size());
+      ASSERT_TRUE((*decoded)[0]);
+      EXPECT_EQ(value, *(*decoded)[0]); // Preserve accepted spelling, not reformatted output.
+      EXPECT_TRUE(errors.empty());
+    }
+    for (const auto value : {bound.below, bound.above, "", "12garbage", "+1"}) {
+      Bytes bytes;
+      text(bytes, value);
+      std::vector<CellEncodingError> errors;
+      auto decoded = query_detail::row(bytes, columns, 5, errors, native);
+      ASSERT_TRUE(decoded);
+      ASSERT_TRUE((*decoded)[0]);
+      EXPECT_TRUE((*decoded)[0]->empty());
+      EXPECT_EQ((std::vector<CellEncodingError>{{5, 0}}), errors);
+    }
+    std::vector<CellEncodingError> errors;
+    auto null = query_detail::row(Bytes{std::byte{251}}, columns, 5, errors, native);
+    ASSERT_TRUE(null);
+    EXPECT_FALSE((*null)[0]);
+    EXPECT_TRUE(errors.empty());
+  }
+}
+
+TEST(MySqlTextIntegerDomainTest, MixedRowsKeepOrderedErrorsNullBinaryAndNormalizedFallback) {
+  std::vector<ResultColumnMetadata> columns;
+  std::vector<query_detail::NativeColumn> native;
+  for (const auto& [type, flags] : {std::pair{3u, 32u}, std::pair{1u, 0u},
+      std::pair{252u, 0u}, std::pair{253u, 0u}}) {
+    query_detail::NativeColumn observed;
+    auto meta = query_detail::column(column(type, type == 253 ? 45 : 63, flags),
+        ResultLimits{}, nullptr, &observed.type, &observed.unsigned_value);
+    ASSERT_TRUE(meta);
+    columns.push_back(*meta);
+    native.push_back(observed);
+  }
+  Bytes bytes;
+  text(bytes, "4294967296");
+  text(bytes, "-129");
+  text(bytes, std::string_view{"\0\xff", 2});
+  text(bytes, std::string_view{"\xff", 1});
+  std::vector<CellEncodingError> errors;
+  auto decoded = query_detail::row(bytes, columns, 11, errors, native);
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ((std::vector<CellEncodingError>{{11, 0}, {11, 1}, {11, 3}}), errors);
+  EXPECT_TRUE((*decoded)[0]->empty());
+  EXPECT_TRUE((*decoded)[1]->empty());
+  EXPECT_EQ(std::string("\0\xff", 2), *(*decoded)[2]);
+  EXPECT_TRUE((*decoded)[3]->empty());
+  bytes.assign(bytes.size(), std::byte{0});
+  EXPECT_EQ(std::string("\0\xff", 2), *(*decoded)[2]); // Owning, after source overwrite.
+
+  bytes = {std::byte{251}, std::byte{251}, std::byte{0}, std::byte{0}};
+  errors.clear();
+  auto nullable = query_detail::row(bytes, columns, 12, errors, native);
+  ASSERT_TRUE(nullable);
+  EXPECT_FALSE((*nullable)[0]);
+  EXPECT_FALSE((*nullable)[1]);
+  EXPECT_TRUE((*nullable)[2]->empty());
+  EXPECT_TRUE((*nullable)[3]->empty());
+  EXPECT_TRUE(errors.empty());
+
+  // The existing no-native-observation codec fallback remains normalized-only.
+  const std::vector<ResultColumnMetadata> fallback{{"n", NativeTypeInfo{ScalarType::BigInt, 19, 0, true}}};
+  for (const auto value : {"-1", "4294967296"}) {
+    bytes.clear();
+    text(bytes, value);
+    errors.clear();
+    auto legacy = query_detail::row(bytes, fallback, 0, errors);
+    ASSERT_TRUE(legacy);
+    EXPECT_EQ(value, *(*legacy)[0]);
+    EXPECT_TRUE(errors.empty());
+  }
+  auto bigint = query_detail::column(column(8, 63, 32), ResultLimits{});
+  ASSERT_TRUE(bigint);
+  const std::vector<ResultColumnMetadata> bigint_columns{*bigint};
+  const std::array<query_detail::NativeColumn, 1> bigint_native{{{8, true}}};
+  bytes.clear();
+  text(bytes, "18446744073709551615");
+  errors.clear();
+  auto maximum = query_detail::row(bytes, bigint_columns, 0, errors, bigint_native);
+  ASSERT_TRUE(maximum);
+  EXPECT_EQ("18446744073709551615", *(*maximum)[0]);
+  EXPECT_TRUE(errors.empty());
+  bytes.push_back(std::byte{0});
+  EXPECT_FALSE(query_detail::row(bytes, bigint_columns, 0, errors, bigint_native));
+  EXPECT_FALSE(query_detail::row(Bytes{std::byte{252}}, bigint_columns, 0, errors, bigint_native));
+}
+}
