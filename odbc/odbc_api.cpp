@@ -1006,9 +1006,15 @@ static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER at
   if (attribute == SQL_ATTR_CURRENT_CATALOG) {
     const auto catalog = conn->get_current_catalog();
     if (catalog.empty()) return SQL_NO_DATA;
-    return write_narrow_output(
+    const auto result = write_narrow_output(
         conn, catalog, static_cast<SQLCHAR*>(value),
         buffer_length, string_length, "Current catalog was truncated");
+    if (result == SQL_SUCCESS && value && buffer_length == 0) {
+      conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Current catalog was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return result;
   }
   if (!value && !string_length) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -1042,9 +1048,15 @@ static SQLRETURN SQLGetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER a
     if (!conn) return SQL_INVALID_HANDLE;
     const auto catalog = conn->get_current_catalog();
     if (catalog.empty()) return SQL_NO_DATA;
-    return write_wide_bytes_output(
+    const auto result = write_wide_bytes_output(
         conn, catalog, static_cast<SQLWCHAR*>(value),
         buffer_length, string_length, "Current catalog was truncated");
+    if (result == SQL_SUCCESS && value && buffer_length == 0) {
+      conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Current catalog was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return result;
   }
   return SQLGetConnectAttr(
       connection_handle, attribute, value, buffer_length, string_length);
