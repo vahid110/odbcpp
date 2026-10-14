@@ -724,8 +724,15 @@ BackendResult<PreparedResultSequence> SessionLease::start_result_sequence(
     }
     sequence.names_ += column.name.size();
   }
-  return BackendResult<PreparedResultSequence>{std::move(sequence),
-      passive_outcome(physical_session()->is_connected(), physical_session()->session_state())};
+  SessionSnapshot snapshot;
+  try {
+    snapshot = passive_outcome(physical_session()->is_connected(), physical_session()->session_state());
+  } catch (...) {
+    // Preserve the callback exception while preventing ambiguous borrow reuse.
+    retire();
+    throw;
+  }
+  return BackendResult<PreparedResultSequence>{std::move(sequence), snapshot};
 }
 bool SessionLease::accepts_result_sequence(const PreparedResultSequence& sequence) const noexcept {
   return !sequence.closed_ && borrow_ && sequence.owner_.lock() == state_ &&
