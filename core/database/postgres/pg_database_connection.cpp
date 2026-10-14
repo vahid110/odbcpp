@@ -764,19 +764,24 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_routine_catalog(
         return !escape;
       };
       if(!pattern(names.schema,names.name_matches.schema) || !pattern(names.procedure,names.name_matches.object))return false;
-      if constexpr(std::is_same_v<T,ProcedureColumnsCatalogRequest>)
+      if constexpr(std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
         return valid(names.column) && pattern(names.column,names.name_matches.member);
-      return true;
+      } else {
+        return true;
+      }
+    } else {
+      return false;
     }
-    return false;
   },*native);
   if(!valid_names)return local_backend_error(LocalFailure::InvalidInput,"Invalid routine catalog arguments",
       BackendOperation::ExecuteCatalog,session_state());
   const auto schema_bytes=std::visit([](const auto& names)->std::size_t {
     using T=std::decay_t<decltype(names)>;
-    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>)
+    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
       return names.schema?names.schema->size():0;
-    return 0;
+    } else {
+      return 0;
+    }
   },*native);
   if(schema_bytes>catalog_result_limits().max_column_name_bytes ||
       !budget.retain({0,0,schema_bytes,0,schema_bytes}))return redshift_routine_limit();
@@ -785,8 +790,11 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_routine_catalog(
   if(schema && schema->empty())return redshift_routine_result("","",{},columns,budget);
   const auto catalog=std::visit([](const auto& names)->std::optional<std::string> {
     using T=std::decay_t<decltype(names)>;
-    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>)return names.catalog;
-    return std::nullopt;
+    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
+      return names.catalog;
+    } else {
+      return std::nullopt;
+    }
   },*native);
   if (catalog && catalog->empty()) return redshift_routine_result("", schema?std::string_view{*schema}:std::string_view{}, {}, columns, budget);
   std::vector<std::string> databases;
