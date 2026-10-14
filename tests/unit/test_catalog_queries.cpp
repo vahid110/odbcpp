@@ -757,3 +757,31 @@ TEST(CatalogQueryTest, RedshiftSuperCatalogTypeKeepsQualifiedCodesUnsizedFieldsA
   EXPECT_EQ(std::string::npos, query->find("16777216"));
   EXPECT_EQ(std::string::npos, query->find("65535"));
 }
+
+
+TEST(CatalogQueryTest, RedshiftSpatialClosedCodesKeepUnsizedFieldsAndPostgresPolicy) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  PgDatabaseConnection pg;
+  const auto query = redshift.catalog_query(ColumnsCatalogRequest{"db", "s%", "t%", "p%"});
+  const auto postgres = pg.catalog_query(ColumnsCatalogRequest{"db", "s%", "t%", "p%"});
+  ASSERT_TRUE(query);
+  ASSERT_TRUE(postgres);
+  for (const auto* label : {"geometry", "geography"}) {
+    const std::string clause = std::string("WHEN '") + label + "' THEN -4";
+    const auto first = query->find(clause);
+    ASSERT_NE(std::string::npos, first);
+    EXPECT_NE(std::string::npos, query->find(clause, first + clause.size()));
+    EXPECT_EQ(std::string::npos, postgres->find(clause));
+  }
+  for (const auto* retained : {"CASE LOWER(columns.data_type)", "columns.data_type::text AS type_name",
+      "WHEN 'varbyte' THEN -4", "WHEN 'super' THEN -1", "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3",
+      "ELSE 0 END::smallint AS data_type", "ELSE NULL END::integer AS column_size",
+      "ELSE NULL END::integer AS buffer_length", "ELSE NULL END::smallint AS num_prec_radix",
+      "THEN columns.character_maximum_length ELSE NULL END::integer AS char_octet_length",
+      "AND table_cat = 'db'", "AND table_schem LIKE 's%'", "AND table_name LIKE 't%'", "AND column_name LIKE 'p%'"}) {
+    EXPECT_NE(std::string::npos, query->find(retained)) << retained;
+  }
+  EXPECT_EQ(std::string::npos, query->find("geography(4326)"));
+  EXPECT_EQ(std::string::npos, query->find("1048447"));
+}

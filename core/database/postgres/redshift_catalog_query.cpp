@@ -521,6 +521,11 @@ std::optional<ColumnDimensions> column_dimensions(std::string_view type,
     result.code = result.sql_type = -1; // SQL_LONGVARCHAR; SUPER is unsized catalog metadata.
     return result;
   }
+  if (normalized == "geometry" || normalized == "geography") {
+    ColumnDimensions result;
+    result.code = result.sql_type = -4; // Closed unsized spatial catalog labels, not a payload codec.
+    return result;
+  }
   if (normalized == "varbyte" || normalized == "varbinary" || normalized == "binary varying") {
     ColumnDimensions result;
     result.code = result.sql_type = -4; // SQL_LONGVARBINARY; dimensions remain unknown.
@@ -1569,6 +1574,7 @@ std::string redshift_columns_query(const ColumnsCatalogRequest& input, bool visi
       "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
       "WHEN 'varbyte' THEN -4 WHEN 'varbinary' THEN -4 WHEN 'binary varying' THEN -4 "
       "WHEN 'super' THEN -1 "
+      "WHEN 'geometry' THEN -4 WHEN 'geography' THEN -4 "
       "WHEN 'date' THEN 91 WHEN 'time without time zone' THEN 92 "
       "WHEN 'time with time zone' THEN 92 WHEN 'timestamp without time zone' THEN 93 "
       "WHEN 'timestamp with time zone' THEN 93 ELSE 0 END";

@@ -4580,7 +4580,8 @@ TEST(RedshiftVarbyteCatalogTypes, NearMissAndUnrelatedFamiliesRemainUnknown) {
     ASSERT_TRUE(result);
     ASSERT_EQ(1u, result->rows.size());
     // SUPER is now a separately selected catalog contract; all original near-misses stay unknown.
-    const ResultCell expected_type{std::string_view(label) == "SUPER" ? "-1" : "0"};
+    const ResultCell expected_type{std::string_view(label) == "SUPER" ? "-1" :
+        std::string_view(label) == "geometry" ? "-4" : "0"};
     EXPECT_EQ(expected_type, result->rows[0][4]);
     EXPECT_EQ(expected_type, result->rows[0][13]);
     EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
@@ -4823,8 +4824,9 @@ TEST(RedshiftSuperCatalogTypes, NearMissesStayUnknownAndVarbyteKeepsItsClosedCon
         BackendResult<QueryResult>{varbyte_catalog_rows(label), {SessionState::Idle, SessionDisposition::Reusable}});
     ASSERT_TRUE(result);
     ASSERT_EQ(1u, result->rows.size());
-    EXPECT_EQ(ResultCell{"0"}, result->rows[0][4]);
-    EXPECT_EQ(ResultCell{"0"}, result->rows[0][13]);
+    const ResultCell expected_type{std::string_view(label) == "geometry" ? "-4" : "0"};
+    EXPECT_EQ(expected_type, result->rows[0][4]);
+    EXPECT_EQ(expected_type, result->rows[0][13]);
     EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
     EXPECT_FALSE(result->rows[0][6]);
     EXPECT_FALSE(result->rows[0][15]);
@@ -5012,4 +5014,263 @@ TEST(RedshiftSuperCatalogTypes, TwoNegativeTypeCellsUseExactSimultaneousRawAndOw
       expect_super_catalog_row(result->rows[0], "SUPER", true);
     }
   } // Native157 + owning descriptor names232 + full owning row16 =405 bytes.
+}
+
+
+TEST(RedshiftSpatialCatalogTypes, ExactLabelsKeepUnsizedOwningEighteenFields) {
+  for (const auto* label : {"geometry", "GEOMETRY", "GeOmEtRy", "geography", "GEOGRAPHY", "GeOgRaPhY"}) {
+    for (const ResultCell& dimension : {ResultCell{}, ResultCell{"0"}, ResultCell{"1"}, ResultCell{"65535"}}) {
+      SCOPED_TRACE(label);
+      auto source = varbyte_catalog_rows(label, dimension);
+      auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+          BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}});
+      ASSERT_TRUE(result) << result.error_message();
+      ASSERT_EQ(18u, result->columns.size());
+      ASSERT_EQ(1u, result->rows.size());
+      EXPECT_EQ((ResultRow{"selected", "fixture", "rows", "payload", "-4", label,
+          std::nullopt, std::nullopt, std::nullopt, std::nullopt, "1", "owning binary remark",
+          "'owning default'", "-4", std::nullopt, std::nullopt, "1", "YES"}), result->rows[0]);
+      source.rows.clear();
+      EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
+      EXPECT_EQ(ResultCell{"owning binary remark"}, result->rows[0][11]);
+      EXPECT_EQ(ResultCell{"'owning default'"}, result->rows[0][12]);
+    }
+  }
+}
+
+TEST(RedshiftSpatialCatalogTypes, NearMissesAndOtherFamiliesKeepClosedCodes) {
+  for (const auto* label : {"geometry[]", "geography(4326)", " geometry", "geography ",
+      "geometry_domain", "geographys", "g\xc3\xa9ometry", "hllsketch", "text", "bytea"}) {
+    SCOPED_TRACE(label);
+    auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{varbyte_catalog_rows(label), {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(result);
+    ASSERT_EQ(1u, result->rows.size());
+    EXPECT_EQ(ResultCell{"0"}, result->rows[0][4]);
+    EXPECT_EQ(ResultCell{"0"}, result->rows[0][13]);
+    EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
+    EXPECT_FALSE(result->rows[0][6]);
+    EXPECT_FALSE(result->rows[0][15]);
+  }
+  for (const auto* label : {"varbyte", "VARBINARY", "binary varying", "SUPER"}) {
+    auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{varbyte_catalog_rows(label), {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(result);
+    ASSERT_EQ(1u, result->rows.size());
+    const ResultCell expected{std::string_view(label) == "SUPER" ? "-1" : "-4"};
+    EXPECT_EQ(expected, result->rows[0][4]);
+    EXPECT_EQ(expected, result->rows[0][13]);
+    EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
+  }
+}
+
+TEST(RedshiftSpatialCatalogTypes, RoutineModesAndReturnKeepOwningNineteenFields) {
+  RoutineExecutionSession session;
+  session.discovery({{"db", "s", "p", "2", "geometry, geography", std::nullopt, "owning"}},
+      {{"db", "s", "f", "0", "", "geography", std::nullopt}});
+  session.replies.erase(session.replies.begin());
+  session.replies.emplace_back(routine_parameters(true,
+      {{"db", "s", "f", "", "0", "RETURN", "geography", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+  session.replies.emplace_back(routine_parameters(false, {
+      {"db", "s", "p", "out", "3", "OUT", "GeOmEtRy", "65535", "0", "0"},
+      {"db", "s", "p", "inout", "2", "INOUT", "GEOGRAPHY", "0", "0", "0"},
+      {"db", "s", "p", "input", "1", "IN", "geometry", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto result = session.execute_catalog(ProcedureColumnsCatalogRequest{"db", "s", std::nullopt, std::nullopt}, deadline);
+  ASSERT_TRUE(result) << result.error_message();
+  ASSERT_EQ(19u, result->columns.size());
+  ASSERT_EQ(4u, result->rows.size());
+  const std::array<const char*, 4> labels{"geography", "geometry", "GEOGRAPHY", "GeOmEtRy"};
+  const std::array<const char*, 4> modes{"5", "1", "2", "4"};
+  for (unsigned i = 0; i < 4; ++i) {
+    expect_varbyte_catalog_row(result->rows[i], labels[i], true); // Shared long-binary catalog fields, no payload codec.
+    EXPECT_EQ(ResultCell{modes[i]}, result->rows[i][4]);
+    EXPECT_EQ(ResultCell{std::to_string(i)}, result->rows[i][17]);
+  }
+  EXPECT_EQ(4u, session.commands.size());
+  EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+  session.replies.clear();
+  session.connected = false;
+  EXPECT_EQ(ResultCell{"GeOmEtRy"}, result->rows[3][6]);
+}
+
+TEST(RedshiftSpatialCatalogTypes, ExactIdentifiersAndSchemaPatternsKeepTheSameDeadline) {
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  SchemaSpy exact;
+  exact.show = varbyte_catalog_rows("GEOMETRY");
+  auto identifiers = column_request();
+  identifiers.catalog = "selected";
+  identifiers.column = "payload";
+  identifiers.name_matches.catalog = CatalogNameMatch::IdentifierQuoted;
+  identifiers.name_matches.schema = CatalogNameMatch::IdentifierQuoted;
+  identifiers.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+  identifiers.name_matches.member = CatalogNameMatch::IdentifierQuoted;
+  auto direct = exact.execute_catalog(identifiers, deadline);
+  ASSERT_TRUE(direct);
+  ASSERT_EQ(1u, direct->rows.size());
+  expect_varbyte_catalog_row(direct->rows[0], "GEOMETRY");
+  EXPECT_EQ(std::vector<rs::util::Deadline>(2, deadline), exact.deadlines);
+  EXPECT_EQ(0u, exact.catalog_builds);
+  for (const auto& schema : {std::optional<std::string>{}, std::optional<std::string>{"%"},
+      std::optional<std::string>{"fixt%"}}) {
+    WideColumnsSession session;
+    session.replies.emplace_back(routine_identity(), session.snapshot);
+    session.replies.emplace_back(routine_schema_rows({
+        {"db", "fixture", "owner", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+    auto tables = tables_response("db");
+    tables.rows = {{"db", "fixture", "a", "TABLE", std::nullopt, std::nullopt}};
+    session.replies.emplace_back(std::move(tables), session.snapshot);
+    session.replies.emplace_back(varbyte_catalog_rows("GeOgRaPhY", std::nullopt, "db", "a"), session.snapshot);
+    auto input = wide_columns("a%");
+    input.schema = schema;
+    auto result = session.execute_catalog(input, deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(1u, result->rows.size());
+    expect_varbyte_catalog_row(result->rows[0], "GeOgRaPhY");
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+        "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+  }
+}
+
+TEST(RedshiftSpatialCatalogTypes, HiddenMalformedLateErrorsAndSnapshotOverflowPreserveRecovery) {
+  for (unsigned bad = 0; bad < 5; ++bad) {
+    WideColumnsSession session;
+    session.current({"a", "z"});
+    session.replies[2] = BackendResult<QueryResult>{varbyte_catalog_rows("geometry", std::nullopt, "db", "a"), session.snapshot};
+    auto source = varbyte_catalog_rows("geography", std::nullopt, "db", "z");
+    if (bad == 0) {
+      source.rows[0][2] = "foreign";
+    } else if (bad == 1) {
+      source.rows[0][8] = "not-a-number";
+    } else if (bad == 2) {
+      source.rows[0][7] = std::string("GEOMETRY\0bad", 12);
+    } else if (bad == 3) {
+      source.rows[0][11] = std::string("\xff", 1);
+    }
+    session.replies[3] = BackendResult<QueryResult>{std::move(source), session.snapshot};
+    if (bad == 4) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "late spatial metadata denial"};
+      error.native_state = "42501";
+      error.session_state = SessionState::Idle;
+      error.disposition = SessionDisposition::Reusable;
+      session.replies[3] = error;
+    }
+    auto input = wide_columns();
+    if (bad != 4) {
+      input.column = "no-match";
+    }
+    auto failed = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(4u, session.commands.size());
+    if (bad == 4) {
+      EXPECT_EQ("42501", failed.backend_error().native_state);
+    } else {
+      EXPECT_EQ(BackendErrorClass::InvalidMetadata, failed.backend_error().error_class);
+    }
+    session.current({"a"});
+    session.replies.back() = BackendResult<QueryResult>{varbyte_catalog_rows("GEOGRAPHY", std::nullopt, "db", "a"), session.snapshot};
+    auto recovered = session.execute_catalog(wide_columns(), rs::util::Deadline::max());
+    ASSERT_TRUE(recovered);
+    ASSERT_EQ(1u, recovered->rows.size());
+    expect_varbyte_catalog_row(recovered->rows[0], "GEOGRAPHY");
+  }
+  for (const bool retire : {false, true}) {
+    WideColumnsSession session;
+    ResultLimits limits;
+    limits.max_rows = 10; // Discovery fits; only the native column response exceeds this cap.
+    ASSERT_TRUE(session.budgets(limits));
+    session.current({"a"});
+    auto raw = varbyte_catalog_rows("geometry", std::nullopt, "db", "a");
+    const auto first_row = raw.rows[0];
+    for (unsigned i = 1; i < 11; ++i) {
+      raw.rows.push_back(first_row);
+      raw.rows.back()[3] = "other" + std::to_string(i);
+      raw.rows.back()[4] = std::to_string(i + 1);
+    }
+    session.replies.back() = BackendResult<QueryResult>{std::move(raw), retire ?
+        SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire} : session.snapshot};
+    auto failed = session.execute_catalog(wide_columns(), rs::util::Deadline::max());
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(3u, session.commands.size()); // The invalid/overbudget column exchange was actually reached.
+    if (retire) {
+      EXPECT_EQ(SessionState::Unknown, failed.backend_error().session_state);
+      EXPECT_EQ(SessionDisposition::Retire, failed.backend_error().disposition);
+    } else {
+      wide_resource(failed);
+    }
+  }
+  SchemaSpy expired;
+  expired.show = varbyte_catalog_rows("geometry");
+  auto timeout = expired.execute_catalog(column_request(), rs::util::Clock::now());
+  ASSERT_FALSE(timeout);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), timeout.error());
+  EXPECT_EQ(0u, expired.direct_calls);
+}
+
+TEST(RedshiftSpatialCatalogTypes, LiteralOwningByteBoundaryAndDestroyedRawKeepPeakBounded) {
+  for (const auto* label : {"GEOMETRY", "GEOGRAPHY"}) {
+    const std::size_t raw_bytes = std::string_view(label) == "GEOMETRY" ? 160 : 161;
+    const std::size_t total_bytes = std::string_view(label) == "GEOMETRY" ? 411 : 413;
+    for (const auto cap : {total_bytes - 1, total_bytes}) {
+      RedshiftRoutine routine;
+      routine.name = "p";
+      routine.arguments = {std::string_view(label) == "GEOMETRY" ? "geometry" : "geography"};
+      auto source = routine_parameters(false,
+          {{"d", "s", "p", "v", "1", "IN", label, std::nullopt, std::nullopt, std::nullopt}});
+      const auto raw = redshift_routine_usage(source);
+      ASSERT_EQ(raw_bytes, raw.bytes); // Native header names145 plus literal identity/type bytes.
+      ResponseLimits response;
+      response.max_wire_bytes = cap;
+      RedshiftRoutineBudget budget{response, ResultLimits{}};
+      ASSERT_TRUE(budget.retain(raw));
+      auto result = normalize_redshift_parameters("d", "s", routine,
+          ProcedureColumnsCatalogRequest{"d", "s", "p", std::nullopt},
+          BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}},
+          budget, rs::util::Deadline::max());
+      if (cap < total_bytes) {
+        ASSERT_FALSE(result);
+        EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+      } else {
+        ASSERT_TRUE(result);
+        ASSERT_EQ(1u, result->rows.size());
+        expect_varbyte_catalog_row(result->rows[0], label, true);
+      }
+    }
+  }
+  for (const std::size_t cap : {661u, 662u}) {
+    ResponseLimits response;
+    response.max_wire_bytes = cap;
+    RedshiftRoutineBudget budget{response, ResultLimits{}};
+    RedshiftRoutine routine;
+    routine.name = "p";
+    routine.arguments = {"geometry"};
+    auto source = routine_parameters(false,
+        {{"d", "s", "p", "v", "1", "IN", "GEOMETRY", std::nullopt, std::nullopt, std::nullopt}});
+    const auto raw = redshift_routine_usage(source);
+    ASSERT_TRUE(budget.retain(raw));
+    auto first = normalize_redshift_parameters("d", "s", routine,
+        ProcedureColumnsCatalogRequest{"d", "s", "p", std::nullopt},
+        BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, budget, rs::util::Deadline::max());
+    ASSERT_TRUE(first);
+    source = QueryResult{}; // Actual destruction precedes release. Keep first owning result charged.
+    budget.release(raw);
+    routine.name = "q";
+    source = routine_parameters(false,
+        {{"d", "s", "q", "v", "1", "IN", "GEOMETRY", std::nullopt, std::nullopt, std::nullopt}});
+    ASSERT_TRUE(budget.retain(redshift_routine_usage(source)));
+    auto second = normalize_redshift_parameters("d", "s", routine,
+        ProcedureColumnsCatalogRequest{"d", "s", "q", std::nullopt},
+        BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, budget, rs::util::Deadline::max());
+    if (cap == 661) {
+      ASSERT_FALSE(second);
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), second.error());
+    } else {
+      ASSERT_TRUE(second); // Raw160 + two live owning (headers232+row19) =662.
+      EXPECT_EQ(ResultCell{"q"}, second->rows[0][2]);
+    }
+    EXPECT_EQ(ResultCell{"p"}, first->rows[0][2]);
+    expect_varbyte_catalog_row(first->rows[0], "GEOMETRY", true);
+  }
 }
