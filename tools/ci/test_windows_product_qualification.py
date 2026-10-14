@@ -432,6 +432,239 @@ class ConfigureAuxiliarySafety(unittest.TestCase):
                     w.configure_auxiliary_context(installation, build)
 
 
+class BuildAuxiliarySafety(unittest.TestCase):
+    def facts(self):
+        record, tool = ConfigureAuxiliarySafety().facts()
+        env = RequestSafety(); env.setUp()
+        self.env = dict(env.env, WINDOWS_WORKFLOW_ROOT=str(ROOT), GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
+                        GITHUB_SHA=env.env['WINDOWS_WORKFLOW_HEAD'])
+        self.sources = {name: {'head': self.env[key], 'tree': 'f' * 40, 'tracked_sha256': 'e' * 64}
+                        for name, key in [('workflow', 'WINDOWS_WORKFLOW_HEAD'), ('product', 'WINDOWS_PRODUCT_HEAD')]}
+        command = ['cmake', '--build', str(w.BUILD), '--config', 'Release', '--parallel', '2', '--target',
+                   'test_backend_contract', 'odbcpp_sdk_header_isolation', 'odbcpp_driver', '--',
+                   '/verbosity:normal', '/nodeReuse:false', '/p:TrackFileAccess=true']
+        context = {'tool': tool, 'sources': deepcopy(self.sources), 'base': self.env['WINDOWS_PRODUCT_BASE'],
+                   'argv': command, 'build_path': str(w.BUILD.resolve()),
+                   'runner': {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': self.env['GITHUB_SHA']},
+                   'configure_finished_at': '2026-10-14T11:18:00+00:00',
+                   'identity_sha256': '1' * 64, 'configure_record_sha256': '2' * 64,
+                   'configure_phase_sha256': '3' * 64, 'dependencies_sha256': '4' * 64}
+        record.update(phase='build', argv=command, fresh_graph_before_launch=False,
+                      build_auxiliary_context=context, build_auxiliary_context_after=deepcopy(context),
+                      build_auxiliary_context_error=None)
+        return record, context
+
+    def test_exact_build_cleanup_requires_context_and_retains_raw_fact(self):
+        record, context = self.facts()
+        with patch.dict(os.environ, self.env):
+            result = w.build_auxiliary_disposition(record, context)
+        self.assertTrue(result['accepted'])
+        self.assertEqual(result['disposition'], 'expected_owned_compiler_auxiliary_cleaned')
+        self.assertIn('build-only', result['policy'])
+        self.assertTrue(record['unexpected_children'])
+        self.assertFalse(record['fresh_graph_before_launch'])
+        self.assertFalse(w.configure_auxiliary_disposition(record, context['tool'])['accepted'])
+
+    def test_build_phase_argv_source_identity_and_context_mutations_refuse(self):
+        record, context = self.facts()
+        mutations = [('phase', 'configure'), ('phase', 'test'), ('phase', 'list'), ('phase', 'safety'),
+                     ('argv', ['cmake', '--build', 'other']), ('exit', 1), ('exit', False),
+                     ('timed_out', True), ('direct_terminal', False), ('pipe_drained', False),
+                     ('fresh_graph_before_launch', True), ('build_auxiliary_context', None),
+                     ('build_auxiliary_context_after', None), ('build_auxiliary_context_error', 'changed')]
+        with patch.dict(os.environ, self.env):
+            for key, value in mutations:
+                with self.subTest(key=key, value=value):
+                    changed = deepcopy(record); changed[key] = value
+                    self.assertFalse(w.build_auxiliary_disposition(changed, context)['accepted'])
+            for key, value in [('base', '0' * 40), ('argv', record['argv'][:-1]), ('build_path', 'other'),
+                               ('configure_finished_at', record['direct_exited_at']),
+                               ('sources', {}), ('runner', {}), ('tool', {})]:
+                with self.subTest(context=key):
+                    changed = deepcopy(context)
+                    changed[key] = value
+                    bound = deepcopy(record)
+                    bound['build_auxiliary_context'] = deepcopy(changed)
+                    bound['build_auxiliary_context_after'] = deepcopy(changed)
+                    self.assertFalse(w.build_auxiliary_disposition(bound, changed)['accepted'])
+            for key in context:
+                changed = deepcopy(context)
+                del changed[key]
+                bound = deepcopy(record)
+                bound['build_auxiliary_context'] = deepcopy(changed)
+                bound['build_auxiliary_context_after'] = deepcopy(changed)
+                self.assertFalse(w.build_auxiliary_disposition(bound, changed)['accepted'])
+            self.assertFalse(w.build_auxiliary_disposition(record, None)['accepted'])
+
+    def test_build_held_identity_mixed_unknown_and_cleanup_refusals(self):
+        record, context = self.facts()
+        with patch.dict(os.environ, self.env):
+            for key, value in [('image_path', 'C:/unknown/vctip.exe'), ('image_sha256', '0' * 64),
+                               ('creation_filetime', 0), ('job_member', False), ('held_handle', False),
+                               ('terminal_after_cleanup', False), ('held_handle_closed', False)]:
+                changed = deepcopy(record); changed['cleanup']['owned_descendants'][0][key] = value
+                self.assertFalse(w.build_auxiliary_disposition(changed, context)['accepted'])
+            for key, value in [('active_after_cleanup', 1), ('active_after_grace', None),
+                               ('identity_errors', [{'error': 'wait/close/query failed'}]),
+                               ('termination_requested', False), ('termination_succeeded', False),
+                               ('cleanup_seconds', 6), ('cleanup_elapsed_seconds', 5.01),
+                               ('identity_stages', [])]:
+                changed = deepcopy(record); changed['cleanup'][key] = value
+                self.assertFalse(w.build_auxiliary_disposition(changed, context)['accepted'])
+            changed = deepcopy(record)
+            changed['cleanup']['owned_descendants'].append({'pid': 55, 'image_path': 'C:/python.exe'})
+            self.assertFalse(w.build_auxiliary_disposition(changed, context)['accepted'])
+
+    def fixture(self, root):
+        record, context = self.facts()
+        evidence = root / 'evidence'; evidence.mkdir()
+        build = root / 'graph'; build.mkdir()
+        configured = deepcopy(record)
+        configured.update(phase='configure', argv=w.configure_command(), fresh_graph_before_launch=True,
+                          direct_exited_at='2026-10-14T11:17:59+00:00',
+                          started_at='2026-10-14T11:16:00+00:00', unexpected_children=False,
+                          configure_auxiliary_context=context['tool'], configure_auxiliary_context_error=None)
+        configured['cleanup'].update(active_after_grace=0, active_after_cleanup=0,
+                                     owned_descendants=[], identity_errors=[])
+        identity = {'sources': self.sources, 'base': self.env['WINDOWS_PRODUCT_BASE'],
+                    'targets': ['test_backend_contract'], 'profile': list(w.PROFILE),
+                    'cache': {'mode': 'cold', 'restored': False, 'saved': False}, 'runner': context['runner'],
+                    'product_path': str(Path.cwd()), 'workflow_path': str(ROOT)}
+        values = {'identity.json': identity, 'configure-command.json': configured,
+                  'configure.json': {'status': 'passed', 'finished_at': context['configure_finished_at']},
+                  'dependencies.json': {'visual_studio': [{'selected': 'installation'}]}}
+        for name, value in values.items():
+            (evidence / name).write_text(json.dumps(value))
+        return evidence, build, context, values
+
+    def test_context_requires_same_fresh_successful_configure_and_revalidates(self):
+        for defect in [None, 'failed', 'missing', 'nonzero', 'not_fresh', 'source', 'base', 'profile',
+                       'targets', 'cache', 'runner', 'tool', 'cleanup', 'context_error']:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as tmp:
+                evidence, build, context, values = self.fixture(Path(tmp))
+                if defect == 'failed': values['configure.json']['status'] = 'failed'
+                if defect == 'nonzero': values['configure-command.json']['exit'] = 1
+                if defect == 'not_fresh': values['configure-command.json']['fresh_graph_before_launch'] = False
+                if defect == 'source': values['identity.json']['sources']['product']['head'] = '0' * 40
+                if defect == 'base': values['identity.json']['base'] = '0' * 40
+                if defect == 'profile': values['identity.json']['profile'] = []
+                if defect == 'targets': values['identity.json']['targets'] = ['test_sql_escape']
+                if defect == 'cache': values['identity.json']['cache']['restored'] = True
+                if defect == 'runner': values['identity.json']['runner']['GITHUB_RUN_ID'] = 'other'
+                if defect == 'cleanup': values['configure-command.json']['cleanup']['active_after_cleanup'] = 1
+                if defect == 'context_error': values['configure-command.json']['configure_auxiliary_context_error'] = 'query failed'
+                for name, value in values.items(): (evidence / name).write_text(json.dumps(value))
+                if defect == 'missing': (evidence / 'configure.json').unlink()
+                tool = deepcopy(context['tool'])
+                if defect == 'tool': tool['compiler_sha256'] = '9' * 64
+                actual_sources = deepcopy(context['sources'])
+                with patch.dict(os.environ, self.env), patch.object(w, 'EVIDENCE', evidence), \
+                     patch.object(w, 'BUILD', build), patch.object(w, 'sources', return_value=actual_sources), \
+                     patch.object(w, 'configure_auxiliary_context', return_value=tool):
+                    # The configure argv is fixed to the same physical graph for this fixture.
+                    configured = values['configure-command.json']; configured['argv'][4] = str(build)
+                    (evidence / 'configure-command.json').write_text(json.dumps(configured))
+                    if defect is None:
+                        result = w.build_auxiliary_context()
+                        self.assertEqual(result['tool'], tool)
+                        self.assertEqual(result['sources'], actual_sources)
+                        self.assertEqual(result['argv'], w.build_command())
+                        self.assertEqual(result['build_path'], str(build.resolve()))
+                    else:
+                        with self.assertRaises((ValueError, OSError)):
+                            w.build_auxiliary_context()
+
+    def test_live_tool_cache_config_and_checkout_paths_cannot_be_substituted(self):
+        for defect in [None, 'compiler', 'auxiliary', 'cache', 'configuration', 'product_path', 'workflow_path']:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                evidence, unused_build, context, values = self.fixture(root)
+                installation, build, compiler, auxiliary, configuration = ConfigureAuxiliarySafety().graph(root)
+                self.env['WINDOWS_WORKFLOW_ROOT'] = str(ROOT)
+                values['identity.json'].update(product_path=str(Path.cwd()), workflow_path=str(ROOT))
+                values['dependencies.json']['visual_studio'] = [installation]
+                values['configure-command.json']['argv'][4] = str(build)
+                values['configure-command.json']['configure_auxiliary_context'] = w.configure_auxiliary_context(installation, build)
+                if defect in ['compiler', 'auxiliary', 'cache', 'configuration']:
+                    target = {'compiler': compiler, 'auxiliary': auxiliary, 'cache': build / 'CMakeCache.txt',
+                              'configuration': configuration}[defect]
+                    target.write_bytes(target.read_bytes() + b'\nmodified bytes\n')
+                if defect in ['product_path', 'workflow_path']:
+                    values['identity.json'][defect] = str(root / 'other-checkout')
+                for name, value in values.items(): (evidence / name).write_text(json.dumps(value))
+                with patch.dict(os.environ, self.env), patch.object(w, 'EVIDENCE', evidence), \
+                     patch.object(w, 'BUILD', build), patch.object(w, 'sources', return_value=context['sources']):
+                    if defect is None:
+                        self.assertEqual(w.build_auxiliary_context()['build_path'], str(build.resolve()))
+                    else:
+                        with self.assertRaises((ValueError, OSError)):
+                            w.build_auxiliary_context()
+
+    def test_missing_context_refuses_before_command_creation(self):
+        record, context = self.facts()
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, self.env), \
+             patch.object(w, 'EVIDENCE', Path(tmp)), \
+             patch.object(w, 'build_auxiliary_context', side_effect=ValueError('configure missing')), \
+             patch.object(w, 'WindowsSuspendedProcess') as process, patch.object(w.subprocess, 'Popen') as popen:
+            with self.assertRaisesRegex(ValueError, 'configure missing'):
+                w.measure('build', record['argv'], 10, owning_build=True)
+            process.assert_not_called()
+            popen.assert_not_called()
+            failed = json.loads((Path(tmp) / 'build-command.json').read_text())
+            self.assertEqual(failed['status'], 'failed')
+            self.assertEqual(failed['build_auxiliary_context_error'], 'configure missing')
+
+    def test_measure_revalidates_private_build_context_and_refuses_changes(self):
+        record, context = self.facts()
+        for private, changed in [(True, False), (False, False), (True, True), (True, 'query-failure')]:
+            with self.subTest(private=private, changed=changed), tempfile.TemporaryDirectory() as tmp:
+                class Process:
+                    pid, _handle = 1212, 1
+                    def __init__(self, argv):
+                        self.stdout = BytesIO(b'build completed\n'); self.launch_order = ['created_suspended']
+                    def resume(self): self.launch_order.append('resumed')
+                    def wait(self, timeout): return 0
+                    def poll(self): return 0
+                    def close(self): pass
+                class Job:
+                    def attach(self, process): pass
+                    def close(self): pass
+                after = deepcopy(context)
+                if changed == 'query-failure':
+                    after = ValueError('tool query failed after direct exit')
+                elif changed:
+                    after['tool']['cache_sha256'] = '0' * 64
+                with patch.dict(os.environ, self.env), patch.object(w, 'os', SimpleNamespace(name='nt', environ=os.environ)), \
+                     patch.object(w, 'EVIDENCE', Path(tmp)), \
+                     patch.object(w, 'WindowsSuspendedProcess', Process), patch.object(w, 'WindowsProcessJob', Job), \
+                     patch.object(w, 'direct_peak', return_value=1), \
+                     patch.object(w, 'utc', side_effect=[record['started_at'], record['direct_exited_at'], record['direct_exited_at']]), \
+                     patch.object(w, 'owned_exit_cleanup', return_value=(deepcopy(record['cleanup']), True, False)), \
+                     patch.object(w, 'build_auxiliary_context', side_effect=[context, after]) as validator:
+                    if private and not changed:
+                        w.measure('build', record['argv'], 10, owning_build=True)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'command failed'):
+                            w.measure('build', record['argv'], 10, owning_build=private)
+                    self.assertEqual(validator.call_count, 2 if private else 0)
+                measured = json.loads((Path(tmp) / 'build-command.json').read_text())
+                self.assertEqual(measured['exit'], 0)
+                self.assertEqual(measured['cleanup']['active_after_cleanup'], 0)
+                self.assertTrue(measured['cleanup']['owned_descendants'][0]['held_handle_closed'])
+                self.assertTrue(measured['unexpected_children'])
+                self.assertEqual(measured['auxiliary_disposition']['accepted'], private and not changed)
+
+    def test_expected_build_cleanup_does_not_complete_missing_product_proof(self):
+        self.facts()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(w, 'EVIDENCE', Path(tmp)):
+            for phase in w.PHASES:
+                if phase != 'inventory': w.write(phase + '.json', {'status': 'passed'})
+            w.write('results.json', {})
+            complete, phases = w.completion()
+            self.assertFalse(complete)
+            self.assertEqual(phases['inventory']['status'], 'missing')
+
+
 class OwnedDescendantLifecycleSafety(unittest.TestCase):
     def test_successful_direct_exit_with_owned_child_still_refuses_and_retains_identity(self):
         events = []
@@ -709,6 +942,23 @@ class WindowsChildProcessRegression(unittest.TestCase):
             self.assertTrue(identity['held_handle'])
             self.assertTrue(identity['terminal_after_cleanup'])
             self.assertTrue(identity['held_handle_closed'])
+
+    def test_generic_build_python_descendant_has_no_compiler_exception(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(w, 'EVIDENCE', Path(tmp)):
+            script = ('import subprocess,sys; subprocess.Popen([sys.executable,"-c",'
+                      '"import time; time.sleep(60)"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)')
+            with self.assertRaisesRegex(RuntimeError, 'build command failed'):
+                w.measure('build', [os.sys.executable, '-c', script], 10)
+            record = json.loads((Path(tmp) / 'build-command.json').read_text())
+            self.assertEqual(record['exit'], 0)
+            self.assertTrue(record['unexpected_children'])
+            self.assertFalse(record['auxiliary_disposition']['accepted'])
+            self.assertEqual(record['cleanup']['active_after_cleanup'], 0)
+            self.assertFalse(record['cleanup']['identity_errors'])
+            child = record['cleanup']['owned_descendants'][0]
+            self.assertTrue(child['job_member'])
+            self.assertTrue(child['terminal_after_cleanup'])
+            self.assertTrue(child['held_handle_closed'])
 
     def test_native_assignment_and_resume_failures_never_execute_command(self):
         for method, owner in (('attach', w.WindowsProcessJob), ('resume', w.WindowsSuspendedProcess)):

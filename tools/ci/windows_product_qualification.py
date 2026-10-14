@@ -54,6 +54,7 @@ AUTHORITY_SHA256 = {
     'first_product_lease': 'b9127de0b411df08dfae5f1ca4a0984ba0c04efdd58e328264fec0b6e3914262',
     'owned_child_identity_lease': '80432afe8935bac045c9c43556feb28d5a8561cf0cb27a4e3e60d3d684e42bc8',
     'configure_owned_auxiliary_lease': '8c43877fd9cbd2b26b03b99f615e0ccb1affa28a16be6ef72a64ad124273d1fb',
+    'owned_build_auxiliary_lease': '5e6694b42a24757e512f341c8ff6ee77f27a4000093bd8d5b28865b99202f8ca',
 }
 TEXT_SUFFIXES = {'.json', '.txt', '.xml', '.log'}
 MAX_BYTES = 20 * 1024 * 1024
@@ -351,15 +352,15 @@ def configure_auxiliary_context(installation, build):
             'compiler_configuration_sha256': sha(configs[0]), 'profile': list(PROFILE)}
 
 
-def configure_auxiliary_disposition(record, context):
-    """Explicit configure-only harness policy, not a vendor shutdown protocol."""
+def _compiler_auxiliary_disposition(record, context, phase, command, fresh_graph, policy):
+    """Shared exact held-identity/reap predicate for two private owning phases."""
     refused = {'accepted': False, 'disposition': 'unexpected_owned_child_refused'}
     try:
-        if not context or record['phase'] != 'configure' or record['argv'] != configure_command() or \
+        if not context or record['phase'] != phase or record['argv'] != command or \
                 type(record['exit']) is not int or record['exit'] != 0 or \
                 type(record['direct_pid']) is not int or record['direct_pid'] <= 0 or record['timed_out'] is not False or \
                 record['direct_terminal'] is not True or record['pipe_drained'] is not True or \
-                record['fresh_graph_before_launch'] is not True or record['unexpected_children'] is not True or \
+                record['fresh_graph_before_launch'] is not fresh_graph or record['unexpected_children'] is not True or \
                 record['launch_order'] != ['created_suspended', 'assigned_to_job', 'resumed']:
             return refused
         if context['profile'] != list(PROFILE) or any(not re.fullmatch('[0-9a-f]{64}', context[key]) for key in
@@ -410,7 +411,110 @@ def configure_auxiliary_disposition(record, context):
                         ('job_member', 'held_handle', 'terminal_after_cleanup', 'held_handle_closed')):
                 return refused
         return {'accepted': True, 'disposition': 'expected_owned_compiler_auxiliary_cleaned',
-                'member_pids': pids, 'policy': 'configure-only exact compiler sibling; verified owned termination and reap'}
+                'member_pids': pids, 'policy': policy}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return refused
+
+
+def configure_auxiliary_disposition(record, context):
+    """Preserve the original configure-only policy and its raw child fact."""
+    return _compiler_auxiliary_disposition(record, context, 'configure', configure_command(), True,
+        'configure-only exact compiler sibling; verified owned termination and reap')
+
+
+def build_command():
+    return ['cmake', '--build', str(BUILD), '--config', 'Release', '--parallel', '2', '--target',
+            *selected(), 'odbcpp_sdk_header_isolation', 'odbcpp_driver', '--',
+            '/verbosity:normal', '/nodeReuse:false', '/p:TrackFileAccess=true']
+
+
+def build_auxiliary_context():
+    """Revalidate private cold-configure provenance and live tools, before/after build."""
+    request_guard(os.environ)
+    paths = {name: EVIDENCE / name for name in
+             ('identity.json', 'configure-command.json', 'configure.json', 'dependencies.json')}
+    values = {name: json.loads(path.read_text()) for name, path in paths.items()}
+    identity, configured = values['identity.json'], values['configure-command.json']
+    runner = {key: os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA')}
+    current_sources = sources()
+    if identity['sources'] != current_sources or identity['base'] != os.environ['WINDOWS_PRODUCT_BASE'] or \
+            identity['profile'] != list(PROFILE) or identity['targets'] != selected() or \
+            identity['cache'] != {'mode': 'cold', 'restored': False, 'saved': False} or \
+            any(identity['runner'].get(key) != value for key, value in runner.items()) or \
+            runner['GITHUB_SHA'] != os.environ['WINDOWS_WORKFLOW_HEAD'] or \
+            Path(identity['product_path']).resolve(strict=True) != Path.cwd() or \
+            Path(identity['workflow_path']).resolve(strict=True) != Path(os.environ['WINDOWS_WORKFLOW_ROOT']).resolve(strict=True):
+        raise ValueError('build differs from admitted cold W/P/profile/targets/run')
+    for name, key in [('workflow', 'WINDOWS_WORKFLOW_HEAD'), ('product', 'WINDOWS_PRODUCT_HEAD')]:
+        source_identity = current_sources[name]
+        if source_identity['head'] != immutable(os.environ[key]) or \
+                not re.fullmatch('[0-9a-f]{40}', source_identity['tree']) or \
+                not re.fullmatch('[0-9a-f]{64}', source_identity['tracked_sha256']):
+            raise ValueError('build source identity missing or changed')
+    if values['configure.json']['status'] != 'passed' or configured['phase'] != 'configure' or \
+            configured['argv'] != configure_command() or configured['fresh_graph_before_launch'] is not True or \
+            type(configured['exit']) is not int or configured['exit'] != 0 or configured['timed_out'] is not False or \
+            configured['direct_terminal'] is not True or configured['pipe_drained'] is not True or \
+            configured['launch_order'] != ['created_suspended', 'assigned_to_job', 'resumed'] or \
+            configured['configure_auxiliary_context_error'] is not None:
+        raise ValueError('fresh successful configure proof required before owning build')
+    finished = datetime.fromisoformat(values['configure.json']['finished_at'])
+    exited = datetime.fromisoformat(configured['direct_exited_at'])
+    if any(stamp.utcoffset() is None or stamp.utcoffset().total_seconds() != 0 for stamp in (finished, exited)) or finished < exited:
+        raise ValueError('configure completion timestamp differs')
+    installations = values['dependencies.json']['visual_studio']
+    if len(installations) != 1:
+        raise ValueError('same single selected Visual Studio installation required')
+    tool = configure_auxiliary_context(installations[0], BUILD)
+    if tool != configured['configure_auxiliary_context']:
+        raise ValueError('configured cache/compiler/auxiliary identity changed')
+    cleanup = configured['cleanup']
+    if configured['unexpected_children'] is True:
+        if not configure_auxiliary_disposition(configured, tool)['accepted']:
+            raise ValueError('configure auxiliary cleanup proof invalid')
+    elif configured['unexpected_children'] is not False or \
+            type(cleanup['active_after_cleanup']) is not int or cleanup['active_after_cleanup'] != 0 or \
+            cleanup['identity_errors'] or cleanup['tree_owned_by_job'] is not True or \
+            cleanup['kill_on_job_close'] is not True or any(
+                child.get('terminal_after_cleanup') is not True or child.get('held_handle_closed') is not True
+                for child in cleanup['owned_descendants']):
+        raise ValueError('configure owned terminal/close/zero proof missing')
+    return {'tool': tool, 'sources': current_sources, 'base': identity['base'], 'runner': runner,
+            'argv': build_command(), 'build_path': str(BUILD.resolve(strict=True)),
+            'configure_finished_at': values['configure.json']['finished_at'],
+            'identity_sha256': sha(paths['identity.json']),
+            'configure_record_sha256': sha(paths['configure-command.json']),
+            'configure_phase_sha256': sha(paths['configure.json']),
+            'dependencies_sha256': sha(paths['dependencies.json'])}
+
+
+def build_auxiliary_disposition(record, context):
+    """Explicit build-only policy; no arbitrary caller, basename or environment exemption."""
+    refused = {'accepted': False, 'disposition': 'unexpected_owned_child_refused'}
+    try:
+        if not context or record['phase'] != 'build' or record['argv'] != build_command() or \
+                context['argv'] != record['argv'] or context['build_path'] != str(BUILD.resolve()) or \
+                context != record['build_auxiliary_context'] or context != record['build_auxiliary_context_after'] or \
+                record['build_auxiliary_context_error'] is not None or \
+                context['base'] != immutable(os.environ['WINDOWS_PRODUCT_BASE']):
+            return refused
+        if any(not re.fullmatch('[0-9a-f]{64}', context[key]) for key in
+               ('identity_sha256', 'configure_record_sha256', 'configure_phase_sha256', 'dependencies_sha256')):
+            return refused
+        for name, key in [('workflow', 'WINDOWS_WORKFLOW_HEAD'), ('product', 'WINDOWS_PRODUCT_HEAD')]:
+            value = context['sources'][name]
+            if value['head'] != immutable(os.environ[key]) or not re.fullmatch('[0-9a-f]{40}', value['tree']) or \
+                    not re.fullmatch('[0-9a-f]{64}', value['tracked_sha256']):
+                return refused
+        if context['runner'] != {key: os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA')} or \
+                context['runner']['GITHUB_SHA'] != os.environ['WINDOWS_WORKFLOW_HEAD']:
+            return refused
+        finished, started = (datetime.fromisoformat(value) for value in
+                             (context['configure_finished_at'], record['started_at']))
+        if any(stamp.utcoffset() is None or stamp.utcoffset().total_seconds() != 0 for stamp in (finished, started)) or finished > started:
+            return refused
+        return _compiler_auxiliary_disposition(record, context['tool'], 'build', build_command(), False,
+            'build-only exact compiler sibling after same fresh configure; verified owned termination and reap')
     except (KeyError, TypeError, ValueError, OverflowError):
         return refused
 
@@ -652,11 +756,21 @@ class WindowsProcessJob:
             self.handle = None
 
 
-def measure(name, command, timeout, *, configure_installation=None):
+def measure(name, command, timeout, *, configure_installation=None, owning_build=False):
     EVIDENCE.mkdir(exist_ok=True)
     start, tick = utc(), time.monotonic()
     fresh_graph = name == 'configure' and command == configure_command() and \
         configure_installation is not None and not BUILD.exists()
+    build_context, build_context_after, build_context_error = None, None, None
+    if owning_build:
+        try:
+            if name != 'build' or command != build_command():
+                raise ValueError('private owning build requires exact phase/argv')
+            build_context = build_auxiliary_context()
+        except Exception as exc:
+            write(name + '-command.json', {'argv': command, 'started_at': start, 'finished_at': utc(),
+                  'status': 'failed', 'build_auxiliary_context_error': str(exc)})
+            raise
     job = WindowsProcessJob() if os.name == 'nt' else None
     try:
         if job:
@@ -715,6 +829,13 @@ def measure(name, command, timeout, *, configure_installation=None):
             context = configure_auxiliary_context(configure_installation, BUILD)
         except Exception as exc:
             context_error = str(exc)
+    if owning_build and code == 0 and not timed_out:
+        try:
+            build_context_after = build_auxiliary_context()
+            if build_context_after != build_context:
+                raise ValueError('build configure/source/tool provenance changed during command')
+        except Exception as exc:
+            build_context_error = str(exc)
     peak = direct_peak(process._handle) if os.name == 'nt' else None
     unexpected_children = invalid_cleanup = False
     if job:
@@ -741,6 +862,8 @@ def measure(name, command, timeout, *, configure_installation=None):
               'phase': name, 'direct_exited_at': direct_exited_at, 'fresh_graph_before_launch': fresh_graph,
               'pipe_drained': not reader.is_alive(), 'unexpected_children': unexpected_children,
               'configure_auxiliary_context': context, 'configure_auxiliary_context_error': context_error,
+              'build_auxiliary_context': build_context, 'build_auxiliary_context_after': build_context_after,
+              'build_auxiliary_context_error': build_context_error,
               'elapsed_seconds': time.monotonic() - tick, 'exit': code,
               'timed_out': timed_out, 'direct_pid': process.pid,
               'direct_terminal': terminal, 'cleanup': cleanup, 'launch_order': launch_order,
@@ -748,10 +871,11 @@ def measure(name, command, timeout, *, configure_installation=None):
               'memory_limit': 'direct child peak only, not summed process-tree peak',
               'disk_free_bytes_after': shutil.disk_usage('.').free,
               'log_bytes_emitted': total[0], 'log_truncated': total[0] > LOG_BYTES}
-    disposition = configure_auxiliary_disposition(record, context)
+    disposition = (build_auxiliary_disposition(record, build_context) if owning_build else
+                   configure_auxiliary_disposition(record, context))
     record['auxiliary_disposition'] = disposition
     write(name + '-command.json', record)
-    if code or timed_out or reader.is_alive() or (unexpected_children and not disposition['accepted']) or invalid_cleanup:
+    if code or timed_out or reader.is_alive() or build_context_error or (unexpected_children and not disposition['accepted']) or invalid_cleanup:
         raise RuntimeError(f'{name} command failed; original exit/log/cleanup retained')
     return record
 
@@ -842,9 +966,7 @@ def configure():
 
 
 def build():
-    measure('build', ['cmake', '--build', str(BUILD), '--config', 'Release', '--parallel', '2', '--target',
-                     *selected(), 'odbcpp_sdk_header_isolation', 'odbcpp_driver', '--',
-                     '/verbosity:normal', '/nodeReuse:false', '/p:TrackFileAccess=true'], 1200)
+    measure('build', build_command(), 1200, owning_build=True)
 
 
 def gtest_names(text):
