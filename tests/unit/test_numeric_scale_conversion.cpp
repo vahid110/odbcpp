@@ -3370,3 +3370,297 @@ TEST_F(NumericScaleApiTest, TinyintBinaryResultSyntheticIndicatorOnlyValidationA
   EXPECT_EQ(0u, facts->disconnects);
 }
 } // namespace
+
+
+namespace {
+TEST_F(NumericScaleApiTest, DateBinaryResultLiteralFieldsAllShortRetryCompletionAndNull) {
+  facts->result.columns = {{"d", NativeTypeInfo{ScalarType::Date, 10, 0, true}}};
+  facts->result.rows = {{"0000-02-29"}, {"0001-01-01"}, {"2000-02-29"},
+      {"2024-02-29"}, {"9999-12-31"}, {std::nullopt}, {"2024-02-29 12:00:00"}};
+  const SQL_DATE_STRUCT expected[] = {{0, 2, 29}, {1, 1, 1}, {2000, 2, 29},
+      {2024, 2, 29}, {9999, 12, 31}, {0, 0, 0}, {2024, 2, 29}};
+  const SQLLEN width = sizeof(SQL_DATE_STRUCT);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT date", SQL_NTS));
+  SQLSMALLINT type{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+  EXPECT_EQ(SQL_TYPE_DATE, type);
+  const auto queries = facts->queries;
+  for (int row = 0; row < 7; ++row) {
+    SCOPED_TRACE(row);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 3> bytes;
+    bytes.fill(0xa5);
+    const auto before = bytes;
+    SQLLEN length = 79;
+    if (row != 5) {
+      for (SQLLEN capacity = 0; capacity < width; ++capacity) {
+        SCOPED_TRACE(capacity);
+        ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_BINARY, bytes.data() + 1, capacity, &length));
+        EXPECT_EQ("22003", state());
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+      }
+    }
+    ASSERT_EQ(row == 6 ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS,
+        SQLGetData(stmt, 1, SQL_C_BINARY,
+            row == 5 ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) : bytes.data() + 1,
+            row == 5 ? 0 : width + 1, &length));
+    if (row == 5) {
+      EXPECT_EQ(SQL_NULL_DATA, length);
+      EXPECT_EQ(before, bytes);
+    } else {
+      EXPECT_EQ(width, length);
+      EXPECT_EQ(0, std::memcmp(&expected[row], bytes.data() + 1, sizeof(expected[row])));
+      EXPECT_EQ(0xa5, bytes.front());
+      EXPECT_EQ(0xa5, bytes[width + 1]);
+      EXPECT_EQ(0xa5, bytes.back());
+      if (row == 6) {
+        EXPECT_EQ("01S07", state());
+      }
+    }
+    const auto completed = bytes;
+    length = 83;
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_BINARY, bytes.data() + 1, width, &length));
+    EXPECT_EQ(completed, bytes);
+    EXPECT_EQ(83, length);
+  }
+  EXPECT_EQ(queries, facts->queries);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, DateBinaryResultMalformedValuePrecedesCapacityAndIndicatorOnlyPublishesNothing) {
+  facts->result.columns = {{"d", NativeTypeInfo{ScalarType::Date, 10, 0, true}}};
+  for (const char* text : {"1900-02-29", "2023-02-29", "2024-13-01", "2024-04-31",
+           "10000-01-01", "bad", "2024-02-29 25:00:00"}) {
+    SCOPED_TRACE(text);
+    facts->result.rows = {{text}};
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT date", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 2> bytes;
+    bytes.fill(0xa5);
+    const auto before = bytes;
+    SQLLEN length = 79;
+    for (SQLLEN capacity : {SQLLEN(0), SQLLEN(sizeof(SQL_DATE_STRUCT))}) {
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_BINARY, bytes.data() + 1, capacity, &length));
+      EXPECT_EQ("22007", state());
+      EXPECT_EQ(before, bytes);
+      EXPECT_EQ(79, length);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, nullptr, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT date", SQL_NTS));
+    ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+    EXPECT_EQ("22007", state());
+    EXPECT_EQ(79, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  }
+  for (const auto& text : {std::optional<std::string>{"2024-02-29"}, std::optional<std::string>{}}) {
+    facts->result.rows = {{text}};
+    SQLLEN length = 79;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, nullptr, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT date", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    EXPECT_EQ(text ? SQLLEN(sizeof(SQL_DATE_STRUCT)) : SQL_NULL_DATA, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, DateBinaryResultArdNullAndTypedDefaultsKeepHeaderPrecedence) {
+  facts->result.columns = {{"d", NativeTypeInfo{ScalarType::Date, 10, 0, true}},
+      {"d2", NativeTypeInfo{ScalarType::Date, 10, 0, true}},
+      {"t", NativeTypeInfo{ScalarType::Time, 8, 0, true}}};
+  facts->result.rows = {{"2024-02-29", "2000-02-29", "12:34:56"},
+      {std::nullopt, std::nullopt, "12:34:56"}};
+  auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_CONCISE_TYPE, (SQLPOINTER)SQL_C_BINARY, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT dates", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 2> bytes;
+  bytes.fill(0xa5);
+  const auto before = bytes;
+  SQLLEN length = 79;
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes.data() + 1, -1, &length));
+  EXPECT_EQ("HY090", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, nullptr, 0, &length));
+  EXPECT_EQ("HY009", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, 12345, bytes.data() + 1, sizeof(SQL_DATE_STRUCT), &length));
+  EXPECT_EQ("HY003", state());
+  EXPECT_EQ(before, bytes);
+  EXPECT_EQ(79, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes.data() + 1, sizeof(SQL_DATE_STRUCT), &length));
+  const SQL_DATE_STRUCT expected{2024, 2, 29};
+  EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, sizeof(expected)));
+  EXPECT_EQ(sizeof(expected), length);
+  length = 83;
+  ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes.data() + 1, sizeof(expected), &length));
+  EXPECT_EQ(83, length);
+  SQL_DATE_STRUCT typed{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 2, SQL_C_DEFAULT, &typed, 0, &length));
+  EXPECT_EQ(2000, typed.year);
+  EXPECT_EQ(2, typed.month);
+  EXPECT_EQ(29, typed.day);
+  EXPECT_EQ(sizeof(typed), length);
+  bytes.fill(0xa5);
+  length = 79;
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 3, SQL_C_BINARY, bytes.data() + 1, sizeof(expected), &length));
+  EXPECT_EQ("07006", state());
+  EXPECT_EQ(before, bytes);
+  EXPECT_EQ(79, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, nullptr, 0, &length));
+  EXPECT_EQ("HY009", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes.data(), 0, nullptr));
+  EXPECT_EQ("22002", state());
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_ARD_TYPE,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(before, bytes);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, DateBinaryResultColumnArraysSplitUnalignedStrideSpanAndRowStatus) {
+  facts->result.columns = {{"d", NativeTypeInfo{ScalarType::Date, 10, 0, true}}};
+  facts->result.rows = {{"2024-02-29"}, {std::nullopt}};
+  const SQLLEN width = sizeof(SQL_DATE_STRUCT);
+  SQLULEN offset = 1, count = 91;
+  SQLUSMALLINT status[2]{71, 72};
+  std::array<unsigned char, 2 * (sizeof(SQL_DATE_STRUCT) + 2) + 2> bytes;
+  bytes.fill(0xa5);
+  std::array<unsigned char, 2 * sizeof(SQLLEN) + 2> lengths, indicators;
+  for (auto* storage : {&lengths, &indicators}) {
+    storage->fill(0xa5);
+    for (std::size_t row = 0; row < 2; ++row) {
+      const SQLLEN initial = 79;
+      std::memcpy(storage->data() + 1 + row * sizeof(SQLLEN), &initial, sizeof(initial));
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, bytes.data(), width + 2, reinterpret_cast<SQLLEN*>(lengths.data())));
+  auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, indicators.data(), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT dates", SQL_NTS));
+  const auto queries = facts->queries;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_DATA_PTR,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)() - 3), 0));
+  ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, count);
+  EXPECT_EQ(71, status[0]);
+  EXPECT_EQ(72, status[1]);
+  EXPECT_TRUE(std::all_of(bytes.begin(), bytes.end(), [](auto b) { return b == 0xa5; }));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_DATA_PTR, bytes.data(), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  const SQL_DATE_STRUCT expected{2024, 2, 29};
+  EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, sizeof(expected)));
+  for (std::size_t i = 0; i < bytes.size(); ++i) {
+    if (i < 1 || i >= 1 + sizeof(expected)) {
+      EXPECT_EQ(0xa5, bytes[i]);
+    }
+  }
+  const auto read = [](const auto& storage, std::size_t row) {
+    SQLLEN value{};
+    std::memcpy(&value, storage.data() + 1 + row * sizeof(SQLLEN), sizeof(value));
+    return value;
+  };
+  EXPECT_EQ(width, read(lengths, 0));
+  EXPECT_EQ(79, read(lengths, 1));
+  EXPECT_EQ(0, read(indicators, 0));
+  EXPECT_EQ(SQL_NULL_DATA, read(indicators, 1));
+  for (const auto* storage : {&lengths, &indicators}) {
+    EXPECT_EQ(0xa5, storage->front());
+    EXPECT_EQ(0xa5, storage->back());
+  }
+  EXPECT_EQ(2u, count);
+  EXPECT_EQ(SQL_ROW_SUCCESS, status[0]);
+  EXPECT_EQ(SQL_ROW_SUCCESS, status[1]);
+  EXPECT_EQ(queries, facts->queries);
+}
+
+TEST_F(NumericScaleApiTest, DateBinaryResultRowOffsetsShortRepairPreparedOwningSiblingAndRefill) {
+  facts->result.columns = {{"d", NativeTypeInfo{ScalarType::Date, 10, 0, true}}};
+  facts->result.normalized_parameter_types = {{ScalarType::Integer, 10, 0, true}};
+  facts->result.rows = {{"2024-02-29"}, {"2000-02-29"}};
+  SQLHSTMT sibling{};
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+  struct Owner { SQLHSTMT h; ~Owner() { SQLFreeHandle(SQL_HANDLE_STMT, h); } } owner{sibling};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT date", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLINTEGER input = 44;
+  SQLLEN input_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 10, 0, &input, 0, &input_length));
+  struct Row { unsigned char before{0xa5}; unsigned char bytes[sizeof(SQL_DATE_STRUCT)]{}; unsigned char after{0xb5}; SQLLEN length{79}; } pages[2][2];
+  SQLULEN offset = sizeof(pages[0]), count = 91;
+  SQLUSMALLINT status[2]{71, 72};
+  for (auto& page : pages) {
+    for (auto& row : page) {
+      std::fill(std::begin(row.bytes), std::end(row.bytes), 0xee);
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE, (SQLPOINTER)sizeof(Row), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].bytes, sizeof(SQL_DATE_STRUCT) - 1, &pages[0][0].length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  input = 999;
+  facts->result.rows = {{"9999-12-31"}};
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"44"}, facts->parameters[0].value);
+  const auto queries = facts->queries;
+  ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ("22003", state());
+  EXPECT_EQ(2u, count);
+  EXPECT_EQ(SQL_ROW_ERROR, status[0]);
+  EXPECT_EQ(SQL_ROW_ERROR, status[1]);
+  for (const auto& page : pages) {
+    for (const auto& row : page) {
+      EXPECT_EQ(79, row.length);
+      EXPECT_TRUE(std::all_of(std::begin(row.bytes), std::end(row.bytes), [](auto b) { return b == 0xee; }));
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].bytes, sizeof(SQL_DATE_STRUCT), &pages[0][0].length));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  const SQL_DATE_STRUCT expected[] = {{2024, 2, 29}, {2000, 2, 29}};
+  for (std::size_t row = 0; row < 2; ++row) {
+    EXPECT_EQ(0, std::memcmp(&expected[row], pages[1][row].bytes, sizeof(SQL_DATE_STRUCT)));
+    EXPECT_EQ(sizeof(SQL_DATE_STRUCT), pages[1][row].length);
+    EXPECT_EQ(SQL_ROW_SUCCESS, status[row]);
+    EXPECT_EQ(79, pages[0][row].length);
+  }
+  for (const auto& page : pages) {
+    for (const auto& row : page) {
+      EXPECT_EQ(0xa5, row.before);
+      EXPECT_EQ(0xb5, row.after);
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+  SQL_DATE_STRUCT actual{};
+  SQLLEN length = 79;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_DEFAULT, &actual, 0, &length));
+  EXPECT_EQ(2024, actual.year);
+  EXPECT_EQ(29, actual.day);
+  EXPECT_EQ(queries, facts->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0));
+  input = 44;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  actual = {};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, &actual, sizeof(actual), &length));
+  EXPECT_EQ(9999, actual.year);
+  EXPECT_EQ(12, actual.month);
+  EXPECT_EQ(31, actual.day);
+  EXPECT_EQ(sizeof(actual), length);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+} // namespace

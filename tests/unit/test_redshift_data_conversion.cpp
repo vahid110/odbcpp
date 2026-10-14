@@ -1211,7 +1211,7 @@ TEST(ResultTypesTest, SignedIntegerBinaryResultPairsAreExplicitAndDefaultsStayNa
         EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-         SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+         SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
@@ -1227,7 +1227,7 @@ TEST(ResultTypesTest, FloatingBinaryResultPairsKeepNativeDefaultsAndOtherRefusal
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_FLOAT));
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_DOUBLE));
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-             SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+             SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
 }
@@ -1241,7 +1241,7 @@ TEST(ResultTypesTest, TinyintBinaryResultUsesSignedOneByteWithoutChangingDefault
     EXPECT_EQ(-128, (std::numeric_limits<SQLSCHAR>::min)());
     EXPECT_EQ(127, (std::numeric_limits<SQLSCHAR>::max)());
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-             SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+             SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
 }
@@ -1273,5 +1273,61 @@ TEST_F(RedshiftDataConverterTest, TinyintCheckedScalarDomainIsSignedAndPublishes
             EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, 1));
             EXPECT_EQ(1, length);
         }
+    }
+}
+
+
+TEST(ResultTypesTest, DateBinaryResultPairUsesExistingDateStructureAndKeepsOtherRefusals) {
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_BINARY));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(SQL_DATE, SQL_C_BINARY));
+    EXPECT_EQ(SQL_C_DATE, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_DATE));
+    EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_DATE)); // Legacy source policy only.
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TIME),
+             SQLSMALLINT(SQL_TYPE_TIMESTAMP), SQLSMALLINT(SQL_TIMESTAMP),
+             SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
+        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_SLONG));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_TYPE_TIME));
+}
+
+TEST_F(RedshiftDataConverterTest, DateBinaryPrerequisiteCheckedFieldsPreserveExistingCalendarAndWarningPolicy) {
+    struct Case { const char* text; SQLSMALLINT year; SQLUSMALLINT month, day; SQLRETURN result; };
+    using rs::odbc::ConversionIssue;
+    ASSERT_EQ(6u, sizeof(SQL_DATE_STRUCT));
+    for (const auto& c : {Case{"0000-02-29", 0, 2, 29, SQL_SUCCESS},
+             Case{"0001-01-01", 1, 1, 1, SQL_SUCCESS},
+             Case{"2000-02-29", 2000, 2, 29, SQL_SUCCESS},
+             Case{"2024-02-29", 2024, 2, 29, SQL_SUCCESS},
+             Case{"9999-12-31", 9999, 12, 31, SQL_SUCCESS},
+             Case{" 2024-02-29 ", 2024, 2, 29, SQL_SUCCESS},
+             Case{"2024-02-29 12:00:00", 2024, 2, 29, SQL_SUCCESS_WITH_INFO}}) {
+        SCOPED_TRACE(c.text);
+        std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 2> bytes;
+        bytes.fill(0xa5);
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        ASSERT_EQ(c.result, RedshiftDataConverter::convert_data(c.text, SQL_C_TYPE_DATE,
+            bytes.data() + 1, 0, &length, &issue));
+        const SQL_DATE_STRUCT expected{c.year, c.month, c.day};
+        EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, sizeof(expected)));
+        EXPECT_EQ(sizeof(expected), length);
+        EXPECT_EQ(c.result == SQL_SUCCESS ? ConversionIssue::None : ConversionIssue::FractionalTruncation, issue);
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes.back());
+    }
+    for (const char* text : {"1900-02-29", "2023-02-29", "2024-00-01", "2024-01-00",
+             "2024-13-01", "2024-04-31", "10000-01-01", "-001-01-01", "bad"}) {
+        SCOPED_TRACE(text);
+        std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 2> bytes;
+        bytes.fill(0xa5);
+        const auto before = bytes;
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(text, SQL_C_TYPE_DATE,
+            bytes.data() + 1, 0, &length, &issue));
+        EXPECT_EQ(ConversionIssue::InvalidDatetimeFormat, issue);
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
     }
 }
