@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <functional>
 #include "core/database/postgres/redshift_catalog_query.h"
+#include "core/database/postgres/redshift_primary_key_contract.h"
 
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
@@ -262,6 +263,8 @@ TEST(RedshiftCatalogExecution, IncompleteAndMalformedExactNamesPerformNoSql) {
       std::optional<std::string>{std::string("x\0secret", 8)}, std::optional<std::string>{std::string("\xff", 1)}}) {
     for (int field = 0; field < 3; ++field) {
       SpySession spy; auto input = request();
+      // NULL catalog is now valid only for ordinary SHOW/current; retain the old LEGACY refusal.
+      if (field == 0 && !bad) spy.mode = RedshiftCatalogMode::Legacy;
       if (field == 0) input.catalog = bad;
       if (field == 1) input.schema = bad;
       if (field == 2) input.table = bad.value_or("");
@@ -3798,5 +3801,229 @@ TEST(RedshiftTablesSchemaPatterns, HeaderIndexScratchReleasesAfterProjectionWhil
       EXPECT_EQ(ResultCell{"owning"},second->rows[0][4]);
     }
     EXPECT_EQ(ResultCell{"owning"},first->rows[0][4]);
+  }
+}
+
+namespace {
+QueryResult current_pk_rows() {
+  QueryResult raw;
+  for (const auto* name:{"database_name","schema_name","table_name","column_name","key_seq","pk_name"}) {
+    raw.columns.push_back({name,NativeTypeInfo{
+        std::string_view(name)=="key_seq"?ScalarType::SmallInt:ScalarType::VarChar,0,0,true}});
+  }
+  raw.statement_kind=StatementKind::Unknown;
+  raw.rows={{"db","scope","table","second","2",std::nullopt},
+            {"db","scope","table","first","1",std::nullopt}};
+  return raw;
+}
+class CurrentPrimaryKeySession final : public RoutineExecutionSession {
+ public:
+  std::optional<std::string> share,external;
+  bool lost_scope{false};
+  std::vector<QueryParameter> bound;
+  std::optional<std::string> get_parameter_status(std::string_view key) const override {
+    if (lost_scope) throw std::runtime_error("Fixture scope observation loss");
+    if (key=="datashare_enabled") return share;
+    if (key=="external_database") return external;
+    return std::nullopt;
+  }
+  BackendResult<QueryResult> execute_prepared(std::string_view query,
+      std::span<const QueryParameter> values,rs::util::Deadline deadline) override {
+    bound.assign(values.begin(),values.end());
+    return execute_query(query,deadline);
+  }
+  void ready() {
+    replies.emplace_back(routine_identity(),snapshot);
+    replies.emplace_back(current_pk_rows(),snapshot);
+  }
+};
+PrimaryKeysCatalogRequest current_pk_request() {return {std::nullopt,"scope","table"};}
+}
+TEST(RedshiftCurrentPrimaryKeys, OwningCompositeSortAndOneDeadlineUseOnlyConnectedDatabase) {
+  CurrentPrimaryKeySession session;session.ready();
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{1});
+  auto result=session.execute_catalog(current_pk_request(),deadline);
+  ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(6u,result->columns.size());
+  EXPECT_EQ((ResultRows{{"db","scope","table","first","1",std::nullopt},
+                        {"db","scope","table","second","2",std::nullopt}}),result->rows);
+  EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;"}),session.commands);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline,deadline}),session.deadlines);
+  ASSERT_EQ(3u,session.bound.size());
+  EXPECT_EQ(ResultCell{"db"},session.bound[0].value);
+  EXPECT_EQ(ResultCell{"scope"},session.bound[1].value);
+  EXPECT_EQ(ResultCell{"table"},session.bound[2].value);
+  for (const auto& parameter:session.bound) {
+    EXPECT_EQ(QueryParameterType::Unspecified,parameter.type);
+  }
+  session.replies.clear();session.bound.clear();session.connected=false;
+  EXPECT_EQ(ResultCell{"first"},result->rows[0][3]);EXPECT_FALSE(result->rows[0][5]);
+}
+TEST(RedshiftCurrentPrimaryKeys, LiteralQuotedUnicodeNamesAndNoKeysRemainSixOwningFields) {
+  const std::string schema="schema\"_%\\雪",table="table'_%\\é";
+  CurrentPrimaryKeySession session;session.ready();
+  session.replies.back()->rows.clear();
+  auto result=session.execute_catalog(PrimaryKeysCatalogRequest{std::nullopt,schema,table},rs::util::Deadline::max());
+  ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());
+  ASSERT_EQ(6u,result->columns.size());EXPECT_EQ("TABLE_CAT",result->columns[0].name);
+  EXPECT_EQ("PK_NAME",result->columns[5].name);
+  EXPECT_EQ(ResultCell{schema},session.bound[1].value);EXPECT_EQ(ResultCell{table},session.bound[2].value);
+}
+TEST(RedshiftCurrentPrimaryKeys, InvalidCallerTextAndMetadataIdentifiersNeverDispatch) {
+  for (const auto& value:{std::string{},std::string("bad\0name",8),std::string("\xff",1)}) {
+    for (bool schema:{false,true}) {
+      CurrentPrimaryKeySession session;auto input=current_pk_request();
+      if (schema) input.schema=value;
+      else input.table=value;
+      auto result=session.execute_catalog(input,rs::util::Deadline::max());
+      ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),result.error());
+      EXPECT_TRUE(session.commands.empty());
+    }
+  }
+  CurrentPrimaryKeySession session;auto input=current_pk_request();input.schema.reset();
+  EXPECT_FALSE(session.execute_catalog(input,rs::util::Deadline::max()));EXPECT_TRUE(session.commands.empty());
+  input=current_pk_request();input.name_matches.catalog=CatalogNameMatch::IdentifierUnquoted;
+  input.name_matches.schema=CatalogNameMatch::IdentifierUnquoted;input.name_matches.object=CatalogNameMatch::IdentifierUnquoted;
+  EXPECT_FALSE(session.execute_catalog(input,rs::util::Deadline::max()));EXPECT_TRUE(session.commands.empty());
+}
+TEST(RedshiftCurrentPrimaryKeys, ModeStateCapabilityAndVisibleScopeRefuseWithoutDowngrade) {
+  for (unsigned guard=0;guard<7;++guard) {
+    CurrentPrimaryKeySession session;
+    if (guard==0) session.mode=RedshiftCatalogMode::Legacy;
+    if (guard==1) session.snapshot.state=SessionState::Transaction;
+    if (guard==2) session.capability="3";
+    if (guard==3) session.capability="4suffix";
+    if (guard==4) session.external="on";
+    if (guard==5) session.external="broken";
+    if (guard==6) session.lost_scope=true;
+    auto result=session.execute_catalog(current_pk_request(),rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_TRUE(session.commands.empty());
+  }
+  CurrentPrimaryKeySession expired;
+  EXPECT_FALSE(expired.execute_catalog(current_pk_request(),rs::util::Clock::now()));
+  EXPECT_TRUE(expired.commands.empty());
+}
+TEST(RedshiftCurrentPrimaryKeys, InvalidIdentityAndSnapshotPrecedeOverflowWithoutPreparedDispatch) {
+  for (unsigned bad=0;bad<5;++bad) {
+    CurrentPrimaryKeySession session;ResultLimits limits;limits.max_metadata_entries=1;
+    ASSERT_TRUE(session.budgets(limits));
+    auto identity=routine_identity();auto snapshot=session.snapshot;
+    if (bad==0) identity.rows[0][0]=std::string("bad\0name",8);
+    if (bad==1) identity.statement_kind.reset();
+    if (bad==2) identity.columns[0].name="wrong";
+    if (bad==3) snapshot.state=SessionState::Transaction;
+    if (bad==4) snapshot.disposition=SessionDisposition::Retire;
+    session.replies.emplace_back(std::move(identity),snapshot);
+    auto result=session.execute_catalog(current_pk_request(),rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+    EXPECT_EQ(snapshot.state,result.session_snapshot().state);
+    EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+    EXPECT_EQ(1u,session.commands.size());EXPECT_TRUE(session.bound.empty());
+  }
+}
+TEST(RedshiftCurrentPrimaryKeys, HiddenForeignDuplicateAndIncompleteKeysNeverPublishPrefix) {
+  for (unsigned bad=0;bad<6;++bad) {
+    CurrentPrimaryKeySession session;session.ready();auto& raw=*session.replies.back();
+    if (bad==0) raw.rows.back()[0]="foreign";
+    if (bad==1) raw.rows.back()[3]="second";
+    if (bad==2) raw.rows.back()[4]="2";
+    if (bad==3) raw.rows.back()[4]="3";
+    if (bad==4) raw.rows.back()[2].reset();
+    if (bad==5) raw.statement_kind.reset();
+    auto result=session.execute_catalog(current_pk_request(),rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+    EXPECT_EQ(2u,session.commands.size());
+  }
+}
+TEST(RedshiftCurrentPrimaryKeys, RawIndexSetsAndOutputHaveLiteralPeakAndDestroyedScratchRelease) {
+  const RedshiftPrimaryKeyCommandPlan plan{"db","scope","table"};
+  for (const auto cap:{20u,21u,26u,27u}) {
+    SCOPED_TRACE(cap);ResultLimits limits;limits.max_metadata_entries=cap;
+    RedshiftRoutineBudget budget{ResponseLimits{},limits};auto raw=current_pk_rows();raw.rows.erase(raw.rows.begin());
+    auto first=redshift_primary_key_part(plan,{raw,{SessionState::Idle,SessionDisposition::Reusable}},
+        budget,rs::util::Deadline::max());
+    if (cap==20) {
+      ASSERT_FALSE(first);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),first.error());
+      continue;
+    }
+    ASSERT_TRUE(first)<<first.error_message();ASSERT_EQ(6u,first->columns.size());
+    // Raw six + index six + output six + sequence/key sets two + PK-name identity one =21.
+    // Scratch dies, but six published descriptors remain: the next peak is27.
+    auto second=redshift_primary_key_part(plan,{raw,{SessionState::Idle,SessionDisposition::Reusable}},
+        budget,rs::util::Deadline::max());
+    if (cap<27) {
+      ASSERT_FALSE(second);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),second.error());
+    } else {
+      ASSERT_TRUE(second)<<second.error_message();EXPECT_EQ(ResultCell{"first"},second->rows[0][3]);
+    }
+    EXPECT_EQ(ResultCell{"first"},first->rows[0][3]);
+  }
+}
+TEST(RedshiftCurrentPrimaryKeys, ConstraintTerminalSnapshotCannotBecomeReusableBudgetError) {
+  CurrentPrimaryKeySession session;ResultLimits limits;limits.max_metadata_entries=15;
+  ASSERT_TRUE(session.budgets(limits));session.ready();
+  session.replies.back()={current_pk_rows(),{SessionState::Transaction,SessionDisposition::ResetRequired}};
+  auto result=session.execute_catalog(current_pk_request(),rs::util::Deadline::max());
+  ASSERT_FALSE(result);EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+  EXPECT_EQ(SessionState::Transaction,result.session_snapshot().state);
+  EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+}
+TEST(RedshiftCurrentPrimaryKeys, LateIdentityOrPreparedCompletionCannotReturnSuccessPrefix) {
+  for (const auto late_command:{1u,2u}) {
+    CurrentPrimaryKeySession session;session.ready();
+    const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{5});
+    session.callback=[&] {
+      if (session.commands.size()==late_command) std::this_thread::sleep_until(deadline+std::chrono::milliseconds{1});
+    };
+    auto result=session.execute_catalog(current_pk_request(),deadline);
+    ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());
+    EXPECT_EQ(late_command,session.commands.size());
+    session.callback={};session.replies.clear();session.ready();
+    EXPECT_TRUE(session.execute_catalog(current_pk_request(),rs::util::Deadline::max()));
+  }
+}
+TEST(RedshiftCurrentPrimaryKeys, NativeErrorAndExchangePreflightKeepFreshRequestRecoveryExplicit) {
+  CurrentPrimaryKeySession session;ResultLimits limits;limits.max_results=1;
+  ASSERT_TRUE(session.budgets(limits));session.ready();
+  auto refused=session.execute_catalog(current_pk_request(),rs::util::Deadline::max());
+  ASSERT_FALSE(refused);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),refused.error());
+  EXPECT_TRUE(session.commands.empty());
+  limits.max_results=4;ASSERT_TRUE(session.budgets(limits));session.replies.clear();session.ready();
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"Permission denied"};
+  denied.native_state="42501";denied.session_state=SessionState::Idle;denied.disposition=SessionDisposition::Reusable;
+  session.replies.back()=denied;
+  auto failure=session.execute_catalog(current_pk_request(),rs::util::Deadline::max());
+  ASSERT_FALSE(failure);EXPECT_EQ(std::optional<std::string>{"42501"},failure.backend_error().native_state);
+  EXPECT_EQ(SessionDisposition::Reusable,failure.session_snapshot().disposition);
+  session.ready();EXPECT_TRUE(session.execute_catalog(current_pk_request(),rs::util::Deadline::max()));
+  EXPECT_EQ(4u,session.commands.size());
+}
+
+TEST(RedshiftCurrentPrimaryKeys, RowCellByteAndNameBoundsAdmitOnlySimultaneousOwningStorage) {
+  const RedshiftPrimaryKeyCommandPlan plan{"db","scope","table"};
+  for (const bool rows:{false,true}) {
+    for (const bool enough:{false,true}) {
+      ResultLimits limits;
+      if (rows) limits.max_rows=enough?2:1; // One raw row + one projected owning row.
+      else limits.max_cells=enough?12:11; // Six raw cells + six projected owning cells.
+      RedshiftRoutineBudget budget{ResponseLimits{},limits};auto raw=current_pk_rows();raw.rows.erase(raw.rows.begin());
+      auto result=redshift_primary_key_part(plan,{raw,{SessionState::Idle,SessionDisposition::Reusable}},
+          budget,rs::util::Deadline::max());
+      if (enough) {
+        ASSERT_TRUE(result)<<result.error_message();EXPECT_EQ(ResultCell{"first"},result->rows[0][3]);
+      } else {
+        ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+      }
+    }
+  }
+  for (const bool bytes:{false,true}) {
+    auto raw=current_pk_rows();raw.rows.erase(raw.rows.begin());ResponseLimits response;ResultLimits limits;
+    if (bytes) response.max_wire_bytes=redshift_routine_schema_usage(raw).bytes*2;
+    else limits.max_metadata_name_bytes=1;
+    RedshiftRoutineBudget budget{response,limits};
+    auto result=redshift_primary_key_part(plan,{raw,{SessionState::Idle,SessionDisposition::Reusable}},
+        budget,rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+    EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
   }
 }

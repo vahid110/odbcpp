@@ -1,6 +1,7 @@
 #pragma once
 
 #include "odbcpp/database/query_result.h"
+#include "odbcpp/util/deadline.h"
 #include <optional>
 #include <string>
 
@@ -34,5 +35,15 @@ BackendResult<RedshiftPrimaryKeyCommandPlan> redshift_primary_key_plan(
 BackendResult<QueryResult> normalize_redshift_primary_keys(
     const RedshiftPrimaryKeyCommandPlan& plan,
     BackendResult<QueryResult> input);
+
+class RedshiftRoutineBudget;
+// New ordinary omitted-catalog route only. Native borrowed validation precedes
+// admission; the strict plan and existing pure normalizer above retain their API.
+BackendResult<std::string> redshift_primary_key_database(
+    BackendResult<QueryResult> input, RedshiftRoutineBudget& budget,
+    rs::util::Deadline deadline);
+BackendResult<QueryResult> redshift_primary_key_part(
+    const RedshiftPrimaryKeyCommandPlan& plan, BackendResult<QueryResult> input,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
 
 }  // namespace rs::core::database::postgres

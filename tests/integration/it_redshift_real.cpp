@@ -247,6 +247,7 @@ protected:
   SQLHSTMT hstmt_ = nullptr;
   
   void modern_primary_key_contract(bool use_executor, bool invalid_names = false, bool legacy = false);
+  void current_database_primary_key_contract(bool wide);
   void odbc_primary_key_mode_contract(const char* explicit_mode);
   void odbc_primary_key_edge_contract(const char* mode, bool quoted);
   std::string connection_string_;
@@ -761,16 +762,16 @@ void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool inval
     ASSERT_NE(nullptr, executor);
     const SessionSnapshot expected{SessionState::Idle, SessionDisposition::Reusable};
     ASSERT_EQ(SessionState::Idle, session.session_state());
-    std::vector<PrimaryKeysCatalogRequest> invalid{
-        {std::nullopt, plan->schema, plan->table},
-        {plan->database, std::nullopt, plan->table}};
+    std::vector<PrimaryKeysCatalogRequest> invalid{{plan->database, std::nullopt, plan->table}};
+    // Only the newly sealed ordinary SHOW omitted-catalog oracle is obsolete.
+    if (legacy) invalid.push_back({std::nullopt, plan->schema, plan->table});
     for (const auto& bad : {std::string{}, std::string("x\0suffix", 8),
                             std::string("\xff", 1)}) {
       invalid.push_back({bad, plan->schema, plan->table});
       invalid.push_back({plan->database, bad, plan->table});
       invalid.push_back({plan->database, plan->schema, bad});
     }
-    ASSERT_EQ(11u, invalid.size());
+    ASSERT_EQ(legacy ? 11u : 10u, invalid.size());
     for (const auto& input : invalid) {
       auto rejected = executor->execute_catalog(input, deadline);
       ASSERT_FALSE(rejected);
@@ -10166,4 +10167,69 @@ TEST_F(RedshiftNumericBinaryInputRealTest, NumericBinaryInputPairsNullApdAndOwni
   ASSERT_NO_FATAL_FAILURE(echo(-42, false));
   ASSERT_NO_FATAL_FAILURE(echo(0, true));
   ASSERT_NO_FATAL_FAILURE(release_connection());
+}
+
+void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
+  // Source authorship/compile only. A protected finite checkpoint must admit
+  // this exact case and the existing composite-PK fixture before any body runs.
+  const auto* enabled=std::getenv("ODBCPP_REDSHIFT_CURRENT_PK_NATIVE");
+  if (!enabled || std::string_view(enabled)!="1") {
+    GTEST_SKIP()<<"Separately admitted current-database primary-key fixture";
+  }
+  const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
+  connection_string_+=";RedshiftCatalogMode=SHOW";
+  ASSERT_TRUE(connect());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(5),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(SQL_FALSE),0));
+  std::array<SQLCHAR,1025> name{};SQLSMALLINT length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_DATABASE_NAME,name.data(),name.size(),&length));
+  ASSERT_GT(length,0);ASSERT_LT(static_cast<std::size_t>(length),name.size());
+  const std::string database(reinterpret_cast<char*>(name.data()),length);
+  const std::string schema="odbcpp_fixture",table="m2_catalog_parent_20261003_c01";
+  std::array<rs::core::database::ResultRows,2> owned;
+  for (unsigned explicit_catalog=0;explicit_catalog<2;++explicit_catalog) {
+    SQLRETURN result=SQL_ERROR;
+    if (wide) {
+      auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(schema),t=rs::odbc::utf8_to_wide(table);
+      ASSERT_TRUE(db);ASSERT_TRUE(sc);ASSERT_TRUE(t);
+      result=SQLPrimaryKeysW(hstmt_,explicit_catalog?db->data():nullptr,
+          explicit_catalog?static_cast<SQLSMALLINT>(db->size()):0,
+          sc->data(),static_cast<SQLSMALLINT>(sc->size()),t->data(),static_cast<SQLSMALLINT>(t->size()));
+    } else {
+      result=SQLPrimaryKeys(hstmt_,explicit_catalog?reinterpret_cast<SQLCHAR*>(const_cast<char*>(database.data())):nullptr,
+          explicit_catalog?static_cast<SQLSMALLINT>(database.size()):0,
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema.data())),schema.size(),
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(table.data())),table.size());
+    }
+    ASSERT_TRUE(catalog_succeeded(result))<<metadata_diagnostic();
+    SQLSMALLINT columns=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(6,columns);
+    for (unsigned row=0;row<2;++row) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));rs::core::database::ResultRow cells;
+      for (SQLUSMALLINT col=1;col<=6;++col) {
+        std::array<char,1025> value{};SQLLEN indicator=0;
+        ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,col,SQL_C_CHAR,value.data(),value.size(),&indicator));
+        if (indicator==SQL_NULL_DATA) cells.emplace_back(std::nullopt);
+        else {
+          ASSERT_GE(indicator,0);ASSERT_LT(static_cast<std::size_t>(indicator),value.size());
+          cells.emplace_back(std::string(value.data(),indicator));
+        }
+      }
+      EXPECT_EQ(rs::core::database::ResultCell{database},cells[0]);
+      EXPECT_EQ(rs::core::database::ResultCell{schema},cells[1]);
+      EXPECT_EQ(rs::core::database::ResultCell{table},cells[2]);
+      EXPECT_EQ(rs::core::database::ResultCell{row?"key_a":"key_b"},cells[3]);
+      EXPECT_EQ(rs::core::database::ResultCell{std::to_string(row+1)},cells[4]);
+      ASSERT_TRUE(cells[5]);EXPECT_FALSE(cells[5]->empty());
+      owned[explicit_catalog].push_back(std::move(cells));
+    }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+  EXPECT_EQ(owned[0],owned[1]);
+}
+TEST_F(RedshiftRealTest, CurrentDatabasePrimaryKeyNullCatalogAnsi) {
+  current_database_primary_key_contract(false);
+}
+TEST_F(RedshiftRealTest, CurrentDatabasePrimaryKeyNullCatalogWide) {
+  current_database_primary_key_contract(true);
 }
