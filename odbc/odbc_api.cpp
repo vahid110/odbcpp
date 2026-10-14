@@ -2760,7 +2760,7 @@ static SQLRETURN SQLDescribeCol_impl(SQLHSTMT statement_handle, SQLUSMALLINT col
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
-  return stmt->describe_col(column_number, column_name, name_buffer_length, name_length,
+  return stmt->describe_col(column_number, column_name, column_name ? name_buffer_length : 0, name_length,
                            data_type, column_size, decimal_digits, nullable);
 }
 
@@ -2772,7 +2772,7 @@ static SQLRETURN SQLDescribeColW_impl(
     SQLSMALLINT* nullable) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  if (name_buffer_length < 0) {
+  if (column_name && name_buffer_length < 0) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid column-name buffer length");
     return SQL_ERROR;
@@ -2792,7 +2792,7 @@ static SQLRETURN SQLDescribeColW_impl(
       stmt,
       std::string_view(reinterpret_cast<const char*>(utf8.data()),
                        static_cast<std::size_t>(utf8_length)),
-      column_name, name_buffer_length, name_length,
+      column_name, column_name ? name_buffer_length : 0, name_length,
       "Column name was truncated");
 }
 
