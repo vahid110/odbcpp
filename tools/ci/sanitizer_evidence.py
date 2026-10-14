@@ -232,6 +232,39 @@ def gtest_names(text):
     return sorted(result)
 
 
+def platform_inactive_provenance(name):
+    # Frozen P registers this producer unconditionally, but every case is _WIN32-only.
+    # It must still be compiled, linked, listed and run by the complete Linux CTest job.
+    if name != 'test_iocp_transport' or sys.platform != 'linux' or os.environ.get('RUNNER_OS') != 'Linux':
+        return None
+    if os.environ.get('SANITIZER_PRODUCT_HEAD') != FROZEN_PRODUCT or not os.environ.get('SANITIZER_PRODUCT_ROOT'):
+        raise ValueError('platform-inactive producer requires exact frozen product context')
+    root = Path(os.environ['SANITIZER_PRODUCT_ROOT'])
+    source = 'tests/unit/test_iocp_transport.cpp'
+    registration = 'cmake/Tests.cmake'
+    source_sha = 'e95667bf7dc5951cdf35a8cf8995b10f9fe4afbf30268ecd6fb6c3a97b35008b'
+    registration_sha = 'fef8438a8aafd831103c59845a1c39e26447729bf94f1ecfe7551ea76ceca6e2'
+    for relative, expected in [(source, source_sha), (registration, registration_sha)]:
+        path = root / relative
+        if not path.is_file() or path.is_symlink() or sha(path) != expected:
+            raise ValueError('platform-inactive producer source/registration provenance differs')
+    return {'product_head': FROZEN_PRODUCT, 'platform': 'Linux', 'source': source,
+            'source_sha256': source_sha, 'registration': registration,
+            'registration_sha256': registration_sha,
+            'reason': 'all owning cases guarded by _WIN32; unconditional unit CTest producer retained'}
+
+
+def producer_inventory(name, text):
+    inactive = platform_inactive_provenance(name)
+    if inactive is not None:
+        # gtest_main may emit only its banner before a successful zero-case listing.
+        # Do not turn malformed output, disabled cases or unexpected cases into an empty pass.
+        if text.strip() and not re.fullmatch(r'Running main\(\) from [^\r\n]+', text.strip()):
+            raise ValueError('platform-inactive producer must list exactly zero cases')
+        return {'names': [], 'platform_inactive': inactive}
+    return {'names': gtest_names(text), 'platform_inactive': None}
+
+
 def gtest_xml_path(name):
     if not re.fullmatch(r'test_[a-z0-9_]+', name):
         raise ValueError('unsafe or non-owning binary name')
@@ -336,8 +369,8 @@ def inventory():
         name = entry['name']
         gtest_xml_path(name)
         measure('list-' + name, [str(path), '--gtest_list_tests'], 60)
-        listed = gtest_names((EVIDENCE / ('list-' + name + '.log')).read_text())
-        binaries[name] = {'path': str(path), 'sha256': sha(path), 'names': listed}
+        listed = producer_inventory(name, (EVIDENCE / ('list-' + name + '.log')).read_text())
+        binaries[name] = {'path': str(path), 'sha256': sha(path), **listed}
     if not binaries or len({Path(v['path']).name for v in binaries.values()}) != len(binaries):
         raise ValueError('missing or colliding per-binary GoogleTest producers')
     require_unit_sources(binaries, [p.stem for p in Path('tests/unit').glob('*.cpp') if p.stem not in optional])
@@ -354,7 +387,9 @@ def test():
             {'GTEST_OUTPUT': 'xml:' + directory.as_posix() + '/'})
     expected = [entry['name'] for entry in json.loads((EVIDENCE / 'ctest-inventory.json').read_text())['tests']]
     root = xml_root(EVIDENCE / 'ctest.xml')
-    if sorted(case.attrib['name'] for case in root.iter('testcase')) != sorted(expected) or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
+    if (sorted(case.attrib['name'] for case in root.iter('testcase')) != sorted(expected)
+            or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped'))
+            or any(case.get('status') not in (None, 'run', 'passed') for case in root.iter('testcase'))):
         raise ValueError('all-unit CTest result failure/missing/skip')
     if {p.name for p in directory.iterdir()} != {name + '.xml' for name in binaries}:
         raise ValueError('per-binary XML missing/extra/overwritten')
@@ -362,7 +397,15 @@ def test():
     for name, record in binaries.items():
         if sha(record['path']) != record['sha256']:
             raise ValueError('owning executable changed during test')
+        inactive = platform_inactive_provenance(name)
+        if (record.get('platform_inactive') != inactive
+                or (not record['names'] and inactive is None)
+                or (inactive is not None and record['names'])):
+            raise ValueError('owning inventory applicability/provenance mismatch')
         results[name] = xml_result(gtest_xml_path(name), record['names'])
+        if inactive is not None:
+            results[name]['platform_inactive'] = inactive
+            results[name]['ctest_result'] = {'name': name, 'status': 'passed', 'xml_sha256': sha(EVIDENCE / 'ctest.xml')}
     write('results.json', results)
 
 

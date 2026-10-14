@@ -1,6 +1,7 @@
 """Offline sanitizer scheduling/evidence safety; never product assertions."""
 import ast
 from copy import deepcopy
+from contextlib import contextmanager
 import importlib.util
 import itertools
 import json
@@ -128,6 +129,118 @@ class EvidenceSafety(unittest.TestCase):
         for bad in ['', 'Suite.\n  DISABLED_one\n', 'Suite.\n  One\n  One\n']:
             with self.assertRaises(ValueError):h.gtest_names(bad)
         self.assertEqual(h.gtest_names('Suite.\n  One\n'), ['Suite.One'])
+
+    @contextmanager
+    def inactive_product(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ['tests/unit/test_iocp_transport.cpp', 'cmake/Tests.cmake']:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(subprocess.check_output(['git', 'show', BASE + ':' + name], cwd=ROOT))
+            env = {'SANITIZER_PRODUCT_ROOT': str(root), 'SANITIZER_PRODUCT_HEAD': BASE, 'RUNNER_OS': 'Linux'}
+            with patch.dict(os.environ, env), patch.object(h.sys, 'platform', 'linux'):
+                yield root
+
+    def test_frozen_linux_iocp_zero_inventory_is_source_backed_and_explicit(self):
+        with self.inactive_product():
+            for listing in ['', 'Running main() from /cold/_deps/googletest-src/googletest/src/gtest_main.cc\n']:
+                record = h.producer_inventory('test_iocp_transport', listing)
+                self.assertEqual(record['names'], [])
+                provenance = record['platform_inactive']
+                self.assertEqual(provenance['product_head'], BASE)
+                self.assertEqual(provenance['platform'], 'Linux')
+                self.assertEqual(provenance['source'], 'tests/unit/test_iocp_transport.cpp')
+                self.assertEqual(provenance['source_sha256'], 'e95667bf7dc5951cdf35a8cf8995b10f9fe4afbf30268ecd6fb6c3a97b35008b')
+                self.assertEqual(provenance['registration_sha256'], 'fef8438a8aafd831103c59845a1c39e26447729bf94f1ecfe7551ea76ceca6e2')
+            self.assertEqual(h.producer_inventory('test_backend_contract', 'Suite.\n  One\n')['names'], ['Suite.One'])
+            for name, listing in [('test_backend_contract', ''), ('test_unknown', ''),
+                                  ('test_iocp_transport', 'Suite.\n  Unexpected\n'),
+                                  ('test_iocp_transport', 'Suite.\n  DISABLED_one\n'),
+                                  ('test_iocp_transport', 'error: listing failed\n')]:
+                with self.subTest(name=name, listing=listing), self.assertRaises(ValueError):
+                    h.producer_inventory(name, listing)
+
+    def test_iocp_empty_inventory_without_exact_platform_source_context_refused(self):
+        with self.inactive_product() as root:
+            for env in [{'RUNNER_OS': 'Windows'}, {'SANITIZER_PRODUCT_HEAD': 'd'*40}]:
+                with patch.dict(os.environ, env), self.assertRaises(ValueError):
+                    h.producer_inventory('test_iocp_transport', '')
+            with patch.object(h.sys, 'platform', 'darwin'), self.assertRaises(ValueError):
+                h.producer_inventory('test_iocp_transport', '')
+            for name in ['tests/unit/test_iocp_transport.cpp', 'cmake/Tests.cmake']:
+                path = root / name
+                original = path.read_bytes()
+                path.write_bytes(original + b'\n// changed provenance\n')
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    h.producer_inventory('test_iocp_transport', '')
+                path.write_bytes(original)
+
+    def test_inactive_producer_still_runs_all_unit_ctest_and_requires_zero_xml_result(self):
+        inactive = 'test_iocp_transport'
+        applicable = 'test_backend_contract'
+        zero = '<testsuites tests="0" failures="0" disabled="0" errors="0"/>'
+        one = '<testsuites tests="1"><testsuite><testcase classname="Suite" name="One"/></testsuite></testsuites>'
+        junit = '<testsuite><testcase name="test_iocp_transport"/><testcase name="test_backend_contract"/></testsuite>'
+        with self.inactive_product() as root, patch.object(h, 'EVIDENCE', root):
+            binaries = {}
+            for name, listing in [(inactive, ''), (applicable, 'Suite.\n  One\n')]:
+                exe = root / name
+                exe.write_bytes(b'fresh offline executable identity fixture')
+                binaries[name] = dict(h.producer_inventory(name, listing), path=str(exe), sha256=h.sha(exe))
+            h.write('ctest-inventory.json', {'tests': [{'name': name} for name in binaries]})
+            h.write('executables.json', binaries)
+            def measured_result(*args):
+                (root/'ctest.xml').write_text(junit)
+                h.gtest_xml_path(inactive).write_text(zero)
+                h.gtest_xml_path(applicable).write_text(one)
+            with patch.object(h, 'measure', side_effect=measured_result) as measure:
+                h.test()
+            argv = measure.call_args.args[1]
+            self.assertEqual(argv[:9], ['ctest', '--test-dir', str(h.BUILD), '-L', 'unit', '--timeout', '60', '--output-on-failure', '--output-junit'])
+            self.assertEqual(measure.call_args.args[2], 900)
+            results = json.loads((root/'results.json').read_text())
+            self.assertEqual(results[inactive]['count'], 0)
+            self.assertEqual(results[inactive]['platform_inactive'], binaries[inactive]['platform_inactive'])
+            self.assertEqual(results[inactive]['ctest_result']['name'], inactive)
+            self.assertEqual(results[applicable]['count'], 1)
+            for kind in ['missing-ctest', 'skipped-ctest', 'disabled-ctest', 'duplicate-ctest',
+                         'missing-xml', 'nonzero-xml', 'wrong-xml-count', 'disabled-xml',
+                         'missing-provenance', 'wrong-provenance', 'empty-applicable', 'changed-exe']:
+                # Each fixture represents a separate completed CTest command, not a real product run.
+                for path in (root/'gtest').iterdir():
+                    path.unlink()
+                (root/'gtest').rmdir()
+                modified = deepcopy(binaries)
+                if kind == 'missing-provenance':
+                    modified[inactive].pop('platform_inactive')
+                elif kind == 'wrong-provenance':
+                    modified[inactive]['platform_inactive']['source_sha256'] = 'e'*64
+                elif kind == 'empty-applicable':
+                    modified[applicable]['names'] = []
+                elif kind == 'changed-exe':
+                    modified[inactive]['sha256'] = 'f'*64
+                h.write('executables.json', modified)
+                def bad_result(*args):
+                    measured_result(*args)
+                    if kind == 'missing-ctest':
+                        (root/'ctest.xml').write_text(junit.replace('<testcase name="test_iocp_transport"/>', ''))
+                    elif kind == 'skipped-ctest':
+                        (root/'ctest.xml').write_text(junit.replace('name="test_iocp_transport"/>', 'name="test_iocp_transport"><skipped/></testcase>'))
+                    elif kind == 'disabled-ctest':
+                        (root/'ctest.xml').write_text(junit.replace('name="test_iocp_transport"/>', 'name="test_iocp_transport" status="disabled"/>'))
+                    elif kind == 'duplicate-ctest':
+                        (root/'ctest.xml').write_text(junit.replace('</testsuite>', '<testcase name="test_iocp_transport"/></testsuite>'))
+                    elif kind == 'missing-xml':
+                        h.gtest_xml_path(inactive).unlink()
+                    elif kind == 'nonzero-xml':
+                        h.gtest_xml_path(inactive).write_text(one)
+                    elif kind == 'wrong-xml-count':
+                        h.gtest_xml_path(inactive).write_text(zero.replace('tests="0"', 'tests="1"'))
+                    elif kind == 'disabled-xml':
+                        h.gtest_xml_path(inactive).write_text(zero.replace('disabled="0"', 'disabled="1"'))
+                with self.subTest(kind=kind), patch.object(h, 'measure', side_effect=bad_result), self.assertRaises(ValueError):
+                    h.test()
 
     def test_xml_exact_cases_failure_skip_and_separate_binary_names(self):
         good='<testsuites tests="1"><testsuite><testcase classname="Suite" name="One"/></testsuite></testsuites>'
