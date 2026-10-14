@@ -1404,3 +1404,60 @@ TEST_F(RedshiftDataConverterTest, TimeTimestampBinaryPrerequisiteFractionsAndExi
         EXPECT_EQ(79, length);
     }
 }
+
+TEST_F(RedshiftDataConverterTest, NonfiniteNumericStrictTextParserAndFloatingControlsRemainDistinct) {
+    using rs::odbc::ConversionIssue;
+    for (const char* text : {"NaN", "Infinity", "-Infinity", "NaNx", "1.2junk"}) {
+        SCOPED_TRACE(text);
+        std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+        bytes.fill(0xa5);
+        const auto before = bytes;
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            text, SQL_C_NUMERIC, bytes.data() + 1, 0, &length, &issue, 10, 2));
+        EXPECT_EQ(ConversionIssue::InvalidCharacterValue, issue);
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+    }
+    for (const char* text : {"NaN", "Infinity", "-Infinity"}) {
+        SQLDOUBLE value = 7;
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+            text, SQL_C_DOUBLE, &value, 0, &length, &issue));
+        EXPECT_EQ(ConversionIssue::None, issue);
+        EXPECT_EQ(sizeof(value), length);
+        if (std::string_view(text) == "NaN") {
+            EXPECT_TRUE(std::isnan(value));
+        } else {
+            EXPECT_TRUE(std::isinf(value));
+            EXPECT_EQ(text[0] == '-', std::signbit(value));
+        }
+    }
+}
+
+TEST_F(RedshiftDataConverterTest, NonfiniteNumericRepairRetainsFiniteScaleAndWholeOverflow) {
+    using rs::odbc::ConversionIssue;
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = 79;
+    ConversionIssue issue{};
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12.345", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 5, 2));
+    EXPECT_EQ(ConversionIssue::FractionalTruncation, issue);
+    EXPECT_EQ(5, numeric.precision);
+    EXPECT_EQ(2, numeric.scale);
+    EXPECT_EQ(1, numeric.sign);
+    EXPECT_EQ(0xd2, numeric.val[0]);
+    EXPECT_EQ(4, numeric.val[1]);
+    EXPECT_TRUE(std::all_of(std::begin(numeric.val) + 2, std::end(numeric.val), [](auto b) { return b == 0; }));
+    EXPECT_EQ(sizeof(numeric), length);
+    std::memset(&numeric, 0xa5, sizeof(numeric));
+    const auto before = numeric;
+    length = 79;
+    ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "1000", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 5, 2));
+    EXPECT_EQ(ConversionIssue::NumericValueOutOfRange, issue);
+    EXPECT_EQ(0, std::memcmp(&before, &numeric, sizeof(numeric)));
+    EXPECT_EQ(79, length);
+}

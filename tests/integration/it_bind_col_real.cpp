@@ -3993,3 +3993,65 @@ TEST_F(BindColIntegrationTest, TimeTimestampBinaryWholeFieldsShortRetryNullAndRe
     }
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(60));
 }
+
+TEST_F(BindColIntegrationTest, NonfiniteNumericBoundAndGetDataRangeRecovery) {
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)5, 0));
+    const char* query = "SELECT 'NaN'::real, 'Infinity'::double precision, "
+        "'-Infinity'::real, 42::double precision, CAST(NULL AS real)";
+    const auto state = [&]() {
+        SQLCHAR value[6]{};
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            value, nullptr, nullptr, 0, nullptr));
+        return std::string(reinterpret_cast<char*>(value));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)query, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_NUMERIC_STRUCT numeric{};
+    std::memset(&numeric, 0xa5, sizeof(numeric));
+    const auto original = numeric;
+    SQLLEN length = 79;
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+        ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_NUMERIC, &numeric, 0, &length));
+        EXPECT_EQ("22003", state());
+        EXPECT_EQ(79, length);
+        EXPECT_EQ(0, std::memcmp(&original, &numeric, sizeof(numeric)));
+        SQLDOUBLE floating = 7;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_DOUBLE, &floating, 0, &length));
+        if (column == 1) {
+            EXPECT_TRUE(std::isnan(floating));
+        } else {
+            EXPECT_TRUE(std::isinf(floating));
+            EXPECT_EQ(column == 3, std::signbit(floating));
+        }
+        length = 79;
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_NUMERIC, &numeric, 0, &length));
+    EXPECT_EQ(1, numeric.sign);
+    EXPECT_EQ(42, numeric.val[0]);
+    EXPECT_EQ(sizeof(numeric), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 5, SQL_C_NUMERIC,
+        reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    for (bool indicator_only : {false, true}) {
+        std::memset(&numeric, 0xa5, sizeof(numeric));
+        length = 79;
+        ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_NUMERIC,
+            indicator_only ? nullptr : &numeric, 0, &length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)query, SQL_NTS));
+        ASSERT_EQ(SQL_ERROR, SQLFetch(hstmt));
+        EXPECT_EQ("22003", state());
+        EXPECT_EQ(79, length);
+        EXPECT_EQ(0, std::memcmp(&original, &numeric, sizeof(numeric)));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_UNBIND));
+    }
+    SQLREAL recovered = 7;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_FLOAT, &recovered, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)query, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_TRUE(std::isnan(recovered));
+    EXPECT_EQ(sizeof(recovered), length);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(60));
+}

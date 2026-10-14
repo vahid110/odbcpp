@@ -3999,3 +3999,328 @@ TEST_F(NumericScaleApiTest, TimeTimestampBinaryRowOffsetsShortRepairPreparedOwni
   }
 }
 } // namespace
+
+namespace {
+TEST_F(NumericScaleApiTest, NonfiniteNumericGetDataBoundAndIndicatorOnlyShareRangeWithoutPublication) {
+  for (ScalarType family : {ScalarType::Real, ScalarType::Double}) {
+    SCOPED_TRACE(static_cast<int>(family));
+    facts->result.columns = {{"f", NativeTypeInfo{family, 15, 6, true}},
+        {"sibling", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+    for (const char* text : {"NaN", "Infinity", "-Infinity"}) {
+      SCOPED_TRACE(text);
+      facts->result.rows = {{text, "42"}};
+      std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+      bytes.fill(0xa5);
+      const auto before = bytes;
+      SQLLEN length = 79;
+      ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT special", SQL_NTS));
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+      dimensions(ard, 1, 10, 2);
+      for (SQLSMALLINT target : {SQLSMALLINT(SQL_C_NUMERIC), SQLSMALLINT(SQL_ARD_TYPE)}) {
+        ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, target, bytes.data() + 1, 0, &length));
+        EXPECT_EQ("22003", state());
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+      }
+      SQLDOUBLE value = 7;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DOUBLE, &value, 0, &length));
+      if (std::string_view(text) == "NaN") {
+        EXPECT_TRUE(std::isnan(value));
+      } else {
+        EXPECT_TRUE(std::isinf(value));
+        EXPECT_EQ(text[0] == '-', std::signbit(value));
+      }
+      EXPECT_EQ(sizeof(value), length);
+      length = 79;
+      ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_NUMERIC, bytes.data() + 1, 0, &length));
+      EXPECT_EQ(before, bytes);
+      EXPECT_EQ(79, length);
+      SQLINTEGER sibling = 73;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 2, SQL_C_SLONG, &sibling, 0, &length));
+      EXPECT_EQ(42, sibling);
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      for (bool indicator_only : {false, true}) {
+        SCOPED_TRACE(indicator_only);
+        length = 79;
+        SQLLEN indicator = 83;
+        SQLULEN count = 91;
+        SQLUSMALLINT status = 71;
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, &status, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC,
+            indicator_only ? nullptr : bytes.data() + 1, 0, &length));
+        dimensions(ard, 1, 10, 2, indicator_only ? nullptr : bytes.data() + 1);
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &indicator, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT special", SQL_NTS));
+        const auto queries = facts->queries;
+        ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+        EXPECT_EQ("22003", state());
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+        EXPECT_EQ(83, indicator);
+        EXPECT_EQ(SQL_ROW_ERROR, status);
+        EXPECT_EQ(1u, count);
+        EXPECT_EQ(queries, facts->queries);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0));
+      }
+    }
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, NonfiniteNumericSourceDistinctionAndHeaderNullDeferredPrecedence) {
+  for (ScalarType family : {ScalarType::Real, ScalarType::Double, ScalarType::VarChar}) {
+    SCOPED_TRACE(static_cast<int>(family));
+    facts->result.columns = {{"f", NativeTypeInfo{family, 15, 6, true}}};
+    for (const char* text : {"NaN", "Infinity", "-Infinity", "NaNx", "1.2junk"}) {
+      facts->result.rows = {{text}};
+      const bool canonical = std::string_view(text) == "NaN" || std::string_view(text) == "Infinity" || std::string_view(text) == "-Infinity";
+      const char* expected = family != ScalarType::VarChar && canonical ? "22003" : "22018";
+      ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT special", SQL_NTS));
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+      bytes.fill(0xa5);
+      const auto before = bytes;
+      SQLLEN length = 79;
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_NUMERIC, bytes.data() + 1, -1, &length));
+      EXPECT_EQ("HY090", state());
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_NUMERIC, nullptr, 0, &length));
+      EXPECT_EQ("HY009", state());
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, 12345, bytes.data() + 1, 0, &length));
+      EXPECT_EQ("HY003", state());
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_NUMERIC, bytes.data() + 1, 0, &length));
+      EXPECT_EQ(expected, state());
+      EXPECT_EQ(before, bytes);
+      EXPECT_EQ(79, length);
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC, bytes.data() + 1, 0, &length));
+      auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+      dimensions(ard, 1, 10, 2, bytes.data() + 1);
+      ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT special", SQL_NTS));
+      ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+      EXPECT_EQ(expected, state());
+      EXPECT_EQ(before, bytes);
+      EXPECT_EQ(79, length);
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+    }
+  }
+  facts->result.columns = {{"f", NativeTypeInfo{ScalarType::Double, 15, 6, true}}};
+  facts->result.rows = {{"NaN"}};
+  facts->result.cell_errors = {{0, 0}};
+  SQL_NUMERIC_STRUCT numeric{};
+  std::memset(&numeric, 0xa5, sizeof(numeric));
+  const auto original = numeric;
+  SQLLEN length = 79;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC, &numeric, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT deferred", SQL_NTS));
+  ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+  EXPECT_EQ("22018", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_NUMERIC, &numeric, 0, &length));
+  EXPECT_EQ("22018", state());
+  EXPECT_EQ(0, std::memcmp(&original, &numeric, sizeof(numeric)));
+  EXPECT_EQ(79, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  facts->result.cell_errors.clear();
+  facts->result.rows = {{std::nullopt}};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)() - 3), 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT null", SQL_NTS));
+  // Even a NULL row must pass the existing layout/span preflight.
+  ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+  EXPECT_EQ("HY024", state());
+  EXPECT_EQ(79, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC, &numeric, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(0, std::memcmp(&original, &numeric, sizeof(numeric)));
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_NUMERIC, &numeric, 0, nullptr));
+  EXPECT_EQ("22002", state());
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_NUMERIC,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+}
+
+TEST_F(NumericScaleApiTest, NonfiniteNumericRowColumnArraysKeepSplitPublicationAndDiagnosticAttribution) {
+  struct Row {
+    unsigned char before{0xa5}, bytes[sizeof(SQL_NUMERIC_STRUCT)]{}, after{0xb5};
+    SQLLEN length{79}, indicator{83};
+  };
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  for (bool row_wise : {false, true}) {
+    SCOPED_TRACE(row_wise);
+    facts->result.columns = {{"f", NativeTypeInfo{ScalarType::Double, 15, 6, true}}};
+    facts->result.rows = {{"NaN"}, {"12.345"}, {std::nullopt}, {"NaNx"}, {"99.00"}};
+    Row pages[2][5];
+    for (auto& page : pages) {
+      for (auto& row : page) {
+        std::fill(std::begin(row.bytes), std::end(row.bytes), 0xee);
+      }
+    }
+    std::array<unsigned char, 5 * sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+    bytes.fill(0xee);
+    std::array<unsigned char, 5 * sizeof(SQLLEN) + 2> lengths, indicators;
+    for (auto* storage : {&lengths, &indicators}) {
+      storage->fill(0xa5);
+      for (std::size_t row = 0; row < 5; ++row) {
+        const SQLLEN initial = storage == &lengths ? 79 : 83;
+        std::memcpy(storage->data() + 1 + row * sizeof(SQLLEN), &initial, sizeof(initial));
+      }
+    }
+    SQLULEN offset = row_wise ? sizeof(pages[0]) : 1, count = 91;
+    SQLUSMALLINT statuses[5]{71, 72, 73, 74, 75};
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)5, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE,
+        (SQLPOINTER)(row_wise ? sizeof(Row) : SQL_BIND_BY_COLUMN), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, statuses, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+    void* data = row_wise ? pages[0][0].bytes : bytes.data();
+    SQLLEN* length = row_wise ? &pages[0][0].length : reinterpret_cast<SQLLEN*>(lengths.data());
+    void* indicator = row_wise ? static_cast<void*>(&pages[0][0].indicator) : indicators.data();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC, data, sizeof(SQL_NUMERIC_STRUCT) + 2, length));
+    auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+    dimensions(ard, 1, 5, 2, data);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, indicator, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT mixed", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+    EXPECT_EQ(5u, count);
+    const SQLUSMALLINT expected_status[] = {SQL_ROW_ERROR, SQL_ROW_SUCCESS_WITH_INFO,
+        SQL_ROW_SUCCESS, SQL_ROW_ERROR, SQL_ROW_SUCCESS};
+    for (std::size_t row = 0; row < 5; ++row) {
+      SCOPED_TRACE(row);
+      EXPECT_EQ(expected_status[row], statuses[row]);
+      const auto* output = row_wise ? pages[1][row].bytes : bytes.data() + 1 + row * sizeof(SQL_NUMERIC_STRUCT);
+      SQLLEN actual_length{}, actual_indicator{};
+      if (row_wise) {
+        actual_length = pages[1][row].length;
+        actual_indicator = pages[1][row].indicator;
+        EXPECT_EQ(0xa5, pages[1][row].before);
+        EXPECT_EQ(0xb5, pages[1][row].after);
+        EXPECT_EQ(79, pages[0][row].length);
+        EXPECT_EQ(83, pages[0][row].indicator);
+        EXPECT_TRUE(std::all_of(std::begin(pages[0][row].bytes), std::end(pages[0][row].bytes), [](auto b) { return b == 0xee; }));
+      } else {
+        std::memcpy(&actual_length, lengths.data() + 1 + row * sizeof(SQLLEN), sizeof(SQLLEN));
+        std::memcpy(&actual_indicator, indicators.data() + 1 + row * sizeof(SQLLEN), sizeof(SQLLEN));
+      }
+      if (row == 1 || row == 4) {
+        SQL_NUMERIC_STRUCT numeric{};
+        std::memcpy(&numeric, output, sizeof(numeric));
+        EXPECT_EQ(5, numeric.precision);
+        EXPECT_EQ(2, numeric.scale);
+        EXPECT_EQ(1, numeric.sign);
+        EXPECT_EQ(row == 1 ? 0xd2 : 0xac, numeric.val[0]); // 1234 and9900.
+        EXPECT_EQ(row == 1 ? 4 : 38, numeric.val[1]);
+        EXPECT_TRUE(std::all_of(std::begin(numeric.val) + 2, std::end(numeric.val), [](auto b) { return b == 0; }));
+        EXPECT_EQ(sizeof(numeric), actual_length);
+        EXPECT_EQ(0, actual_indicator);
+      } else {
+        EXPECT_TRUE(std::all_of(output, output + sizeof(SQL_NUMERIC_STRUCT), [](auto b) { return b == 0xee; }));
+        EXPECT_EQ(79, actual_length);
+        EXPECT_EQ(row == 2 ? SQL_NULL_DATA : 83, actual_indicator);
+      }
+    }
+    const char* states[] = {"22003", "01S07", "22018"};
+    const SQLLEN rows[] = {1, 2, 4};
+    for (SQLSMALLINT record = 1; record <= 3; ++record) {
+      SQLCHAR state_value[6]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, record, state_value, nullptr, nullptr, 0, nullptr));
+      EXPECT_STREQ(states[record - 1], reinterpret_cast<char*>(state_value));
+      SQLLEN row_number = 79, column_number = 83;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, record, SQL_DIAG_ROW_NUMBER, &row_number, 0, nullptr));
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, record, SQL_DIAG_COLUMN_NUMBER, &column_number, 0, nullptr));
+      EXPECT_EQ(rows[record - 1], row_number);
+      EXPECT_EQ(1, column_number);
+    }
+    EXPECT_EQ(0xee, bytes.front());
+    EXPECT_EQ(0xee, bytes.back());
+    EXPECT_EQ(0xa5, lengths.front());
+    EXPECT_EQ(0xa5, lengths.back());
+    EXPECT_EQ(0xa5, indicators.front());
+    EXPECT_EQ(0xa5, indicators.back());
+    ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 1, SQL_POSITION, SQL_LOCK_NO_CHANGE));
+    SQLDOUBLE recovered = 7;
+    ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_DOUBLE, &recovered, 0, nullptr));
+    EXPECT_EQ("07009", state()); // Existing block GetData does not advertise GD_BOUND.
+    EXPECT_EQ(7, recovered);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DOUBLE, &recovered, 0, nullptr));
+    EXPECT_TRUE(std::isnan(recovered));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE, (SQLPOINTER)SQL_BIND_BY_COLUMN, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0));
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, NonfiniteNumericPreparedOwningSiblingFiniteAndNullRecovery) {
+  facts->result.columns = {{"f", NativeTypeInfo{ScalarType::Double, 15, 6, true}}};
+  facts->result.rows = {{"NaN"}, {"12.345"}, {std::nullopt}};
+  facts->result.normalized_parameter_types = {{ScalarType::Integer, 10, 0, true}};
+  SQLHSTMT sibling{};
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+  struct Owner { SQLHSTMT handle; ~Owner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); } } owner{sibling};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT sibling", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLINTEGER input = 44;
+  SQLLEN input_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input, 0, &input_length));
+  SQL_NUMERIC_STRUCT numeric{};
+  std::memset(&numeric, 0xa5, sizeof(numeric));
+  const auto original = numeric;
+  SQLLEN length = 79;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_NUMERIC, &numeric, 0, &length));
+  dimensions(descriptor(SQL_ATTR_APP_ROW_DESC), 1, 5, 2, &numeric);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  input = 999;
+  facts->result.rows = {{"99.00"}};
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"44"}, facts->parameters[0].value);
+  const auto queries = facts->queries;
+  ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+  EXPECT_EQ("22003", state());
+  EXPECT_EQ(79, length);
+  EXPECT_EQ(0, std::memcmp(&original, &numeric, sizeof(numeric)));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+  SQLDOUBLE special = 7;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_DOUBLE, &special, 0, &length));
+  EXPECT_TRUE(std::isnan(special));
+  length = 79;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+  EXPECT_EQ("01S07", state());
+  EXPECT_EQ(5, numeric.precision);
+  EXPECT_EQ(2, numeric.scale);
+  EXPECT_EQ(1, numeric.sign);
+  EXPECT_EQ(0xd2, numeric.val[0]);
+  EXPECT_EQ(4, numeric.val[1]);
+  EXPECT_TRUE(std::all_of(std::begin(numeric.val) + 2, std::end(numeric.val), [](auto b) { return b == 0; }));
+  EXPECT_EQ(sizeof(numeric), length);
+  const auto finite = numeric;
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(0, std::memcmp(&finite, &numeric, sizeof(numeric)));
+  EXPECT_EQ(queries, facts->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  input = 44;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(5, numeric.precision);
+  EXPECT_EQ(2, numeric.scale);
+  EXPECT_EQ(1, numeric.sign);
+  EXPECT_EQ(0xac, numeric.val[0]);
+  EXPECT_EQ(38, numeric.val[1]);
+  EXPECT_TRUE(std::all_of(std::begin(numeric.val) + 2, std::end(numeric.val), [](auto b) { return b == 0; }));
+  EXPECT_EQ(sizeof(numeric), length);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+} // namespace
