@@ -3745,3 +3745,58 @@ TEST(RedshiftTablesSchemaPatterns, OptionalNativeFieldsCannotBypassRawDescriptio
   wide_resource(session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max()));
   EXPECT_EQ(3u,session.commands.size());EXPECT_TRUE(session.replies.empty());
 }
+
+
+namespace {
+QueryResult table_eleven_field_one_row() {
+  auto raw=tables_response("db","a");raw.rows.resize(1);
+  raw.rows[0][2]="one";raw.rows[0][3]="TABLE";raw.rows[0][4]="owning";
+  for (const auto* field:{"owner","last_altered_time","last_modified_time","dist_style","table_subtype"}) {
+    raw.columns.push_back({field,NativeTypeInfo{ScalarType::VarChar,128,0,true}});
+    raw.rows[0].push_back(std::nullopt);
+  }
+  return raw;
+}
+}
+TEST(RedshiftTablesSchemaPatterns, NativeHeaderIndexPeakRefusesTwentyAndTwentySevenAcceptsTwentyEight) {
+  // Literal live-entry contract: eleven raw descriptors + eleven header-index
+  // nodes + five projected descriptors + one row-identity node = twenty-eight.
+  for (const auto cap:{20u,27u,28u}) {
+    SCOPED_TRACE(cap);auto raw=table_eleven_field_one_row();
+    ASSERT_EQ(11u,raw.columns.size());ASSERT_EQ(1u,raw.rows.size());
+    ResultLimits limits;limits.max_metadata_entries=cap;limits.max_columns_per_description=11;
+    RedshiftRoutineBudget budget{ResponseLimits{},limits};
+    auto result=redshift_tables_part("db","a",schema_pattern_tables("%"),
+        {std::move(raw),{SessionState::Idle,SessionDisposition::Reusable}},budget,rs::util::Deadline::max(),true);
+    if (cap<28) {
+      ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+      EXPECT_EQ(SessionState::Idle,result.session_snapshot().state);
+      EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
+    } else {
+      ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(5u,result->columns.size());
+      EXPECT_EQ((ResultRows{{"db","a","one","TABLE","owning"}}),result->rows);
+    }
+  }
+}
+TEST(RedshiftTablesSchemaPatterns, HeaderIndexScratchReleasesAfterProjectionWhileOwningDescriptorsRemainCharged) {
+  for (const auto cap:{32u,33u}) {
+    SCOPED_TRACE(cap);ResultLimits limits;limits.max_metadata_entries=cap;limits.max_columns_per_description=11;
+    RedshiftRoutineBudget budget{ResponseLimits{},limits};
+    auto first=redshift_tables_part("db","a",schema_pattern_tables("%"),
+        {table_eleven_field_one_row(),{SessionState::Idle,SessionDisposition::Reusable}},
+        budget,rs::util::Deadline::max(),true);
+    ASSERT_TRUE(first)<<first.error_message();ASSERT_EQ(5u,first->columns.size());
+    // The first raw/index/identity nodes are destroyed; its five owning output
+    // descriptors are still live. Second projection requires five + twenty-eight.
+    auto second=redshift_tables_part("db","a",schema_pattern_tables("%"),
+        {table_eleven_field_one_row(),{SessionState::Idle,SessionDisposition::Reusable}},
+        budget,rs::util::Deadline::max(),true);
+    if (cap==32) {
+      ASSERT_FALSE(second);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),second.error());
+    } else {
+      ASSERT_TRUE(second)<<second.error_message();ASSERT_EQ(5u,second->columns.size());
+      EXPECT_EQ(ResultCell{"owning"},second->rows[0][4]);
+    }
+    EXPECT_EQ(ResultCell{"owning"},first->rows[0][4]);
+  }
+}

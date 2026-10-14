@@ -1226,7 +1226,11 @@ BackendResult<QueryResult> redshift_tables_part(std::string_view database,std::s
     }
   }
   const auto raw=redshift_routine_schema_usage(*input);const auto count=input->rows.size();
-  RedshiftRoutineUsage peak{count,count*5,0,count+8,0};
+  // Raw descriptors are charged separately. The normalizer simultaneously owns
+  // one header-index node per native column, five live output descriptors and
+  // one row-identity node per row. Unconstructed descriptor capacity remains
+  // covered by the eight-slot byte reservation below, not metadata entries.
+  RedshiftRoutineUsage peak{count,count*5,0,count+input->columns.size()+index.size(),0};
   if (!wide_storage_component(peak,raw.bytes,3) ||
       !wide_storage_component(peak,count,5*sizeof(ResultCell)+4*sizeof(ResultRow)+256) ||
       !wide_storage_component(peak,8,sizeof(ResultColumnMetadata)) || !wide_storage_component(peak,1024))
