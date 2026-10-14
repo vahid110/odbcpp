@@ -3935,3 +3935,61 @@ TEST_F(BindColIntegrationTest, DateBinaryResultWholeStructureShortRetryNullAndRe
     EXPECT_EQ(SQL_NULL_DATA, length);
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(40));
 }
+
+TEST_F(BindColIntegrationTest, TimeTimestampBinaryWholeFieldsShortRetryNullAndRefill) {
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)5, 0));
+    struct Case { const char* query; const char* null_query; SQLSMALLINT type; SQLLEN width; };
+    const Case cases[] = {
+        {"SELECT TIME '12:34:56'", "SELECT CAST(NULL AS TIME)", SQL_TYPE_TIME, sizeof(SQL_TIME_STRUCT)},
+        {"SELECT TIMESTAMP '2024-02-29 12:34:56.123456'", "SELECT CAST(NULL AS TIMESTAMP)",
+         SQL_TYPE_TIMESTAMP, sizeof(SQL_TIMESTAMP_STRUCT)}};
+    const SQL_TIME_STRUCT time{12, 34, 56};
+    const SQL_TIMESTAMP_STRUCT timestamp{2024, 2, 29, 12, 34, 56, 123456000};
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.type);
+        std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT) + 2> bytes;
+        bytes.fill(0xa5);
+        const auto before = bytes;
+        SQLLEN length = 79;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)c.query, SQL_NTS));
+        SQLSMALLINT type{};
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+        EXPECT_EQ(c.type, type);
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (SQLLEN capacity = 0; capacity < c.width; ++capacity) {
+            ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, capacity, &length));
+            SQLCHAR state[6]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+            EXPECT_EQ(before, bytes);
+            EXPECT_EQ(79, length);
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, c.width, &length));
+        const void* expected = c.type == SQL_TYPE_TIME ? static_cast<const void*>(&time) : &timestamp;
+        EXPECT_EQ(0, std::memcmp(expected, bytes.data() + 1, c.width));
+        EXPECT_EQ(c.width, length);
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes[c.width + 1]);
+        const auto completed = bytes;
+        length = 83;
+        ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, c.width, &length));
+        EXPECT_EQ(completed, bytes);
+        EXPECT_EQ(83, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, c.width, &length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)c.query, SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(0, std::memcmp(expected, bytes.data() + 1, c.width));
+        EXPECT_EQ(c.width, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_UNBIND));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)c.null_query, SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+            reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+        EXPECT_EQ(SQL_NULL_DATA, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(60));
+}

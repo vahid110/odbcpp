@@ -1210,8 +1210,7 @@ TEST(ResultTypesTest, SignedIntegerBinaryResultPairsAreExplicitAndDefaultsStayNa
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_SMALLINT), SQLSMALLINT(SQL_INTEGER), SQLSMALLINT(SQL_BIGINT)}) {
         EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
-    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-         SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
@@ -1226,8 +1225,7 @@ TEST(ResultTypesTest, FloatingBinaryResultPairsKeepNativeDefaultsAndOtherRefusal
     EXPECT_EQ(SQL_C_FLOAT, rs::odbc::ResultTypes::default_c_type(SQL_REAL));
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_FLOAT));
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_DOUBLE));
-    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-             SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
 }
@@ -1240,8 +1238,7 @@ TEST(ResultTypesTest, TinyintBinaryResultUsesSignedOneByteWithoutChangingDefault
     EXPECT_EQ(1u, sizeof(SQLSCHAR));
     EXPECT_EQ(-128, (std::numeric_limits<SQLSCHAR>::min)());
     EXPECT_EQ(127, (std::numeric_limits<SQLSCHAR>::max)());
-    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-             SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
 }
@@ -1282,9 +1279,7 @@ TEST(ResultTypesTest, DateBinaryResultPairUsesExistingDateStructureAndKeepsOther
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(SQL_DATE, SQL_C_BINARY));
     EXPECT_EQ(SQL_C_DATE, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_DATE));
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_DATE)); // Legacy source policy only.
-    for (SQLSMALLINT type : {SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TIME),
-             SQLSMALLINT(SQL_TYPE_TIMESTAMP), SQLSMALLINT(SQL_TIMESTAMP),
-             SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_SLONG));
@@ -1328,6 +1323,84 @@ TEST_F(RedshiftDataConverterTest, DateBinaryPrerequisiteCheckedFieldsPreserveExi
             bytes.data() + 1, 0, &length, &issue));
         EXPECT_EQ(ConversionIssue::InvalidDatetimeFormat, issue);
         EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+    }
+}
+
+
+TEST(ResultTypesTest, TimeTimestampBinaryClosedPairsAndNativeLayouts) {
+    EXPECT_EQ(6u, sizeof(SQL_TIME_STRUCT));
+    EXPECT_EQ(16u, sizeof(SQL_TIMESTAMP_STRUCT));
+    EXPECT_EQ(0u, offsetof(SQL_TIME_STRUCT, hour));
+    EXPECT_EQ(2u, offsetof(SQL_TIME_STRUCT, minute));
+    EXPECT_EQ(4u, offsetof(SQL_TIME_STRUCT, second));
+    EXPECT_EQ(0u, offsetof(SQL_TIMESTAMP_STRUCT, year));
+    EXPECT_EQ(2u, offsetof(SQL_TIMESTAMP_STRUCT, month));
+    EXPECT_EQ(4u, offsetof(SQL_TIMESTAMP_STRUCT, day));
+    EXPECT_EQ(6u, offsetof(SQL_TIMESTAMP_STRUCT, hour));
+    EXPECT_EQ(8u, offsetof(SQL_TIMESTAMP_STRUCT, minute));
+    EXPECT_EQ(10u, offsetof(SQL_TIMESTAMP_STRUCT, second));
+    EXPECT_EQ(12u, offsetof(SQL_TIMESTAMP_STRUCT, fraction));
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TIME),
+             SQLSMALLINT(SQL_TYPE_TIMESTAMP), SQLSMALLINT(SQL_TIMESTAMP)}) {
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_SLONG));
+    }
+    EXPECT_EQ(SQL_C_TIME, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_TIME));
+    EXPECT_EQ(SQL_C_TIMESTAMP, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_TIMESTAMP));
+    EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_TIME));
+    EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_TIMESTAMP));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_NUMERIC, SQL_C_BINARY));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_DECIMAL, SQL_C_BINARY));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_TYPE_TIME));
+}
+
+TEST_F(RedshiftDataConverterTest, TimeTimestampBinaryPrerequisiteFractionsAndExistingDomains) {
+    using rs::odbc::ConversionIssue;
+    struct Case { const char* suffix; SQLUINTEGER fraction; SQLRETURN time_result, timestamp_result; };
+    const Case cases[] = {{"", 0, SQL_SUCCESS, SQL_SUCCESS},
+        {".0", 0, SQL_SUCCESS, SQL_SUCCESS},
+        {".1", 100000000, SQL_SUCCESS_WITH_INFO, SQL_SUCCESS},
+        {".123456789", 123456789, SQL_SUCCESS_WITH_INFO, SQL_SUCCESS},
+        {".1234567890", 123456789, SQL_SUCCESS_WITH_INFO, SQL_SUCCESS},
+        {".1234567891", 123456789, SQL_SUCCESS_WITH_INFO, SQL_SUCCESS_WITH_INFO},
+        {".0000000001", 0, SQL_SUCCESS_WITH_INFO, SQL_SUCCESS_WITH_INFO},
+        {".0000000000", 0, SQL_SUCCESS, SQL_SUCCESS},
+        {"+15:59", 0, SQL_SUCCESS, SQL_SUCCESS},
+        {"-02", 0, SQL_SUCCESS, SQL_SUCCESS}};
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.suffix);
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        SQL_TIME_STRUCT time{};
+        ASSERT_EQ(c.time_result, RedshiftDataConverter::convert_data(
+            std::string(" 23:59:60") + c.suffix + " ", SQL_C_TYPE_TIME, &time, 0, &length, &issue));
+        EXPECT_EQ(23, time.hour);
+        EXPECT_EQ(59, time.minute);
+        EXPECT_EQ(60, time.second); // Existing checked source domain, not native exposure.
+        EXPECT_EQ(sizeof(time), length);
+        EXPECT_EQ(c.time_result == SQL_SUCCESS ? ConversionIssue::None : ConversionIssue::FractionalTruncation, issue);
+        SQL_TIMESTAMP_STRUCT timestamp{};
+        ASSERT_EQ(c.timestamp_result, RedshiftDataConverter::convert_data(
+            std::string("0000-02-29T23:59:60") + c.suffix, SQL_C_TYPE_TIMESTAMP, &timestamp, 0, &length, &issue));
+        EXPECT_EQ(0, timestamp.year);
+        EXPECT_EQ(2, timestamp.month);
+        EXPECT_EQ(29, timestamp.day);
+        EXPECT_EQ(23, timestamp.hour);
+        EXPECT_EQ(59, timestamp.minute);
+        EXPECT_EQ(60, timestamp.second);
+        EXPECT_EQ(c.fraction, timestamp.fraction);
+        EXPECT_EQ(sizeof(timestamp), length);
+        EXPECT_EQ(c.timestamp_result == SQL_SUCCESS ? ConversionIssue::None : ConversionIssue::FractionalTruncation, issue);
+    }
+    for (const char* bad : {"24:00:00", "12:60:00", "12:34:61", "12:34:56.", "12:34:56+16", "12:34:56+02:60", "12:34:56Z"}) {
+        SCOPED_TRACE(bad);
+        SQL_TIME_STRUCT time{71, 72, 73};
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(bad, SQL_C_TYPE_TIME, &time, 0, &length, &issue));
+        EXPECT_EQ(ConversionIssue::InvalidDatetimeFormat, issue);
+        EXPECT_EQ(71, time.hour);
         EXPECT_EQ(79, length);
     }
 }

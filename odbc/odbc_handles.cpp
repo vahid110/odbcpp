@@ -354,6 +354,10 @@ SQLSMALLINT fixed_binary_result_c_type(SQLSMALLINT sql_type) {
   switch (sql_type) {
     case SQL_TYPE_DATE:
     case SQL_DATE: return SQL_C_TYPE_DATE;
+    case SQL_TYPE_TIME:
+    case SQL_TIME: return SQL_C_TYPE_TIME;
+    case SQL_TYPE_TIMESTAMP:
+    case SQL_TIMESTAMP: return SQL_C_TYPE_TIMESTAMP;
     case SQL_TINYINT: return SQL_C_STINYINT;
     case SQL_SMALLINT: return SQL_C_SSHORT;
     case SQL_INTEGER: return SQL_C_SLONG;
@@ -365,14 +369,15 @@ SQLSMALLINT fixed_binary_result_c_type(SQLSMALLINT sql_type) {
   }
 }
 
-// Fixed numeric and DATE SQL-to-C binary uses the host representation, not text
+// Fixed numeric and temporal SQL-to-C binary uses the host representation, not text
 // or backend wire bytes. Validate into aligned scratch before any publication.
 // A null output serves our existing indicator-only binding contract.
 SQLRETURN convert_fixed_result_to_binary(SQLSMALLINT sql_type,
     const std::string& value, void* buffer, SQLLEN buffer_length,
     SQLLEN* indicator, ConversionIssue* issue) {
   alignas(std::max_align_t) unsigned char scratch[
-      (std::max)({sizeof(SQLBIGINT), sizeof(SQLDOUBLE), sizeof(SQL_DATE_STRUCT)})]{};
+      (std::max)({sizeof(SQLBIGINT), sizeof(SQLDOUBLE), sizeof(SQL_DATE_STRUCT),
+                 sizeof(SQL_TIME_STRUCT), sizeof(SQL_TIMESTAMP_STRUCT)})]{};
   SQLLEN width = 0;
   const auto result = TextDataConverter::convert_data(value,
       fixed_binary_result_c_type(sql_type), scratch, sizeof(scratch),
@@ -381,6 +386,33 @@ SQLRETURN convert_fixed_result_to_binary(SQLSMALLINT sql_type,
   if (buffer && buffer_length < width) {
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
+  }
+  // Typed conversion can copy unspecified struct padding. Keep host fields but
+  // publish deterministic zero padding for the newly supported temporal structs.
+  const auto c_type = fixed_binary_result_c_type(sql_type);
+  if (c_type == SQL_C_TYPE_TIME || c_type == SQL_C_TYPE_TIMESTAMP) {
+    unsigned char normalized[sizeof(SQL_TIMESTAMP_STRUCT)]{};
+    const auto field = [&](std::size_t offset, const auto& value) {
+      std::memcpy(normalized + offset, &value, sizeof(value));
+    };
+    if (c_type == SQL_C_TYPE_TIME) {
+      SQL_TIME_STRUCT parsed{};
+      std::memcpy(&parsed, scratch, sizeof(parsed));
+      field(offsetof(SQL_TIME_STRUCT, hour), parsed.hour);
+      field(offsetof(SQL_TIME_STRUCT, minute), parsed.minute);
+      field(offsetof(SQL_TIME_STRUCT, second), parsed.second);
+    } else {
+      SQL_TIMESTAMP_STRUCT parsed{};
+      std::memcpy(&parsed, scratch, sizeof(parsed));
+      field(offsetof(SQL_TIMESTAMP_STRUCT, year), parsed.year);
+      field(offsetof(SQL_TIMESTAMP_STRUCT, month), parsed.month);
+      field(offsetof(SQL_TIMESTAMP_STRUCT, day), parsed.day);
+      field(offsetof(SQL_TIMESTAMP_STRUCT, hour), parsed.hour);
+      field(offsetof(SQL_TIMESTAMP_STRUCT, minute), parsed.minute);
+      field(offsetof(SQL_TIMESTAMP_STRUCT, second), parsed.second);
+      field(offsetof(SQL_TIMESTAMP_STRUCT, fraction), parsed.fraction);
+    }
+    std::memcpy(scratch, normalized, static_cast<std::size_t>(width));
   }
   if (buffer) std::memcpy(buffer, scratch, static_cast<std::size_t>(width));
   if (indicator) store_application_value(indicator, width);
