@@ -706,16 +706,22 @@ BackendResult<PreparedResultSequence> SessionLease::start_result_sequence(
   const auto& description = sequence.description_;
   if (description.columns.size() > sequence.limits_.max_columns_per_description ||
       description.columns.size() > sequence.limits_.max_metadata_entries ||
-      description.normalized_parameter_types.size() > sequence.limits_.max_metadata_entries - description.columns.size())
+      description.normalized_parameter_types.size() > sequence.limits_.max_metadata_entries - description.columns.size()) {
+    retire();
     return BackendResult<PreparedResultSequence>{rs::util::DbErrorCode::ResourceLimit, {}};
+  }
   sequence.metadata_ = description.columns.size() + description.normalized_parameter_types.size();
   for (const auto& column : description.columns) {
     if (!column.normalized_type || column.name.find('\0') != std::string::npos ||
-        !rs::util::utf8_code_point_count(column.name))
+        !rs::util::utf8_code_point_count(column.name)) {
+      retire();
       return BackendResult<PreparedResultSequence>{rs::util::DbErrorCode::ProtocolError, {}};
+    }
     if (column.name.size() > sequence.limits_.max_column_name_bytes ||
-        column.name.size() > sequence.limits_.max_metadata_name_bytes - sequence.names_)
+        column.name.size() > sequence.limits_.max_metadata_name_bytes - sequence.names_) {
+      retire();
       return BackendResult<PreparedResultSequence>{rs::util::DbErrorCode::ResourceLimit, {}};
+    }
     sequence.names_ += column.name.size();
   }
   return BackendResult<PreparedResultSequence>{std::move(sequence),
