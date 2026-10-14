@@ -36,6 +36,41 @@ struct ODBCBackendTestAccess {
     std::shared_ptr<ODBCConnection> connection_;
   };
   static View view(std::shared_ptr<ODBCConnection> connection) { return View{std::move(connection)}; }
+#ifdef ODBCPP_ENABLE_TEST_HOOKS
+  // Synthetic adapter metadata only: the SDK/provider has no TinyInt family.
+  // Call serially after a real owning SMALLINT result is installed and before
+  // its first fetch. Cursor close/refill replaces both metadata stores normally.
+  static bool project_synthetic_tinyint(SQLHSTMT handle, SQLUSMALLINT column) {
+    auto statement = HandleRegistry::instance().get_handle_as<ODBCStatement>(handle);
+    if (!statement || !statement->executed_ || statement->row_positioned_ || statement->current_row_ != 0 ||
+        column == 0 || column > statement->column_info_.size()) {
+      return false;
+    }
+    auto descriptor = statement->descriptor(statement->imp_row_descriptor_);
+    const auto* original = descriptor ? descriptor->record(column - 1) : nullptr;
+    auto& metadata = statement->column_info_[column - 1];
+    if (!original || metadata.sql_type != SQL_SMALLINT ||
+        original->concise_type != SQL_SMALLINT) {
+      return false;
+    }
+    // The descriptor is owned and mutable; record() exposes a const view.
+    // Stage allocating strings before changing either metadata store.
+    auto record = *original;
+    record.type = record.concise_type = SQL_TINYINT;
+    record.length = record.precision = 3;
+    record.scale = record.datetime_interval_code = 0;
+    record.octet_length = 1;
+    record.display_size = 4;
+    record.unsigned_attribute = SQL_FALSE;
+    record.type_name = record.local_type_name = "TINYINT";
+    *const_cast<DescriptorRecord*>(original) = std::move(record);
+    metadata.sql_type = SQL_TINYINT;
+    metadata.column_size = 3;
+    metadata.decimal_digits = 0;
+    return true;
+  }
+#endif
+
 };
 } // namespace rs::odbc::detail
 

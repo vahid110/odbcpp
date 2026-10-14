@@ -14182,3 +14182,151 @@ TEST_F(CommandArrayDeferredInputTest, NumericBinaryInputOrdinaryNeighborRefusesB
   EXPECT_EQ(3u, progress.value); ASSERT_NO_FATAL_FAILURE(guards());
   EXPECT_EQ(0, seen->disconnects);
 }
+
+
+TEST_F(BackendContractTest, TinyintBinaryResultSyntheticRowWiseOffsetsShortRepairAndCanaries) {
+  QueryResult result;
+  result.columns = {{"tiny", NativeTypeInfo{ScalarType::SmallInt, 3, 0, true}}};
+  result.rows = {{"-128"}, {"127"}};
+  seen->date_result = result;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  struct Row {
+    unsigned char before{0xa5}, value{0xee}, after{0xb5};
+    SQLLEN length{79}, indicator{81};
+  } pages[2][2];
+  SQLULEN offset = sizeof(pages[0]);
+  SQLUSMALLINT status[2]{71, 72};
+  SQLULEN count = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE, (SQLPOINTER)sizeof(Row), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, &pages[0][0].value, 0, &pages[0][0].length));
+  SQLHDESC ard{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_ROW_DESC, &ard, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicator, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT synthetic tiny", SQL_NTS));
+  ASSERT_TRUE(rs::odbc::detail::ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  const auto queries = seen->queries;
+  ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ("22003", state());
+  EXPECT_EQ(2u, count);
+  EXPECT_EQ(SQL_ROW_ERROR, status[0]);
+  EXPECT_EQ(SQL_ROW_ERROR, status[1]);
+  SQLLEN diagnostic_row{}, diagnostic_column{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_ROW_NUMBER, &diagnostic_row, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_COLUMN_NUMBER, &diagnostic_column, 0, nullptr));
+  EXPECT_EQ(1, diagnostic_row);
+  EXPECT_EQ(1, diagnostic_column);
+  for (const auto& page : pages) {
+    for (const auto& row : page) {
+      EXPECT_EQ(0xee, row.value);
+      EXPECT_EQ(79, row.length);
+      EXPECT_EQ(81, row.indicator);
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, &pages[0][0].value, 1, &pages[0][0].length));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicator, 0));
+  count = 91;
+  status[0] = 71;
+  status[1] = 72;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_DATA_PTR,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)() - 1), 0));
+  ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, count);
+  EXPECT_EQ(71, status[0]);
+  EXPECT_EQ(72, status[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_DATA_PTR, &pages[0][0].value, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  for (std::size_t row = 0; row < 2; ++row) {
+    const SQLSCHAR expected = row == 0 ? -128 : 127;
+    EXPECT_EQ(0, std::memcmp(&expected, &pages[1][row].value, 1));
+    EXPECT_EQ(1, pages[1][row].length);
+    EXPECT_EQ(0, pages[1][row].indicator);
+    EXPECT_EQ(SQL_ROW_SUCCESS, status[row]);
+    EXPECT_EQ(0xee, pages[0][row].value);
+    EXPECT_EQ(79, pages[0][row].length);
+    EXPECT_EQ(81, pages[0][row].indicator);
+  }
+  for (const auto& page : pages) {
+    for (const auto& row : page) {
+      EXPECT_EQ(0xa5, row.before);
+      EXPECT_EQ(0xb5, row.after);
+    }
+  }
+  EXPECT_EQ(2u, count);
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, TinyintBinaryResultSyntheticColumnStrideSplitNullAndUnalignedPublication) {
+  QueryResult result;
+  result.columns = {{"tiny", NativeTypeInfo{ScalarType::SmallInt, 3, 0, true}},
+      {"small", NativeTypeInfo{ScalarType::SmallInt, 5, 0, true}}};
+  result.rows = {{"-1", "44"}, {std::nullopt, "-42"}};
+  seen->date_result = result;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLULEN offset = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+  std::array<unsigned char, 7> bytes;
+  std::array<unsigned char, 8> small;
+  bytes.fill(0xa5);
+  small.fill(0xb5);
+  std::array<unsigned char, 2 * sizeof(SQLLEN) + 2> lengths, indicators, small_lengths;
+  for (auto* storage : {&lengths, &indicators, &small_lengths}) {
+    storage->fill(0xa5);
+    for (std::size_t row = 0; row < 2; ++row) {
+      const SQLLEN initial = 79;
+      std::memcpy(storage->data() + 1 + row * sizeof(SQLLEN), &initial, sizeof(initial));
+    }
+  }
+  SQLUSMALLINT status[2]{71, 72};
+  SQLULEN count = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, bytes.data(), 3, reinterpret_cast<SQLLEN*>(lengths.data())));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 2, SQL_C_BINARY, small.data(), 3, reinterpret_cast<SQLLEN*>(small_lengths.data())));
+  SQLHDESC ard{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_ROW_DESC, &ard, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, indicators.data(), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT synthetic tiny and real small", SQL_NTS));
+  ASSERT_TRUE(rs::odbc::detail::ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  const auto queries = seen->queries;
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  const SQLSCHAR expected = -1;
+  EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, 1));
+  const SQLSMALLINT positive = 44, negative = -42;
+  EXPECT_EQ(0, std::memcmp(&positive, small.data() + 1, 2));
+  EXPECT_EQ(0, std::memcmp(&negative, small.data() + 4, 2));
+  for (std::size_t i : {0u, 2u, 3u, 4u, 5u, 6u}) {
+    EXPECT_EQ(0xa5, bytes[i]);
+  }
+  for (std::size_t i : {0u, 3u, 6u, 7u}) {
+    EXPECT_EQ(0xb5, small[i]);
+  }
+  const auto read = [](const auto& storage, std::size_t row) {
+    SQLLEN value{};
+    std::memcpy(&value, storage.data() + 1 + row * sizeof(SQLLEN), sizeof(value));
+    return value;
+  };
+  EXPECT_EQ(1, read(lengths, 0));
+  EXPECT_EQ(79, read(lengths, 1)); // Split NULL reports only through the indicator.
+  EXPECT_EQ(0, read(indicators, 0));
+  EXPECT_EQ(SQL_NULL_DATA, read(indicators, 1));
+  EXPECT_EQ(2, read(small_lengths, 0));
+  EXPECT_EQ(2, read(small_lengths, 1));
+  for (const auto* storage : {&lengths, &indicators, &small_lengths}) {
+    EXPECT_EQ(0xa5, storage->front());
+    EXPECT_EQ(0xa5, storage->back());
+  }
+  EXPECT_EQ(2u, count);
+  EXPECT_EQ(SQL_ROW_SUCCESS, status[0]);
+  EXPECT_EQ(SQL_ROW_SUCCESS, status[1]);
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}

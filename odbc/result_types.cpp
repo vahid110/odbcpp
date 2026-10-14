@@ -196,7 +196,8 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
           return true;
       }
     case SQL_C_BINARY:
-      return sql_type == SQL_SMALLINT || sql_type == SQL_INTEGER ||
+      return sql_type == SQL_TINYINT || sql_type == SQL_SMALLINT ||
+             sql_type == SQL_INTEGER ||
              sql_type == SQL_BIGINT || sql_type == SQL_REAL ||
              sql_type == SQL_FLOAT || sql_type == SQL_DOUBLE ||
              sql_type == SQL_BIT || sql_type == SQL_CHAR ||
