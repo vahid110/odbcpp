@@ -1,4 +1,4 @@
-name: Experimental Ubuntu development pilot (NOT full acceptance)
+name: Focused Ubuntu qualification and experiments (NOT full acceptance)
 
 on:
   workflow_call:
@@ -18,11 +18,26 @@ on:
       submitted_at:
         required: true
         type: string
+      product_head:
+        type: string
+        default: ""
+      product_base:
+        type: string
+        default: ""
+      product_targets:
+        type: string
+        default: test_diagnostics_apis
+      product_cache:
+        type: string
+        default: "{}"
+      conflicting_experiment:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# The manual ci.yml caller holds the single global, noncancelling pilot group.
+# The manual ci.yml caller holds one global noncancelling Ubuntu heavy group.
 # No secrets inheritance, endpoints, services, native tests or binary artifacts.
 env:
   PILOT_EXPECTED_HEAD: ${{ inputs.expected_head }}
@@ -33,6 +48,117 @@ env:
   LC_ALL: C
 
 jobs:
+  product:
+    if: inputs.mode == 'product_qualification'
+    name: Owning Linux product qualification - NOT full acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: product
+    env:
+      PILOT_MODE: product
+      PILOT_EXPECTED_HEAD: ${{ inputs.product_head }}
+      PILOT_WORKFLOW_HEAD: ${{ inputs.expected_head }}
+      PILOT_WORKFLOW_ROOT: ${{ github.workspace }}/pilot-workflow
+      PILOT_PRODUCT_BASE: ${{ inputs.product_base }}
+      PILOT_PRODUCT_TARGETS: ${{ inputs.product_targets }}
+      PILOT_PRODUCT_CACHE: ${{ inputs.product_cache }}
+      PILOT_EXPERIMENT_REQUESTED: ${{ inputs.conflicting_experiment }}
+    steps:
+      - name: Check out reviewed immutable workflow/helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: pilot-workflow
+          persist-credentials: false
+      - name: Check out exact reviewed product and batch history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.product_head }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select fresh bounded compiler-object cache directory
+        run: echo "CCACHE_DIR=$RUNNER_TEMP/ubuntu-product-compiler-cache" >> "$GITHUB_ENV"
+      - name: Verify separate immutable sources and allowlisted owning selection
+        id: identity
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" init
+      - name: Check helper offline
+        run: python3 -m unittest discover -s "$PILOT_WORKFLOW_ROOT/tools/ci" -p test_ubuntu_development_pilot.py -v
+      - name: Cheap changed-C++ GoogleTest control check BEFORE expensive commands
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" product-preflight
+      - name: Install existing Redshift Linux dependencies
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" dependencies
+      - name: Require an independently fresh graph and initially empty cache
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" empty-cache
+      - name: Configure existing Release Redshift unixODBC2 profile
+        id: configure
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" configure
+      - name: Validate exact owning producer and actual compatibility before restore
+        id: cache
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" product-cache-check
+      - name: Record restore start
+        if: steps.cache.outputs.restore == 'true'
+        run: date -u +%Y-%m-%dT%H:%M:%S.%NZ > ubuntu-pilot-evidence/restore-start.txt
+      - name: Restore ONLY selected compatible compiler objects
+        id: restore
+        if: steps.cache.outputs.restore == 'true'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.cache.outputs.restore_key }}
+          enableCrossOsArchive: false
+      - name: Retain actual restore hit/key/overhead
+        if: always() && steps.cache.outputs.restore == 'true' && steps.restore.outcome != 'skipped'
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          RESTORED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > ubuntu-pilot-evidence/restore-end.txt
+          printf '%s\n' "$CACHE_HIT" > ubuntu-pilot-evidence/restore-hit.txt
+          printf '%s\n' "$RESTORED_KEY" > ubuntu-pilot-evidence/restore-key.txt
+      - name: Verify restored embedded producer before compiling any product
+        env:
+          PILOT_CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          PILOT_RESTORED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" product-restore-check
+      - name: Compile actual owning targets and SDK header units j2; freshly link
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" build
+      - name: Record actual owning inventories, binaries, objects and staged headers
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" inventory
+      - name: Execute selected owning GoogleTests and six architecture checks
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" test
+      - name: Guard both sources after commands including failed phases
+        if: always() && steps.identity.outcome == 'success'
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" product-source-guard
+      - name: Preserve phase failures and source guards; eligible cache producer only after complete tests
+        id: finish
+        if: always() && steps.configure.outcome == 'success'
+        env:
+          PILOT_CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          PILOT_RESTORED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" finish
+      - name: Save bounded compiler objects with exact qualified owning provenance
+        if: success() && steps.finish.outputs.save_cache == 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.configure.outputs.cache_key }}
+      - name: Bound text evidence even after an original failure
+        id: package
+        if: always()
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" package
+      - name: Retain small source-only owning qualification evidence
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ubuntu-product-${{ inputs.product_head }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: product/ubuntu-pilot-evidence/
+          retention-days: 3
+          compression-level: 9
+          if-no-files-found: error
+
   cold:
     if: inputs.mode == 'same_head'
     name: Experimental Linux cold - NOT full acceptance

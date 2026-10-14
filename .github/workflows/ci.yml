@@ -44,19 +44,54 @@ on:
         required: false
         type: boolean
         default: false
+      run_product_qualification:
+        description: Normal focused Ubuntu owning product qualification (NOT full acceptance)
+        required: false
+        type: boolean
+        default: false
+      product_workflow_head:
+        description: Exact reviewed immutable workflow/helper HEAD
+        required: false
+        type: string
+        default: ""
+      product_head:
+        description: Exact reviewed immutable product candidate HEAD
+        required: false
+        type: string
+        default: ""
+      product_base:
+        description: Exact product batch base for the cheap changed-source check
+        required: false
+        type: string
+        default: ""
+      product_targets:
+        description: One to four comma-separated allowlisted owning unit targets
+        required: false
+        type: string
+        default: test_diagnostics_apis
+      product_cache:
+        description: Optional exact previously qualified producer provenance JSON; empty object means cold
+        required: false
+        type: string
+        default: "{}"
+      product_submitted_at:
+        description: Fresh UTC ISO timestamp immediately before coordinator dispatch
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification) && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
   cancel-in-progress: false
   queue: max
 
 jobs:
   ubuntu-development-pilot:
     name: Experimental Linux pilot - NOT full acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot
+    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && !inputs.run_product_qualification
     uses: ./.github/workflows/ubuntu-development-pilot.yml
     with:
       expected_head: ${{ inputs.pilot_expected_head }}
@@ -65,8 +100,22 @@ jobs:
       seed_head: ${{ inputs.pilot_seed_head }}
       changed_head: ${{ inputs.pilot_changed_head }}
 
+  ubuntu-product-qualification:
+    name: Owning Linux product qualification - NOT full acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.run_product_qualification
+    uses: ./.github/workflows/ubuntu-development-pilot.yml
+    with:
+      expected_head: ${{ inputs.product_workflow_head }}
+      submitted_at: ${{ inputs.product_submitted_at }}
+      mode: product_qualification
+      product_head: ${{ inputs.product_head }}
+      product_base: ${{ inputs.product_base }}
+      product_targets: ${{ inputs.product_targets }}
+      product_cache: ${{ inputs.product_cache }}
+      conflicting_experiment: ${{ inputs.run_development_pilot }}
+
   build-and-test:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: ubuntu-latest
 
     services:
@@ -271,7 +320,7 @@ jobs:
           if-no-files-found: error
 
   redshift-build:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -311,7 +360,7 @@ jobs:
             "$RUNNER_TEMP/redshift-missing-endpoint.log"
 
   windows-live:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: windows-2025
 
     env:
@@ -470,7 +519,7 @@ jobs:
           retention-days: 7
 
   windows-package:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     timeout-minutes: 15
     needs: windows-live
     runs-on: windows-2025
@@ -501,7 +550,7 @@ jobs:
             ${{ runner.temp }}/odbcpp-postgres.log
 
   windows-linked-server:
-    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot
+    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot && !inputs.run_product_qualification
     timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
@@ -531,7 +580,7 @@ jobs:
           retention-days: 7
 
   linux-sanitizers:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: ubuntu-latest
 
     env:
@@ -573,7 +622,7 @@ jobs:
           --timeout 60 --output-on-failure
 
   linux-openssl-static:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: ubuntu-latest
 
     services:
@@ -891,7 +940,7 @@ jobs:
           if-no-files-found: error
 
   awslc-adapter-proof:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -968,7 +1017,7 @@ jobs:
           if-no-files-found: error
 
   iodbc-unicode:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
     runs-on: macos-latest
 
     strategy:

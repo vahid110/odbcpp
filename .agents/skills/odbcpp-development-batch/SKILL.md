@@ -8,7 +8,7 @@ description: Prepare, qualify, review and integrate a bounded ODBCPP implementat
 Use `AGENTS.md` for repository rules and the active handoff for current facts.
 Apply its build storage and periodic cleanup policy before resource admission and
 at batch closure; the coordinator owns integration, shared resources and cleanup.
-Apply `PARALLEL_WORKFLOW.md` for the human-approved two-lane execution model and
+Apply `PARALLEL_WORKFLOW.md` for the human-approved continuous three-owner execution model and
 separate source, resource and integration/live migration releases. The 12-hour cadence and protected acceptance stay unchanged.
 Do not turn this workflow into new product scope or execution permission.
 
@@ -16,8 +16,8 @@ Do not turn this workflow into new product scope or execution permission.
 
 Use the current local development reset in `PARALLEL_WORKFLOW.md` ahead of old
 lane briefs/private controller admissions. `odbcpp-1` alone directs AO workers;
-a user-facing maintenance chat stops it before an authorized policy reset and
-hands back once. Resume reviewed feature implementation and ordinary owned
+an outside maintenance reset uses an explicit coordinator handoff. A root-assigned
+exclusive policy lease permits worker authorship without creating a second coordinator. Resume reviewed feature implementation and ordinary owned
 CMake/CTest qualification under the existing common slot. Do not make pristine
 pre-code execution, generated-source category approval, full compiler/loader
 provenance or bespoke guardian/controller proof a routine local prerequisite.
@@ -33,7 +33,7 @@ Read the actual Git state, applicable plans and current task evidence. Name the
 contract gap and observable completion condition before selecting files. Check
 the current Redshift product task, work board and actual agents. After the
 coordinator records `source_lanes_released=true` from the existing owner's scope/
-lease acknowledgment, dispatch up to two dependency-compatible complete packages. Package
+lease acknowledgment, dispatch three dependency-compatible complete product packages under exact leases. Package
 owners implement and investigate automated focused qualification; independent
 reviewers are drawn from a shared pool when candidates are ready. Do not create
 permanent three-agent sets, per-lane app goals or timers. Setup can proceed now,
@@ -91,7 +91,7 @@ unsupported changed scope requires explicit manual review, never a guessed
 pass. This authoring/review check is not compiler or GCC proof, a new full-graph
 gate or permission to change compiler warnings. Preserve assertion conditions,
 macro arguments, test names and original diagnostics when repairing fixtures.
-Use `tools/development/with_build_slot.py` for one heavy configure/build/regression
+Owners 2/3 use `tools/development/with_build_slot.py` for one heavy configure/build/regression
 slot on this 8 GiB host. Keep an owned build directory and durable retention reason.
 Do not bypass the legacy resource-release fence, run duplicate heavy builds or replay a
 passed gate just because another lane has completed.
@@ -101,6 +101,22 @@ exit status and qualification limits. Source checks and mocked controls do not
 prove compiler, provider, TLS or live behavior. A proposal is not implementation.
 Do not label a test passed before its process completes and results are read.
 
+Owner 4 uses the default-off normal Ubuntu product mode in `PARALLEL_WORKFLOW.md`,
+not a local heavy graph or another benchmark. The coordinator automatically
+manually dispatches reviewed immutable workflow W and separate product P: one
+standard free Ubuntu 24.04 x64 job, j2/30 minutes, one global noncancelling remote
+heavy group. Run the changed-diff brace check before expensive commands. Use
+literal allowlisted owning GoogleTest targets, six architecture checks and 23 SDK
+headers with the existing REDSHIFT Release/GCC/unixODBC SQLWCHAR2/OpenSSL shared
+profile. Configure fresh, restore only an exact compatible owning producer's
+compiler objects after independent compiler/dependency/full-flags/profile/path/
+ccache checks, and link/test fresh. No fallback keys, binaries or graphs. Cache is
+at most 256 MiB; source-only evidence is at most 20 MiB/job with three-day retention.
+Retain P/W before/after, source/config/dependency/object/executable/XML/inventory/
+run-attempt and failure/phase evidence. Maximum child RSS is not aggregate peak;
+missing provider step precision stays explicit. Linux proof leaves macOS/full/
+platform/native/live/final debt. No paid/secrets/services/privatePG authority.
+
 ## Review and integrate
 
 Have a finite independent review assess actual candidate bytes and evidence.
@@ -109,7 +125,7 @@ unchanged accepted package for reassurance. Before applying, verify current
 baseline, pins, exact selected diff, apply/reverse checks and unrelated changes.
 
 For Redshift, apply [DEVELOPMENT_WORKFLOW.md](../../../DEVELOPMENT_WORKFLOW.md).
-Use macOS/iODBC UCS4 as the primary development profile: focused checks, then
+Owners 2/3 use macOS/iODBC UCS4 as the primary local development profile: focused checks, then
 relevant coherent regression/staging/architecture/package checks. Collect additional width/sanitizer/platform/provider
 checks into the 12-hour sweep; run one early only for actual failure, immediate
 safety/ABI diagnosis, or explicit human request, with a
@@ -119,7 +135,8 @@ source/binary binding, bounded execution and PostgreSQL/process cleanup.
 Reviewed primary-qualified commits and pushes continue with full-CI/live
 acceptance pending. Author live GoogleTests with the feature and queue their
 execution; do not create per-feature paid admission. The coordinator uses the
-existing continuation and private ci-cadence.json for a combined checkpoint every12h:
+existing private ci-cadence.json for a combined checkpoint every 12 hours without
+resuming the paused continuation:
 first make full GitHub CI green on the exact ready pushed head, then run the
 accumulated new/affected and applicable authorized Redshift regression cases in
 one reviewed finite live batch. Group failures into coherent reviewed fixes,
@@ -158,7 +175,12 @@ failures and protected cloud admission. Keep secrets and credential/accounting a
 The coordinator's existing authorized implementation goals chain immediately after
 verified integration closure; the existing timer complements execution and runs
 accumulated acceptance. Work-board entries track lanes without per-lane app goals
-or timers. Preserve actual human pauses during migration.
+or timers. Keep legacy 15-minute continuation PAUSED, cost monitor 12-hour ACTIVE
+and existing human 5-minute supervision; no automatic resume. Each continuing
+owner has an exact assignment, a named wait with owner and resumption event/deadline,
+or promptly reported genuine human decision. Closure immediately resumes the next
+root-selected authorized package; neither six packages nor pilot closure ends the
+mission. Reuse/rename the stable session for its current package and verify names.
 Preserve full-CI/live/final debt in continuation/acceptance-backlog.json before
 closing any implementation goal. Existing full-acceptance app objectives require
 supported redefinition or actual full closure; never mark them complete by prose

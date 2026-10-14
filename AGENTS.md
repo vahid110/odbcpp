@@ -41,8 +41,8 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
   applicable architecture/public-first-include checks. These mechanical checks
   support, but do not replace, the semantic ownership review.
 - One coordinator owns the integration branch, integration commits/pushes,
-  combined qualification, live admission/accounting and cleanup. Two package
-  owners may implement, test, investigate failures and commit/push their assigned
+  combined qualification, live admission/accounting and cleanup. Three continuing product
+  owners (`odbcpp-2`, `odbcpp-3`, `odbcpp-4`) may implement, test, investigate failures and commit/push their assigned
   worker branches and open candidate PRs. Finite assignments state exact baseline,
   leased files/contracts, permitted actions, checks, deliverable and stop condition.
   SDK/CMake/CI/crypto/ODBC authorship is allowed in a bounded package with an exact
@@ -66,6 +66,10 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
   and applicable source-lane release; do not wait for a timer tick. Keep package state on the
   work board, without per-lane app goals or timers. Preserve all accumulated gates
   in the private acceptance backlog, with truthful supported app-goal transitions.
+- Every continuing owner has an exact assignment, a named wait with owner and
+  resumption event/deadline, or a promptly reported genuine human decision. After
+  verified closure/lease release, assign the next authorized package immediately;
+  six-package evaluation and infrastructure closure are not project stops.
 - Before ending a development turn, reconcile actual workers and the next
   product task with the handoff. Completed, selection-only or idle workers are
   not active implementation. Do not invent work to fill a lane or let routine
@@ -95,8 +99,9 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
   current CMake rejects a MySQL product build. Inspect real options and target
   inventories rather than assuming every historical preset is valid.
 - Use distinct owned build directories. For Redshift, follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md):
-  an owned incremental macOS/iODBC UCS4 development build per active package
-  where needed and 12-hour full qualification. This 8 GiB Mac has one heavy-build
+  owned incremental macOS/iODBC UCS4 builds for owners 2/3 where needed and
+  12-hour full qualification. Owner 4 uses the reviewed normal Ubuntu owning-job
+  workflow under coordinator dispatch, not a local heavy graph. This 8 GiB Mac has one heavy-build
   slot, acquired through `tools/development/with_build_slot.py`; migration product
   builds require the legacy owner's recorded resource release. Run focused checks during
   development and relevant primary regression once per coherent batch. Keep full final acceptance gates.
@@ -114,7 +119,8 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
 ## Build storage and periodic cleanup
 
 The coordinator owns cleanup across the lanes. Use the existing
-continuation timer, with no separate cleanup agent or timer.
+coordinator continuation state and closure callbacks, with no separate cleanup
+agent or timer; the legacy 15-minute continuation remains paused.
 
 - Check actual free space at each continuation. Inventory obsolete project build
   artifacts once daily, at qualification batch closure, and before a build when
@@ -163,8 +169,10 @@ cutover requires terminal/reaps/principal cleanup/accounting release
 (`integration_live_released=true`). Pending live acceptance alone does not block
 isolated source work. See `PARALLEL_WORKFLOW.md`.
 
-Keep the existing 15-minute continuation and separate cost monitor active until
-an explicit stop or their actual completion condition. No per-agent timers.
+Keep the legacy 15-minute continuation PAUSED, the existing 12-hour cost monitor
+ACTIVE and existing human 5-minute supervision intact. Do not resume the paused
+continuation or create timers/goals/watchers. Continuous assignments proceed
+through callbacks independently of timer state. No per-agent timers.
 Notify on meaningful completion, failure, material blocker or required action;
 otherwise keep scheduled checks quiet.
 
@@ -177,7 +185,7 @@ verified-TLS Redshift login remain separate completion requirements.
 ## Current Redshift cadence — human approved 12-hour batching 2026-10-11
 
 [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) supersedes the older per-batch
-full-graph/CI sequencing below. The existing continuation owns the 12-hour full
+full-graph/CI sequencing below. The coordinator retains the 12-hour full
 CI-first/live-batch cadence and durable private ci-cadence.json; no new timer.
 Author live tests during development, defer per-feature execution/admission to the
 checkpoint and collect failures into coherent reviewed fixes. Product implementation
