@@ -448,3 +448,21 @@ not an official-driver binary parity claim. Raw scalar parsing, REAL/DOUBLE rang
 policy, existing BIT text aliases, broader noncanonical spelling/hex grammar,
 input/default/SDK/backend behavior and protected full/platform/live/final debt
 remain unchanged. This ledger grants no login/SQL/spending authority.
+
+
+### Character Boolean-word to BIT diagnostic queue
+
+`BindColIntegrationTest.CharacterBooleanWordsRefusalAndNativeBooleanRecovery`
+checks genuine VARCHAR t/true/f/false to C BIT as 22018 without payload/length
+publication, with same-row text retry and NO_DATA. Actual SQL Boolean TRUE/FALSE,
+finite VARCHAR 1 and NULL recover; data and indicator-only fetch repeat refusal.
+Three fixed one-row/eight-column SELECTs maximum, no DDL/DML, five-second statement
+timeout and 60-second case assertion excluding login; word cells at most five
+bytes. Native bodies remain UNRUN locally; configured-row syntax only is distinct
+from native/provider/current-driver/link-list/full/platform/live/final acceptance.
+
+Primary ODBC character numeric-literal rules exclude these four words. Retained
+AWS text-format source also classifies them 22018; vendor binary/native execution
+and broader spelling parity remain unproved. Raw Boolean converter aliases,
+backend normalization to SDK 0/1, BoolsAsChar declared identity, input/default
+policy and broader grammar are unchanged. This ledger grants no live authority.
