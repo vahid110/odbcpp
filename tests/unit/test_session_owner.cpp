@@ -3115,3 +3115,282 @@ TEST(PreparedStartupObservationTest, SuccessfulSnapshotsPriorOwnershipAndFreshRe
   EXPECT_EQ(0, fresh_observed->disconnects);
 }
 } // namespace
+
+namespace {
+TEST(PreparedCommandTerminalTest, DisconnectedObservationBlocksWouldSucceedCommandsInEveryCachedState) {
+  for (const auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction}) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_command_description(observed);
+    QueryResult command;
+    command.statement_kind = StatementKind::UpdateWhere;
+    command.affected_rows = 4;
+    observed->execution_result = BackendResult<QueryResult>{command,
+        {SessionState::Idle, SessionDisposition::Reusable}};
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    auto plan = lease->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(plan);
+    observed->passive_connected = false;
+    observed->passive_state = state;
+    auto completed = lease->execute_command_batch(std::move(*plan));
+    ASSERT_TRUE(completed); // Bounded owning batch, not a top-level local error.
+    EXPECT_EQ(1u, completed->examined);
+    ASSERT_EQ(3u, completed->outcomes.size());
+    EXPECT_EQ(PreparedCommandOutcome::State::Failed, completed->outcomes[0].state);
+    ASSERT_TRUE(completed->outcomes[0].error);
+    EXPECT_EQ(BackendErrorClass::NotConnected, completed->outcomes[0].error->error_class);
+    EXPECT_EQ(BackendOperation::ExecutePrepared, completed->outcomes[0].error->operation);
+    EXPECT_FALSE(completed->outcomes[0].result);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}),
+        completed.session_snapshot());
+    EXPECT_EQ(completed.session_snapshot(), completed->outcomes[0].snapshot);
+    for (const auto index : {1u, 2u}) {
+      EXPECT_EQ(PreparedCommandOutcome::State::NotAttempted, completed->outcomes[index].state);
+      EXPECT_FALSE(completed->outcomes[index].result);
+      EXPECT_FALSE(completed->outcomes[index].error);
+    }
+    EXPECT_EQ(0, observed->queries);
+    EXPECT_FALSE(*lease);
+    retired_once(*observed);
+    auto repeated = lease->execute_command_batch(std::move(*plan));
+    ASSERT_FALSE(repeated);
+    EXPECT_EQ(BackendErrorClass::InvalidInput, repeated.backend_error().error_class);
+    lease->retire();
+    retired_once(*observed);
+  }
+}
+
+TEST(PreparedCommandTerminalTest, InitialTerminalDispositionPrecedesMasksAndKeepsConnectedSkips) {
+  for (const bool all_ignored : {false, true}) {
+    for (const auto state : {SessionState::Idle, SessionState::Unknown, SessionState::Disconnected}) {
+      auto observed = std::make_shared<Observed>();
+      authoritative_command_description(observed);
+      auto owner = owner_for(observed);
+      auto lease = owner.try_acquire();
+      ASSERT_TRUE(lease);
+      auto sets = fixed_command_sets();
+      sets[0].ignored = true;
+      sets[0].values.clear();
+      if (all_ignored) {
+        sets[2].ignored = true;
+        sets[2].values.clear();
+      }
+      auto plan = lease->prepare_command_batch("UPDATE t SET v=?", std::move(sets), {}, {},
+          rs::util::Deadline::max());
+      ASSERT_TRUE(plan);
+      observed->passive_connected = false;
+      observed->passive_state = state;
+      auto completed = lease->execute_command_batch(std::move(*plan));
+      ASSERT_TRUE(completed);
+      EXPECT_EQ(1u, completed->examined);
+      ASSERT_TRUE(completed->outcomes[0].error);
+      EXPECT_EQ(BackendErrorClass::NotConnected, completed->outcomes[0].error->error_class);
+      EXPECT_EQ(PreparedCommandOutcome::State::Failed, completed->outcomes[0].state);
+      for (const auto index : {1u, 2u}) {
+        EXPECT_EQ(PreparedCommandOutcome::State::NotAttempted, completed->outcomes[index].state);
+        EXPECT_FALSE(completed->outcomes[index].result);
+        EXPECT_FALSE(completed->outcomes[index].error);
+      }
+      EXPECT_EQ(0, observed->queries);
+      retired_once(*observed);
+    }
+    auto observed = std::make_shared<Observed>();
+    authoritative_command_description(observed);
+    QueryResult command;
+    command.statement_kind = StatementKind::UpdateWhere;
+    command.affected_rows = 9;
+    observed->execution_result = BackendResult<QueryResult>{command,
+        {SessionState::Idle, SessionDisposition::Reusable}};
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    auto sets = fixed_command_sets();
+    sets[0].ignored = true;
+    sets[0].values.clear();
+    if (all_ignored) {
+      sets[2].ignored = true;
+      sets[2].values.clear();
+    }
+    auto plan = lease->prepare_command_batch("UPDATE t SET v=?", std::move(sets), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(plan);
+    auto completed = lease->execute_command_batch(std::move(*plan));
+    ASSERT_TRUE(completed);
+    EXPECT_EQ(3u, completed->examined);
+    EXPECT_EQ(PreparedCommandOutcome::State::Skipped, completed->outcomes[0].state);
+    EXPECT_EQ(PreparedCommandOutcome::State::Skipped, completed->outcomes[1].state);
+    if (all_ignored) {
+      EXPECT_EQ(PreparedCommandOutcome::State::Skipped, completed->outcomes[2].state);
+      EXPECT_EQ(0, observed->queries);
+    } else {
+      ASSERT_TRUE(completed->outcomes[2].result);
+      EXPECT_EQ(9u, completed->outcomes[2].result->affected_rows);
+      EXPECT_EQ(1, observed->queries);
+    }
+    EXPECT_TRUE(*lease);
+    EXPECT_EQ(0, observed->disconnects);
+  }
+}
+
+TEST(PreparedCommandTerminalTest, InvalidAuthorityPrecedesFaultingObservationsAndFreshBorrowRetirement) {
+  for (const int mode : {0, 1, 2, 3}) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_command_description(observed);
+    QueryResult command;
+    command.statement_kind = StatementKind::UpdateWhere;
+    command.affected_rows = 3;
+    observed->execution_result = BackendResult<QueryResult>{command,
+        {SessionState::Idle, SessionDisposition::Reusable}};
+    CredentialContext credentials;
+    const auto token = credentials.publish_authenticated();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token);
+    ASSERT_TRUE(lease);
+    auto plan = lease->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(plan);
+    PreparedCommandPlan destination{std::move(*plan)};
+    auto other_observed = std::make_shared<Observed>();
+    auto other_owner = owner_for(other_observed);
+    auto other = other_owner.try_acquire();
+    ASSERT_TRUE(other);
+    std::optional<SessionLease> fresh;
+    if (mode == 2) {
+      auto completed = lease->execute_command_batch(std::move(destination));
+      ASSERT_TRUE(completed);
+      EXPECT_EQ(2, observed->queries);
+    }
+    if (mode == 3) {
+      ASSERT_TRUE(lease->return_reusable(rs::util::Deadline::max()));
+      fresh = owner.try_acquire(token);
+      ASSERT_TRUE(fresh);
+    }
+    const auto queries = observed->queries.load();
+    const auto resets = observed->resets.load();
+    observed->reset_mode = 11; // Even is_connected must not be called.
+    observed->passive_connected = false;
+    observed->on_passive = [] { ADD_FAILURE() << "Invalid authority must precede terminal observation"; };
+    other_observed->reset_mode = 11;
+    other_observed->on_passive = [] { ADD_FAILURE() << "Wrong owner must stay passive"; };
+    auto rejected = mode == 0 ? lease->execute_command_batch(std::move(*plan)) :
+        mode == 1 ? other->execute_command_batch(std::move(destination)) :
+        mode == 2 ? lease->execute_command_batch(std::move(destination)) :
+        fresh->execute_command_batch(std::move(destination));
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(BackendErrorClass::InvalidInput, rejected.backend_error().error_class);
+    EXPECT_EQ(queries, observed->queries);
+    EXPECT_EQ(resets, observed->resets);
+    EXPECT_EQ(0, observed->disconnects);
+    EXPECT_EQ(0, other_observed->queries);
+    EXPECT_EQ(0, other_observed->disconnects);
+    EXPECT_TRUE(*other);
+    if (mode == 3) {
+      EXPECT_TRUE(*fresh);
+    } else {
+      EXPECT_TRUE(*lease);
+    }
+    observed->on_passive = {};
+    observed->reset_mode = 0;
+    observed->passive_connected = true;
+    other_observed->on_passive = {};
+    other_observed->reset_mode = 0;
+    auto& active = mode == 3 ? *fresh : *lease;
+    auto repaired = active.prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(repaired);
+    ASSERT_TRUE(active.execute_command_batch(std::move(*repaired)));
+    EXPECT_EQ(queries + 2, observed->queries);
+    EXPECT_EQ(0, observed->disconnects);
+  }
+}
+
+TEST(PreparedCommandTerminalTest, ConnectedStatesCachePriorOwnershipAndExplicitFreshRecoveryRemainExact) {
+  for (const auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction}) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_command_description(observed);
+    QueryResult command;
+    command.statement_kind = StatementKind::UpdateWhere;
+    command.affected_rows = 7;
+    const auto disposition = state == SessionState::Idle ? SessionDisposition::Reusable :
+        SessionDisposition::ResetRequired;
+    observed->execution_result = BackendResult<QueryResult>{command, {state, disposition}};
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    auto plan = lease->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(plan);
+    observed->passive_connected = true;
+    observed->passive_state = state;
+    auto completed = lease->execute_command_batch(std::move(*plan));
+    ASSERT_TRUE(completed);
+    EXPECT_EQ((SessionSnapshot{state, disposition}), completed.session_snapshot());
+    EXPECT_EQ(3u, completed->examined);
+    ASSERT_TRUE(completed->outcomes[2].result);
+    EXPECT_EQ(7u, completed->outcomes[2].result->affected_rows);
+    EXPECT_EQ(2, observed->queries);
+    EXPECT_TRUE(*lease);
+    EXPECT_EQ(0, observed->disconnects);
+  }
+  for (const bool throwing_cleanup : {false, true}) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_command_description(observed);
+    QueryResult command;
+    command.statement_kind = StatementKind::UpdateWhere;
+    command.affected_rows = 13;
+    observed->execution_result = BackendResult<QueryResult>{command,
+        {SessionState::Idle, SessionDisposition::Reusable}};
+    CredentialContext credentials;
+    const auto token = credentials.publish_authenticated();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token);
+    ASSERT_TRUE(lease);
+    auto prior_plan = lease->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(prior_plan);
+    auto prior = lease->execute_command_batch(std::move(*prior_plan));
+    ASSERT_TRUE(prior);
+    auto plan = lease->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(plan);
+    auto scope = lease->cache_token();
+    ASSERT_TRUE(scope);
+    observed->passive_connected = false;
+    observed->throw_disconnect = throwing_cleanup;
+    observed->on_disconnect = [&] {
+      EXPECT_FALSE(*lease);
+      EXPECT_FALSE(scope->is_current());
+      EXPECT_FALSE(owner.try_acquire(token));
+    };
+    auto completed = lease->execute_command_batch(std::move(*plan));
+    ASSERT_TRUE(completed);
+    ASSERT_TRUE(completed->outcomes[0].error);
+    EXPECT_EQ(BackendErrorClass::NotConnected, completed->outcomes[0].error->error_class);
+    EXPECT_EQ(2, observed->queries); // Only the previously owned batch ran.
+    retired_once(*observed);
+    ASSERT_TRUE(prior->outcomes[0].result);
+    ASSERT_TRUE(prior->outcomes[2].result);
+    EXPECT_EQ(13u, prior->outcomes[0].result->affected_rows);
+    EXPECT_EQ(13u, prior->outcomes[2].result->affected_rows);
+    EXPECT_EQ(PreparedCommandOutcome::State::Skipped, prior->outcomes[1].state);
+    EXPECT_FALSE(scope->is_current());
+    observed->on_disconnect = {};
+    auto fresh_observed = std::make_shared<Observed>();
+    authoritative_command_description(fresh_observed);
+    fresh_observed->execution_result = BackendResult<QueryResult>{command,
+        {SessionState::Idle, SessionDisposition::Reusable}};
+    auto fresh_owner = owner_for(fresh_observed);
+    auto fresh = fresh_owner.try_acquire();
+    ASSERT_TRUE(fresh);
+    auto fresh_plan = fresh->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max());
+    ASSERT_TRUE(fresh_plan);
+    auto recovered = fresh->execute_command_batch(std::move(*fresh_plan));
+    ASSERT_TRUE(recovered);
+    EXPECT_EQ(2, fresh_observed->queries);
+    EXPECT_EQ(0, fresh_observed->disconnects);
+  }
+}
+}

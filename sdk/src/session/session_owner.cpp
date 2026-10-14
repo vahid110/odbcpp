@@ -628,7 +628,8 @@ BackendResult<PreparedCommandBatchResult> SessionLease::execute_command_batch(Pr
   };
   try {
     snapshot = passive_outcome(physical_session()->is_connected(), physical_session()->session_state());
-    if (snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected) {
+    if (snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected ||
+        snapshot.disposition == SessionDisposition::Retire) {
       fail(rs::util::DbErrorCode::NotConnected);
       return BackendResult<PreparedCommandBatchResult>{std::move(batch), snapshot};
     }
