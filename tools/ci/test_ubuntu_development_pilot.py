@@ -15,6 +15,12 @@ spec.loader.exec_module(pilot)
 
 
 class PilotEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        # Legacy-role checks also run inside the hosted normal job.
+        env = patch.dict(pilot.os.environ, {"PILOT_MODE": "cold"})
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_exact_ten_ctests_and_no_extra_native_inventory(self):
         listing = {'tests': [{'name': n} for n in pilot.SELECTED]}
         self.assertEqual(len(pilot.inventory_names(listing)), 10)
@@ -309,6 +315,208 @@ class PilotEvidenceTests(unittest.TestCase):
                 f.write(b'x')
             with self.assertRaises(ValueError):
                 pilot.package()
+
+class ProductQualificationTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(pilot.os.environ, {
+            'PILOT_MODE': 'product', 'PILOT_PRODUCT_TARGETS': 'test_diagnostics_apis',
+            'PILOT_PRODUCT_BASE': 'b' * 40, 'PILOT_PRODUCT_CACHE': '{}',
+            'PILOT_WORKFLOW_HEAD': 'a' * 40, 'PILOT_WORKFLOW_ROOT': '/workflow',
+            'PILOT_EXPERIMENT_REQUESTED': 'false', 'GITHUB_SHA': 'a' * 40,
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def producer_request(self):
+        values = dict(source_head='c' * 40, workflow_head='a' * 40,
+                      compatibility_digest='d' * 64, run_id='123', run_attempt='1')
+        values['key'] = pilot.product_cache_key(values['source_head'], values['workflow_head'], values['compatibility_digest'], values['run_id'], values['run_attempt'])
+        return values
+
+    def test_literal_target_selection_and_actual_ctest_inventory(self):
+        self.assertEqual(pilot.owning_suites(), ('test_diagnostics_apis',))
+        names = pilot.owning_suites() + pilot.CHECKS
+        self.assertEqual(len(pilot.inventory_names({'tests': [{'name': n} for n in names]})), 7)
+        self.assertEqual(pilot.product_targets('test_backend_contract,test_sql_escape'), ('test_backend_contract', 'test_sql_escape'))
+        for bad in ('', 'test_.*', 'test_diagnostics_apis;uname', ' test_diagnostics_apis',
+                    'test_diagnostics_apis,test_diagnostics_apis', ','.join(pilot.PRODUCT_TARGETS), 'it_redshift_real'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pilot.product_targets(bad)
+        with self.assertRaises(ValueError):
+            pilot.inventory_names({'tests': [{'name': n} for n in pilot.SELECTED]})
+
+    def test_normal_init_separates_heads_and_rejects_invalid_role_base_conflict(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
+            sources = [{'head': 'c' * 40, 'tree': 'd' * 40}, {'head': 'a' * 40, 'tree': 'e' * 40}]
+            with patch.object(pilot, 'source', side_effect=copy.deepcopy(sources)), patch.object(pilot, 'sha', return_value='f' * 64), patch.object(pilot, 'output', return_value='host'), patch.object(pilot.platform, 'machine', return_value='x86_64'), patch.object(Path, 'read_text', return_value='RAM'), patch.dict(pilot.os.environ, {'RUNNER_OS': 'Linux'}):
+                pilot.init('c' * 40, '2026-01-01T00:00:00Z', 'product')
+            identity = json.loads((Path(directory) / 'identity.json').read_text())
+            self.assertEqual(identity['head'], 'c' * 40)
+            self.assertEqual(identity['workflow_source']['head'], 'a' * 40)
+            self.assertEqual(identity['batch_base'], 'b' * 40)
+            self.assertEqual(identity['selected'], ['test_diagnostics_apis', *pilot.CHECKS])
+            for override in ({'PILOT_MODE': 'cached-b'}, {'PILOT_PRODUCT_BASE': 'branch'}, {'PILOT_EXPERIMENT_REQUESTED': 'true'}, {'GITHUB_SHA': 'f' * 40}):
+                with patch.dict(pilot.os.environ, override), patch.object(pilot, 'source', side_effect=copy.deepcopy(sources)), self.assertRaises(ValueError):
+                    pilot.init('c' * 40, '2026-01-01T00:00:00Z', 'product')
+            with patch.object(pilot, 'source', return_value=sources[0]), self.assertRaises(ValueError):
+                pilot.init('c' * 40, '2026-01-01T00:00:00Z', 'unknown')
+
+    def test_after_guard_requires_both_immutable_clean_sources_even_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
+            pilot.write('identity.json', {'mode': 'product', 'head': 'c' * 40, 'workflow_source': {'head': 'a' * 40}})
+            pilot.write('build.json', {'exit': 7})
+            after=[{'head': 'c' * 40, 'tree': 'd' * 40}, {'head': 'a' * 40, 'tree': 'e' * 40}]
+            with patch.object(pilot, 'source', side_effect=after) as guard:
+                pilot.product_source_guard()
+                self.assertEqual(guard.call_args_list, [unittest.mock.call('c' * 40), unittest.mock.call('a' * 40, Path('/workflow'))])
+            self.assertEqual(json.loads((pilot.EVIDENCE / 'source-after.json').read_text())['product']['head'], 'c' * 40)
+            with patch.object(pilot, 'source', side_effect=ValueError('tracked source changed')), self.assertRaises(ValueError):
+                pilot.product_source_guard()
+            self.assertEqual(json.loads((pilot.EVIDENCE / 'build.json').read_text())['exit'], 7)
+
+    def test_preflight_checks_exact_changed_source_before_any_product_commands(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
+            pilot.write('identity.json', {'head': 'c' * 40, 'batch_base': 'b' * 40, 'mode': 'product'})
+            with patch.object(pilot, 'output', side_effect=['b' * 40, 'tests/unit/test_diagnostics_apis.cpp\nREADME.md']), patch.object(pilot, 'sha', return_value='a' * 64), patch.object(pilot.subprocess, 'run') as git, patch.object(pilot, 'measure') as measure:
+                pilot.product_preflight()
+                git.assert_called_once_with(['git', 'merge-base', '--is-ancestor', 'b' * 40, 'c' * 40], check=True, timeout=30)
+                measure.assert_called_once_with('source-preflight', ['python3', '-B', '/workflow/tools/development/check_changed_gtest_control_flow.py', '--base', 'b' * 40, '--head', 'c' * 40, 'tests/unit/test_diagnostics_apis.cpp'], 120)
+            with patch.object(pilot, 'output', side_effect=['b' * 40, 'README.md']), patch.object(pilot.subprocess, 'run'), patch.object(pilot, 'measure') as measure, self.assertRaises(ValueError):
+                pilot.product_preflight()
+            measure.assert_not_called()
+
+    def test_exact_producer_cache_identity_and_independent_compatibility_rejection(self):
+        request = self.producer_request()
+        self.assertEqual(pilot.product_cache_request(json.dumps(request)), request)
+        for bad in (dict(request, key=request['key'] + '-fallback'), dict(request, source_head='main'),
+                    dict(request, workflow_head='branch'), dict(request, run_attempt='0'),
+                    dict(request, run_id=123), dict(request, extra='fallback'), []):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pilot.product_cache_request(json.dumps(bad))
+        with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)), patch.dict(pilot.os.environ, {'GITHUB_OUTPUT': directory + '/out'}):
+            pilot.write('cache-key.json', {'compatibility_digest': 'd' * 64})
+            pilot.check_product_cache()
+            self.assertIn('restore=false\nrestore_key=\n', (Path(directory) / 'out').read_text())
+            with patch.dict(pilot.os.environ, {'PILOT_PRODUCT_CACHE': json.dumps(request)}):
+                pilot.check_product_cache()
+                self.assertIn('restore_key=' + request['key'], (Path(directory) / 'out').read_text())
+                pilot.write('cache-key.json', {'compatibility_digest': 'e' * 64})
+                with self.assertRaises(ValueError):
+                    pilot.check_product_cache()
+
+    def test_restore_requires_exact_successful_embedded_owning_producer(self):
+        request = self.producer_request()
+        producer = {'identity': request, 'role': 'product', 'source_tree': 'e' * 40, 'workflow_tree': 'f' * 40,
+                    'phase_exits': {p: 0 for p in ('source-preflight', 'dependency-install', 'configure', 'build', 'tests')},
+                    'targets': ['test_diagnostics_apis'], 'counts': {'test_diagnostics_apis': 3}, 'inventory_digest': '1' * 64}
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / 'cache'; cache.mkdir()
+            record = cache / 'odbcpp-product-producer.json'
+            with patch.object(pilot, 'EVIDENCE', Path(directory) / 'evidence'), patch.dict(pilot.os.environ, {'CCACHE_DIR': str(cache), 'PILOT_CACHE_HIT': 'true', 'PILOT_RESTORED_KEY': request['key']}):
+                pilot.write('selected-product-cache.json', {'requested': True, 'producer': request})
+                record.write_text(json.dumps(producer))
+                pilot.check_product_restore()
+                self.assertEqual(json.loads((pilot.EVIDENCE / 'product-cache-restore.json').read_text())['producer_record_sha256'], pilot.sha(record))
+                for bad in (dict(producer, role='seed-a'), dict(producer, identity=dict(request, run_attempt='2')),
+                            dict(producer, phase_exits=dict(producer['phase_exits'], tests=7)),
+                            dict(producer, phase_exits=dict(producer['phase_exits'], tests=False)),
+                            dict(producer, counts={'test_diagnostics_apis': 0}), dict(producer, source_tree='unknown'),
+                            dict(producer, inventory_digest='unknown'), dict(producer, targets=['it_redshift_real'])):
+                    record.write_text(json.dumps(bad))
+                    with self.subTest(bad=bad), self.assertRaises(ValueError):
+                        pilot.check_product_restore()
+                record.write_text(json.dumps(producer))
+                with patch.dict(pilot.os.environ, {'PILOT_RESTORED_KEY': request['key'] + '-fallback'}), self.assertRaises(ValueError):
+                    pilot.check_product_restore()
+                record.unlink()
+                with patch.dict(pilot.os.environ, {'PILOT_CACHE_HIT': ''}):
+                    pilot.check_product_restore()
+                    self.assertFalse(json.loads((pilot.EVIDENCE / 'product-cache-restore.json').read_text())['hit'])
+
+    def test_normal_test_phase_refuses_changed_binary_and_retains_measured_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); build=root / 'build'; evidence=root / 'evidence'
+            (build / 'tests').mkdir(parents=True)
+            binary = build / 'tests/test_diagnostics_apis'; binary.write_text('original executable')
+            with patch.object(pilot, 'BUILD', build), patch.object(pilot, 'EVIDENCE', evidence):
+                pilot.write('executables.json', {'test_diagnostics_apis': {'sha256': pilot.sha(binary), 'names': ['Suite.Case']}})
+                def run_tests(name, command, timeout):
+                    self.assertIn('--no-tests=error', command)
+                    self.assertIn(pilot.selected_regex(), command)
+                    pilot.write('tests.json', {'exit': 0})
+                    binary.write_text('unexpected changed executable')
+                with patch.object(pilot, 'measure', side_effect=run_tests), self.assertRaisesRegex(ValueError, 'executable changed'):
+                    pilot.test()
+                self.assertEqual(json.loads((evidence / 'tests.json').read_text())['exit'], 0)
+                with patch.object(pilot, 'main', side_effect=RuntimeError('original exit7')), patch.object(sys, 'argv', ['pilot', 'test']), self.assertRaisesRegex(RuntimeError, 'original exit7'):
+                    pilot.run_cli()
+                failure = json.loads((evidence / 'product-failure-test.json').read_text())
+                self.assertEqual(failure['error'], 'original exit7')
+                self.assertEqual(json.loads((evidence / 'tests.json').read_text())['exit'], 0)
+
+    def test_real_normal_configure_finish_preserve_phases_and_only_save_complete_results(self):
+        for disposition in ('complete', 'failed', 'missing'):
+            with self.subTest(disposition=disposition), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory); build=root / 'build'; evidence=root / 'evidence'; cache=root / 'cache'; cache.mkdir()
+                compiler=root / 'compiler'; compiler.write_text('offline compiler fixture')
+                identity={'head': 'c' * 40, 'tree': 'e' * 40, 'mode': 'product', 'submitted_at': '2026-01-01T00:00:00+00:00', 'workflow_source': {'head': 'a' * 40, 'tree': 'f' * 40}}
+                def measure(name, command, timeout):
+                    build.mkdir()
+                    for name2 in ('CMakeCache.txt', 'odbcpp-crypto-manifest.json'): (build / name2).write_text('{}')
+                    (build / 'compile_commands.json').write_text('[]')
+                    for dep in ('googletest', 'spdlog'):
+                        src=build / '_deps' / (dep + '-src'); src.mkdir(parents=True); (src / 'file').write_text('source')
+                    pilot.write(name + '.json', {'exit': 0})
+                def output(*cmd):
+                    return 'direct_cache_hit 0\ncache_miss 1' if cmd == ('ccache', '--print-stats') else 'offline fixture'
+                env={'CCACHE_DIR': str(cache), 'GITHUB_OUTPUT': str(root / 'out'), 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1', 'PILOT_CACHE_HIT': ''}
+                with patch.object(pilot, 'BUILD', build), patch.object(pilot, 'EVIDENCE', evidence), patch.object(pilot, 'measure', side_effect=measure), patch.object(pilot, 'output', side_effect=output), patch.object(pilot.shutil, 'which', return_value=str(compiler)), patch.object(pilot, 'source', return_value=identity), patch.object(pilot.subprocess, 'run'), patch.dict(pilot.os.environ, env):
+                    pilot.write('identity.json', identity)
+                    pilot.write('dependency-install.json', {'exit': 0, 'elapsed_seconds': 1.25})
+                    (evidence / 'dependency-install-time.txt').write_text('raw GNU time')
+                    (evidence / 'dependency-install.log').write_text('original child output')
+                    pilot.configure()
+                    self.assertEqual(json.loads((evidence / 'dependency-install.json').read_text())['elapsed_seconds'], 1.25)
+                    for name in ('source-preflight', 'build', 'tests'): pilot.write(name + '.json', {'exit': 7 if name == 'build' and disposition == 'failed' else 0})
+                    if disposition == 'missing': (evidence / 'source-preflight.json').unlink()
+                    pilot.write('results.json', {'test_diagnostics_apis': {'count': 3, 'failures': 0, 'errors': 0, 'skips': 0, 'disabled_or_notrun': 0}})
+                    pilot.write('semantic-inventory.json', {'ctests': list(pilot.selected_tests()), 'google_tests': {'test_diagnostics_apis': ['Suite.One', 'Suite.Two', 'Suite.Three']}})
+                    pilot.check_product_cache()
+                    pilot.finish()
+                    saved=cache / 'odbcpp-product-producer.json'
+                    self.assertEqual(saved.exists(), disposition == 'complete')
+                    self.assertEqual(json.loads((evidence / 'product-cache-eligibility.json').read_text())['save'], disposition == 'complete')
+                    index=json.loads((evidence / 'evidence-index.json').read_text())
+                    for name in ('dependencies.json', 'dependency-install.json', 'dependency-install-time.txt', 'dependency-install.log', 'configure.json', 'build.json', 'tests.json', 'finish.json'):
+                        self.assertEqual(index[name]['sha256'], pilot.sha(evidence / name))
+                    if disposition == 'complete':
+                        producer=json.loads(saved.read_text())
+                        self.assertEqual(producer['counts'], {'test_diagnostics_apis': 3})
+                        self.assertEqual(producer['identity']['workflow_head'], 'a' * 40)
+                        self.assertEqual(producer['identity']['source_head'], 'c' * 40)
+                        self.assertEqual(set(producer['phase_exits']), {'source-preflight', 'dependency-install', 'configure', 'build', 'tests'})
+                        self.assertIn('save_cache=true', (root / 'out').read_text())
+                    else:
+                        self.assertIn('save_cache=false', (root / 'out').read_text())
+
+    def test_manual_normal_mode_default_off_and_bounded_single_job(self):
+        root = Path(__file__).resolve().parents[2]
+        caller=(root / '.github/workflows/ci.yml').read_text()
+        reusable=(root / '.github/workflows/ubuntu-development-pilot.yml').read_text()
+        input_block=caller.split('      run_product_qualification:', 1)[1].split('      product_workflow_head:', 1)[0]
+        self.assertIn('type: boolean', input_block)
+        self.assertIn('default: false', input_block)
+        self.assertIn('cancel-in-progress: false', caller)
+        self.assertIn("(inputs.run_development_pilot || inputs.run_product_qualification)", caller)
+        product_job=reusable.split('  product:\n', 1)[1].split('  cold:\n', 1)[0]
+        self.assertEqual(product_job.count('runs-on:'), 1)
+        self.assertIn('runs-on: ubuntu-24.04', product_job)
+        self.assertIn('timeout-minutes: 30', product_job)
+        self.assertIn('retention-days: 3', product_job)
+        self.assertNotIn('restore-keys:', product_job)
+        self.assertNotIn('secrets:', product_job)
+        self.assertLess(product_job.index(' product-preflight'), product_job.index(' dependencies'))
+        self.assertLess(product_job.index(' product-restore-check'), product_job.index(' build'))
 
 
 if __name__ == '__main__':

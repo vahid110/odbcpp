@@ -7,7 +7,7 @@ Product scope, independent review, live-test authority and final acceptance rema
 
 Human-approved parallel execution on 2026-10-13 supersedes the root-only
 implementation/qualification and no-new-agents restrictions of the 2026-10-11
-trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines two package owners,
+trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines three continuing product owners,
 automated qualification, shared independent review, coordinator integration and
 the separate source, resource and integration/live migration releases. The 12-hour cadence and all protected gates remain.
 
@@ -15,8 +15,9 @@ the separate source, resource and integration/live migration releases. The 12-ho
 
 Apply the local development reset in `PARALLEL_WORKFLOW.md` to both existing
 packages and future ordinary local work. One operational coordinator (`odbcpp-1`)
-directs two implementation owners. Use ordinary owned CMake/CTest builds through
-the shared slot, measured resource reserve, finite supervised commands and actual
+directs three implementation owners. Owners 2/3 use ordinary owned CMake/CTest
+builds through the shared local slot; owner 4 uses the reviewed one-job standard
+free hosted Ubuntu workflow under automatic coordinator dispatch. Retain measured resource reserve, finite supervised commands and actual
 source/configuration/binary/test evidence. Retained custom-controller failures do
 not block a fresh ordinary build. Do not require sequential generated-input or
 compiler-probe category approvals, full trace/loader/syscall closure, or a new
@@ -26,7 +27,7 @@ failures, architecture checks and every full/platform/live/final gate remain.
 
 ## Development loop
 
-- Use one owned incremental macOS/iODBC UCS4 working build for each active
+- Owners 2/3 use one owned incremental macOS/iODBC UCS4 working build for each active
   coherent package where needed. Serialize heavy local configure/build/regression
   work through `tools/development/with_build_slot.py` on this 8 GiB Mac; source
   work and independent review can proceed concurrently. During migration, product
@@ -39,7 +40,7 @@ failures, architecture checks and every full/platform/live/final gate remain.
   concrete safety/ABI defect needing immediate diagnosis, an explicit human
   request; record the reason. Pointer/layout/Unicode
   changes alone do not automatically trigger every profile.
-- Two package owners implement complete bounded deliverables, author tests,
+- Three continuing product owners implement complete bounded deliverables, author tests,
   investigate automated focused qualification and resolve independent review
   findings. A shared reviewer pool reviews ready candidates independently.
   The coordinator owns integration branch Git, combined/full CI, live admission,
@@ -57,6 +58,27 @@ failures, architecture checks and every full/platform/live/final gate remain.
   Continue reviewed primary-qualified commits and pushes with full-CI and live
   acceptance explicitly pending. A pending qualification goal does not prevent
   implementation of the next authorized coherent product package.
+
+## Third-owner focused Ubuntu loop
+
+Owner 4 qualifies product changes with the default-off normal mode described in
+`PARALLEL_WORKFLOW.md`: one fresh standard Ubuntu 24.04 x64 runner, j2/30 minutes,
+reviewed immutable workflow W separate from product P, allowlisted owning tests,
+six architecture checks and 23 SDK headers. The coordinator automatically submits
+one bounded manual dispatch after review; no owner dispatch or human-click gate.
+Run the cheap changed-diff brace checker first. Reuse only exact compatible
+compiler objects with actual owning producer provenance, never binaries/graphs,
+and retain independent fresh-link/XML/source evidence and original failures.
+Bounds remain 256 MiB cache, 20 MiB source-only evidence/job, three-day retention,
+one global noncancelling Ubuntu heavy group; ordinary CI queues remain separate.
+
+This is normal development qualification, not another three-job benchmark. Actual
+Linux owning results do not inherit historical source results or clear required
+macOS/iODBC primary, full/platform/native/live/final gates. Review candidate
+ownership/evidence once, then assess exact current integration applicability;
+repair concrete affected findings without replaying unchanged accepted audits.
+Use one finite exact-head CI/native-review completion route with verified cleanup.
+No third local heavy graph, paid/storage expansion, secrets or live authority.
 
 ## Goals and pending acceptance
 
@@ -82,7 +104,13 @@ The coordinator records reviewed primary-qualified integration, not merely a
 worker's local completion, as accepted implementation throughput. The first six
 real dependency-compatible packages evaluate elapsed delivery time, review/build/
 coordinator waits, integration rework, later failures and acceptance-debt growth.
-Keep two lanes until those results support more concurrency.
+The human-approved 2026-10-14 three-owner continuation supersedes the two-lane
+trial. Six packages are an evaluation milestone, not a project stop. Every owner
+has an exact active lease, a named dependency/resource wait with owner and
+resumption event/deadline, or a genuine human decision promptly reported. Resolve
+routine repairs within existing authority. Preserve parked scope; do not invent
+filler. Reuse stable AO IDs, rename/read back current package names and align
+stale supported native titles.
 
 The private `continuation/acceptance-backlog.json` retains accumulated qualification
 debt across completed implementation goals. Each entry binds its feature, exact source/head, authored
@@ -107,7 +135,7 @@ this does not remove its original final acceptance or require an early test run.
 
 ## Combined 12-hour qualification checkpoint
 
-- The existing 15-minute continuation checks the durable 12-hour due time in
+- The coordinator checks the durable 12-hour due time in
   `continuation/ci-cadence.json`; no additional timer or watcher. When changed
   source has accumulated, freeze a ready pushed head and the applicable pending
   test inventory. Reuse a matching completed green or active full GitHub CI run;
@@ -149,7 +177,9 @@ this does not remove its original final acceptance or require an early test run.
 - Preserve noncancelling CI queue groups and inspect GitHub's pending-run capacity
   before dispatch. Record a real queue wait instead of duplicating watchers.
 
-Keep the existing continuation and cost monitor at their actual authorized state;
+Keep the legacy 15-minute continuation PAUSED and existing 12-hour cost monitor
+ACTIVE, with the existing human 5-minute supervision; no new timer, goal or watcher.
+Continuous assignment does not resume the paused continuation. Preserve their authorized state;
 the migration does not restart a human-paused continuation. The human-approved
 isolated source lanes can overlap the immutable live checkpoint after its owner's
 scope/lease acknowledgment and `source_lanes_released=true`; heavy builds require

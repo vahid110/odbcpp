@@ -19,8 +19,9 @@ SQL/live, private PostgreSQL or final release authority.
   assignments, leases resources and owns integration. The user-facing chat may
   inspect/report progress and perform an explicitly requested workflow reset;
   after reset it routes steering through `odbcpp-1` rather than directing workers.
-  A workflow-maintenance handoff temporarily stops that coordinator before another
-  author changes policy or shared state; only one coordinator acts at a time.
+  Only one coordinator acts at a time. A coordinator-assigned exclusive policy
+  lease permits worker authorship while the coordinator continues scheduling;
+  outside maintenance resets require an explicit handoff.
 - Package owners resume their already reviewed feature contracts and exact file
   leases. They implement and author GoogleTests now; a pristine pre-change
   executable baseline is useful evidence, not a universal prerequisite to coding.
@@ -57,9 +58,11 @@ SQL/live, private PostgreSQL or final release authority.
   bounded configure/build/focused-regression sequence as one resource assignment.
   Full CI/live/final acceptance debt stays recorded under the existing cadence.
 
-## Two lanes and one integration coordinator
+## Three continuing product owners and one coordinator
 
-Start with two complete package owners, automated qualification and a shared
+The human-approved 2026-10-14 continuous assignment supersedes the initial
+two-lane trial and temporary infrastructure-only role. `odbcpp-2`, `odbcpp-3`
+and `odbcpp-4` are continuing complete product owners. Use automated qualification and a shared
 independent reviewer pool. A package owner implements, authors meaningful tests,
 investigates failures and resolves review findings. Qualification runners execute
 prescribed checks and retain their actual results; an additional agent is not
@@ -94,6 +97,17 @@ Use the product plans and actual handoff to select complete deliverables, normal
 three to five related scenarios where compatible. Do not manufacture work to fill
 a lane. Inspect SDK/core, Redshift catalog/types, MySQL and authentication at
 continuation checkpoints; parked scope remains parked until authorized.
+
+Every owner must have an actual bounded assignment, or a named dependency/resource
+wait with its owner and resumption event/deadline, or a promptly reported genuine
+human decision. A working label or delivered message is not implementation. After
+verified closure and lease release, the coordinator immediately assigns the next
+dependency-compatible authorized roadmap package through the existing AO board;
+do not wait for a timer, stop at six packages, or exit after a pilot. Resolve routine
+source/test/review/resource repairs within existing authority; escalate actual
+scope, access, principal or spending decisions with concrete options. On session
+reuse, rename it to the current package, verify the returned name and align a stale
+supported native title while preserving its stable ID/history.
 
 Each assignment must state:
 
@@ -170,6 +184,50 @@ manual-dispatch input and final acceptance requirement; primary-only PR status
 does not establish full/live/final qualification. Scheduling-tool offline tests
 run in the primary workflow as well as during changes to that tooling.
 
+## Ubuntu normal product qualification
+
+Owners 2 and 3 share the existing local macOS/iODBC UCS4 heavy slot, j2,
+fixed source and measured disk reserve. Owner 4 uses one standard free public
+GitHub-hosted `ubuntu-24.04` x64 job, j2, at most 30 minutes; it does not create
+another local product graph. All manual Ubuntu heavy modes share one global
+noncancelling concurrency group, distinct from ordinary CI. No larger, paid or
+self-hosted runner, storage-limit change, secret, service, AWS or private PostgreSQL
+is authorized by this lane.
+
+The coordinator automatically dispatches the registered `ci.yml` workflow on a
+reviewed immutable workflow W, with a separate immutable product P and exact batch
+base. Both are 40-character commit IDs. The explicit default-off
+`run_product_qualification` input selects one normal job and skips all nine full
+jobs; ordinary/default runs and both historical experiment modes remain intact.
+Manual-trigger semantics do not require a human click. Owners never self-dispatch.
+Before expensive commands, run the changed-source GoogleTest brace check. Select
+one to four distinct literal owning targets from diagnostics, backend, numeric,
+data, catalog and SQL escape/query tests; arbitrary shell targets or regexes are
+rejected. Use the existing Redshift Release/GCC/unixODBC SQLWCHAR2/OpenSSL
+SYSTEM_SHARED profile, actual selected GoogleTests, six architecture checks and
+23 SDK header-isolation units.
+
+Configure a fresh graph and link fresh executables on every job. A cold job
+restores nothing. An optional cache request names the exact successful owning
+producer P/W/run/attempt/key and strict compatibility digest of actual compiler,
+system/fetched dependencies, complete compile flags, profile, canonical paths and
+ccache configuration. Independently compute that digest before exact-key restore;
+no fallback keys. Verify the embedded producer identity and successful phase/test
+inventory before using restored compiler objects. Changed inputs still compile;
+cache hits are not test results. Save only eligible compiler objects, bounded to
+256 MiB, and retain source-only text evidence at most 20 MiB/job for three days.
+Never cache final binaries or configured graphs.
+
+Retain P/W source identities before/after, configuration, dependency/header pins,
+actual compile/object/link maps, executable hashes, XML/case inventory, cache
+provenance/statistics, original failed exits/logs and phase/resource evidence.
+GNU time maximum child RSS is not summed concurrent peak; missing provider step
+stamps and approximate log timing remain explicit. A normal owning Linux result
+leaves macOS/full/platform/native/live/final acceptance pending. Historical cache
+experiments and their failures remain preserved, with no benchmark, migration or
+adoption claim. Follow one finite supplied-head/native-ID CI+review completion
+route, then reap it and verify release; no duplicate watchers.
+
 ## Board, candidate handoff and integration
 
 Use Agent Orchestrator issues/workers as the package work board. Record the exact
@@ -201,9 +259,10 @@ authorized package without waiting for a timer tick. The coordinator replaces
 current facts in the handoff, records debt in the existing acceptance backlog and
 reconciles actual workers before ending a development turn.
 
-## Six-package evaluation
+## Continuing delivery evaluation
 
-Evaluate the first six real dependency-compatible packages. Do not count setup,
+Evaluate the first six real dependency-compatible packages as a retained measurement window;
+continue recording subsequent delivery. Do not count setup,
 empty lanes or status-only changes as product packages. Record package-ready,
 implementation start, candidate-ready, review, build and integration timestamps
 and the periods waiting on review, builds or coordinator attention. Measure:
@@ -214,14 +273,17 @@ and the periods waiting on review, builds or coordinator attention. Measure:
 - Outstanding full/platform/live acceptance debt and its age.
 
 Compare against available recent serial-package evidence without inventing missing
-baseline timings. Keep quality gates unchanged. Expand beyond two lanes only when
-measured accepted throughput improves without worse rework or growing acceptance
-debt; changing the agreed concurrency model requires human steering. A tool's
+baseline timings. The first-six evaluation is retained evidence, not a stopping
+condition. The human has approved three continuing owners; further concurrency
+changes require human steering. Keep measuring rework and acceptance-debt growth
+without claiming delivery from agent count. A tool's
 running-agent count or patches produced is not delivery throughput.
 
-## Migration cutover and current live checkpoint
+## Historical migration cutover and retained live checkpoint
 
-Setup proceeds now in an isolated workflow candidate. The original development
+The initial two-lane migration below records historical release conditions; it
+does not limit the current three-owner assignment. Preserve its original receipts.
+Setup proceeded in an isolated workflow candidate. The original development
 chat retains its in-flight exact `c3a7ab5244083173189c5c99cad48750cd09e4f2` live
 checkpoint, binary/control identities, one-use admission and financial/cleanup
 ownership. Do not migrate or restart that owner, mutate its warm source/build or
