@@ -1364,6 +1364,10 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
                   sizeof(length));
     }
 
+    // NULL is a length-only query; a requested buffer must fit the terminator.
+    if (diag_info_ptr && buffer_length == 0) {
+      return SQL_SUCCESS_WITH_INFO;
+    }
     if (diag_info_ptr && buffer_length > 0) {
       const auto copy_len = std::min(
           static_cast<std::size_t>(buffer_length - 1), str.length());
@@ -1449,10 +1453,14 @@ static SQLRETURN SQLGetDiagFieldW_impl(
     if (diag_identifier == SQL_DIAG_DYNAMIC_FUNCTION) {
       if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
       const auto header = obj->get_diagnostic_header();
-      return write_wide_bytes_output(
-          obj, header.dynamic_function,
+      const auto result = write_wide_bytes_output(
+          static_cast<ODBCHandle*>(nullptr), header.dynamic_function,
           static_cast<SQLWCHAR*>(diag_info_ptr), buffer_length,
           string_length_ptr, "Diagnostic field was truncated", false);
+      if (result == SQL_SUCCESS && diag_info_ptr && buffer_length == 0) {
+        return SQL_SUCCESS_WITH_INFO;
+      }
+      return result;
     }
     return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
                            diag_info_ptr, buffer_length, string_length_ptr);
@@ -1476,9 +1484,15 @@ static SQLRETURN SQLGetDiagFieldW_impl(
     case SQL_DIAG_SERVER_NAME: value = &record->server_name; break;
     default: return SQL_ERROR;
   }
-  return write_wide_bytes_output(
-      obj, *value, static_cast<SQLWCHAR*>(diag_info_ptr), buffer_length,
+  // Conversion and buffer errors during retrieval must not replace records.
+  const auto result = write_wide_bytes_output(
+      static_cast<ODBCHandle*>(nullptr), *value,
+      static_cast<SQLWCHAR*>(diag_info_ptr), buffer_length,
       string_length_ptr, "Diagnostic field was truncated", false);
+  if (result == SQL_SUCCESS && diag_info_ptr && buffer_length == 0) {
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return result;
 }
 
 static SQLRETURN SQLError_impl(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHSTMT statement_handle,
