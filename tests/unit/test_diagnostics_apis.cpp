@@ -2,6 +2,7 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -857,4 +858,476 @@ TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidUtf8WideReadPreservesAnsiAndOtherRe
         EXPECT_EQ(static_cast<SQLWCHAR>(recovery_state[index]), wide_state[index]);
     }
     EXPECT_EQ(1u, statement->get_diagnostic_count());
+}
+
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_RecordStringsZeroCapacityAndRetry) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("HY000", "alpha", 17);
+    statement->add_diagnostic("01000", 18, "omega");
+    struct StringField {
+        SQLSMALLINT identifier;
+        const char* expected;
+    };
+    const std::array<StringField, 6> fields{{
+        {SQL_DIAG_SQLSTATE, "HY000"},
+        {SQL_DIAG_MESSAGE_TEXT, "alpha"},
+        {SQL_DIAG_CLASS_ORIGIN, "ISO 9075"},
+        {SQL_DIAG_SUBCLASS_ORIGIN, "ISO 9075"},
+        {SQL_DIAG_CONNECTION_NAME, ""},
+        {SQL_DIAG_SERVER_NAME, ""},
+    }};
+    for (const auto& field : fields) {
+        SCOPED_TRACE(field.identifier);
+        const auto expected_length = static_cast<SQLSMALLINT>(
+            std::strlen(field.expected));
+        std::array<SQLCHAR, 32> output{};
+        output.fill(0xa5);
+        const auto untouched = output;
+        alignas(SQLSMALLINT) std::array<std::byte,
+            sizeof(SQLSMALLINT) + 2> length_bytes{};
+        length_bytes.fill(std::byte{0x7b});
+        auto* length = reinterpret_cast<SQLSMALLINT*>(length_bytes.data() + 1);
+        EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagField(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            output.data() + 1, 0, length));
+        EXPECT_EQ(untouched, output);
+        SQLSMALLINT actual_length = -1;
+        std::memcpy(&actual_length, length_bytes.data() + 1,
+                    sizeof(actual_length));
+        EXPECT_EQ(expected_length, actual_length);
+        EXPECT_EQ(std::byte{0x7b}, length_bytes.front());
+        EXPECT_EQ(std::byte{0x7b}, length_bytes.back());
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            nullptr, 0, length));
+        std::memcpy(&actual_length, length_bytes.data() + 1,
+                    sizeof(actual_length));
+        EXPECT_EQ(expected_length, actual_length);
+        EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagField(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            output.data() + 1, 0, nullptr));
+        EXPECT_EQ(untouched, output);
+        EXPECT_EQ(expected_length == 0 ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO,
+                  SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+                                  output.data() + 1, 1, length));
+        EXPECT_EQ(0, output[1]);
+        EXPECT_EQ(0xa5, output[0]);
+        EXPECT_EQ(0xa5, output[2]);
+        if (expected_length > 0) {
+            EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagField(
+                SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+                output.data() + 1, expected_length, length));
+            EXPECT_EQ(0, output[expected_length]);
+        }
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            output.data() + 1, expected_length + 1, length));
+        EXPECT_STREQ(field.expected,
+                     reinterpret_cast<const char*>(output.data() + 1));
+        EXPECT_EQ(0xa5, output[0]);
+        EXPECT_EQ(0xa5, output[expected_length + 2]);
+        std::array<SQLWCHAR, 32> wide{};
+        wide.fill(static_cast<SQLWCHAR>(0x7b7b));
+        const auto wide_untouched = wide;
+        EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagFieldW(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            wide.data() + 1, 0, length));
+        EXPECT_EQ(wide_untouched, wide);
+        std::memcpy(&actual_length, length_bytes.data() + 1,
+                    sizeof(actual_length));
+        EXPECT_EQ(expected_length * sizeof(SQLWCHAR), actual_length);
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            nullptr, 0, length));
+        std::memcpy(&actual_length, length_bytes.data() + 1,
+                    sizeof(actual_length));
+        EXPECT_EQ(expected_length * sizeof(SQLWCHAR), actual_length);
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+            SQL_HANDLE_STMT, hstmt, 1, field.identifier,
+            wide.data() + 1,
+            static_cast<SQLSMALLINT>((expected_length + 1) * sizeof(SQLWCHAR)),
+            length));
+        for (SQLSMALLINT index = 0; index < expected_length; ++index) {
+            EXPECT_EQ(static_cast<SQLWCHAR>(field.expected[index]), wide[index + 1]);
+        }
+        EXPECT_EQ(0, wide[expected_length + 1]);
+        EXPECT_EQ(static_cast<SQLWCHAR>(0x7b7b), wide.front());
+        EXPECT_EQ(static_cast<SQLWCHAR>(0x7b7b), wide[expected_length + 2]);
+        EXPECT_EQ(std::byte{0x7b}, length_bytes.front());
+        EXPECT_EQ(std::byte{0x7b}, length_bytes.back());
+    }
+    ASSERT_EQ(2u, statement->get_diagnostic_count());
+    const auto first = statement->get_diagnostic_record(1);
+    const auto second = statement->get_diagnostic_record(2);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ("HY000", first->sqlstate);
+    EXPECT_EQ(17, first->native_error);
+    EXPECT_EQ("alpha", first->message_text);
+    EXPECT_EQ("01000", second->sqlstate);
+    EXPECT_EQ(18, second->native_error);
+    EXPECT_EQ("omega", second->message_text);
+}
+
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_HeaderStringBoundariesPreserveMetadata) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("HY000", "original", 37);
+    statement->add_diagnostic("01000", 38, "second");
+    statement->set_last_return_code(SQL_ERROR);
+    for (const auto* text : {"SELECT CURSOR", ""}) {
+        SCOPED_TRACE(text);
+        statement->set_statement_diagnostic_header(
+            29, 17, text, SQL_DIAG_SELECT_CURSOR);
+        const auto units = static_cast<SQLSMALLINT>(std::strlen(text));
+        const auto bytes = static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR));
+        SQLSMALLINT required = -1;
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+            SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_DYNAMIC_FUNCTION,
+            nullptr, 0, &required));
+        EXPECT_EQ(units, required);
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+            SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_DYNAMIC_FUNCTION,
+            nullptr, 0, &required));
+        EXPECT_EQ(bytes, required);
+        for (SQLSMALLINT capacity : {SQLSMALLINT{0}, SQLSMALLINT{1},
+                                     units, static_cast<SQLSMALLINT>(units + 1)}) {
+            SCOPED_TRACE(capacity);
+            std::array<SQLCHAR, 32> output{};
+            output.fill(0xa5);
+            const auto untouched = output;
+            const auto expected = capacity <= units
+                ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+            EXPECT_EQ(expected, SQLGetDiagField(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_DYNAMIC_FUNCTION,
+                output.data() + 1, capacity, &required));
+            EXPECT_EQ(units, required);
+            if (capacity == 0) {
+                EXPECT_EQ(untouched, output);
+            } else {
+                EXPECT_EQ(0, output[std::min(capacity - 1, int(units)) + 1]);
+                EXPECT_EQ(0xa5, output[capacity + 1]);
+            }
+            EXPECT_EQ(0xa5, output.front());
+            if (capacity > units) {
+                EXPECT_STREQ(text, reinterpret_cast<const char*>(output.data() + 1));
+            }
+            std::array<SQLWCHAR, 32> wide_output{};
+            wide_output.fill(static_cast<SQLWCHAR>(0x7b7b));
+            const auto wide_untouched = wide_output;
+            EXPECT_EQ(expected, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_DYNAMIC_FUNCTION,
+                wide_output.data() + 1,
+                static_cast<SQLSMALLINT>(capacity * sizeof(SQLWCHAR)), &required));
+            EXPECT_EQ(bytes, required);
+            if (capacity == 0) {
+                EXPECT_EQ(wide_untouched, wide_output);
+            } else {
+                EXPECT_EQ(0, wide_output[std::min(capacity - 1, int(units)) + 1]);
+                EXPECT_EQ(static_cast<SQLWCHAR>(0x7b7b), wide_output[capacity + 1]);
+            }
+            EXPECT_EQ(static_cast<SQLWCHAR>(0x7b7b), wide_output.front());
+            if (capacity > units) {
+                for (SQLSMALLINT index = 0; index < units; ++index) {
+                    EXPECT_EQ(static_cast<SQLWCHAR>(text[index]), wide_output[index + 1]);
+                }
+            }
+            SQLINTEGER code = -1;
+            SQLINTEGER count = -1;
+            SQLRETURN return_code = SQL_SUCCESS;
+            SQLLEN row_count = -1;
+            SQLLEN cursor_count = -1;
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_DYNAMIC_FUNCTION_CODE,
+                &code, 0, nullptr));
+            EXPECT_EQ(SQL_DIAG_SELECT_CURSOR, code);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+            EXPECT_EQ(2, count);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_RETURNCODE,
+                &return_code, 0, nullptr));
+            EXPECT_EQ(SQL_ERROR, return_code);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_ROW_COUNT,
+                &row_count, 0, nullptr));
+            EXPECT_EQ(17, row_count);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_CURSOR_ROW_COUNT,
+                &cursor_count, 0, nullptr));
+            EXPECT_EQ(29, cursor_count);
+        }
+        const auto header = statement->get_diagnostic_header();
+        EXPECT_EQ(text, header.dynamic_function);
+        EXPECT_EQ(29, header.cursor_row_count);
+        EXPECT_EQ(17, header.row_count);
+        EXPECT_EQ(SQL_DIAG_SELECT_CURSOR, header.dynamic_function_code);
+        ASSERT_EQ(2u, statement->get_diagnostic_count());
+        const auto record = statement->get_diagnostic_record(1);
+        ASSERT_TRUE(record.has_value());
+        EXPECT_EQ("HY000", record->sqlstate);
+        EXPECT_EQ(37, record->native_error);
+        EXPECT_EQ("original", record->message_text);
+    }
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_WideByteCapacityAndScalarBoundaries) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("22003", "A\xF0\x9F\x98\x80Z", 53);
+    statement->add_diagnostic("01000", 54, "second");
+    constexpr auto units = sizeof(SQLWCHAR) == 2 ? 4 : 3;
+    constexpr auto bytes = static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR));
+    alignas(SQLWCHAR) std::array<std::byte, 2 + 6 * sizeof(SQLWCHAR)> storage{};
+    storage.fill(std::byte{0x7b});
+    auto* output = reinterpret_cast<SQLWCHAR*>(storage.data() + 1);
+    const auto untouched = storage;
+    alignas(SQLSMALLINT) std::array<std::byte, sizeof(SQLSMALLINT) + 2> lengths{};
+    lengths.fill(std::byte{0x5a});
+    auto* length = reinterpret_cast<SQLSMALLINT*>(lengths.data() + 1);
+    SQLSMALLINT required = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT, nullptr, 0, length));
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(bytes, required);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT, output, 0, length));
+    EXPECT_EQ(untouched, storage);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT, output, 0, nullptr));
+    EXPECT_EQ(untouched, storage);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT, output,
+        static_cast<SQLSMALLINT>(3 * sizeof(SQLWCHAR)), length));
+    std::array<SQLWCHAR, 6> decoded{};
+    std::memcpy(decoded.data(), storage.data() + 1, sizeof(decoded));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), decoded[0]);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        EXPECT_EQ(0, decoded[1]);
+        EXPECT_EQ(static_cast<SQLWCHAR>(0x7b7b), decoded[2]);
+    } else {
+        EXPECT_EQ(static_cast<SQLWCHAR>(0x1f600), decoded[1]);
+        EXPECT_EQ(0, decoded[2]);
+    }
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(bytes, required);
+    EXPECT_EQ(std::byte{0x7b}, storage[1 + 3 * sizeof(SQLWCHAR)]);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT, output,
+        static_cast<SQLSMALLINT>((units + 1) * sizeof(SQLWCHAR)), length));
+    std::memcpy(decoded.data(), storage.data() + 1, sizeof(decoded));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), decoded[0]);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(0xd83d), decoded[1]);
+        EXPECT_EQ(static_cast<SQLWCHAR>(0xde00), decoded[2]);
+    } else {
+        EXPECT_EQ(static_cast<SQLWCHAR>(0x1f600), decoded[1]);
+    }
+    EXPECT_EQ(static_cast<SQLWCHAR>('Z'), decoded[units - 1]);
+    EXPECT_EQ(0, decoded[units]);
+    EXPECT_EQ(std::byte{0x7b}, storage.front());
+    EXPECT_EQ(std::byte{0x7b}, storage[1 + (units + 1) * sizeof(SQLWCHAR)]);
+    EXPECT_EQ(std::byte{0x7b}, storage.back());
+    EXPECT_EQ(std::byte{0x5a}, lengths.front());
+    EXPECT_EQ(std::byte{0x5a}, lengths.back());
+    ASSERT_EQ(2u, statement->get_diagnostic_count());
+    SQLCHAR state[6]{};
+    SQLINTEGER native = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, &native, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<const char*>(state));
+    EXPECT_EQ(53, native);
+}
+
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidWideTextPreservesHeaderAndRecords) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    const std::string malformed("\xF0\x28\x8C\x28", 4);
+    statement->set_error("22018", malformed, 71);
+    statement->add_diagnostic("01000", 72, "valid second");
+    statement->set_statement_diagnostic_header(
+        31, 19, malformed, SQL_DIAG_SELECT_CURSOR);
+    statement->set_last_return_code(SQL_ERROR);
+    for (SQLSMALLINT record : {SQLSMALLINT{0}, SQLSMALLINT{1}}) {
+        const auto identifier = static_cast<SQLSMALLINT>(record == 0
+            ? SQL_DIAG_DYNAMIC_FUNCTION : SQL_DIAG_MESSAGE_TEXT);
+        SCOPED_TRACE(record);
+        for (SQLSMALLINT capacity : {SQLSMALLINT{0}, SQLSMALLINT{32}}) {
+            std::array<SQLWCHAR, 32> output{};
+            output.fill(static_cast<SQLWCHAR>(0x7b7b));
+            const auto untouched = output;
+            SQLSMALLINT length = -73;
+            EXPECT_EQ(SQL_ERROR, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, record, identifier,
+                output.data(), capacity, &length));
+            EXPECT_EQ(untouched, output);
+            EXPECT_EQ(-73, length);
+            EXPECT_EQ(SQL_ERROR, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, record, identifier,
+                nullptr, 0, &length));
+            EXPECT_EQ(-73, length);
+            ASSERT_EQ(2u, statement->get_diagnostic_count());
+            const auto first = statement->get_diagnostic_record(1);
+            const auto second = statement->get_diagnostic_record(2);
+            ASSERT_TRUE(first.has_value());
+            ASSERT_TRUE(second.has_value());
+            EXPECT_EQ("22018", first->sqlstate);
+            EXPECT_EQ(71, first->native_error);
+            EXPECT_EQ(malformed, first->message_text);
+            EXPECT_EQ("01000", second->sqlstate);
+            EXPECT_EQ(72, second->native_error);
+            EXPECT_EQ("valid second", second->message_text);
+            const auto header = statement->get_diagnostic_header();
+            EXPECT_EQ(malformed, header.dynamic_function);
+            EXPECT_EQ(31, header.cursor_row_count);
+            EXPECT_EQ(19, header.row_count);
+            EXPECT_EQ(SQL_DIAG_SELECT_CURSOR, header.dynamic_function_code);
+            EXPECT_EQ(SQL_ERROR, statement->get_last_return_code());
+            std::array<SQLCHAR, 8> ansi{};
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+                SQL_HANDLE_STMT, hstmt, record, identifier,
+                ansi.data(), static_cast<SQLSMALLINT>(ansi.size()), &length));
+            EXPECT_EQ(4, length);
+            EXPECT_EQ(0, std::memcmp(ansi.data(), malformed.data(), malformed.size()));
+            EXPECT_EQ(0, ansi[4]);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+                SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                ansi.data(), static_cast<SQLSMALLINT>(ansi.size()), &length));
+            EXPECT_EQ(4, length);
+            EXPECT_EQ(0, std::memcmp(ansi.data(), malformed.data(), malformed.size()));
+            output.fill(0);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, 2, SQL_DIAG_MESSAGE_TEXT,
+                output.data(), static_cast<SQLSMALLINT>(sizeof(output)), &length));
+            EXPECT_EQ(12 * sizeof(SQLWCHAR), length);
+            constexpr char valid[] = "valid second";
+            for (std::size_t index = 0; index < sizeof(valid); ++index) {
+                EXPECT_EQ(static_cast<SQLWCHAR>(valid[index]), output[index]);
+            }
+        }
+    }
+    // A deliberate fixture header update permits recovery without changing records.
+    statement->set_statement_diagnostic_header(
+        31, 19, "SELECT CURSOR", SQL_DIAG_SELECT_CURSOR);
+    std::array<SQLWCHAR, 32> recovered{};
+    SQLSMALLINT length = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_DYNAMIC_FUNCTION,
+        recovered.data(), static_cast<SQLSMALLINT>(sizeof(recovered)), &length));
+    EXPECT_EQ(13 * sizeof(SQLWCHAR), length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('S'), recovered[0]);
+    EXPECT_EQ(0, recovered[13]);
+    EXPECT_EQ(SQL_ERROR, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+        nullptr, 0, &length));
+    EXPECT_EQ(13 * sizeof(SQLWCHAR), length);
+    EXPECT_EQ(2u, statement->get_diagnostic_count());
+    const auto first = statement->get_diagnostic_record(1);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(malformed, first->message_text);
+    EXPECT_EQ("SELECT CURSOR", statement->get_diagnostic_header().dynamic_function);
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_ErrorAndNumericControlsAreNondestructive) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("HY000", "original", 91);
+    statement->add_diagnostic("01000", 92, "second");
+    statement->set_statement_diagnostic_header(
+        29, 17, "SELECT CURSOR", SQL_DIAG_SELECT_CURSOR);
+    statement->set_last_return_code(SQL_ERROR);
+    for (const auto api : {&SQLGetDiagField, &SQLGetDiagFieldW}) {
+        std::array<SQLWCHAR, 16> output{};
+        output.fill(static_cast<SQLWCHAR>(0x7b7b));
+        const auto untouched = output;
+        SQLSMALLINT length = -11;
+        EXPECT_EQ(SQL_INVALID_HANDLE, api(
+            SQL_HANDLE_DBC, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), 0, &length));
+        EXPECT_EQ(SQL_INVALID_HANDLE, api(
+            SQL_HANDLE_STMT, nullptr, 1, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), 0, &length));
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_STMT, hstmt, 1, -12345,
+            output.data(), 0, &length));
+        EXPECT_EQ(SQL_NO_DATA, api(
+            SQL_HANDLE_STMT, hstmt, 3, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), 0, &length));
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_STMT, hstmt, -1, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), 0, &length));
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), -1, &length));
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_DBC, hdbc, 0, SQL_DIAG_DYNAMIC_FUNCTION,
+            output.data(), 0, &length));
+        EXPECT_EQ(untouched, output);
+        EXPECT_EQ(-11, length);
+        // This generic lambda tests exact typed publication, not a new production seam.
+        const auto check_numeric = [&](SQLSMALLINT record,
+                                       SQLSMALLINT identifier, auto expected) {
+            using Value = decltype(expected);
+            alignas(Value) std::array<std::byte, sizeof(Value) + 2> storage{};
+            storage.fill(std::byte{0x5a});
+            EXPECT_EQ(SQL_SUCCESS, api(
+                SQL_HANDLE_STMT, hstmt, record, identifier,
+                storage.data() + 1, 0, &length));
+            Value actual{};
+            std::memcpy(&actual, storage.data() + 1, sizeof(actual));
+            EXPECT_EQ(expected, actual);
+            EXPECT_EQ(std::byte{0x5a}, storage.front());
+            EXPECT_EQ(std::byte{0x5a}, storage.back());
+            EXPECT_EQ(-11, length);
+        };
+        check_numeric(0, SQL_DIAG_NUMBER, SQLINTEGER{2});
+        check_numeric(0, SQL_DIAG_RETURNCODE, SQLRETURN{SQL_ERROR});
+        check_numeric(0, SQL_DIAG_DYNAMIC_FUNCTION_CODE,
+                      SQLINTEGER{SQL_DIAG_SELECT_CURSOR});
+        check_numeric(0, SQL_DIAG_ROW_COUNT, SQLLEN{17});
+        check_numeric(0, SQL_DIAG_CURSOR_ROW_COUNT, SQLLEN{29});
+        check_numeric(1, SQL_DIAG_NATIVE, SQLINTEGER{91});
+        check_numeric(1, SQL_DIAG_ROW_NUMBER, SQLLEN{SQL_NO_ROW_NUMBER});
+        check_numeric(1, SQL_DIAG_COLUMN_NUMBER,
+                      SQLINTEGER{SQL_NO_COLUMN_NUMBER});
+    }
+    for (SQLSMALLINT record : {SQLSMALLINT{0}, SQLSMALLINT{1}}) {
+        const auto identifier = static_cast<SQLSMALLINT>(record == 0
+            ? SQL_DIAG_DYNAMIC_FUNCTION : SQL_DIAG_MESSAGE_TEXT);
+        std::array<SQLWCHAR, 16> output{};
+        output.fill(static_cast<SQLWCHAR>(0x7b7b));
+        const auto untouched = output;
+        SQLSMALLINT length = -11;
+        EXPECT_EQ(SQL_ERROR, SQLGetDiagFieldW(
+            SQL_HANDLE_STMT, hstmt, record, identifier,
+            output.data(), static_cast<SQLSMALLINT>(sizeof(SQLWCHAR) - 1), &length));
+        EXPECT_EQ(untouched, output);
+        EXPECT_EQ(-11, length);
+        ASSERT_EQ(2u, statement->get_diagnostic_count());
+        const auto first = statement->get_diagnostic_record(1);
+        const auto second = statement->get_diagnostic_record(2);
+        ASSERT_TRUE(first.has_value());
+        ASSERT_TRUE(second.has_value());
+        EXPECT_EQ("HY000", first->sqlstate);
+        EXPECT_EQ(91, first->native_error);
+        EXPECT_EQ("original", first->message_text);
+        EXPECT_EQ("01000", second->sqlstate);
+        EXPECT_EQ(92, second->native_error);
+        EXPECT_EQ("second", second->message_text);
+        const auto header = statement->get_diagnostic_header();
+        EXPECT_EQ("SELECT CURSOR", header.dynamic_function);
+        EXPECT_EQ(29, header.cursor_row_count);
+        EXPECT_EQ(17, header.row_count);
+        EXPECT_EQ(SQL_DIAG_SELECT_CURSOR, header.dynamic_function_code);
+        EXPECT_EQ(SQL_ERROR, statement->get_last_return_code());
+    }
 }
