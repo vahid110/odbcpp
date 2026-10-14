@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 
 class DiagnosticsTest : public ::testing::Test {
@@ -1715,4 +1716,218 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_FieldDomainsPreserveStringAndRetrievalCo
             EXPECT_EQ(SQL_SUCCESS, object->get_last_return_code());
         }
     }
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidIdentifiersRejectEmptyStores) {
+    struct HandleCase {
+        SQLSMALLINT type;
+        SQLHANDLE value;
+    };
+    const std::array<HandleCase, 3> handles{{
+        {SQL_HANDLE_ENV, henv}, {SQL_HANDLE_DBC, hdbc},
+        {SQL_HANDLE_STMT, hstmt},
+    }};
+    for (const auto& handle : handles) {
+        auto object = rs::odbc::HandleRegistry::instance().get_handle(handle.value);
+        ASSERT_NE(nullptr, object);
+        object->clear_diagnostics();
+        object->set_last_return_code(SQL_SUCCESS);
+        for (const auto api : {&SQLGetDiagField, &SQLGetDiagFieldW}) {
+            for (SQLSMALLINT identifier : {SQLSMALLINT{0}, SQLSMALLINT{-12345},
+                                          std::numeric_limits<SQLSMALLINT>::max()}) {
+                SCOPED_TRACE(identifier);
+                std::array<unsigned char, 32> output{};
+                output.fill(0xa7);
+                const auto untouched = output;
+                SQLSMALLINT length = -73;
+                for (SQLSMALLINT record : {SQLSMALLINT{1},
+                                          std::numeric_limits<SQLSMALLINT>::max()}) {
+                    EXPECT_EQ(SQL_ERROR, api(
+                        handle.type, handle.value, record, identifier,
+                        output.data(), 0, &length));
+                    EXPECT_EQ(untouched, output);
+                    EXPECT_EQ(-73, length);
+                }
+                EXPECT_EQ(0u, object->get_diagnostic_count());
+                EXPECT_EQ(SQL_SUCCESS, object->get_last_return_code());
+            }
+        }
+    }
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidIdentifiersPreserveRecordsAndLegacyCursor) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("HY000", "first diagnostic", 71);
+    statement->add_attributed_diagnostic("01004", "second diagnostic", 5, 3, 72);
+    statement->set_statement_diagnostic_header(
+        29, 17, "SELECT CURSOR", SQL_DIAG_SELECT_CURSOR);
+    statement->set_last_return_code(SQL_ERROR);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLError(
+        henv, hdbc, hstmt, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<const char*>(state));
+    ASSERT_EQ(std::optional<SQLSMALLINT>{2},
+              statement->legacy_diagnostic_record_number());
+    const auto first = statement->get_diagnostic_record(1);
+    const auto second = statement->get_diagnostic_record(2);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    for (const auto api : {&SQLGetDiagField, &SQLGetDiagFieldW}) {
+        for (SQLSMALLINT record : {SQLSMALLINT{1}, SQLSMALLINT{2},
+                                  SQLSMALLINT{3},
+                                  std::numeric_limits<SQLSMALLINT>::max()}) {
+            std::array<unsigned char, 32> output{};
+            output.fill(0xa7);
+            const auto untouched = output;
+            SQLSMALLINT length = -73;
+            EXPECT_EQ(SQL_ERROR, api(
+                SQL_HANDLE_STMT, hstmt, record, -12345,
+                output.data(), sizeof(output), &length));
+            EXPECT_EQ(SQL_ERROR, api(
+                SQL_HANDLE_STMT, hstmt, record, -12345, nullptr, 0, &length));
+            EXPECT_EQ(SQL_ERROR, api(
+                SQL_HANDLE_STMT, hstmt, record, -12345, output.data(), 0, nullptr));
+            EXPECT_EQ(SQL_ERROR, api(
+                SQL_HANDLE_STMT, hstmt, record, -12345, nullptr, 0, nullptr));
+            EXPECT_EQ(untouched, output);
+            EXPECT_EQ(-73, length);
+        }
+    }
+    ASSERT_EQ(2u, statement->get_diagnostic_count());
+    for (SQLSMALLINT record : {SQLSMALLINT{1}, SQLSMALLINT{2}}) {
+        const auto after = statement->get_diagnostic_record(record);
+        const auto& before = record == 1 ? first : second;
+        ASSERT_TRUE(after.has_value());
+        EXPECT_EQ(before->sqlstate, after->sqlstate);
+        EXPECT_EQ(before->native_error, after->native_error);
+        EXPECT_EQ(before->message_text, after->message_text);
+        EXPECT_EQ(before->class_origin, after->class_origin);
+        EXPECT_EQ(before->subclass_origin, after->subclass_origin);
+        EXPECT_EQ(before->connection_name, after->connection_name);
+        EXPECT_EQ(before->server_name, after->server_name);
+        EXPECT_EQ(before->row_number, after->row_number);
+        EXPECT_EQ(before->column_number, after->column_number);
+    }
+    EXPECT_EQ(29, statement->get_diagnostic_header().cursor_row_count);
+    EXPECT_EQ(17, statement->get_diagnostic_header().row_count);
+    EXPECT_EQ("SELECT CURSOR", statement->get_diagnostic_header().dynamic_function);
+    EXPECT_EQ(SQL_DIAG_SELECT_CURSOR,
+              statement->get_diagnostic_header().dynamic_function_code);
+    EXPECT_EQ(SQL_ERROR, statement->get_last_return_code());
+    EXPECT_EQ(std::optional<SQLSMALLINT>{2},
+              statement->legacy_diagnostic_record_number());
+    SQLWCHAR wide_state[6]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLErrorW(
+        henv, hdbc, hstmt, wide_state, nullptr, nullptr, 0, nullptr));
+    for (std::size_t i = 0; i < 6; ++i) {
+        EXPECT_EQ(static_cast<SQLWCHAR>("01004"[i]), wide_state[i]);
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLError(
+        henv, hdbc, hstmt, state, nullptr, nullptr, 0, nullptr));
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_ValidFieldsRecoverAfterInvalidIdentifier) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("HY000", "original", 81);
+    statement->set_statement_diagnostic_header(
+        29, 17, "SELECT CURSOR", SQL_DIAG_SELECT_CURSOR);
+    statement->set_last_return_code(SQL_ERROR);
+    for (const auto api : {&SQLGetDiagField, &SQLGetDiagFieldW}) {
+        SQLSMALLINT length = -73;
+        std::array<unsigned char, 32> output{};
+        output.fill(0xa7);
+        const auto untouched = output;
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_STMT, hstmt, 2, -12345, output.data(), 0, &length));
+        EXPECT_EQ(SQL_NO_DATA, api(
+            SQL_HANDLE_STMT, hstmt, 2, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), 0, &length));
+        EXPECT_EQ(SQL_NO_DATA, api(
+            SQL_HANDLE_STMT, hstmt, 2, SQL_DIAG_NATIVE,
+            output.data(), -1, &length));
+        EXPECT_EQ(untouched, output);
+        EXPECT_EQ(-73, length);
+        SQLINTEGER count = -1;
+        EXPECT_EQ(SQL_SUCCESS, api(
+            SQL_HANDLE_STMT, hstmt, -1, SQL_DIAG_NUMBER, &count, -1, &length));
+        EXPECT_EQ(1, count);
+        SQLINTEGER native = -1;
+        EXPECT_EQ(SQL_SUCCESS, api(
+            SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_NATIVE, &native, -1, &length));
+        EXPECT_EQ(81, native);
+        EXPECT_EQ(-73, length);
+    }
+    SQLCHAR text[32]{};
+    SQLWCHAR wide[32]{};
+    SQLSMALLINT length = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+        text, sizeof(text), &length));
+    EXPECT_STREQ("original", reinterpret_cast<const char*>(text));
+    EXPECT_EQ(8, length);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, -1, SQL_DIAG_DYNAMIC_FUNCTION,
+        wide, sizeof(wide), &length));
+    EXPECT_EQ(13 * sizeof(SQLWCHAR), length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('S'), wide[0]);
+    EXPECT_EQ(0, wide[13]);
+    SQLCHAR state[6]{};
+    SQLINTEGER native = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, &native, text, sizeof(text), &length));
+    EXPECT_STREQ("HY000", reinterpret_cast<const char*>(state));
+    EXPECT_STREQ("original", reinterpret_cast<const char*>(text));
+    EXPECT_EQ(81, native);
+    EXPECT_EQ(1u, statement->get_diagnostic_count());
+    EXPECT_EQ(SQL_ERROR, statement->get_last_return_code());
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidIdentifierKeepsHandleAndDomainPrecedence) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    statement->set_error("HY000", "original", 81);
+    for (const auto api : {&SQLGetDiagField, &SQLGetDiagFieldW}) {
+        std::array<unsigned char, 32> output{};
+        output.fill(0xa7);
+        const auto untouched = output;
+        SQLSMALLINT length = -73;
+        EXPECT_EQ(SQL_INVALID_HANDLE, api(
+            SQL_HANDLE_STMT, nullptr, 1, -12345, output.data(), 0, &length));
+        EXPECT_EQ(SQL_INVALID_HANDLE, api(
+            SQL_HANDLE_DBC, hstmt, 1, -12345, output.data(), 0, &length));
+        EXPECT_EQ(SQL_INVALID_HANDLE, api(
+            -12345, hstmt, 1, -12345, output.data(), 0, &length));
+        EXPECT_EQ(SQL_INVALID_HANDLE, api(
+            SQL_HANDLE_STMT, reinterpret_cast<SQLHANDLE>(std::uintptr_t{1}),
+            1, -12345, output.data(), 0, &length));
+        for (SQLSMALLINT record : {SQLSMALLINT{-1}, SQLSMALLINT{0}}) {
+            EXPECT_EQ(SQL_ERROR, api(
+                SQL_HANDLE_STMT, hstmt, record, -12345,
+                output.data(), 0, &length));
+            EXPECT_EQ(SQL_ERROR, api(
+                SQL_HANDLE_STMT, hstmt, record, SQL_DIAG_MESSAGE_TEXT,
+                output.data(), 0, &length));
+        }
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_STMT, hstmt, 2, -12345, output.data(), -1, &length));
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_STMT, hstmt, 2, SQL_DIAG_MESSAGE_TEXT,
+            output.data(), -1, &length));
+        EXPECT_EQ(SQL_ERROR, api(
+            SQL_HANDLE_DBC, hdbc, 1, SQL_DIAG_ROW_COUNT,
+            output.data(), 0, &length));
+        EXPECT_EQ(untouched, output);
+        EXPECT_EQ(-73, length);
+    }
+    EXPECT_EQ(1u, statement->get_diagnostic_count());
+    const auto record = statement->get_diagnostic_record(1);
+    ASSERT_TRUE(record.has_value());
+    EXPECT_EQ("HY000", record->sqlstate);
+    EXPECT_EQ("original", record->message_text);
+    EXPECT_EQ(81, record->native_error);
 }

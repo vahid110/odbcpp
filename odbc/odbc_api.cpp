@@ -1400,8 +1400,18 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
     case SQL_DIAG_ROW_COUNT:
       if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
       return copy_numeric(obj->get_diagnostic_header().row_count);
-    default:
+    case SQL_DIAG_SQLSTATE:
+    case SQL_DIAG_NATIVE:
+    case SQL_DIAG_MESSAGE_TEXT:
+    case SQL_DIAG_CLASS_ORIGIN:
+    case SQL_DIAG_COLUMN_NUMBER:
+    case SQL_DIAG_SUBCLASS_ORIGIN:
+    case SQL_DIAG_CONNECTION_NAME:
+    case SQL_DIAG_SERVER_NAME:
+    case SQL_DIAG_ROW_NUMBER:
       break;
+    default:
+      return SQL_ERROR;
   }
 
   // Only record fields require a positive index. Keep string-length errors
@@ -1472,6 +1482,18 @@ static SQLRETURN SQLGetDiagFieldW_impl(
       diag_identifier == SQL_DIAG_ROW_NUMBER) {
     return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
                            diag_info_ptr, buffer_length, string_length_ptr);
+  }
+  // Reject unsupported identifiers independently of record availability.
+  switch (diag_identifier) {
+    case SQL_DIAG_SQLSTATE:
+    case SQL_DIAG_MESSAGE_TEXT:
+    case SQL_DIAG_CLASS_ORIGIN:
+    case SQL_DIAG_SUBCLASS_ORIGIN:
+    case SQL_DIAG_CONNECTION_NAME:
+    case SQL_DIAG_SERVER_NAME:
+      break;
+    default:
+      return SQL_ERROR;
   }
   if (rec_number < 1 || buffer_length < 0) return SQL_ERROR;
 
