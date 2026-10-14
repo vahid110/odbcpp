@@ -483,8 +483,11 @@ BackendResult<PreparedCommandPlan> SessionLease::finalize_parameter_input(
     }
   }
   if (!proceeding) return reject("Deferred command authority has no real sets");
-  if (rs::util::Clock::now() >= authority.deadline_)
+  if (rs::util::Clock::now() >= authority.deadline_) {
+    // Only this accepted borrow is terminal; passive refusals above stay local.
+    retire();
     return BackendResult<PreparedCommandPlan>{rs::util::DbErrorCode::Timeout, {}};
+  }
   // No describe/passive provider callback or transaction here. All storage is
   // owning; construction precedes any adapter BEGIN or publication.
   return BackendResult<PreparedCommandPlan>{PreparedCommandPlan{
