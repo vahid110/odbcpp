@@ -979,14 +979,19 @@ class WindowsChildProcessRegression(unittest.TestCase):
 
 
 class SDKScopeSafety(unittest.TestCase):
-    def fixture(self, head=None):
+    def fixture(self, head=None, checkout_newline=None):
         def source(name):
             if head:
-                return subprocess.check_output(['git', '-C', str(ROOT), 'show', head + ':' + name])
-            return (ROOT/name).read_bytes()
-        manifest = source('sdk/contract_headers.txt').decode()
+                raw = subprocess.check_output(['git', '-C', str(ROOT), 'show', head + ':' + name])
+            else:
+                raw = (ROOT/name).read_bytes()
+            if checkout_newline is not None:
+                raw = raw.replace(b'\r\n', b'\n').replace(b'\n', checkout_newline.encode())
+            return raw
+        # Checkout bytes may be CRLF; construct intentional test variants from LF.
+        manifest = source('sdk/contract_headers.txt').decode().replace('\r\n', '\n')
         headers = manifest.splitlines()
-        owners = source('sdk/header_owners.txt').decode()
+        owners = source('sdk/header_owners.txt').decode().replace('\r\n', '\n')
         original = {h: hashlib.sha256(source('sdk/include/'+h)).hexdigest() for h in headers}
         objects = {'sdk/odbcpp_sdk_header_isolation.dir/Release/'+h.replace('/', '_')+'.obj':
                    {'bytes': 17, 'sha256': 'a'*64} for h in headers}
@@ -995,14 +1000,15 @@ class SDKScopeSafety(unittest.TestCase):
     def test_original23_and_integrated24_have_exact_owners_staging_and_one_object_each(self):
         for head, count, digest in [(w.FIRST_PRODUCT, 23, '20c54a37f72e79d566b03eba312e6469e92217528065bc3b169b7d276e7f3bb4'),
                                     (None, 24, 'ede15fe5cb19bebf56a6cb02eb5080bd1505b83db94f087cba0fc46df85d342f')]:
-            args = self.fixture(head)
-            for manifest in [args[0], args[0].replace('\n', '\r\n')]:
-                with self.subTest(count=count):
-                    result = w.validate_sdk_inventory(manifest, *args[1:])
-                    self.assertEqual(result['manifest_sha256'], digest)
-                    self.assertEqual(len(result['headers']), count)
-                    self.assertEqual(len(result['objects']), count)
-                    self.assertEqual(result['owners'], {h: 'sdk/include/'+h for h in args[0].splitlines()})
+            for checkout_newline in ['\n', '\r\n']:
+                args = self.fixture(head, checkout_newline)
+                for manifest in [args[0], args[0].replace('\n', '\r\n')]:
+                    with self.subTest(count=count, checkout_newline=repr(checkout_newline)):
+                        result = w.validate_sdk_inventory(manifest, *args[1:])
+                        self.assertEqual(result['manifest_sha256'], digest)
+                        self.assertEqual(len(result['headers']), count)
+                        self.assertEqual(len(result['objects']), count)
+                        self.assertEqual(result['owners'], {h: 'sdk/include/'+h for h in args[0].splitlines()})
 
     def test_count_preserving_unknown_duplicate_reordered_and_noncanonical_manifests_refuse(self):
         for head in [w.FIRST_PRODUCT, None]:
@@ -1016,16 +1022,30 @@ class SDKScopeSafety(unittest.TestCase):
                     w.validate_sdk_inventory('\n'.join(lines)+'\n', *rest)
             with self.assertRaises(ValueError):
                 w.validate_sdk_inventory(manifest.rstrip('\n'), *rest)
+            with self.assertRaises(ValueError):
+                w.validate_sdk_inventory(manifest.replace('\n', '\r\r\n'), *rest)
 
     def test_wrong_missing_duplicate_extra_owner_staging_or_object_binding_refuse(self):
-        manifest, owners, original, staged, objects = self.fixture()
+        manifest, owners, original, staged, objects = self.fixture(checkout_newline='\r\n')
         header = manifest.splitlines()[0]
         row = header+'|sdk/include/'+header
-        for changed in [owners.replace(row+'\n', ''), owners+row+'\n',
-                        owners.replace(row, header+'|sdk/internal/'+header),
-                        owners+'odbcpp/database/unknown.h|sdk/include/odbcpp/database/unknown.h\n']:
-            with self.subTest(owners=changed), self.assertRaises(ValueError):
-                w.validate_sdk_inventory(manifest, changed, original, staged, objects)
+        variants = [
+            ('missing', owners.replace(row+'\n', '')),
+            ('duplicate', owners+row+'\n'),
+            ('wrong_owner', owners.replace(row, header+'|sdk/internal/'+header)),
+            ('extra', owners+'odbcpp/database/unknown.h|sdk/include/odbcpp/database/unknown.h\n'),
+        ]
+        for mutation, changed in variants:
+            with self.subTest(owner_mutation=mutation):
+                self.assertNotEqual(changed, owners, 'negative owner mutation must change fixture bytes')
+                if mutation in ('missing', 'wrong_owner'):
+                    self.assertNotIn(row, changed.splitlines())
+                elif mutation == 'duplicate':
+                    self.assertEqual(changed.splitlines().count(row), 2)
+                else:
+                    self.assertIn('odbcpp/database/unknown.h|sdk/include/odbcpp/database/unknown.h', changed.splitlines())
+                with self.assertRaises(ValueError):
+                    w.validate_sdk_inventory(manifest, changed, original, staged, objects)
         for part in ['original', 'staged', 'objects']:
             for mutation in ['missing', 'extra', 'changed']:
                 values = {'original': dict(original), 'staged': dict(staged), 'objects': deepcopy(objects)}
