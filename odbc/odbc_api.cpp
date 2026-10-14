@@ -1010,13 +1010,20 @@ static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER at
         conn, catalog, static_cast<SQLCHAR*>(value),
         buffer_length, string_length, "Current catalog was truncated");
   }
-  if (!value) {
+  if (!value && !string_length) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
                     "Null connection attribute output pointer");
     return SQL_ERROR;
   }
+  // Length-only queries still use the same typed getter and validation.
+  SQLUINTEGER discarded_integer{};
+  SQLHWND discarded_window{};
+  const SQLPOINTER output = value ? value
+      : attribute == SQL_ATTR_QUIET_MODE
+          ? static_cast<SQLPOINTER>(&discarded_window)
+          : static_cast<SQLPOINTER>(&discarded_integer);
   const auto result = conn->get_attribute(
-      attribute, value);
+      attribute, output);
   if (result == SQL_SUCCESS && string_length) {
     const auto length = static_cast<SQLINTEGER>(
         attribute == SQL_ATTR_QUIET_MODE ? sizeof(SQLHWND)
