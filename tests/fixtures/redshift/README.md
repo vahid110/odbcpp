@@ -390,3 +390,26 @@ year0000, extra nanosecond digits and legacySQL_TIME/SQL_TIMESTAMP pair assertio
 are source policy, not native exposure or backend wire/vendor/cross-endian claims.
 DATE/numeric/BIT/text/default/input/parser behavior remains covered by retained
 controls. Full/platform/currentdriver/native/live/final acceptance stays pending.
+
+### Non-finite approximate results to NUMERIC — authored checkpoint debt
+
+`BindColIntegrationTest.NonfiniteNumericBoundAndGetDataRangeRecovery` adds
+source-aware diagnosis consistency for existing canonical NaN/Infinity/-Infinity
+REAL/DOUBLE results requested as SQL_C_NUMERIC. GetData, bound and indicator-only
+fetch must report22003 without payload/length publication; legal IEEE targets,
+finite NUMERIC and NULL recover. Character or malformed numeric text retains
+22018; SDK decimal parsing, input/default/type eligibility are unchanged.
+
+Local qualification compiles the actual configured native row with syntax-only;
+native bodies/currentdriver/link-list/Redshift execution remain UNRUN. The existing
+gated fixture has one login; this case repeats one fixed five-column/one-row SELECT
+four times (GetData, bound refusal, indicator-only refusal, floating recovery),
+API upper4, no DDL/DML/resource/privilege changes. Canonical special-value cells are
+at most9 text bytes; finite cell42 and typed NULL; query timeout5s/case assertion60s
+exclude login. This ledger grants no TLS/login/spending/principal authority.
+
+The22003 rule reuses the driver's existing approximate-source GetData policy;
+primary numeric representability rules do not explicitly specify NaN spellings.
+No source spelling/whitespace/case normalization, SQL_FLOAT native exposure,
+vendor wire/endian or new floating-domain claim. Full/platform/native/live/final
+acceptance and protected exact-principal cleanup remain checkpoint debt.

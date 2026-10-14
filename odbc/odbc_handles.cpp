@@ -419,6 +419,16 @@ SQLRETURN convert_fixed_result_to_binary(SQLSMALLINT sql_type,
   return result;
 }
 
+// Canonical non-finite approximate SQL values have no exact NUMERIC result.
+// Keep this source-aware ODBC range policy out of the strict text/SDK parser:
+// character sources with these spellings still report invalid character values.
+bool nonfinite_numeric_result(SQLSMALLINT sql_type, SQLSMALLINT target_type,
+                              std::string_view value) {
+  return target_type == SQL_C_NUMERIC &&
+      (sql_type == SQL_REAL || sql_type == SQL_FLOAT || sql_type == SQL_DOUBLE) &&
+      (value == "NaN" || value == "Infinity" || value == "-Infinity");
+}
+
 // ODBC indicator-only bindings request a converted byte length, not a data
 // allocation or truncation test. Variable output is counted with SDK decoding;
 // fixed C conversion uses bounded aligned scratch to retain validation/warnings.
@@ -436,6 +446,10 @@ SQLRETURN indicator_only_result_length(SQLSMALLINT sql_type,
     length = static_cast<SQLLEN>(units * unit_size);
     return SQL_SUCCESS;
   };
+  if (nonfinite_numeric_result(sql_type, target_type, value)) {
+    issue = ConversionIssue::NumericValueOutOfRange;
+    return SQL_ERROR;
+  }
   if (sql_type == SQL_BIT && value != "0" && value != "1") {
     issue = ConversionIssue::InvalidCharacterValue;
     return SQL_ERROR;
@@ -4773,7 +4787,10 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
       ConversionIssue conversion_issue = ConversionIssue::None;
       auto* output_length = octet_length_ptr ? octet_length_ptr : indicator_ptr;
       SQLRETURN conv_result;
-      if (!data_ptr) {
+      if (data_ptr && nonfinite_numeric_result(sql_type, target_type, value)) {
+        conversion_issue = ConversionIssue::NumericValueOutOfRange;
+        conv_result = SQL_ERROR;
+      } else if (!data_ptr) {
         SQLLEN required = 0;
         conv_result = indicator_only_result_length(sql_type, target_type, value,
             binding.precision, binding.scale, required, conversion_issue);
@@ -5179,11 +5196,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
   }
   const auto& character_cell = formatted_text ? *formatted_text : value;
-  if (effective_target_type == SQL_C_NUMERIC &&
-      (sql_type == SQL_REAL || sql_type == SQL_FLOAT ||
-       sql_type == SQL_DOUBLE) &&
-      (character_cell == "NaN" || character_cell == "Infinity" ||
-       character_cell == "-Infinity")) {
+  if (nonfinite_numeric_result(sql_type, effective_target_type, character_cell)) {
     set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
               "Non-finite numeric result cannot be represented as SQL_C_NUMERIC");
     return SQL_ERROR;
