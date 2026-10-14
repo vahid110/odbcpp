@@ -14996,3 +14996,179 @@ TEST_F(BackendContractTest, CurrentCatalogOutputValidationAndLengthOnlyQueriesRe
   EXPECT_EQ(8 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
   EXPECT_EQ(0, seen->queries);
 }
+
+TEST_F(BackendContractTest, CurrentCatalogNullOutputIgnoresAnsiCapacity) {
+  SQLCHAR catalog[] = "contract";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG, catalog, SQL_NTS));
+  for (SQLINTEGER capacity : {(std::numeric_limits<SQLINTEGER>::min)(),
+                              SQLINTEGER{-1}, SQLINTEGER{SQL_NTS}, SQLINTEGER{0},
+                              SQLINTEGER{1}, (std::numeric_limits<SQLINTEGER>::max)()}) {
+    SCOPED_TRACE(capacity);
+    SQLINTEGER length = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+        dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, capacity, &length));
+    EXPECT_EQ(8, length);
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+  }
+  SQLCHAR output[9]{};
+  SQLINTEGER length = -73;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      dbc, SQL_ATTR_CURRENT_CATALOG, output, sizeof(output), &length));
+  EXPECT_STREQ("contract", reinterpret_cast<char*>(output));
+  EXPECT_EQ(8, length);
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, CurrentCatalogNullOutputKeepsWideByteLengths) {
+  std::vector<SQLWCHAR> catalog{SQLWCHAR{'d'}, SQLWCHAR{'b'}};
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    catalog.push_back(static_cast<SQLWCHAR>(0xd83d));
+    catalog.push_back(static_cast<SQLWCHAR>(0xde80));
+  } else {
+    catalog.push_back(static_cast<SQLWCHAR>(0x1f680));
+  }
+  catalog.push_back(SQLWCHAR{'x'});
+  catalog.push_back(SQLWCHAR{0});
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(
+      dbc, SQL_ATTR_CURRENT_CATALOG, catalog.data(), SQL_NTS));
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    const auto required = api == &SQLGetConnectAttrW
+        ? (catalog.size() - 1) * sizeof(SQLWCHAR) : std::size_t{7};
+    for (SQLINTEGER capacity : {(std::numeric_limits<SQLINTEGER>::min)(),
+                                SQLINTEGER{-1}, SQLINTEGER{SQL_NTS}, SQLINTEGER{0},
+                                SQLINTEGER{1}, static_cast<SQLINTEGER>(sizeof(SQLWCHAR) + 1),
+                                (std::numeric_limits<SQLINTEGER>::max)()}) {
+      SCOPED_TRACE(capacity);
+      SQLINTEGER length = -73;
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, capacity, &length));
+      EXPECT_EQ(required, static_cast<std::size_t>(length));
+      SQLINTEGER count = -1;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+          SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+      EXPECT_EQ(0, count);
+    }
+  }
+  std::array<SQLWCHAR, 8> output{};
+  SQLINTEGER length = -73;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(
+      dbc, SQL_ATTR_CURRENT_CATALOG, output.data(), sizeof(output), &length));
+  EXPECT_EQ((catalog.size() - 1) * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+  EXPECT_TRUE(std::equal(catalog.begin(), catalog.end(), output.begin()));
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, CurrentCatalogNullOutputPublishesBoundedLengthAndRecovers) {
+  SQLCHAR catalog[] = "contract";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG, catalog, SQL_NTS));
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    const auto unit = api == &SQLGetConnectAttrW ? sizeof(SQLWCHAR) : std::size_t{1};
+    alignas(SQLWCHAR) std::array<unsigned char, 12 * sizeof(SQLWCHAR)> output{};
+    output.fill(0xa5);
+    const auto before = output;
+    alignas(SQLINTEGER) std::array<unsigned char, sizeof(SQLINTEGER) + 2> lengths{};
+    lengths.fill(0xb5);
+    const SQLINTEGER initial = -73;
+    std::memcpy(lengths.data() + 1, &initial, sizeof(initial));
+    auto* length = reinterpret_cast<SQLINTEGER*>(lengths.data() + 1);
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_CURRENT_CATALOG, output.data(), -1, length));
+    EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc));
+    SQLINTEGER required = 0;
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(-73, required);
+    EXPECT_EQ(before, output);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, length));
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(8 * unit, static_cast<std::size_t>(required));
+    EXPECT_EQ(0xb5, lengths.front());
+    EXPECT_EQ(0xb5, lengths.back());
+    EXPECT_EQ(before, output);
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_CURRENT_CATALOG, nullptr,
+                              (std::numeric_limits<SQLINTEGER>::min)(), length));
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_CURRENT_CATALOG, output.data(),
+                              static_cast<SQLINTEGER>(output.size()), length));
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(8 * unit, static_cast<std::size_t>(required));
+    for (std::size_t i = 0; i < 9; ++i) {
+      if (api == &SQLGetConnectAttrW) {
+        SQLWCHAR character{};
+        std::memcpy(&character, output.data() + i * unit, sizeof(character));
+        EXPECT_EQ(static_cast<SQLWCHAR>(catalog[i]), character);
+      } else {
+        EXPECT_EQ(catalog[i], output[i]);
+      }
+    }
+    for (std::size_t i = 9 * unit; i < output.size(); ++i) {
+      EXPECT_EQ(0xa5, output[i]);
+    }
+    EXPECT_EQ(0xb5, lengths.front());
+    EXPECT_EQ(0xb5, lengths.back());
+  }
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, CurrentCatalogNullOutputPreservesValidationAndRealBufferErrors) {
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    SQLINTEGER length = -73;
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(nullptr, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, &length));
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(env, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, &length));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_NO_DATA, api(dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, &length));
+    EXPECT_EQ(-73, length);
+  }
+  SQLCHAR catalog[] = "contract";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG, catalog, SQL_NTS));
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    alignas(SQLWCHAR) std::array<unsigned char, 3 * sizeof(SQLWCHAR)> output{};
+    output.fill(0xa5);
+    const auto before = output;
+    SQLINTEGER length = -73;
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_CURRENT_CATALOG, output.data(), -1, &length));
+    EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    if (api == &SQLGetConnectAttrW) {
+      EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_CURRENT_CATALOG, output.data(),
+                                static_cast<SQLINTEGER>(sizeof(SQLWCHAR) + 1), &length));
+      EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc));
+      EXPECT_EQ(-73, length);
+    }
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, api(dbc, SQL_ATTR_CURRENT_CATALOG, output.data(), 0, &length));
+    EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+    const auto unit = api == &SQLGetConnectAttrW ? sizeof(SQLWCHAR) : std::size_t{1};
+    EXPECT_EQ(8 * unit, static_cast<std::size_t>(length));
+    EXPECT_EQ(before, output);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_AUTOCOMMIT, nullptr, -1, &length));
+    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_LOGIN_TIMEOUT, nullptr, 0, nullptr));
+    EXPECT_EQ("HY009", state(SQL_HANDLE_DBC, dbc));
+  }
+  SQLCHAR invalid_catalog[]{static_cast<SQLCHAR>(0xff), 0};
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG, invalid_catalog, 1));
+  SQLINTEGER length = -73;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(
+      dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, &length));
+  EXPECT_EQ("22018", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(-73, length);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, &length));
+  EXPECT_EQ(1, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_CURRENT_CATALOG, catalog, SQL_NTS));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(
+      dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, -1, &length));
+  EXPECT_EQ(8 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+  SQLINTEGER count = -1;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+      SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+  EXPECT_EQ(0, count);
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
