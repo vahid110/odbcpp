@@ -15408,3 +15408,270 @@ TEST_F(BackendContractTest, DescribeColumnNullNamePreservesHandleColumnAndRealBu
       &length, nullptr, nullptr, nullptr, nullptr));
   EXPECT_EQ(descriptions, seen->descriptions);
 }
+
+
+TEST_F(BackendContractTest, ColumnAttributeNullCharacterIgnoresAnsiCapacityAndReturnsBytes) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  const auto queries = seen->queries;
+  const auto descriptions = seen->descriptions;
+  for (SQLUSMALLINT field : {SQLUSMALLINT{SQL_DESC_NAME}, SQLUSMALLINT{SQL_COLUMN_NAME},
+                            SQLUSMALLINT{SQL_DESC_LABEL}, SQLUSMALLINT{SQL_COLUMN_LABEL},
+                            SQLUSMALLINT{SQL_DESC_TYPE_NAME}, SQLUSMALLINT{SQL_COLUMN_TYPE_NAME},
+                            SQLUSMALLINT{SQL_DESC_LOCAL_TYPE_NAME},
+                            SQLUSMALLINT{SQL_DESC_LITERAL_PREFIX}, SQLUSMALLINT{SQL_DESC_LITERAL_SUFFIX}}) {
+    SCOPED_TRACE(field);
+    std::array<char, 64> text{};
+    SQLSMALLINT required = -73;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, field, text.data(),
+        static_cast<SQLSMALLINT>(text.size()), &required, nullptr));
+    ASSERT_EQ(std::strlen(text.data()), static_cast<std::size_t>(required));
+    if (field == SQL_DESC_NAME || field == SQL_COLUMN_NAME ||
+        field == SQL_DESC_LABEL || field == SQL_COLUMN_LABEL) {
+      EXPECT_STREQ("binary", text.data());
+      EXPECT_EQ(6, required);
+    }
+    for (SQLSMALLINT capacity : {(std::numeric_limits<SQLSMALLINT>::min)(),
+                                 SQLSMALLINT{-1}, SQLSMALLINT{SQL_NTS}, SQLSMALLINT{0},
+                                 SQLSMALLINT{1}, (std::numeric_limits<SQLSMALLINT>::max)()}) {
+      SCOPED_TRACE(capacity);
+      SQLSMALLINT length = -73;
+      SQLLEN unused_numeric = 79;
+      EXPECT_EQ(SQL_SUCCESS, SQLColAttribute(
+          stmt, 1, field, nullptr, capacity, &length, &unused_numeric));
+      EXPECT_EQ(required, length);
+      EXPECT_EQ(79, unused_numeric);
+      SQLINTEGER count = -1;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+          SQL_HANDLE_STMT, stmt, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+      EXPECT_EQ(0, count);
+    }
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(descriptions, seen->descriptions);
+}
+
+TEST_F(BackendContractTest, ColumnAttributeNullCharacterKeepsWideByteUnits) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  for (const int name_kind : {8, 9}) {
+    seen->invalid_result_structure = name_kind;
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    std::vector<SQLWCHAR> expected;
+    if (name_kind == 9) {
+      expected.push_back(static_cast<SQLWCHAR>(0x20ac));
+      if constexpr (sizeof(SQLWCHAR) == 2) {
+        expected.push_back(static_cast<SQLWCHAR>(0xd83d));
+        expected.push_back(static_cast<SQLWCHAR>(0xde00));
+      } else {
+        expected.push_back(static_cast<SQLWCHAR>(0x1f600));
+      }
+    }
+    const auto required_bytes = static_cast<SQLSMALLINT>(expected.size() * sizeof(SQLWCHAR));
+    expected.push_back(SQLWCHAR{0});
+    const auto queries = seen->queries;
+    const auto descriptions = seen->descriptions;
+    for (SQLUSMALLINT field : {SQLUSMALLINT{SQL_DESC_NAME}, SQLUSMALLINT{SQL_COLUMN_NAME},
+                              SQLUSMALLINT{SQL_DESC_LABEL}, SQLUSMALLINT{SQL_COLUMN_LABEL}}) {
+      for (SQLSMALLINT capacity : {(std::numeric_limits<SQLSMALLINT>::min)(),
+                                   SQLSMALLINT{-1}, SQLSMALLINT{SQL_NTS}, SQLSMALLINT{0},
+                                   SQLSMALLINT{1}, SQLSMALLINT{3},
+                                   (std::numeric_limits<SQLSMALLINT>::max)()}) {
+        SCOPED_TRACE(capacity);
+        SQLSMALLINT length = -73;
+        SQLLEN unused_numeric = 79;
+        EXPECT_EQ(SQL_SUCCESS, SQLColAttributeW(
+            stmt, 1, field, nullptr, capacity, &length, &unused_numeric));
+        EXPECT_EQ(required_bytes, length); // ColAttributeW returns bytes, not character units.
+        EXPECT_EQ(79, unused_numeric);
+        length = -73;
+        EXPECT_EQ(SQL_SUCCESS, SQLColAttribute(
+            stmt, 1, field, nullptr, capacity, &length, &unused_numeric));
+        EXPECT_EQ(name_kind == 9 ? 7 : 0, length);
+      }
+    }
+    std::array<SQLWCHAR, 8> output{};
+    output.fill(static_cast<SQLWCHAR>(0x55));
+    SQLSMALLINT length = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLColAttributeW(stmt, 1, SQL_DESC_NAME, output.data(),
+        static_cast<SQLSMALLINT>(sizeof(output)), &length, nullptr));
+    EXPECT_EQ(required_bytes, length);
+    EXPECT_TRUE(std::equal(expected.begin(), expected.end(), output.begin()));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0x55), output[expected.size()]);
+    if (name_kind == 9) {
+      output.fill(static_cast<SQLWCHAR>(0x55));
+      EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLColAttributeW(stmt, 1, SQL_DESC_NAME,
+          output.data(), static_cast<SQLSMALLINT>(2 * sizeof(SQLWCHAR)), &length, nullptr));
+      EXPECT_EQ("01004", state());
+      EXPECT_EQ(required_bytes, length);
+      EXPECT_EQ(static_cast<SQLWCHAR>(0x20ac), output[0]);
+      EXPECT_EQ(SQLWCHAR{0}, output[1]);
+      EXPECT_EQ(static_cast<SQLWCHAR>(0x55), output[2]);
+    }
+    EXPECT_EQ(queries, seen->queries);
+    EXPECT_EQ(descriptions, seen->descriptions);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(BackendContractTest, ColumnAttributeNullCharacterPublishesBoundedLengthsAndReusesMetadata) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+      stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("rows")), SQL_NTS));
+  const auto queries = seen->queries;
+  for (const bool wide : {false, true}) {
+    alignas(SQLSMALLINT) std::array<unsigned char, sizeof(SQLSMALLINT) + 2> lengths{};
+    alignas(SQLLEN) std::array<unsigned char, sizeof(SQLLEN) + 2> numbers{};
+    lengths.fill(0xa5);
+    numbers.fill(0xb5);
+    const SQLSMALLINT initial_length = -73;
+    const SQLLEN initial_numeric = 79;
+    std::memcpy(lengths.data() + 1, &initial_length, sizeof(initial_length));
+    std::memcpy(numbers.data() + 1, &initial_numeric, sizeof(initial_numeric));
+    auto* length = reinterpret_cast<SQLSMALLINT*>(lengths.data() + 1);
+    auto* numeric = reinterpret_cast<SQLLEN*>(numbers.data() + 1);
+    const auto attribute = [&](SQLPOINTER output, SQLSMALLINT capacity) {
+      return wide
+          ? SQLColAttributeW(stmt, 1, SQL_DESC_NAME, output, capacity, length, numeric)
+          : SQLColAttribute(stmt, 1, SQL_DESC_NAME, output, capacity, length, numeric);
+    };
+    alignas(SQLWCHAR) std::array<unsigned char, 9 * sizeof(SQLWCHAR)> output{};
+    output.fill(0xc5);
+    const auto before = output;
+    EXPECT_EQ(SQL_ERROR, attribute(output.data(), -1));
+    EXPECT_EQ("HY090", state());
+    SQLSMALLINT actual_length = 0;
+    std::memcpy(&actual_length, lengths.data() + 1, sizeof(actual_length));
+    EXPECT_EQ(-73, actual_length);
+    EXPECT_EQ(before, output);
+    EXPECT_EQ(SQL_SUCCESS, attribute(nullptr, (std::numeric_limits<SQLSMALLINT>::min)()));
+    const auto unit = wide ? sizeof(SQLWCHAR) : std::size_t{1};
+    std::memcpy(&actual_length, lengths.data() + 1, sizeof(actual_length));
+    EXPECT_EQ(6 * unit, static_cast<std::size_t>(actual_length));
+    const auto descriptions = seen->descriptions;
+    EXPECT_EQ(SQL_SUCCESS, attribute(nullptr, (std::numeric_limits<SQLSMALLINT>::max)()));
+    EXPECT_EQ(descriptions, seen->descriptions);
+    EXPECT_EQ(before, output);
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, stmt, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+    EXPECT_EQ(SQL_SUCCESS, attribute(output.data(), static_cast<SQLSMALLINT>(output.size())));
+    for (std::size_t i = 0; i < 7; ++i) {
+      if (wide) {
+        SQLWCHAR character{};
+        std::memcpy(&character, output.data() + i * unit, sizeof(character));
+        EXPECT_EQ(static_cast<SQLWCHAR>("binary"[i]), character);
+      } else {
+        EXPECT_EQ(static_cast<unsigned char>("binary"[i]), output[i]);
+      }
+    }
+    for (std::size_t i = 7 * unit; i < output.size(); ++i) {
+      EXPECT_EQ(0xc5, output[i]);
+    }
+    SQLLEN actual_numeric = 0;
+    std::memcpy(&actual_numeric, numbers.data() + 1, sizeof(actual_numeric));
+    EXPECT_EQ(79, actual_numeric);
+    EXPECT_EQ(0xa5, lengths.front());
+    EXPECT_EQ(0xa5, lengths.back());
+    EXPECT_EQ(0xb5, numbers.front());
+    EXPECT_EQ(0xb5, numbers.back());
+    EXPECT_EQ(descriptions, seen->descriptions);
+  }
+  EXPECT_EQ(queries, seen->queries);
+}
+
+TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNumericDomains) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  for (const bool wide : {false, true}) {
+    const auto attribute = [&](SQLHSTMT handle, SQLUSMALLINT column, SQLUSMALLINT field,
+                               SQLPOINTER output, SQLSMALLINT capacity,
+                               SQLSMALLINT* length, SQLLEN* numeric) {
+      return wide
+          ? SQLColAttributeW(handle, column, field, output, capacity, length, numeric)
+          : SQLColAttribute(handle, column, field, output, capacity, length, numeric);
+    };
+    SQLSMALLINT length = -73;
+    SQLLEN numeric = 79;
+    EXPECT_EQ(SQL_INVALID_HANDLE, attribute(nullptr, 1, SQL_DESC_NAME, nullptr, -1, &length, &numeric));
+    EXPECT_EQ(SQL_INVALID_HANDLE, attribute(dbc, 1, SQL_DESC_NAME, nullptr, -1, &length, &numeric));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(79, numeric);
+    EXPECT_EQ(SQL_ERROR, attribute(stmt, 1, SQL_DESC_NAME, nullptr, -1, &length, &numeric));
+    EXPECT_EQ("HY010", state());
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(79, numeric);
+  }
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  for (const bool wide : {false, true}) {
+    const auto attribute = [&](SQLUSMALLINT column, SQLUSMALLINT field, SQLPOINTER output,
+                               SQLSMALLINT capacity, SQLSMALLINT* length, SQLLEN* numeric) {
+      return wide
+          ? SQLColAttributeW(stmt, column, field, output, capacity, length, numeric)
+          : SQLColAttribute(stmt, column, field, output, capacity, length, numeric);
+    };
+    SQLSMALLINT length = -73;
+    SQLLEN unused_numeric = 79;
+    for (SQLUSMALLINT column : {SQLUSMALLINT{0}, SQLUSMALLINT{4}}) {
+      EXPECT_EQ(SQL_ERROR, attribute(column, SQL_DESC_NAME, nullptr, -1, &length, &unused_numeric));
+      EXPECT_EQ("07009", state());
+      EXPECT_EQ(-73, length);
+    }
+    EXPECT_EQ(SQL_ERROR, attribute(1, 65535, nullptr, -1, &length, &unused_numeric));
+    EXPECT_EQ("HY091", state());
+    EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_BASE_TABLE_NAME, nullptr, -1, &length, &unused_numeric));
+    EXPECT_EQ("HYC00", state());
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(79, unused_numeric);
+    alignas(SQLWCHAR) std::array<unsigned char, 9 * sizeof(SQLWCHAR)> output{};
+    output.fill(0xa5);
+    const auto before = output;
+    EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_NAME, output.data(), -1, &length, &unused_numeric));
+    EXPECT_EQ("HY090", state());
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(before, output);
+    if (wide) {
+      EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_NAME, output.data(),
+          static_cast<SQLSMALLINT>(sizeof(SQLWCHAR) + 1), &length, &unused_numeric));
+      EXPECT_EQ("HY090", state());
+      EXPECT_EQ(before, output);
+    }
+    EXPECT_EQ(wide ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO,
+        attribute(1, SQL_DESC_NAME, output.data(), 0, &length, &unused_numeric));
+    EXPECT_EQ(before, output); // Preserve the existing real zero-capacity policies.
+    const auto unit = wide ? sizeof(SQLWCHAR) : std::size_t{1};
+    EXPECT_EQ(6 * unit, static_cast<std::size_t>(length));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, attribute(1, SQL_DESC_NAME, output.data(),
+        static_cast<SQLSMALLINT>(2 * unit), &length, &unused_numeric));
+    EXPECT_EQ("01004", state());
+    EXPECT_EQ(6 * unit, static_cast<std::size_t>(length));
+    EXPECT_EQ(79, unused_numeric);
+    if (wide) {
+      SQLWCHAR first = 0, terminator = 1;
+      std::memcpy(&first, output.data(), sizeof(first));
+      std::memcpy(&terminator, output.data() + unit, sizeof(terminator));
+      EXPECT_EQ(static_cast<SQLWCHAR>('b'), first);
+      EXPECT_EQ(SQLWCHAR{0}, terminator);
+    } else {
+      EXPECT_EQ(static_cast<unsigned char>('b'), output[0]);
+      EXPECT_EQ(0, output[1]);
+    }
+    // Numeric fields ignore character output/capacity/StringLength; write a bounded SQLLEN.
+    alignas(SQLLEN) std::array<unsigned char, sizeof(SQLLEN) + 2> numeric_bytes{};
+    numeric_bytes.fill(0xb5);
+    const SQLLEN initial = 79;
+    std::memcpy(numeric_bytes.data() + 1, &initial, sizeof(initial));
+    length = -73;
+    output.fill(0xa5);
+    for (SQLSMALLINT capacity : {(std::numeric_limits<SQLSMALLINT>::min)(), SQLSMALLINT{3}}) {
+      EXPECT_EQ(SQL_SUCCESS, attribute(1, SQL_DESC_LENGTH, output.data(), capacity, &length,
+          reinterpret_cast<SQLLEN*>(numeric_bytes.data() + 1)));
+      SQLLEN actual = -1;
+      std::memcpy(&actual, numeric_bytes.data() + 1, sizeof(actual));
+      EXPECT_EQ(8, actual);
+      EXPECT_EQ(-73, length);
+      EXPECT_EQ(before, output);
+      EXPECT_EQ(0xb5, numeric_bytes.front());
+      EXPECT_EQ(0xb5, numeric_bytes.back());
+    }
+  }
+}

@@ -2803,7 +2803,7 @@ static SQLRETURN SQLColAttribute_impl(SQLHSTMT statement_handle, SQLUSMALLINT co
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->col_attribute(column_number, field_identifier, character_attribute,
-                            buffer_length, string_length, numeric_attribute);
+                            character_attribute ? buffer_length : 0, string_length, numeric_attribute);
 }
 
 static SQLRETURN SQLColAttributeW_impl(
@@ -2815,7 +2815,7 @@ static SQLRETURN SQLColAttributeW_impl(
   if (!stmt) return SQL_INVALID_HANDLE;
   const bool character_field =
       is_character_column_attribute(field_identifier);
-  if (character_field && buffer_length < 0) {
+  if (character_field && character_attribute && buffer_length < 0) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid column-attribute buffer length");
     return SQL_ERROR;
@@ -2844,7 +2844,7 @@ static SQLRETURN SQLColAttributeW_impl(
   if (value_result != SQL_SUCCESS) return value_result;
   return write_wide_bytes_output(
       stmt, std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
-      static_cast<SQLWCHAR*>(character_attribute), buffer_length,
+      static_cast<SQLWCHAR*>(character_attribute), character_attribute ? buffer_length : 0,
       string_length, "Column attribute was truncated");
 }
 
