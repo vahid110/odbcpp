@@ -463,6 +463,28 @@ bool invalid_character_numeric_result(SQLSMALLINT sql_type,
           (value == "t" || value == "true" || value == "f" || value == "false"));
 }
 
+// TIME source projection is an ODBC SQL-to-C rule, not raw text parsing.
+// Reuse the checked parser/current local calendar; keep any converter warning.
+bool time_uses_timestamp_projection(SQLSMALLINT sql_type, SQLSMALLINT target_type) {
+  return (sql_type == SQL_TYPE_TIME || sql_type == SQL_TIME) &&
+      (target_type == SQL_C_TYPE_TIMESTAMP || target_type == SQL_C_TIMESTAMP);
+}
+
+SQLRETURN convert_time_result_to_timestamp(const std::string& value,
+    void* buffer, SQLLEN* length, ConversionIssue* issue) {
+  SQL_TIMESTAMP_STRUCT timestamp{};
+  SQLLEN width = 0;
+  const auto result = TextDataConverter::convert_data(value, SQL_C_TYPE_TIMESTAMP,
+      &timestamp, sizeof(timestamp), &width, issue);
+  if (result == SQL_ERROR) return result;
+  // SQL-to-C TIME note[c]: current date, original h/m/s, fractional field zero.
+  // Character and TIMESTAMP sources continue through the unchanged raw converter.
+  timestamp.fraction = 0;
+  if (buffer) std::memcpy(buffer, &timestamp, sizeof(timestamp));
+  if (length) store_application_value(length, width);
+  return result;
+}
+
 // ODBC indicator-only bindings request a converted byte length, not a data
 // allocation or truncation test. Variable output is counted with SDK decoding;
 // fixed C conversion uses bounded aligned scratch to retain validation/warnings.
@@ -522,6 +544,8 @@ SQLRETURN indicator_only_result_length(SQLSMALLINT sql_type,
     issue = ConversionIssue::InvalidCharacterValue;
     return SQL_ERROR;
   }
+  if (time_uses_timestamp_projection(sql_type, target_type))
+    return convert_time_result_to_timestamp(value, nullptr, &length, &issue);
   return TextDataConverter::convert_data(value, target_type, scratch,
       sizeof(scratch), &length, &issue, precision, scale);
 }
@@ -4896,7 +4920,10 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
             }
           }
         }
-        if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
+        if (time_uses_timestamp_projection(sql_type, target_type)) {
+          conv_result = convert_time_result_to_timestamp(
+              value, data_ptr, output_length, &conversion_issue);
+        } else if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
           conv_result = convert_bit_result_to_binary(
               value, data_ptr, conversion_length, output_length,
               &conversion_issue);
@@ -5465,9 +5492,11 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     numeric_precision = record->precision;
     numeric_scale = record->scale;
   }
-  SQLRETURN result = TextDataConverter::convert_data(
-      character_cell, effective_target_type, buffer, buffer_length, indicator,
-      &conversion_issue, numeric_precision, numeric_scale);
+  SQLRETURN result = time_uses_timestamp_projection(sql_type, effective_target_type)
+      ? convert_time_result_to_timestamp(value, buffer, indicator, &conversion_issue)
+      : TextDataConverter::convert_data(
+          character_cell, effective_target_type, buffer, buffer_length, indicator,
+          &conversion_issue, numeric_precision, numeric_scale);
 
   set_conversion_diagnostic(*this, result, conversion_issue);
   if (result != SQL_ERROR) save_offset(complete);

@@ -3,12 +3,14 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
+#include "tests/test_time_helpers.h"
 #include "odbcpp/util/scaled_decimal.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -5500,6 +5502,340 @@ TEST_F(NumericScaleApiTest, CharacterBooleanWordsArraysPreparedSnapshotsAndNativ
     EXPECT_EQ(SQL_NULL_DATA, length);
     EXPECT_EQ(77, data);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+} // namespace
+
+namespace {
+TEST_F(NumericScaleApiTest, TimeTimestampFractionProjectionDirectArdAndSourceIdentity) {
+  for (const char* text : {"00:00:00.000000", "12:34:56.123456", "23:59:59.999999", "12:34:56"}) {
+    for (SQLSMALLINT requested : {SQLSMALLINT(SQL_C_TYPE_TIMESTAMP),
+        SQLSMALLINT(SQL_C_TIMESTAMP), SQLSMALLINT(SQL_ARD_TYPE)}) {
+      SCOPED_TRACE(text);
+      SCOPED_TRACE(requested);
+      facts->result.columns = {{"time", NativeTypeInfo{ScalarType::Time, 15, 6, true}},
+          {"text", NativeTypeInfo{ScalarType::VarChar, 15, 0, true}},
+          {"timestamp", NativeTypeInfo{ScalarType::Timestamp, 26, 6, true}}};
+      facts->result.rows = {{text, "12:34:56.123456", "2024-02-29 12:34:56.123456"}};
+      ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT time", SQL_NTS));
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(descriptor(SQL_ATTR_APP_ROW_DESC), 1,
+          SQL_DESC_CONCISE_TYPE, (SQLPOINTER)SQL_C_TYPE_TIMESTAMP, 0));
+      std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT) + 2> bytes;
+      bytes.fill(0xa5);
+      SQLLEN length = 79;
+      const auto before = odbcpp::test::local_calendar(std::time(nullptr));
+      ASSERT_TRUE(before);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, requested, bytes.data() + 1, 0, &length));
+      const auto after = odbcpp::test::local_calendar(std::time(nullptr));
+      ASSERT_TRUE(after);
+      SQL_TIMESTAMP_STRUCT value{};
+      std::memcpy(&value, bytes.data() + 1, sizeof(value));
+      const auto matches = [&](const std::tm& date) {
+        return value.year == date.tm_year + 1900 && value.month == date.tm_mon + 1 && value.day == date.tm_mday;
+      };
+      EXPECT_TRUE(matches(*before) || matches(*after));
+      EXPECT_EQ((text[0] - '0') * 10 + text[1] - '0', value.hour);
+      EXPECT_EQ((text[3] - '0') * 10 + text[4] - '0', value.minute);
+      EXPECT_EQ((text[6] - '0') * 10 + text[7] - '0', value.second);
+      EXPECT_EQ(0u, value.fraction);
+      EXPECT_EQ(sizeof(value), length);
+      EXPECT_EQ(0xa5, bytes.front());
+      EXPECT_EQ(0xa5, bytes.back());
+      const auto published = bytes;
+      length = 79;
+      ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, requested, bytes.data() + 1, 0, &length));
+      EXPECT_EQ(published, bytes);
+      EXPECT_EQ(79, length);
+      // Identical text and actual TIMESTAMP sources retain their fraction.
+      for (SQLUSMALLINT column : {SQLUSMALLINT{2}, SQLUSMALLINT{3}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_TYPE_TIMESTAMP,
+            bytes.data() + 1, 0, &length));
+        std::memcpy(&value, bytes.data() + 1, sizeof(value));
+        EXPECT_EQ(123456000u, value.fraction);
+        EXPECT_EQ(sizeof(value), length);
+        if (column == 3) {
+          EXPECT_EQ(2024, value.year);
+          EXPECT_EQ(2, value.month);
+          EXPECT_EQ(29, value.day);
+        }
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes.back());
+      }
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    }
+  }
+}
+} // namespace
+
+namespace {
+TEST_F(NumericScaleApiTest, TimeTimestampFractionProjectionBoundIndicatorAndPrecedence) {
+  for (bool indicator_only : {false, true}) {
+    for (const char* text : {"12:34:56.123456", "12:34:56.1234567891", "25:00:00", "12:99:00", "bad"}) {
+      SCOPED_TRACE(text);
+      SCOPED_TRACE(indicator_only);
+      facts->result.columns = {{"time", NativeTypeInfo{ScalarType::Time, 15, 6, true}}};
+      facts->result.rows = {{text}};
+      std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT) + 2> bytes;
+      bytes.fill(0xa5);
+      const auto before = bytes;
+      SQLLEN length = 79, indicator = 83;
+      SQLULEN fetched = 91;
+      SQLUSMALLINT status = 71;
+      ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &fetched, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, &status, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_TYPE_TIMESTAMP,
+          indicator_only ? nullptr : bytes.data() + 1, 0, &length));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(descriptor(SQL_ATTR_APP_ROW_DESC), 1,
+          SQL_DESC_INDICATOR_PTR, &indicator, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT time", SQL_NTS));
+      const bool valid = std::string_view(text).starts_with("12:34:56.");
+      // This noncanonical >9-digit fixture preserves the raw converter warning.
+      const bool warning = std::strlen(text) > 18;
+      ASSERT_EQ(valid ? warning ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS : SQL_ERROR, SQLFetch(stmt));
+      EXPECT_EQ(1u, fetched);
+      if (valid) {
+        EXPECT_EQ(sizeof(SQL_TIMESTAMP_STRUCT), length);
+        EXPECT_EQ(0, indicator);
+        EXPECT_EQ(warning ? SQL_ROW_SUCCESS_WITH_INFO : SQL_ROW_SUCCESS, status);
+        if (warning) {
+          EXPECT_EQ("01S07", state());
+        }
+        if (!indicator_only) {
+          SQL_TIMESTAMP_STRUCT value{};
+          std::memcpy(&value, bytes.data() + 1, sizeof(value));
+          EXPECT_EQ(12, value.hour);
+          EXPECT_EQ(34, value.minute);
+          EXPECT_EQ(56, value.second);
+          EXPECT_EQ(0u, value.fraction);
+        } else {
+          EXPECT_EQ(before, bytes);
+        }
+      } else {
+        EXPECT_EQ("22007", state());
+        EXPECT_EQ(SQL_ROW_ERROR, status);
+        EXPECT_EQ(79, length);
+        EXPECT_EQ(83, indicator);
+        EXPECT_EQ(before, bytes);
+      }
+      EXPECT_EQ(0xa5, bytes.front());
+      EXPECT_EQ(0xa5, bytes.back());
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
+    }
+  }
+  facts->result.columns = {{"time", NativeTypeInfo{ScalarType::Time, 15, 6, true}}};
+  facts->result.rows = {{"25:00:00"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT bad_time", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT) + 2> bytes;
+  bytes.fill(0xa5);
+  const auto before = bytes;
+  SQLLEN length = 79;
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, -1, &length));
+  EXPECT_EQ("HY090", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, nullptr, 0, &length));
+  EXPECT_EQ("HY009", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, 12345, bytes.data() + 1, 0, &length));
+  EXPECT_EQ("HY003", state());
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(descriptor(SQL_ATTR_APP_ROW_DESC), 1,
+      SQL_DESC_CONCISE_TYPE, (SQLPOINTER)SQL_C_INTERVAL_YEAR, 0));
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes.data() + 1, 0, &length));
+  EXPECT_EQ("HYC00", state());
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &length));
+  EXPECT_EQ("22007", state());
+  EXPECT_EQ(before, bytes);
+  EXPECT_EQ(79, length);
+  char recovered[32]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, recovered, sizeof(recovered), &length));
+  EXPECT_STREQ("25:00:00", recovered);
+  ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  facts->result.rows = {{"12:34:56.123456"}};
+  facts->result.cell_errors = {{0, 0}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT deferred", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  length = 79;
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &length));
+  EXPECT_EQ("22018", state());
+  SQLCHAR message[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, nullptr, nullptr,
+      message, sizeof(message), nullptr));
+  EXPECT_STREQ("Invalid backend result encoding", reinterpret_cast<char*>(message));
+  EXPECT_EQ(before, bytes);
+  EXPECT_EQ(79, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  facts->result.cell_errors.clear();
+  facts->result.rows = {{std::nullopt}};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_TYPE_TIMESTAMP,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT null", SQL_NTS));
+  ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+  EXPECT_EQ("HY024", state());
+  EXPECT_EQ(79, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(before, bytes);
+  ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, nullptr));
+  EXPECT_EQ("22002", state());
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(before, bytes);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+}
+
+TEST_F(NumericScaleApiTest, TimeTimestampFractionProjectionArraysPreparedSiblingAndRefill) {
+  struct Row {
+    unsigned char before{0xa5}, bytes[sizeof(SQL_TIMESTAMP_STRUCT)]{}, after{0xb5};
+    SQLLEN length{79}, indicator{83};
+  };
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  for (bool row_wise : {false, true}) {
+    SCOPED_TRACE(row_wise);
+    SQLHSTMT sibling{};
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+    struct Owner { SQLHSTMT handle; ~Owner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); } } owner{sibling};
+    facts->result.columns = {{"timestamp", NativeTypeInfo{ScalarType::Timestamp, 26, 6, true}}};
+    facts->result.rows = {{"2024-02-29 12:34:56.123456"}};
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT sibling", SQL_NTS));
+    facts->result.columns = {{"time", NativeTypeInfo{ScalarType::Time, 15, 6, true}}};
+    facts->result.rows = {{"12:34:56.123456"}, {std::nullopt}, {"bad"}, {"23:59:59.999999"}};
+    facts->result.normalized_parameter_types = {{ScalarType::Integer, 10, 0, true}};
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLINTEGER input = 44;
+    SQLLEN input_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+        SQL_INTEGER, 10, 0, &input, 0, &input_length));
+    Row pages[2][4];
+    for (auto& page : pages) {
+      for (auto& row : page) {
+        std::fill(std::begin(row.bytes), std::end(row.bytes), 0xee);
+      }
+    }
+    std::array<unsigned char, 4 * sizeof(SQL_TIMESTAMP_STRUCT) + 2> bytes;
+    bytes.fill(0xee);
+    std::array<unsigned char, 4 * sizeof(SQLLEN) + 2> lengths, indicators;
+    for (auto* storage : {&lengths, &indicators}) {
+      storage->fill(0xa5);
+      for (std::size_t row = 0; row < 4; ++row) {
+        const SQLLEN initial = storage == &lengths ? 79 : 83;
+        std::memcpy(storage->data() + 1 + row * sizeof(SQLLEN), &initial, sizeof(initial));
+      }
+    }
+    SQLULEN offset = row_wise ? sizeof(pages[0]) : 1, count = 91;
+    SQLUSMALLINT statuses[4]{71, 72, 73, 74};
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)4, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE,
+        (SQLPOINTER)(row_wise ? sizeof(Row) : SQL_BIND_BY_COLUMN), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, statuses, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
+    void* data = row_wise ? pages[0][0].bytes : bytes.data();
+    SQLLEN* length = row_wise ? &pages[0][0].length : reinterpret_cast<SQLLEN*>(lengths.data());
+    void* indicator = row_wise ? static_cast<void*>(&pages[0][0].indicator) : indicators.data();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_TYPE_TIMESTAMP, data, 0, length));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(descriptor(SQL_ATTR_APP_ROW_DESC), 1,
+        SQL_DESC_INDICATOR_PTR, indicator, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    input = 999;
+    facts->result.rows = {{"01:02:03.000001"}};
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{"44"}, facts->parameters[0].value);
+    const auto queries = facts->queries;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+    EXPECT_EQ(4u, count);
+    EXPECT_EQ(queries, facts->queries);
+    const SQLUSMALLINT expected_status[] = {SQL_ROW_SUCCESS, SQL_ROW_SUCCESS, SQL_ROW_ERROR, SQL_ROW_SUCCESS};
+    for (std::size_t row = 0; row < 4; ++row) {
+      SCOPED_TRACE(row);
+      EXPECT_EQ(expected_status[row], statuses[row]);
+      const auto* output = row_wise ? pages[1][row].bytes : bytes.data() + 1 + row * sizeof(SQL_TIMESTAMP_STRUCT);
+      SQLLEN actual_length{}, actual_indicator{};
+      if (row_wise) {
+        actual_length = pages[1][row].length;
+        actual_indicator = pages[1][row].indicator;
+        EXPECT_EQ(0xa5, pages[1][row].before);
+        EXPECT_EQ(0xb5, pages[1][row].after);
+        EXPECT_EQ(79, pages[0][row].length);
+        EXPECT_EQ(83, pages[0][row].indicator);
+        EXPECT_TRUE(std::all_of(std::begin(pages[0][row].bytes), std::end(pages[0][row].bytes), [](auto b) { return b == 0xee; }));
+      } else {
+        std::memcpy(&actual_length, lengths.data() + 1 + row * sizeof(SQLLEN), sizeof(SQLLEN));
+        std::memcpy(&actual_indicator, indicators.data() + 1 + row * sizeof(SQLLEN), sizeof(SQLLEN));
+      }
+      if (row == 0 || row == 3) {
+        SQL_TIMESTAMP_STRUCT value{};
+        std::memcpy(&value, output, sizeof(value));
+        EXPECT_EQ(row == 0 ? 12 : 23, value.hour);
+        EXPECT_EQ(row == 0 ? 34 : 59, value.minute);
+        EXPECT_EQ(row == 0 ? 56 : 59, value.second);
+        EXPECT_EQ(0u, value.fraction);
+        EXPECT_EQ(sizeof(value), actual_length);
+        EXPECT_EQ(0, actual_indicator);
+      } else {
+        EXPECT_TRUE(std::all_of(output, output + sizeof(SQL_TIMESTAMP_STRUCT), [](auto b) { return b == 0xee; }));
+        EXPECT_EQ(79, actual_length);
+        EXPECT_EQ(row == 1 ? SQL_NULL_DATA : 83, actual_indicator);
+      }
+    }
+    SQLLEN row = 79, column = 83;
+    SQLCHAR sqlstate[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(sqlstate));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_ROW_NUMBER, &row, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_COLUMN_NUMBER, &column, 0, nullptr));
+    EXPECT_EQ(3, row);
+    EXPECT_EQ(1, column);
+    EXPECT_EQ(0xee, bytes.front());
+    EXPECT_EQ(0xee, bytes.back());
+    EXPECT_EQ(0xa5, lengths.front());
+    EXPECT_EQ(0xa5, lengths.back());
+    EXPECT_EQ(0xa5, indicators.front());
+    EXPECT_EQ(0xa5, indicators.back());
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    SQLLEN sibling_length = 79;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_TYPE_TIMESTAMP, &timestamp, 0, &sibling_length));
+    EXPECT_EQ(123456000u, timestamp.fraction);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 3, SQL_POSITION, SQL_LOCK_NO_CHANGE));
+    ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, &timestamp, 0, nullptr));
+    EXPECT_EQ("07009", state());
+    EXPECT_EQ(123456000u, timestamp.fraction);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+    sibling_length = 79;
+    ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, &timestamp, 0, &sibling_length));
+    EXPECT_EQ("22007", state());
+    EXPECT_EQ(123456000u, timestamp.fraction);
+    EXPECT_EQ(79, sibling_length);
+    char recovered[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, recovered, sizeof(recovered), &sibling_length));
+    EXPECT_STREQ("bad", recovered);
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_TYPE_TIMESTAMP, &timestamp, 0, &sibling_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE, (SQLPOINTER)SQL_BIND_BY_COLUMN, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0));
+    input = 44;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &sibling_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    std::memcpy(&timestamp, bytes.data() + 1, sizeof(timestamp));
+    EXPECT_EQ(1, timestamp.hour);
+    EXPECT_EQ(2, timestamp.minute);
+    EXPECT_EQ(3, timestamp.second);
+    EXPECT_EQ(0u, timestamp.fraction);
+    EXPECT_EQ(sizeof(timestamp), sibling_length);
+    EXPECT_EQ(queries + 1, facts->queries);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
   }
   EXPECT_EQ(0u, facts->disconnects);
 }
