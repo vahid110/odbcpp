@@ -1208,6 +1208,70 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
   }
   const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&*native);
   if (catalog_profile_ != PgCatalogProfile::Redshift || !keys) return unsupported();
+
+  if (!keys->catalog && keys->name_matches.existing() && catalog_mode()==RedshiftCatalogMode::Show) {
+    const auto invalid=[this] {
+      return local_backend_error(LocalFailure::InvalidInput,"Exact nonempty schema and table identifiers are required",
+          BackendOperation::ExecuteCatalog,session_state());
+    };
+    const auto valid=[](std::string_view value) {
+      return !value.empty() && value.find('\0')==std::string_view::npos && rs::util::utf8_code_point_count(value).has_value();
+    };
+    if (!keys->schema || !valid(*keys->schema) || !valid(keys->table)) return invalid();
+    if (session_state()!=SessionState::Idle) return unsupported();
+    const auto capability=get_parameter("show_discovery");std::uint32_t version=0;
+    const auto parsed=std::from_chars(capability.data(),capability.data()+capability.size(),version);
+    if (capability.empty() || capability.size()>10 || parsed.ec!=std::errc{} ||
+        parsed.ptr!=capability.data()+capability.size() || version<4) return unsupported();
+    auto scope=[&]() -> rs::util::Result<CatalogDatabaseScope> {
+      try {
+        return redshift_catalog_database_scope(catalog_database_scope(),
+            get_parameter_status("datashare_enabled"),get_parameter_status("external_database"));
+      } catch (...) {
+        return {rs::util::DbErrorCode::ProtocolError,"Metadata scope observation failed"};
+      }
+    }();
+    if (!scope) {
+      BackendError error{scope.error(),scope.error_message()};error.operation=BackendOperation::ExecuteCatalog;
+      error.error_class=BackendErrorClass::InvalidMetadata;error.session_state=session_state();
+      error.disposition=SessionDisposition::Retire;return error;
+    }
+    if (*scope!=CatalogDatabaseScope::CurrentDatabase) return unsupported(); // Never downgrade visible scope.
+    const auto expired=[deadline]{return rs::util::Clock::now()>=deadline;};
+    const auto timeout=[] {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),"Primary-key catalog deadline expired"};
+      error.operation=BackendOperation::ExecuteCatalog;return error;
+    };
+    if (expired()) return timeout();
+    RedshiftRoutineBudget budget{catalog_response_limits(),catalog_result_limits()};
+    const auto retain_copies=[&](std::size_t bytes,std::size_t copies,std::size_t objects) {
+      const auto max=std::numeric_limits<std::size_t>::max();
+      if (bytes>max/copies || objects>max-bytes*copies) return false;
+      return budget.retain({0,0,bytes*copies+objects,0,bytes*copies});
+    };
+    const auto names_bytes=keys->schema->size()+keys->table.size();
+    if (!budget.name(*keys->schema) || !budget.name(keys->table) || !budget.exchanges_available(2) ||
+        !retain_copies(names_bytes,3,sizeof(RedshiftPrimaryKeyCommandPlan)+6*sizeof(QueryParameter)+128))
+      return redshift_routine_limit();
+    if (!budget.exchange()) return redshift_routine_limit();
+    auto database=redshift_primary_key_database(
+        execute_query("SELECT current_database() AS database_name",deadline),budget,deadline);
+    if (!database) return database.backend_error();
+    if (expired()) return timeout();
+    // Identity owns its connected database. Admit the plan/initializer/parameter
+    // copies while it remains live; caller names were admitted before discovery.
+    if (!retain_copies(database->size(),3,0)) return redshift_routine_limit();
+    auto current=redshift_primary_key_plan(*database,keys->schema,keys->table);
+    if (!current) return current.backend_error();
+    const std::vector<QueryParameter> values{
+        {current->database,QueryParameterType::Unspecified},
+        {current->schema,QueryParameterType::Unspecified},
+        {current->table,QueryParameterType::Unspecified}};
+    if (!budget.exchange()) return redshift_routine_limit();
+    return redshift_primary_key_part(*current,execute_prepared(
+        "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;",values,deadline),budget,deadline);
+  }
+
   auto plan = redshift_primary_key_plan(keys->catalog, keys->schema, keys->table);
   if (!plan) {
     return local_backend_error(LocalFailure::InvalidInput,
