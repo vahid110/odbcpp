@@ -352,6 +352,7 @@ SQLRETURN convert_bit_result_to_binary(std::string_view value, void* buffer,
 
 SQLSMALLINT fixed_numeric_binary_c_type(SQLSMALLINT sql_type) {
   switch (sql_type) {
+    case SQL_TINYINT: return SQL_C_STINYINT;
     case SQL_SMALLINT: return SQL_C_SSHORT;
     case SQL_INTEGER: return SQL_C_SLONG;
     case SQL_BIGINT: return SQL_C_SBIGINT;

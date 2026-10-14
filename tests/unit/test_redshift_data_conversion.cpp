@@ -1210,7 +1210,7 @@ TEST(ResultTypesTest, SignedIntegerBinaryResultPairsAreExplicitAndDefaultsStayNa
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_SMALLINT), SQLSMALLINT(SQL_INTEGER), SQLSMALLINT(SQL_BIGINT)}) {
         EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
-    for (SQLSMALLINT type : {SQLSMALLINT(SQL_TINYINT), SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
          SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
@@ -1229,5 +1229,49 @@ TEST(ResultTypesTest, FloatingBinaryResultPairsKeepNativeDefaultsAndOtherRefusal
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
              SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
+}
+
+
+TEST(ResultTypesTest, TinyintBinaryResultUsesSignedOneByteWithoutChangingDefaultsOrOtherPairs) {
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TINYINT, SQL_C_BINARY));
+    EXPECT_EQ(SQL_C_STINYINT, rs::odbc::ResultTypes::default_c_type(SQL_TINYINT));
+    EXPECT_EQ(SQL_C_STINYINT, rs::odbc::ResultTypes::canonical_c_type(SQL_C_TINYINT));
+    EXPECT_EQ(1u, sizeof(SQLSCHAR));
+    EXPECT_EQ(-128, (std::numeric_limits<SQLSCHAR>::min)());
+    EXPECT_EQ(127, (std::numeric_limits<SQLSCHAR>::max)());
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
+             SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
+}
+
+TEST_F(RedshiftDataConverterTest, TinyintCheckedScalarDomainIsSignedAndPublishesOnlyValidValues) {
+    struct Case { const char* text; SQLRETURN result; int value; rs::odbc::ConversionIssue issue; };
+    using rs::odbc::ConversionIssue;
+    for (const auto& c : {Case{"-128", SQL_SUCCESS, -128, ConversionIssue::None},
+             Case{"0", SQL_SUCCESS, 0, ConversionIssue::None},
+             Case{"127", SQL_SUCCESS, 127, ConversionIssue::None},
+             Case{"1.5", SQL_SUCCESS_WITH_INFO, 1, ConversionIssue::FractionalTruncation},
+             Case{"128", SQL_ERROR, 0, ConversionIssue::NumericValueOutOfRange},
+             Case{"-129", SQL_ERROR, 0, ConversionIssue::NumericValueOutOfRange},
+             Case{"bad", SQL_ERROR, 0, ConversionIssue::InvalidCharacterValue}}) {
+        SCOPED_TRACE(c.text);
+        std::array<unsigned char, 3> bytes{0xa5, 0xa5, 0xa5};
+        SQLLEN length = 79;
+        ConversionIssue issue{};
+        ASSERT_EQ(c.result, RedshiftDataConverter::convert_data(c.text, SQL_C_STINYINT,
+            bytes.data() + 1, 1, &length, &issue));
+        EXPECT_EQ(c.issue, issue);
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes.back());
+        if (c.result == SQL_ERROR) {
+            EXPECT_EQ(0xa5, bytes[1]);
+            EXPECT_EQ(79, length);
+        } else {
+            const SQLSCHAR expected = static_cast<SQLSCHAR>(c.value);
+            EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, 1));
+            EXPECT_EQ(1, length);
+        }
     }
 }

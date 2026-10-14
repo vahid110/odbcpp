@@ -603,6 +603,9 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
+#ifdef ODBCPP_ENABLE_TEST_HOOKS
+  friend struct detail::ODBCBackendTestAccess;
+#endif
   SQLRETURN fetch_impl(SQLSMALLINT orientation, SQLLEN offset);
   enum class StaticPosition { BeforeStart, OnRowset, AfterEnd };
   StaticPosition static_position_ = StaticPosition::BeforeStart;

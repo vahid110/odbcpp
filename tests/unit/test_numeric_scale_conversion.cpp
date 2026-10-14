@@ -2,6 +2,7 @@
 #include "core/database/postgres/pg_backend_provider.h"
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
+#include "tests/test_handle_helpers.h"
 #include "odbcpp/util/scaled_decimal.h"
 
 #include <algorithm>
@@ -3196,3 +3197,176 @@ TEST_F(NumericScaleApiTest, NumericBinaryInputScalarMaskDeferredSpanAndOwningSib
   EXPECT_EQ(0u, facts->disconnects);
 }
 }  // namespace
+
+
+namespace {
+TEST_F(NumericScaleApiTest, TinyintBinaryResultSyntheticLiteralDomainRetryCompletionAndNull) {
+  using rs::odbc::detail::ODBCBackendTestAccess;
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(SQL_NULL_HSTMT, 1));
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  facts->result.columns = {{"tiny", NativeTypeInfo{ScalarType::SmallInt, 3, 0, true}}};
+  facts->result.rows = {{"-128"}, {"0"}, {"127"}, {"-1"}, {std::nullopt}, {"1.5"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT synthetic tiny", SQL_NTS));
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 0));
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 2));
+  ASSERT_TRUE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  SQLSMALLINT type{};
+  SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, &size, nullptr, nullptr));
+  EXPECT_EQ(SQL_TINYINT, type);
+  EXPECT_EQ(3u, size);
+  SQLHDESC ird = descriptor(SQL_ATTR_IMP_ROW_DESC);
+  SQLLEN octets{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_OCTET_LENGTH, &octets, 0, nullptr));
+  EXPECT_EQ(1, octets);
+  const int expected[] = {-128, 0, 127, -1, 0, 1};
+  const auto queries = facts->queries;
+  for (int row = 0; row < 6; ++row) {
+    SCOPED_TRACE(row);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    std::array<unsigned char, 4> output{0xa5, 0xa5, 0xa5, 0xa5};
+    const auto before = output;
+    SQLLEN length = 79;
+    if (row != 4) {
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_BINARY, output.data() + 1, 0, &length));
+      EXPECT_EQ("22003", state());
+      EXPECT_EQ(before, output);
+      EXPECT_EQ(79, length);
+    }
+    const auto result = SQLGetData(stmt, 1, SQL_C_BINARY,
+        row == 4 ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) : output.data() + 1,
+        row == 4 ? 0 : 2, &length);
+    ASSERT_EQ(row == 5 ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS, result);
+    if (row == 4) {
+      EXPECT_EQ(SQL_NULL_DATA, length);
+      EXPECT_EQ(before, output);
+    } else {
+      const SQLSCHAR value = static_cast<SQLSCHAR>(expected[row]);
+      EXPECT_EQ(0, std::memcmp(&value, output.data() + 1, 1));
+      EXPECT_EQ(1, length);
+      EXPECT_EQ(0xa5, output[0]);
+      EXPECT_EQ(0xa5, output[2]);
+      EXPECT_EQ(0xa5, output[3]);
+      if (row == 5) {
+        EXPECT_EQ("01S07", state());
+      }
+    }
+    const auto completed = output;
+    length = 83;
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_BINARY, output.data() + 1, 1, &length));
+    EXPECT_EQ(completed, output);
+    EXPECT_EQ(83, length);
+  }
+  EXPECT_EQ(queries, facts->queries);
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  EXPECT_FALSE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+}
+
+TEST_F(NumericScaleApiTest, TinyintBinaryResultSyntheticMalformedRangeArdAndNullPrecedence) {
+  using rs::odbc::detail::ODBCBackendTestAccess;
+  facts->result.columns = {{"tiny", NativeTypeInfo{ScalarType::SmallInt, 3, 0, true}}};
+  facts->result.rows = {{"bad"}, {"128"}, {"-129"}, {"1e100"}, {"44"}, {std::nullopt}};
+  auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_CONCISE_TYPE, (SQLPOINTER)SQL_C_BINARY, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT synthetic tiny", SQL_NTS));
+  ASSERT_TRUE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  const auto queries = facts->queries;
+  for (int row = 0; row < 6; ++row) {
+    SCOPED_TRACE(row);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    unsigned char bytes[3]{0xa5, 0xa5, 0xa5};
+    SQLLEN length = 79;
+    ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes + 1, -1, &length));
+    EXPECT_EQ("HY090", state());
+    ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, nullptr, 0, &length));
+    EXPECT_EQ("HY009", state());
+    if (row < 4) {
+      for (SQLLEN capacity : {SQLLEN(0), SQLLEN(1)}) {
+        ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes + 1, capacity, &length));
+        EXPECT_EQ(row == 0 ? "22018" : "22003", state());
+        EXPECT_EQ(79, length);
+        EXPECT_EQ(0xa5, bytes[1]);
+      }
+    }
+    if (row == 4) {
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes + 1, 0, &length));
+      EXPECT_EQ("22003", state());
+      EXPECT_EQ(79, length);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes + 1, 1, &length));
+      const SQLSCHAR expected = 44;
+      EXPECT_EQ(0, std::memcmp(bytes + 1, &expected, 1));
+      EXPECT_EQ(1, length);
+    }
+    if (row == 5) {
+      ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_ARD_TYPE, bytes + 1, 0, nullptr));
+      EXPECT_EQ("22002", state());
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_ARD_TYPE,
+          reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+      EXPECT_EQ(SQL_NULL_DATA, length);
+      EXPECT_EQ(0xa5, bytes[1]);
+    }
+    EXPECT_EQ(0xa5, bytes[0]);
+    EXPECT_EQ(0xa5, bytes[2]);
+  }
+  EXPECT_EQ(queries, facts->queries);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, TinyintBinaryResultSyntheticIndicatorOnlyValidationAndOwningReset) {
+  using rs::odbc::detail::ODBCBackendTestAccess;
+  facts->result.columns = {{"tiny", NativeTypeInfo{ScalarType::SmallInt, 3, 0, true}}};
+  facts->result.normalized_parameter_types = {{ScalarType::SmallInt, 3, 0, true}};
+  facts->result.rows = {{"-128"}, {std::nullopt}, {"128"}, {"bad"}, {"127"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLSMALLINT input = 44;
+  SQLLEN input_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SSHORT, SQL_SMALLINT, 3, 0, &input, 0, &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, nullptr, 0, &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_TRUE(ODBCBackendTestAccess::project_synthetic_tinyint(stmt, 1));
+  SQLHSTMT sibling{};
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+  struct Owner { SQLHSTMT h; ~Owner() { SQLFreeHandle(SQL_HANDLE_STMT, h); } } owner{sibling};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT sibling", SQL_NTS));
+  ASSERT_TRUE(ODBCBackendTestAccess::project_synthetic_tinyint(sibling, 1));
+  facts->result.rows = {{"7"}};
+  facts->result.columns = {{"refill", NativeTypeInfo{ScalarType::SmallInt, 5, 0, true}}};
+  input = 999;
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"44"}, facts->parameters[0].value);
+  for (int row = 0; row < 5; ++row) {
+    input_length = 79;
+    const bool error = row == 2 || row == 3;
+    ASSERT_EQ(error ? SQL_ERROR : SQL_SUCCESS, SQLFetch(stmt));
+    if (error) {
+      EXPECT_EQ(row == 2 ? "22003" : "22018", state());
+      EXPECT_EQ(79, input_length);
+    } else {
+      EXPECT_EQ(row == 1 ? SQL_NULL_DATA : 1, input_length);
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+  unsigned char bytes[3]{0xa5, 0xa5, 0xa5};
+  SQLLEN length = 79;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_BINARY, bytes + 1, 1, &length));
+  const SQLSCHAR expected = -128;
+  EXPECT_EQ(0, std::memcmp(&expected, bytes + 1, 1));
+  EXPECT_EQ(1, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  input = 44;
+  input_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  SQLSMALLINT type{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+  EXPECT_EQ(SQL_SMALLINT, type); // Ordinary refill removed the synthetic projection.
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLSMALLINT small{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DEFAULT, &small, 0, &length));
+  EXPECT_EQ(7, small);
+  EXPECT_EQ(2, length);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+} // namespace

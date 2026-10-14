@@ -3820,3 +3820,38 @@ TEST_F(BindColIntegrationTest, LegacySignedIntegerTargetsFetchBindAndNull) {
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     }
 }
+
+
+// Native metadata control only: neither PostgreSQL nor the current normalized
+// SDK exposes TINYINT. Synthetic TINYINT runtime coverage lives in unit tests.
+TEST_F(BindColIntegrationTest, SmallintBinaryKeepsNativeWidthBesideSignedByteTarget) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT -128::smallint", SQL_NTS));
+    SQLSMALLINT type{};
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_SMALLINT, type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    unsigned char bytes[4]{0xa5, 0xa5, 0xa5, 0xa5};
+    SQLLEN length = 79;
+    ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes + 1, 1, &length));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(79, length);
+    EXPECT_EQ(0xa5, bytes[1]);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes + 1, 2, &length));
+    const SQLSMALLINT expected = -128;
+    EXPECT_EQ(0, std::memcmp(bytes + 1, &expected, 2));
+    EXPECT_EQ(2, length);
+    EXPECT_EQ(0xa5, bytes[0]);
+    EXPECT_EQ(0xa5, bytes[3]);
+    length = 83;
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes + 1, 2, &length));
+    EXPECT_EQ(83, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT -128::smallint", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLSCHAR tiny{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_STINYINT, &tiny, 0, &length));
+    EXPECT_EQ(-128, tiny);
+    EXPECT_EQ(1, length);
+}
