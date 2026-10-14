@@ -277,11 +277,12 @@ TEST(RedshiftCatalogExecution, OtherCatalogKindsAreUnsupportedWithoutIo) {
       ProcedureColumnsCatalogRequest{}, SpecialColumnsCatalogRequest{}};
   for (const auto& input : unsupported) {
     SpySession spy;
-    // Omitted-schema routine and column discovery use modern SHOW;
+    // Omitted-schema routine, table and column discovery use modern SHOW;
     // retain their no-I/O refusal contract on the existing legacy path.
     if (std::holds_alternative<ProceduresCatalogRequest>(input) ||
         std::holds_alternative<ProcedureColumnsCatalogRequest>(input) ||
-        std::holds_alternative<ColumnsCatalogRequest>(input)) {
+        std::holds_alternative<ColumnsCatalogRequest>(input) ||
+        std::holds_alternative<TablesCatalogRequest>(input)) {
       spy.mode = RedshiftCatalogMode::Legacy;
     }
     auto result = spy.execute_catalog(input, rs::util::make_deadline(std::chrono::seconds{1}));
@@ -705,7 +706,7 @@ TEST(RedshiftShowSchemas, SelectionIsRequestProfileAndModeSpecificNotCapability)
   SchemaSpy show; show.capability.clear();
   EXPECT_TRUE(show.selects_catalog_request(schemas_request()));
   EXPECT_TRUE(show.selects_catalog_request(request()));
-  EXPECT_FALSE(show.selects_catalog_request(TablesCatalogRequest{}));
+  EXPECT_TRUE(show.selects_catalog_request(TablesCatalogRequest{}));
   EXPECT_TRUE(show.selects_catalog_request(ColumnsCatalogRequest{}));
   show.mode = RedshiftCatalogMode::Legacy;
   EXPECT_FALSE(show.selects_catalog_request(schemas_request()));
@@ -3491,4 +3492,256 @@ TEST(RedshiftColumnsSchemaPatterns, LaterDatabaseSchemaErrorDiscardsEarlierOwnin
   ASSERT_TRUE(restored)<<restored.error_message();ASSERT_EQ(2u,restored->rows.size());
   EXPECT_EQ("z_db",restored->rows[0][0]);EXPECT_EQ("fresh",restored->rows[0][1]);
   EXPECT_EQ(4u,session.commands.size());
+}
+
+
+namespace {
+TablesCatalogRequest schema_pattern_tables(std::optional<std::string> schema=std::nullopt) {
+  TablesCatalogRequest request;request.schema=std::move(schema);return request;
+}
+void tables_schema_current(WideColumnsSession& session,std::vector<std::string> schemas={"z","a"},
+    std::vector<std::string> selected={"a","z"}) {
+  session.replies.emplace_back(routine_identity(),session.snapshot);
+  schema_pattern_response(session,schemas);
+  for (const auto& schema:selected) {
+    session.replies.emplace_back(tables_response("db",schema),session.snapshot);
+  }
+}
+}
+// Group1: native discovery, ordered five-field identities and owning publication.
+TEST(RedshiftTablesSchemaPatterns, NullAndUniversalOwnCollisionsSortAndOneAbsoluteDeadline) {
+  for (const auto& schema:std::vector<std::optional<std::string>>{std::nullopt,"%"}) {
+    WideColumnsSession session;tables_schema_current(session);
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+    auto request=schema_pattern_tables(schema);ASSERT_TRUE(session.selects_catalog_request(request));
+    auto result=session.execute_catalog(request,deadline);ASSERT_TRUE(result)<<result.error_message();
+    ASSERT_EQ(5u,result->columns.size());ASSERT_EQ(4u,result->rows.size());
+    const std::array<const char*,5> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+    for (std::size_t i=0;i<names.size();++i) {
+      EXPECT_EQ(names[i],result->columns[i].name);ASSERT_TRUE(result->columns[i].normalized_type);
+      EXPECT_EQ(128u,result->columns[i].normalized_type->column_size);
+    }
+    EXPECT_EQ((ResultRows{{"db","a","a","TABLE","owning remark"},{"db","z","a","TABLE","owning remark"},
+        {"db","a","z","VIEW",std::nullopt},{"db","z","z","VIEW",std::nullopt}}),result->rows);
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        "SHOW SCHEMAS FROM DATABASE \"db\";","SHOW TABLES FROM SCHEMA \"db\".\"a\";",
+        "SHOW TABLES FROM SCHEMA \"db\".\"z\";"}),session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(4,deadline),session.deadlines);
+    session.replies.clear();session.connected=false;request.schema="changed";
+    EXPECT_EQ(ResultCell{"owning remark"},result->rows[1][4]);
+    EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
+  }
+}
+// Group2: existing matching, catalog/type semantics and exact returned names.
+TEST(RedshiftTablesSchemaPatterns, UnicodeEscapesQuotedNamesAndTableTypeFilters) {
+  struct Case {const char* pattern;const char* name;};
+  for (const auto& test:std::array<Case,5>{{{"a_","a雪"},{"a\\_%","a_1"},
+      {"a\\%%","a%2"},{"a\\\\%","a\\3"},{"a\"%","a\"雪"}}}) {
+    WideColumnsSession session;tables_schema_current(session,{"hidden",test.name},{test.name});
+    auto request=schema_pattern_tables(test.pattern);request.table="a%";
+    request.types=std::vector<std::string>{"TABLE"};
+    auto result=session.execute_catalog(request,rs::util::Deadline::max());
+    ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(1u,result->rows.size());
+    EXPECT_EQ(ResultCell{test.name},result->rows[0][1]);EXPECT_EQ(ResultCell{"a"},result->rows[0][2]);
+    std::string quoted;for (char ch:std::string(test.name)) {
+      if (ch=='"') { quoted+='"'; }
+      quoted+=ch;
+    }
+    EXPECT_EQ("SHOW TABLES FROM SCHEMA \"db\".\""+quoted+"\";",session.commands.back());
+  }
+  WideColumnsSession five;tables_schema_current(five,{"a"},{"a"});
+  auto& raw=*five.replies.back();raw.columns.pop_back();
+  for (auto& row:raw.rows) { row.pop_back(); }
+  auto result=five.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());
+  ASSERT_TRUE(result)<<result.error_message();EXPECT_EQ(2u,result->rows.size());
+}
+TEST(RedshiftTablesSchemaPatterns, EmptySchemaNoMatchAndEmptyTypeVectorRetainTypedEmptyHeaders) {
+  for (const auto& schema:std::vector<std::optional<std::string>>{"","missing%"}) {
+    WideColumnsSession session;tables_schema_current(session,{"a"},{});
+    auto result=session.execute_catalog(schema_pattern_tables(schema),rs::util::Deadline::max());
+    ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(5u,result->columns.size());
+    EXPECT_EQ(2u,session.commands.size());
+  }
+  for (const auto& table:std::array<std::string,2>{"","no_match%"}) {
+    WideColumnsSession empty;tables_schema_current(empty,{"a"},{"a"});
+    auto request=schema_pattern_tables("%");request.table=table;
+    auto result=empty.execute_catalog(request,rs::util::Deadline::max());
+    ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(3u,empty.commands.size());
+  }
+  WideColumnsSession session;tables_schema_current(session,{"a"},{"a"});
+  auto request=schema_pattern_tables("%");request.types=std::vector<std::string>{};
+  auto result=session.execute_catalog(request,rs::util::Deadline::max());
+  ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(3u,session.commands.size());
+}
+TEST(RedshiftTablesSchemaPatterns, VisibleDatabaseCatalogPatternsNeverUseColumnsLiteralPolicy) {
+  for (const auto& catalog:std::array<std::string,2>{"a_%","z%"}) {
+    WideColumnsSession session;session.external="on";
+    session.replies.emplace_back(visible_databases(),session.snapshot);
+    const std::string database=catalog=="z%"?"z_db":"a_雪";
+    schema_pattern_response(session,{"a"},database);
+    session.replies.emplace_back(tables_response(database,"a"),session.snapshot);
+    auto request=schema_pattern_tables("%");request.catalog=catalog;request.table="a";
+    auto result=session.execute_catalog(request,rs::util::Deadline::max());
+    ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(1u,result->rows.size());
+    EXPECT_EQ(ResultCell{database},result->rows[0][0]);EXPECT_EQ("SHOW DATABASES;",session.commands[0]);
+    EXPECT_EQ(3u,session.commands.size());
+  }
+}
+// Group3: selection is an intent guard; exact/enumeration/legacy paths remain separate.
+TEST(RedshiftTablesSchemaPatterns, RefusalsValidateCallerTextBeforeIoAndPreserveOtherModes) {
+  for (const auto& capability:std::array<std::string,5>{"","3","4x","-4","4294967296"}) {
+    WideColumnsSession session;session.capability=capability;auto request=schema_pattern_tables("%");
+    EXPECT_TRUE(session.selects_catalog_request(request));
+    ASSERT_FALSE(session.execute_catalog(request,rs::util::Deadline::max()));EXPECT_TRUE(session.commands.empty());
+  }
+  for (unsigned field=0;field<4;++field) {
+    for (const auto& bad:std::array<std::string,3>{"bad\\",std::string("bad\0name",8),std::string("\xff",1)}) {
+      WideColumnsSession session;auto request=schema_pattern_tables("%");
+      if (field==0) { request.catalog=bad; }
+      if (field==1) { request.schema=bad; }
+      if (field==2) { request.table=bad; }
+      if (field==3) { request.types=std::vector<std::string>{bad}; }
+      // A backslash in a type value is text, unlike a dangling name-pattern escape.
+      if (field==3 && bad=="bad\\") { continue; }
+      auto result=session.execute_catalog(request,rs::util::Deadline::max());ASSERT_FALSE(result);
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),result.error());
+      EXPECT_TRUE(session.commands.empty());
+    }
+  }
+  WideColumnsSession legacy;legacy.mode=RedshiftCatalogMode::Legacy;
+  EXPECT_FALSE(legacy.selects_catalog_request(schema_pattern_tables("%")));
+  PgDatabaseConnection postgres;EXPECT_FALSE(postgres.selects_catalog_request(schema_pattern_tables("%")));
+  WideColumnsSession exact;auto request=schema_pattern_tables("fixture");
+  exact.replies.emplace_back(routine_identity(),exact.snapshot);
+  exact.replies.emplace_back(tables_response("db","fixture"),exact.snapshot);
+  ASSERT_TRUE(exact.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(2u,exact.commands.size());
+  WideColumnsSession manual;manual.snapshot.state=SessionState::Transaction;
+  ASSERT_FALSE(manual.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max()));
+  EXPECT_TRUE(manual.commands.empty());
+  WideColumnsSession identifier;auto id=schema_pattern_tables();
+  id.name_matches.schema=CatalogNameMatch::IdentifierQuoted;
+  id.name_matches.object=CatalogNameMatch::IdentifierQuoted;id.table="rows";
+  ASSERT_FALSE(identifier.execute_catalog(id,rs::util::Deadline::max()));EXPECT_TRUE(identifier.commands.empty());
+  WideColumnsSession expired;ASSERT_FALSE(expired.execute_catalog(schema_pattern_tables("%"),rs::util::Clock::now()));
+  EXPECT_TRUE(expired.commands.empty());
+}
+// Group4: hidden raw protocol rows, snapshots and true simultaneous storage peaks.
+TEST(RedshiftTablesSchemaPatterns, HiddenMalformedTableAndSchemaRowsAreNotFilteredIntoSuccess) {
+  for (unsigned kind=0;kind<6;++kind) {
+    WideColumnsSession session;tables_schema_current(session,{"a"},{"a"});
+    auto& raw=*session.replies.back();
+    if (kind==0) { raw.rows[0][0]="foreign"; }
+    if (kind==1) { raw.rows[0][2].reset(); }
+    if (kind==2) { raw.rows[0][2]=std::string("bad\0name",8); }
+    if (kind==3) { raw.rows[0][2]=std::string("\xff",1); }
+    if (kind==4) { raw.rows.push_back(raw.rows[0]); }
+    if (kind==5) { raw.rows[0][3]="unknown type"; }
+    auto request=schema_pattern_tables("%");request.table="no_match%";
+    auto result=session.execute_catalog(request,rs::util::Deadline::max());ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),result.error());
+    EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);EXPECT_EQ(3u,session.commands.size());
+  }
+  WideColumnsSession schema;tables_schema_current(schema,{"a","hidden"},{});
+  schema.replies[1]->rows[1][0]="foreign";
+  auto result=schema.execute_catalog(schema_pattern_tables("no_match%"),rs::util::Deadline::max());
+  ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),result.error());
+  EXPECT_EQ(2u,schema.commands.size());
+}
+TEST(RedshiftTablesSchemaPatterns, InvalidSnapshotPrecedesRawBudgetAndRetainsOriginalTerminalState) {
+  for (const auto snapshot:std::array<SessionSnapshot,2>{{{SessionState::Transaction,SessionDisposition::Reusable},
+      {SessionState::Idle,SessionDisposition::Retire}}}) {
+    WideColumnsSession session;ResponseLimits response;response.max_wire_bytes=8192;
+    ASSERT_TRUE(session.budgets(ResultLimits{},response));
+    session.replies.emplace_back(routine_identity(),session.snapshot);
+    auto schemas=routine_schema_rows({{"db","a","1","local",std::nullopt,std::nullopt,std::nullopt}});
+    schemas.rows[0][4]=std::string(10000,'x');
+    ASSERT_GT(redshift_routine_schema_usage(schemas).bytes,8192u);
+    session.replies.emplace_back(std::move(schemas),snapshot);
+    auto result=session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),result.error());
+    EXPECT_EQ(snapshot.state,result.session_snapshot().state);EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+    EXPECT_EQ(2u,session.commands.size());
+  }
+}
+TEST(RedshiftTablesSchemaPatterns, DestroyedPerSchemaStorageReleasesButOwningOutputStaysCharged) {
+  for (const auto cap:{5u,6u}) {
+    WideColumnsSession session;ResultLimits limits;limits.max_rows=cap;ASSERT_TRUE(session.budgets(limits));
+    tables_schema_current(session);
+    for (std::size_t i=2;i<session.replies.size();++i) { session.replies[i]->rows.resize(1); }
+    auto result=session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());
+    if (cap==6) {
+      ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(2u,result->rows.size());
+      session.connected=false;session.replies.clear();EXPECT_EQ(ResultCell{"a"},result->rows[0][1]);
+    } else {
+      wide_resource(result);
+    }
+    EXPECT_EQ(4u,session.commands.size());
+  }
+}
+// Group5: known exchange admission, owning errors/no prefix, original deadline, recovery.
+TEST(RedshiftTablesSchemaPatterns, FanoutPreflightAndLateNativeErrorsLeaveNoFallbackOrPartialPrefix) {
+  WideColumnsSession cap;ResultLimits limits;limits.max_results=3;ASSERT_TRUE(cap.budgets(limits));
+  tables_schema_current(cap);
+  wide_resource(cap.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max()));
+  EXPECT_EQ(2u,cap.commands.size());EXPECT_EQ(2u,cap.replies.size());
+  WideColumnsSession failed;tables_schema_current(failed);
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"last native table denied"};
+  error.native_state="42501";error.session_state=SessionState::Idle;error.disposition=SessionDisposition::Reusable;
+  failed.replies.back()=BackendResult<QueryResult>{error};
+  auto result=failed.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());ASSERT_FALSE(result);
+  EXPECT_EQ("42501",result.backend_error().native_state);EXPECT_EQ("last native table denied",result.error_message());
+  EXPECT_EQ(4u,failed.commands.size());EXPECT_TRUE(failed.replies.empty());
+  tables_schema_current(failed,{"a"},{"a"});
+  auto fresh=failed.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());
+  ASSERT_TRUE(fresh)<<fresh.error_message();EXPECT_EQ(2u,fresh->rows.size());
+}
+TEST(RedshiftTablesSchemaPatterns, LateCompletedTableResponseTimesOutWithoutSuccessPrefixAndFreshRequestRecovers) {
+  WideColumnsSession session;tables_schema_current(session);
+  const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{10});
+  session.callback=[&] {
+    if (session.commands.size()==4) {
+      while (rs::util::Clock::now()<deadline) { std::this_thread::yield(); }
+    }
+  };
+  auto result=session.execute_catalog(schema_pattern_tables("%"),deadline);ASSERT_FALSE(result);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());
+  EXPECT_EQ(std::vector<rs::util::Deadline>(4,deadline),session.deadlines);
+  session.callback={};tables_schema_current(session,{"a"},{"a"});
+  auto fresh=session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());
+  ASSERT_TRUE(fresh)<<fresh.error_message();EXPECT_EQ(2u,fresh->rows.size());
+}
+
+TEST(RedshiftTablesSchemaPatterns, RawHiddenRowsNameAndByteAdmissionKeepGenericTypeClassification) {
+  WideColumnsSession hidden;ResultLimits limits;limits.max_rows=2;ASSERT_TRUE(hidden.budgets(limits));
+  tables_schema_current(hidden,{"a","hidden"},{});
+  wide_resource(hidden.execute_catalog(schema_pattern_tables("no_match%"),rs::util::Deadline::max()));
+  EXPECT_EQ(2u,hidden.commands.size());
+  WideColumnsSession name;limits=ResultLimits{};limits.max_column_name_bytes=24;ASSERT_TRUE(name.budgets(limits));
+  tables_schema_current(name,{"a"},{"a"});name.replies.back()->rows[0][2]=std::string(25,'z');
+  auto request=schema_pattern_tables("%");request.table="no_match%";
+  wide_resource(name.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(3u,name.commands.size());
+  WideColumnsSession bytes;ResponseLimits response;response.max_wire_bytes=8192;
+  ASSERT_TRUE(bytes.budgets(ResultLimits{},response));tables_schema_current(bytes,{"a"},{"a"});
+  bytes.replies.back()->rows[0][4]=std::string(9000,'r');
+  wide_resource(bytes.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(3u,bytes.commands.size());
+  auto raw=tables_response("db","a");raw.rows[1][3]="EXTERNAL TABLE";
+  request.types=std::vector<std::string>{"TABLE"};request.table="%";
+  RedshiftRoutineBudget budget{ResponseLimits{},ResultLimits{}};
+  auto generic=redshift_tables_part("db","a",request,{raw,{SessionState::Idle,SessionDisposition::Reusable}},
+      budget,rs::util::Deadline::max(),false);
+  ASSERT_TRUE(generic)<<generic.error_message();ASSERT_EQ(1u,generic->rows.size());
+  EXPECT_EQ(ResultCell{"TABLE"},generic->rows[0][3]);EXPECT_EQ(ResultCell{"owning remark"},generic->rows[0][4]);
+}
+
+TEST(RedshiftTablesSchemaPatterns, OptionalNativeFieldsCannotBypassRawDescriptionLimit) {
+  WideColumnsSession session;ResultLimits limits;limits.max_columns_per_description=7;
+  ASSERT_TRUE(session.budgets(limits));tables_schema_current(session,{"a"},{"a"});
+  auto& raw=*session.replies.back();
+  for (const auto* field:{"owner","last_altered_time","last_modified_time","dist_style","table_subtype"}) {
+    raw.columns.push_back({field,NativeTypeInfo{ScalarType::VarChar,128,0,true}});
+    for (auto& row:raw.rows) { row.push_back(std::nullopt); }
+  }
+  ASSERT_EQ(11u,raw.columns.size());
+  wide_resource(session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max()));
+  EXPECT_EQ(3u,session.commands.size());EXPECT_TRUE(session.replies.empty());
 }

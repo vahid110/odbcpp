@@ -34,6 +34,9 @@ BackendResult<QueryResult> normalize_redshift_schemas(
 // Narrow SHOW TABLES eligibility: schema LIKE pattern denotes one literal.
 bool redshift_table_schema_is_literal(const TablesCatalogRequest& request) noexcept;
 std::optional<std::string> redshift_table_schema(const TablesCatalogRequest& request);
+// Ordinary SQLTables nonliteral-schema SHOW fanout; exact and enumeration paths stay separate.
+bool redshift_tables_schema_wide(const TablesCatalogRequest& request) noexcept;
+bool redshift_tables_patterns_valid(const TablesCatalogRequest& request);
 std::string redshift_show_tables_command(std::string_view database, std::string_view schema);
 BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
     std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input,
@@ -120,6 +123,14 @@ BackendResult<QueryResult> redshift_columns_part(std::string_view database, std:
     std::string_view table, const ColumnsCatalogRequest& request,
     BackendResult<QueryResult> input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
 RedshiftRoutineUsage redshift_columns_output_usage(const QueryResult& result);
+// Closed SQLTables SHOW framing/owning projection, using existing native budget primitives.
+BackendResult<RedshiftColumnSchemas> redshift_table_databases(bool visible,
+    const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+BackendResult<QueryResult> redshift_tables_headers(RedshiftRoutineBudget& budget);
+BackendResult<QueryResult> redshift_tables_part(std::string_view database, std::string_view schema,
+    const TablesCatalogRequest& request, BackendResult<QueryResult> input,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline, bool detailed_types);
+RedshiftRoutineUsage redshift_tables_output_usage(const QueryResult& result);
 std::string redshift_show_routines_command(std::string_view database, std::string_view schema, bool function);
 std::string redshift_show_parameters_command(std::string_view database, std::string_view schema,
     const RedshiftRoutine& routine);

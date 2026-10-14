@@ -434,6 +434,18 @@ BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
 }
 
 
+bool redshift_tables_schema_wide(const TablesCatalogRequest& request) noexcept {
+  return request.mode==TablesCatalogRequest::Mode::Tables && request.name_matches.existing() &&
+      !redshift_table_schema_is_literal(request);
+}
+bool redshift_tables_patterns_valid(const TablesCatalogRequest& request) {
+  if (!table_pattern_valid(request.catalog) || !table_pattern_valid(request.schema) ||
+      !table_pattern_valid(request.table)) return false;
+  if (request.types) for (const auto& type:*request.types)
+    if (type.find('\0')!=std::string::npos || !rs::util::utf8_code_point_count(type)) return false;
+  return true;
+}
+
 namespace {
 bool column_literal_pattern(const std::optional<std::string>& pattern) noexcept {
   if (!pattern || pattern->empty())return false;
@@ -1093,6 +1105,150 @@ BackendResult<QueryResult> redshift_columns_part(std::string_view database,std::
   if (!part) return part.backend_error();
   if (rs::util::Clock::now()>=deadline) return routine_timeout();
   const auto retained=redshift_columns_output_usage(*part);
+  if (retained.rows>peak.rows || retained.cells>peak.cells || retained.bytes>peak.bytes ||
+      retained.metadata>peak.metadata || retained.name_bytes>peak.name_bytes) return redshift_routine_limit();
+  budget.release({peak.rows-retained.rows,peak.cells-retained.cells,peak.bytes-retained.bytes,
+      peak.metadata-retained.metadata,peak.name_bytes-retained.name_bytes});
+  return part;
+}
+
+// Borrowed database validation precedes every selection/allocation/budget classification.
+BackendResult<RedshiftColumnSchemas> redshift_table_databases(bool visible,
+    const BackendResult<QueryResult>& input,RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra:input->additional_results) if (extra.error) return *extra.error;
+  const auto bad=[&](const char* why) {return invalid_wide_columns(why,input.session_snapshot());};
+  if (!routine_shape(*input,input.session_snapshot())) return bad("table-database-completion");
+  std::size_t identity=0;
+  if (!visible) {
+    if (input->columns.size()!=1 || input->columns[0].name!="database_name" ||
+        !schema_text(input->columns[0]) || input->rows.size()!=1 ||
+        input->statement_kind!=StatementKind::SelectCursor) return bad("table-database-lookup");
+  } else {
+    constexpr std::array<std::string_view,6> fields{"database_name","database_owner","database_type",
+        "database_acl","parameters","database_isolation_level"};
+    if (input->columns.size()!=fields.size()) return bad("table-database-layout");
+    for (const auto field:fields) {
+      unsigned count=0;
+      for (std::size_t c=0;c<input->columns.size();++c) if (input->columns[c].name==field) {
+        ++count;if (field=="database_name") identity=c;
+      }
+      if (count!=1) return bad("table-database-layout");
+    }
+    if (!schema_text(input->columns[identity])) return bad("table-database-type");
+  }
+  std::size_t bytes=0;
+  for (std::size_t r=0;r<input->rows.size();++r) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    const auto& cell=input->rows[r][identity];
+    if (!cell || !schema_identifier(*cell)) return bad("table-database-identity");
+    for (std::size_t prior=0;prior<r;++prior) {
+      if (rs::util::Clock::now()>=deadline) return routine_timeout();
+      if (input->rows[prior][identity]==cell) return bad("table-database-duplicate");
+    }
+    if (cell->size()>std::numeric_limits<std::size_t>::max()-bytes) return redshift_routine_limit();
+    bytes+=cell->size();
+  }
+  RedshiftColumnSchemas selected;const auto count=input->rows.size();
+  selected.raw_retained=redshift_routine_schema_usage(*input);
+  selected.retained={count,count,bytes,count,bytes};
+  if (!wide_storage_component(selected.retained,count,sizeof(std::string)+1) ||
+      !budget.description(input->columns.size())) return redshift_routine_limit();
+  for (const auto& column:input->columns) if (!budget.name(column.name)) return redshift_routine_limit();
+  for (const auto& row:input->rows) if (!budget.name(*row[identity])) return redshift_routine_limit();
+  if (!budget.retain(selected.raw_retained) || !budget.retain(selected.retained)) return redshift_routine_limit();
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  selected.names.reserve(count);
+  for (const auto& row:input->rows) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    selected.names.push_back(*row[identity]);
+  }
+  std::sort(selected.names.begin(),selected.names.end());
+  return BackendResult<RedshiftColumnSchemas>{std::move(selected),input.session_snapshot()};
+}
+RedshiftRoutineUsage redshift_tables_output_usage(const QueryResult& result) {
+  auto usage=redshift_routine_schema_usage(result);
+  for (const auto& row:result.rows) for (std::size_t n=0;n<4;++n)
+    if (row[n] && !wide_storage_component(usage,row[n]->size(),1,true))
+      usage.name_bytes=std::numeric_limits<std::size_t>::max();
+  return usage;
+}
+BackendResult<QueryResult> redshift_tables_headers(RedshiftRoutineBudget& budget) {
+  constexpr std::array<std::string_view,5> fields{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+  RedshiftRoutineUsage charge{0,0,fields.size()*sizeof(ResultColumnMetadata),fields.size(),0};
+  if (!budget.description(fields.size())) return redshift_routine_limit();
+  for (const auto field:fields)
+    if (!budget.name(field) || !wide_storage_component(charge,field.size()) ||
+        !wide_storage_component(charge,field.size(),1,true)) return redshift_routine_limit();
+  if (!budget.retain(charge)) return redshift_routine_limit();
+  QueryResult result;result.columns.reserve(fields.size());
+  for (const auto field:fields) result.columns.push_back({std::string(field),NativeTypeInfo{ScalarType::VarChar,0,0,true}});
+  return BackendResult<QueryResult>{std::move(result),{SessionState::Idle,SessionDisposition::Reusable}};
+}
+BackendResult<QueryResult> redshift_tables_part(std::string_view database,std::string_view schema,
+    const TablesCatalogRequest& request,BackendResult<QueryResult> input,RedshiftRoutineBudget& budget,
+    rs::util::Deadline deadline,bool detailed_types) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra:input->additional_results) if (extra.error) return *extra.error;
+  const auto bad=[&](const char* why) {return invalid_wide_columns(why,input.session_snapshot());};
+  if (!routine_shape(*input,input.session_snapshot()) || !schema_identifier(database) || !schema_identifier(schema))
+    return bad("table-completion");
+  constexpr std::array<std::string_view,11> fields{"database_name","schema_name","table_name","table_type",
+      "remarks","table_acl","owner","last_altered_time","last_modified_time","dist_style","table_subtype"};
+  std::array<std::size_t,5> index{};std::array<bool,11> seen{};
+  if (input->columns.size()<index.size() || input->columns.size()>fields.size()) return bad("table-layout");
+  for (std::size_t c=0;c<input->columns.size();++c) {
+    const auto found=std::find(fields.begin(),fields.end(),input->columns[c].name);
+    if (found==fields.end()) return bad("table-layout");
+    const auto n=static_cast<std::size_t>(found-fields.begin());
+    if (seen[n]) return bad("table-layout");
+    seen[n]=true;if (n<index.size()) index[n]=c;
+  }
+  for (std::size_t n=0;n<index.size();++n)
+    if (!seen[n] || !schema_text(input->columns[index[n]])) return bad("table-type");
+  const auto types=catalog_table_types();
+  // Preserve five required fields and optional-layout acceptance. Validate every
+  // identity before matching or admitting duplicate sets/owning projection storage.
+  for (std::size_t r=0;r<input->rows.size();++r) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    const auto& row=input->rows[r];
+    for (std::size_t n=0;n<4;++n)
+      if (!row[index[n]] || !schema_identifier(*row[index[n]])) return bad("table-identity");
+    if (*row[index[0]]!=database || *row[index[1]]!=schema) return bad("table-foreign");
+    if (std::find(types.begin(),types.end(),*row[index[3]])==types.end()) return bad("table-kind");
+    if (row[index[4]] && (row[index[4]]->find('\0')!=std::string::npos ||
+        !rs::util::utf8_code_point_count(*row[index[4]]))) return bad("table-remarks");
+    for (std::size_t prior=0;prior<r;++prior) {
+      if (rs::util::Clock::now()>=deadline) return routine_timeout();
+      if (input->rows[prior][index[2]]==row[index[2]]) return bad("table-duplicate");
+    }
+  }
+  const auto raw=redshift_routine_schema_usage(*input);const auto count=input->rows.size();
+  RedshiftRoutineUsage peak{count,count*5,0,count+8,0};
+  if (!wide_storage_component(peak,raw.bytes,3) ||
+      !wide_storage_component(peak,count,5*sizeof(ResultCell)+4*sizeof(ResultRow)+256) ||
+      !wide_storage_component(peak,8,sizeof(ResultColumnMetadata)) || !wide_storage_component(peak,1024))
+    return redshift_routine_limit();
+  peak.name_bytes=raw.name_bytes;
+  if (!wide_storage_component(peak,256,1,true)) return redshift_routine_limit();
+  for (const auto& column:input->columns) if (!budget.name(column.name)) return redshift_routine_limit();
+  for (const auto& row:input->rows) for (std::size_t n=0;n<4;++n) {
+    if (!budget.name(*row[index[n]]) || !wide_storage_component(peak,row[index[n]]->size(),2,true))
+      return redshift_routine_limit();
+  }
+  if (!budget.description(input->columns.size()) || !budget.description(5) ||
+      !budget.retain(raw) || !budget.retain(peak)) return redshift_routine_limit();
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  BackendResult<QueryResult> part=bad("table-projection");
+  {
+    part=normalize_redshift_tables(database,schema,request,std::move(input),detailed_types);
+  } // The normalizer destroyed the consumed raw response and duplicate set.
+  budget.release(raw);
+  if (!part) return part.backend_error();
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  const auto retained=redshift_tables_output_usage(*part);
   if (retained.rows>peak.rows || retained.cells>peak.cells || retained.bytes>peak.bytes ||
       retained.metadata>peak.metadata || retained.name_bytes>peak.name_bytes) return redshift_routine_limit();
   budget.release({peak.rows-retained.rows,peak.cells-retained.cells,peak.bytes-retained.bytes,
