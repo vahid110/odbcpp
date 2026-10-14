@@ -661,6 +661,9 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     if (seen_->metadata_description_error) return *seen_->metadata_description_error;
     seen_->sql = sql;
     QueryResult result = rows(); result.rows.clear();
+    // Descriptions publish metadata only; rows() remains an execution fixture.
+    result.statement_kind.reset();
+    result.affected_rows = 0;
     result.normalized_parameter_types.assign(types.size(),
         NativeTypeInfo{ScalarType::Binary, seen_->description_size, 0, true});
     if (seen_->parameter_description_types) {
@@ -672,6 +675,9 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       case 3: result.additional_results.emplace_back(); result.additional_results.back().additional_results.emplace_back(); break;
       case 4: result.rows = {{"a", "1", "b"}}; break;
       case 5: result.cell_errors = {{0, 0}}; break;
+      case 6: result.affected_rows = 7; result.statement_kind.reset(); break;
+      case 7: result.statement_kind = StatementKind::SelectCursor; break;
+      case 8: result.affected_rows = 7; result.statement_kind = StatementKind::SelectCursor; break;
     }
     if (seen_->command_array_authority) {
       result.statement_kind.reset();
@@ -15673,5 +15679,38 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNu
       EXPECT_EQ(0xb5, numeric_bytes.front());
       EXPECT_EQ(0xb5, numeric_bytes.back());
     }
+  }
+}
+
+TEST_F(BackendContractTest, DescriptionCompletionFieldsPreserveOutputsAndNeverCacheContradictoryMetadata) {
+  connect();
+  for (const int fault : {6, 7, 8}) {
+    SCOPED_TRACE(fault);
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    seen->invalid_description_shape = fault;
+    const auto before = seen->descriptions;
+    SQLSMALLINT type = -17, digits = -19, nullable = -23, columns = -29;
+    SQLULEN size = 12345;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+    EXPECT_EQ("HY000", state());
+    EXPECT_EQ(-17, type);
+    EXPECT_EQ(12345u, size);
+    EXPECT_EQ(-19, digits);
+    EXPECT_EQ(-23, nullable);
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns));
+    EXPECT_EQ("HY000", state());
+    EXPECT_EQ(-29, columns);
+    EXPECT_EQ(before + 2, seen->descriptions); // Each refusal dispatches, neither is cached.
+    EXPECT_EQ(0, seen->disconnects);
+    seen->invalid_description_shape = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+    EXPECT_EQ(SQL_VARBINARY, type);
+    EXPECT_EQ(before + 3, seen->descriptions);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns));
+    EXPECT_EQ(3, columns);
+    EXPECT_EQ(before + 3, seen->descriptions); // Only repaired metadata becomes reusable.
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   }
 }

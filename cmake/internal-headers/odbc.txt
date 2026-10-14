@@ -9,6 +9,7 @@ odbcpp/database/i_database_connection.h
 odbcpp/database/native_type_info.h
 odbcpp/database/query_parameter.h
 odbcpp/database/query_result.h
+odbcpp/database/result_validation.h
 core/database/result_validation.h
 odbcpp/database/session_health.h
 odbcpp/session/session_owner.h

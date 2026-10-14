@@ -3,6 +3,7 @@
 #include "odbcpp/database/backend_provider.h"
 
 #include "core/database/generic_database_connection.h"
+#include "core/database/result_validation.h"
 #include "core/database/database_factory.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/database/postgres/pg_database_connection.h"
@@ -190,7 +191,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
     BinaryAdditionalResultRow, ReadyOnlyQuery, RowsWithoutCompletion,
-    EmptyQueryResponse, DescriptionZeroColumns, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
+    EmptyQueryResponse, DescriptionZeroColumns, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn, DescriptionRepeatedColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, RedshiftVarbyteCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
@@ -528,14 +529,16 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('t', "\0\0", 2);
       append_message('n', "", 0);
       append_message('Z', "I", 1);
-    } else if (mode == ResponseMode::DescriptionOneColumn) {
-      append_message('1', "", 0);
-      append_message('t', "\0\0", 2);
-      constexpr char description[] =
-          "\0\1value\0" "\0\0\0\0" "\0\0" "\0\0\0\31"
-          "\377\377" "\377\377\377\377" "\0\0";
-      append_message('T', description, sizeof(description) - 1);
-      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionOneColumn || mode == ResponseMode::DescriptionRepeatedColumn) {
+      for (int response = 0; response < (mode == ResponseMode::DescriptionRepeatedColumn ? 2 : 1); ++response) {
+        append_message('1', "", 0);
+        append_message('t', "\0\0", 2);
+        constexpr char description[] =
+            "\0\1value\0" "\0\0\0\0" "\0\0" "\0\0\0\31"
+            "\377\377" "\377\377\377\377" "\0\0";
+        append_message('T', description, sizeof(description) - 1);
+        append_message('Z', "I", 1);
+      }
     } else if (mode == ResponseMode::DescriptionOneParameter || mode == ResponseMode::DescriptionRepeatedParameter) {
       for (int response = 0; response < (mode == ResponseMode::DescriptionRepeatedParameter ? 2 : 1); ++response) {
         append_message('1', "", 0);
@@ -5142,5 +5145,77 @@ TEST(ConnectionLivenessTest, ReadOnlySetupLateResponseAndThrowsRetireBeforePubli
     expect_original_deadline(*wire, deadline);
     wire->reset(); wire->expire_query_read = false; wire->query_throw = 0;
     settings.read_only = false; ASSERT_TRUE(backend.connect(settings)); backend.disconnect();
+  }
+}
+
+TEST(DescriptionResultContractTest, CompletionFieldsNeverBelongToMetadataOnlyDescriptions) {
+  using namespace rs::core::database;
+  for (const auto shape : {std::optional<DescribedResultShape>{},
+      std::optional{DescribedResultShape::NoResultSet}, std::optional{DescribedResultShape::ResultSet}}) {
+    QueryResult description;
+    description.described_result_shape = shape;
+    description.normalized_parameter_types = {{ScalarType::Integer, 10, 0, true}};
+    EXPECT_TRUE(valid_description_structure(description));
+    description.affected_rows = 7;
+    EXPECT_FALSE(valid_description_structure(description));
+    EXPECT_TRUE(valid_execution_structure(description)); // Execution counts remain valid.
+    description.affected_rows = 0;
+    for (const auto kind : {StatementKind::SelectCursor, StatementKind::Unknown}) {
+      description.statement_kind = kind;
+      EXPECT_FALSE(valid_description_structure(description));
+      EXPECT_TRUE(valid_execution_structure(description));
+    }
+    description.statement_kind.reset();
+    EXPECT_TRUE(valid_description_structure(description));
+  }
+}
+
+TEST(DescriptionResultContractTest, DrainedParserCompletionFieldsRejectOwningDescriptionAndExplicitRetryRecovers) {
+  using namespace rs::core::database;
+  class CompletionFieldsParser final : public postgres::PgProtocolParser {
+   public:
+    explicit CompletionFieldsParser(int fault) : fault_(fault) {}
+    ParsedQueryResult extract_query_result(const std::vector<Message>& messages) override {
+      auto result = PgProtocolParser::extract_query_result(messages);
+      if (fault_ != 0) {
+        if (fault_ == 1 || fault_ == 3) {
+          result.affected_rows = 7;
+        }
+        if (fault_ == 2 || fault_ == 3) {
+          result.statement_kind = StatementKind::SelectCursor;
+        }
+        fault_ = 0;
+      }
+      return result;
+    }
+   private:
+    int fault_;
+  };
+  for (const int fault : {1, 2, 3}) {
+    SCOPED_TRACE(fault);
+    GenericDatabaseConnection connection(std::make_unique<CompletionFieldsParser>(fault),
+        std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::DescriptionRepeatedColumn));
+    auto settings = pg_fixture_settings();
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto deadline = rs::util::Clock::now() + std::chrono::seconds(10);
+    const auto rejected = connection.describe_statement("fixed single statement", {}, deadline);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, rejected.backend_error().error_class);
+    EXPECT_EQ(BackendOperation::Describe, rejected.backend_error().operation);
+    EXPECT_EQ(SessionSnapshot({SessionState::Idle, SessionDisposition::Reusable}), rejected.session_snapshot());
+    EXPECT_TRUE(connection.is_connected());
+    auto recovered = connection.describe_statement("fixed single statement", {}, deadline);
+    ASSERT_TRUE(recovered);
+    EXPECT_EQ(SessionSnapshot({SessionState::Idle, SessionDisposition::Reusable}), recovered.session_snapshot());
+    EXPECT_EQ(0u, recovered->affected_rows);
+    EXPECT_FALSE(recovered->statement_kind);
+    EXPECT_EQ(DescribedResultShape::ResultSet, recovered->described_result_shape);
+    ASSERT_EQ(1u, recovered->columns.size());
+    const auto retained_name = recovered->columns[0].name;
+    connection.disconnect();
+    EXPECT_EQ(retained_name, recovered->columns[0].name);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, rejected.backend_error().error_class);
+    EXPECT_EQ(SessionState::Idle, rejected.backend_error().session_state);
   }
 }
