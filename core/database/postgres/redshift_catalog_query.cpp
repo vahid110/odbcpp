@@ -262,9 +262,9 @@ std::optional<RedshiftRoutineUsage> redshift_current_schema_database_storage(std
   return used;
 }
 
-BackendResult<QueryResult> normalize_redshift_current_schemas(std::string_view database,
+BackendResult<RedshiftCurrentSchemaSource> admit_redshift_current_schemas(std::string_view database,
     const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget,
-    RedshiftRoutineUsage& raw_retained, rs::util::Deadline deadline) {
+    rs::util::Deadline deadline) {
   if (!input) return input.backend_error();
   const auto& source = *input;
   if (source.error) return *source.error;
@@ -312,6 +312,26 @@ BackendResult<QueryResult> normalize_redshift_current_schemas(std::string_view d
     if (!budget.name(*row[indexes[0]]) || !budget.name(*row[indexes[1]])) return limit();
   }
   const auto raw = redshift_current_schema_raw_storage(source);
+  // The caller still holds the quoted-command reservation: this is the D+C+R
+  // peak, before any destruction makes those bytes available to projection.
+  if (!raw || !budget.retain(*raw)) return limit();
+  return BackendResult<RedshiftCurrentSchemaSource>{{indexes, *raw}, input.session_snapshot()};
+}
+
+BackendResult<QueryResult> normalize_redshift_current_schemas(
+    const BackendResult<QueryResult>& input, const RedshiftCurrentSchemaSource& admitted,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
+  const auto& source = *input;
+  const auto& indexes = admitted.indexes;
+  const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+  const auto timeout = [] {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+        "Schema enumeration normalization deadline expired"};
+    error.operation = BackendOperation::ExecuteCatalog;
+    return error;
+  };
+  const auto limit = [&] { return redshift_current_schema_limit(input.session_snapshot()); };
+  if (expired()) return timeout();
   RedshiftRoutineUsage scratch{0, 0, sizeof(std::set<std::string>), source.rows.size(), 0};
   RedshiftRoutineUsage output{source.rows.size(), 0, sizeof(QueryResult), 5, 0};
   constexpr std::array<std::string_view, 5> headers{
@@ -330,8 +350,9 @@ BackendResult<QueryResult> normalize_redshift_current_schemas(std::string_view d
     if (!current_schema_string(scratch.bytes, length) || !current_schema_add(scratch.name_bytes, length) ||
         !current_schema_string(output.bytes, length) || !current_schema_add(output.name_bytes, length)) return limit();
   }
-  if (!raw || !budget.retain(*raw) || !budget.retain(scratch) || !budget.retain(output)) return limit();
-  raw_retained = *raw; // Caller releases only after the borrowed response is destroyed.
+  // Raw is already charged by admission. Command storage has actually died;
+  // its released bytes can now hold set/output, without charging raw twice.
+  if (!budget.retain(scratch) || !budget.retain(output)) return limit();
   QueryResult result;
   {
     std::set<std::string> schemas;

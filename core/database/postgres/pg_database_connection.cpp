@@ -1101,19 +1101,21 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     RedshiftRoutineUsage command_storage{0, 0, sizeof(std::string) + 2 * (command_length + 1), 0, 0};
     if (expired()) return timeout();
     std::optional<BackendResult<QueryResult>> response;
+    std::optional<BackendResult<RedshiftCurrentSchemaSource>> admitted;
     {
       if (!budget.retain(command_storage) || !budget.exchange())
         return redshift_current_schema_limit(latest_snapshot);
       const auto command = redshift_show_schemas_command(database);
       response.emplace(execute_query(command, deadline));
+      if (!*response) return response->backend_error();
+      if (expired()) return timeout();
+      admitted.emplace(admit_redshift_current_schemas(database, *response, budget, deadline));
+      if (!*admitted) return admitted->backend_error();
     }
-    budget.release(command_storage); // Command destroyed before its charge is reusable.
-    if (!*response) return response->backend_error();
-    if (expired()) return timeout();
-    RedshiftRoutineUsage raw_storage{};
-    auto normalized = normalize_redshift_current_schemas(database, *response, budget, raw_storage, deadline);
+    budget.release(command_storage); // Destroyed command can fund set/output, raw stays charged once.
+    auto normalized = normalize_redshift_current_schemas(*response, **admitted, budget, deadline);
     response.reset(); // Destroy raw containers before releasing the normalization charge.
-    if (normalized) budget.release(raw_storage);
+    if (normalized) budget.release((*admitted)->raw_retained);
     if (expired()) return timeout();
     return normalized;
   }
