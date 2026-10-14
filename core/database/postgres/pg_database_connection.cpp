@@ -1062,16 +1062,58 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
       return BackendResult<QueryResult>{std::move(error)};
     };
     if (expired()) return timeout();
-    auto identity = execute_query("SELECT current_database() AS database_name", deadline);
-    if (!identity) return identity.backend_error();
+    RedshiftRoutineBudget budget{catalog_response_limits(), catalog_result_limits()};
+    const auto passive = local_backend_error(LocalFailure::Unsupported,
+        "", BackendOperation::ExecuteCatalog, session_state());
+    SessionSnapshot latest_snapshot{passive.session_state, passive.disposition};
+    if (!budget.exchanges_available(2)) return redshift_current_schema_limit(latest_snapshot);
+    std::string database;
+    RedshiftRoutineUsage lookup_storage{};
+    {
+      if (!budget.exchange()) return redshift_current_schema_limit(latest_snapshot);
+      auto identity = execute_query("SELECT current_database() AS database_name", deadline);
+      if (!identity) return identity.backend_error();
+      if (expired()) return timeout();
+      latest_snapshot = identity.session_snapshot();
+      auto borrowed = redshift_schema_database_view(identity);
+      if (!borrowed) return borrowed.backend_error();
+      const auto limit = [&] { return redshift_current_schema_limit(identity.session_snapshot()); };
+      const auto raw = redshift_current_schema_raw_storage(*identity);
+      const auto owning = redshift_current_schema_database_storage(*borrowed);
+      if (!budget.description(identity->columns.size()) || !budget.name(*borrowed) ||
+          !raw || !owning || !budget.retain(*raw) || !budget.retain(*owning)) return limit();
+      for (const auto& column : identity->columns) {
+        if (!budget.name(column.name)) return limit();
+      }
+      lookup_storage = *raw;
+      database = *borrowed;
+      if (expired()) return timeout();
+    }
+    budget.release(lookup_storage); // The lookup response and borrowed view have actually died.
+    // Quoted command can double every native quote. Admit before constructing it.
+    constexpr auto fixed = std::string_view("SHOW SCHEMAS FROM DATABASE \"\";").size();
+    const auto max = std::numeric_limits<std::size_t>::max();
+    if (database.size() > (max - fixed - 1) / 2)
+      return redshift_current_schema_limit(latest_snapshot);
+    const auto command_length = 2 * database.size() + fixed;
+    if (command_length > (max - sizeof(std::string) - 2) / 2)
+      return redshift_current_schema_limit(latest_snapshot);
+    RedshiftRoutineUsage command_storage{0, 0, sizeof(std::string) + 2 * (command_length + 1), 0, 0};
     if (expired()) return timeout();
-    auto database = redshift_schema_database(std::move(identity));
+    std::optional<BackendResult<QueryResult>> response;
+    {
+      if (!budget.retain(command_storage) || !budget.exchange())
+        return redshift_current_schema_limit(latest_snapshot);
+      const auto command = redshift_show_schemas_command(database);
+      response.emplace(execute_query(command, deadline));
+    }
+    budget.release(command_storage); // Command destroyed before its charge is reusable.
+    if (!*response) return response->backend_error();
     if (expired()) return timeout();
-    if (!database) return database.backend_error();
-    auto response = execute_query(redshift_show_schemas_command(*database), deadline);
-    if (!response) return response.backend_error();
-    if (expired()) return timeout();
-    auto normalized = normalize_redshift_schemas(*database, std::move(response));
+    RedshiftRoutineUsage raw_storage{};
+    auto normalized = normalize_redshift_current_schemas(database, *response, budget, raw_storage, deadline);
+    response.reset(); // Destroy raw containers before releasing the normalization charge.
+    if (normalized) budget.release(raw_storage);
     if (expired()) return timeout();
     return normalized;
   }
