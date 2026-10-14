@@ -466,3 +466,23 @@ AWS text-format source also classifies them 22018; vendor binary/native executio
 and broader spelling parity remain unproved. Raw Boolean converter aliases,
 backend normalization to SDK 0/1, BoolsAsChar declared identity, input/default
 policy and broader grammar are unchanged. This ledger grants no live authority.
+
+
+### TIME-to-TIMESTAMP source projection queue
+
+`BindColIntegrationTest.TimeTimestampFractionProjectionAndSourceRecovery`
+checks actual TIME 12:34:56.123456 to C TYPE TIMESTAMP as current local date,
+hour/minute/second and fraction zero, with whole native struct length and NO_DATA.
+Identical VARCHAR and TIMESTAMP sources retain123456000 nanoseconds; NULL leaves
+payload untouched. Bound data and indicator-only fetch share successful projection.
+Three fixed one-row/four-column SELECTs maximum, no DDL/DML, five-second statement
+timeout and 60-second case assertion excluding login. Local native bodies remain
+UNRUN; actual configured-row syntax is separate from native/provider acceptance.
+
+Primary Microsoft SQL-to-C TIME note[c] governs fraction zero. Pinned AWS source
+retains the source fraction, an explicit specification-directed divergence requiring
+independent candidate review; no vendor release-binary parity claim. Raw parser,
+CHAR/TIMESTAMP fractions, C TIME warnings, TIME binary/default/input, calendar and
+timezone behavior remain unchanged. Existing noncanonical >9-digit converter
+warnings are retained, without claiming broader grammar closure. Protected
+current-driver/link-list/full/platform/live/final debt and authority remain.

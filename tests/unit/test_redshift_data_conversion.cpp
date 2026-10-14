@@ -1588,3 +1588,44 @@ TEST_F(RedshiftDataConverterTest, CharacterBooleanWordsRawConverterAndNativeCode
             postgres::normalize_pg_result_value(ScalarType::VarChar, text));
     }
 }
+
+TEST_F(RedshiftDataConverterTest, TimeTimestampFractionProjectionRawParserAndTypedControlsStayUnchanged) {
+    for (const char* text : {"12:34:56.123456", "2024-02-29 12:34:56.123456"}) {
+        std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT) + 2> bytes;
+        bytes.fill(0xa5);
+        SQLLEN length = 79;
+        rs::odbc::ConversionIssue issue{};
+        ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+            text, SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &length, &issue));
+        SQL_TIMESTAMP_STRUCT value{};
+        std::memcpy(&value, bytes.data() + 1, sizeof(value));
+        EXPECT_EQ(12, value.hour);
+        EXPECT_EQ(34, value.minute);
+        EXPECT_EQ(56, value.second);
+        EXPECT_EQ(123456000u, value.fraction);
+        EXPECT_EQ(sizeof(value), length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes.back());
+        const auto before = bytes;
+        length = 79;
+        ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            "25:00:00.123456", SQL_C_TYPE_TIMESTAMP, bytes.data() + 1, 0, &length, &issue));
+        EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+    }
+    SQL_TIME_STRUCT time{};
+    SQLLEN length = 79;
+    rs::odbc::ConversionIssue issue{};
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12:34:56.123456", SQL_C_TYPE_TIME, &time, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(sizeof(time), length);
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12:34:56.1234567891", SQL_C_TYPE_TIMESTAMP, &timestamp, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    EXPECT_EQ(123456789u, timestamp.fraction);
+}
