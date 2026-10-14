@@ -172,6 +172,131 @@ def direct_peak(handle):
     return counters.PeakWorkingSetSize if api(int(handle), ctypes.byref(counters), counters.cb) else None
 
 
+class WindowsSuspendedProcess:
+    """Create a redirected command suspended; assignment precedes ResumeThread.
+
+    https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+    No command code runs until resume(), so its children inherit assigned jobs.
+    """
+    def __init__(self, command):
+        import msvcrt
+        self.command = command
+        self._handle = self._thread = None
+        self.stdout = None
+        self.launch_order = []
+        self.api = ctypes.WinDLL('kernel32', use_last_error=True)
+        class Startup(ctypes.Structure):
+            _fields_ = [('cb', ctypes.c_ulong)] + [(n, ctypes.c_wchar_p) for n in
+                ('lpReserved', 'lpDesktop', 'lpTitle')] + [(n, ctypes.c_ulong) for n in
+                ('dwX', 'dwY', 'dwXSize', 'dwYSize', 'dwXCountChars', 'dwYCountChars',
+                 'dwFillAttribute', 'dwFlags')] + [('wShowWindow', ctypes.c_ushort),
+                ('cbReserved2', ctypes.c_ushort), ('lpReserved2', ctypes.c_void_p)] + [
+                (n, ctypes.c_void_p) for n in ('hStdInput', 'hStdOutput', 'hStdError')]
+        class ProcessInfo(ctypes.Structure):
+            _fields_ = [('hProcess', ctypes.c_void_p), ('hThread', ctypes.c_void_p),
+                        ('dwProcessId', ctypes.c_ulong), ('dwThreadId', ctypes.c_ulong)]
+        self.api.CreateProcessW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_ulong,
+            ctypes.c_void_p, ctypes.c_wchar_p, ctypes.POINTER(Startup), ctypes.POINTER(ProcessInfo)]
+        self.api.CreateProcessW.restype = ctypes.c_int
+        self.api.ResumeThread.argtypes = [ctypes.c_void_p]
+        self.api.ResumeThread.restype = ctypes.c_ulong
+        self.api.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.api.WaitForSingleObject.restype = ctypes.c_ulong
+        self.api.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        self.api.GetExitCodeProcess.restype = ctypes.c_int
+        self.api.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        self.api.TerminateProcess.restype = ctypes.c_int
+        self.api.CloseHandle.argtypes = [ctypes.c_void_p]
+        self.api.CloseHandle.restype = ctypes.c_int
+        executable = shutil.which(command[0])
+        if not executable:
+            raise FileNotFoundError(command[0])
+        read_fd, write_fd = os.pipe()
+        null_fd = None
+        try:
+            null_fd = os.open(os.devnull, os.O_RDONLY)
+            stdout_handle = msvcrt.get_osfhandle(write_fd)
+            stdin_handle = msvcrt.get_osfhandle(null_fd)
+            os.set_handle_inheritable(stdout_handle, True)
+            os.set_handle_inheritable(stdin_handle, True)
+            startup, info = Startup(), ProcessInfo()
+            startup.cb = ctypes.sizeof(startup)
+            startup.dwFlags = 0x100  # STARTF_USESTDHANDLES
+            startup.hStdInput = stdin_handle
+            startup.hStdOutput = startup.hStdError = stdout_handle
+            argv = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+            if not self.api.CreateProcessW(executable, argv, None, None, True,
+                    0x4, None, None, ctypes.byref(startup), ctypes.byref(info)):  # CREATE_SUSPENDED
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._handle, self._thread, self.pid = info.hProcess, info.hThread, info.dwProcessId
+            self.launch_order.append('created_suspended')
+            self.stdout = os.fdopen(read_fd, 'rb')
+            read_fd = None
+        except BaseException:
+            if self._handle:
+                self.kill()
+                self.wait(timeout=30)
+                self.close()
+            raise
+        finally:
+            if read_fd is not None:
+                os.close(read_fd)
+            os.close(write_fd)
+            if null_fd is not None:
+                os.close(null_fd)
+
+    def resume(self):
+        count = self.api.ResumeThread(self._thread)
+        if count == 0xffffffff:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if count != 1:
+            raise RuntimeError('expected exactly one primary-thread suspension')
+        self.launch_order.append('resumed')
+        self.api.CloseHandle(self._thread)
+        self._thread = None
+
+    def poll(self):
+        result = self.api.WaitForSingleObject(self._handle, 0)
+        if result == 258:  # WAIT_TIMEOUT
+            return None
+        if result != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        code = ctypes.c_ulong()
+        if not self.api.GetExitCodeProcess(self._handle, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return code.value
+
+    def wait(self, timeout):
+        result = self.api.WaitForSingleObject(self._handle, max(1, int(timeout * 1000)))
+        if result == 258:
+            raise subprocess.TimeoutExpired(self.command, timeout)
+        if result != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return self.poll()
+
+    def kill(self):
+        if self.poll() is None and not self.api.TerminateProcess(self._handle, 124):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self):
+        for name in ('_thread', '_handle'):
+            handle = getattr(self, name)
+            if handle:
+                self.api.CloseHandle(handle)
+                setattr(self, name, None)
+
+
+def assign_and_resume(job, process):
+    job.attach(process)
+    process.launch_order.append('assigned_to_job')
+    process.resume()
+
+
+def relative_key(path, root):
+    return path.relative_to(root).as_posix()
+
+
 class WindowsProcessJob:
     """Own one command tree; kill-on-close prevents escaped child continuations."""
     def __init__(self):
@@ -238,16 +363,30 @@ def measure(name, command, timeout):
     start, tick = utc(), time.monotonic()
     job = WindowsProcessJob() if os.name == 'nt' else None
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if job:
-            job.attach(process)
-    except Exception:
-        if 'process' in locals():
-            process.kill()
-            process.wait(timeout=30)
-            process.stdout.close()
-        if job:
-            job.close()
+            process = WindowsSuspendedProcess(command)
+            assign_and_resume(job, process)
+        else:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except BaseException as exc:
+        cleanup = {}
+        try:
+            if 'process' in locals():
+                process.kill()
+                process.wait(timeout=30)
+                cleanup['direct_pid'] = process.pid
+                cleanup['direct_terminal'] = process.poll() is not None
+                process.stdout.close()
+                if job:
+                    cleanup['launch_order'] = list(process.launch_order)
+                    process.close()
+            if job:
+                cleanup['job_active_after_cleanup'] = job.active()
+        finally:
+            if job:
+                job.close()
+            write(name + '-command.json', {'argv': command, 'started_at': start, 'finished_at': utc(),
+                  'launch_error': str(exc), 'status': 'failed', 'cleanup': cleanup})
         raise
     stored, tail = bytearray(), bytearray()
     total = [0]
@@ -302,10 +441,14 @@ def measure(name, command, timeout):
     if total[0] > LOG_BYTES:
         log += '\n[bounded log: middle omitted; final 64 KiB follows]\n' + tail.decode('utf-8', errors='replace')
     (EVIDENCE / (name + '.log')).write_text(log, encoding='utf-8')
+    terminal = process.poll() is not None
+    launch_order = list(process.launch_order) if job else ['popen']
+    if job:
+        process.close()
     record = {'argv': command, 'started_at': start, 'finished_at': utc(),
               'elapsed_seconds': time.monotonic() - tick, 'exit': code,
               'timed_out': timed_out, 'direct_pid': process.pid,
-              'direct_terminal': process.poll() is not None, 'cleanup': cleanup,
+              'direct_terminal': terminal, 'cleanup': cleanup, 'launch_order': launch_order,
               'direct_process_peak_working_set_bytes': peak,
               'memory_limit': 'direct child peak only, not summed process-tree peak',
               'disk_free_bytes_after': shutil.disk_usage('.').free,
@@ -394,7 +537,7 @@ def configure():
     fetched = {}
     for name in ('googletest', 'spdlog'):
         root = BUILD / '_deps' / (name + '-src')
-        files = {str(p.relative_to(root)): sha(p) for p in sorted(root.rglob('*')) if p.is_file()}
+        files = {relative_key(p, root): sha(p) for p in sorted(root.rglob('*')) if p.is_file()}
         if not files:
             raise ValueError('missing actual fetched dependency: ' + name)
         fetched[name] = {'files': len(files), 'sha256': digest(files)}
@@ -452,7 +595,7 @@ def inventory():
             raise ValueError('four meaningful numeric product cases missing')
         binaries[name] = {'sha256': sha(binary), 'path': str(binary.resolve()), 'names': names}
     write('executables.json', binaries)
-    objects = {str(p.relative_to(BUILD)): {'bytes': p.stat().st_size, 'sha256': sha(p)}
+    objects = {relative_key(p, BUILD): {'bytes': p.stat().st_size, 'sha256': sha(p)}
                for p in sorted(BUILD.rglob('*.obj')) if 'Release' in p.parts}
     headers = Path('sdk/contract_headers.txt').read_text().splitlines()
     if len(headers) != 23:
@@ -465,7 +608,7 @@ def inventory():
         raise ValueError('missing fresh SDK first-only-include objects')
     write('sdk-header-isolation.json', {'headers': staged, 'objects': sdk_objects})
     write('objects.json', objects)
-    links = {str(p.relative_to(BUILD)): {'bytes': p.stat().st_size, 'sha256': sha(p)}
+    links = {relative_key(p, BUILD): {'bytes': p.stat().st_size, 'sha256': sha(p)}
              for p in sorted(BUILD.rglob('*')) if p.is_file() and 'Release' in p.parts and p.suffix.lower() in ('.lib', '.dll', '.exe', '.map')}
     if not any(p.endswith('odbcpp_core.lib') for p in links) or 'Release/odbcpp.dll' not in links:
         raise ValueError('fresh core lib and driver DLL required')
@@ -477,7 +620,7 @@ def inventory():
     for p in sorted(BUILD.rglob('*')):
         if not p.is_file() or 'Release' not in p.parts or p.suffix.lower() not in ('.tlog', '.rsp'):
             continue
-        key = str(p.relative_to(BUILD))
+        key = relative_key(p, BUILD)
         raw = p.read_bytes()
         text = raw.decode('utf-16' if raw.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8', errors='replace')
         raw_logs[key] = text
@@ -507,7 +650,7 @@ def inventory():
     if not dependencies:
         raise ValueError('actual MSVC read dependencies missing')
     write('msvc-read-dependency-hashes.json', dependencies)
-    projects = {str(p.relative_to(BUILD)): {'sha256': sha(p), 'text': p.read_text(encoding='utf-8-sig', errors='replace')}
+    projects = {relative_key(p, BUILD): {'sha256': sha(p), 'text': p.read_text(encoding='utf-8-sig', errors='replace')}
                 for p in sorted(BUILD.rglob('*.vcxproj')) if p.stem in selected() + ['odbcpp_core', 'odbcpp_driver', 'odbcpp_sdk_header_isolation']}
     write('msvc-project-flags.json', projects)
 

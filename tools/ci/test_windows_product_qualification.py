@@ -3,9 +3,15 @@ from copy import deepcopy
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import tempfile
+import ctypes
+import queue
+import threading
+import time
+from types import SimpleNamespace
+from io import BytesIO
 import unittest
 from unittest.mock import patch
 
@@ -153,6 +159,157 @@ class ResultAndFailureSafety(unittest.TestCase):
                 return  # Windows non-admin symlink permission is not a product result.
             with self.assertRaises(ValueError):
                 w.package()
+
+
+class ReviewRepairSafety(unittest.TestCase):
+    def test_windows_inventory_keys_match_literal_driver_and_sdk_paths(self):
+        root = PureWindowsPath(r'C:\work\build-windows-product')
+        driver = PureWindowsPath(r'C:\work\build-windows-product\Release\odbcpp.dll')
+        sdk = PureWindowsPath(r'C:\work\build-windows-product\sdk\odbcpp_sdk_header_isolation.dir\Release\one.obj')
+        self.assertEqual(w.relative_key(driver, root), 'Release/odbcpp.dll')
+        self.assertIn('Release/odbcpp.dll', {w.relative_key(driver, root): 'fresh DLL'})
+        self.assertEqual(w.relative_key(sdk, root), 'sdk/odbcpp_sdk_header_isolation.dir/Release/one.obj')
+
+    def test_assignment_precedes_resume_and_immediate_child_execution(self):
+        events = ['created_suspended']
+        process = SimpleNamespace(launch_order=events)
+        def attach(p):
+            self.assertNotIn('resumed', events)
+            p.assigned = True
+        def resume():
+            self.assertTrue(process.assigned)
+            self.assertEqual(events, ['created_suspended', 'assigned_to_job'])
+            events.append('resumed')
+        process.resume = resume
+        w.assign_and_resume(SimpleNamespace(attach=attach), process)
+        self.assertEqual(events, ['created_suspended', 'assigned_to_job', 'resumed'])
+
+    def test_assignment_and_resume_failures_reap_without_success(self):
+        for failing_method in ('attach', 'resume'):
+            with self.subTest(method=failing_method), tempfile.TemporaryDirectory() as tmp:
+                events = []
+                class Process:
+                    pid = 123
+                    def __init__(self, command):
+                        self.launch_order = ['created_suspended']
+                        self.stdout = BytesIO()
+                        self.terminal = False
+                    def resume(self):
+                        if failing_method == 'resume':
+                            raise RuntimeError('original resume failure')
+                        events.append('resumed')
+                    def kill(self):
+                        events.append('kill')
+                        self.terminal = True
+                    def wait(self, timeout):
+                        self.assert_terminal = self.terminal
+                        events.append('wait')
+                        return 124
+                    def poll(self):
+                        return 124 if self.terminal else None
+                    def close(self):
+                        events.append('close_process')
+                class Job:
+                    def attach(self, process):
+                        if failing_method == 'attach':
+                            raise RuntimeError('original attach failure')
+                    def active(self):
+                        return 0
+                    def close(self):
+                        events.append('close_job')
+                with patch.object(w, 'os', SimpleNamespace(name='nt')), patch.object(w, 'EVIDENCE', Path(tmp)), \
+                     patch.object(w, 'WindowsSuspendedProcess', Process), patch.object(w, 'WindowsProcessJob', Job):
+                    with self.assertRaisesRegex(RuntimeError, 'original ' + failing_method + ' failure'):
+                        w.measure('launch', ['command'], 10)
+                record = json.loads((Path(tmp) / 'launch-command.json').read_text())
+                self.assertEqual(record['status'], 'failed')
+                self.assertTrue(record['cleanup']['direct_terminal'])
+                self.assertEqual(record['cleanup']['job_active_after_cleanup'], 0)
+                self.assertNotIn('resumed', events)
+                self.assertEqual(events, ['kill', 'wait', 'close_process', 'close_job'])
+
+
+@unittest.skipUnless(os.name == 'nt', 'actual Windows process APIs unrun on non-Windows host')
+class WindowsChildProcessRegression(unittest.TestCase):
+    def test_native_suspension_prevents_execution_before_assignment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / 'command-started.txt'
+            command = [os.sys.executable, '-c', 'from pathlib import Path; Path(' + repr(str(marker)) + ').write_text("ran")']
+            job = w.WindowsProcessJob()
+            process = None
+            try:
+                process = w.WindowsSuspendedProcess(command)
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    process.wait(timeout=0.1)
+                self.assertFalse(marker.exists())
+                w.assign_and_resume(job, process)
+                self.assertEqual(process.wait(timeout=10), 0)
+                self.assertEqual(marker.read_text(), 'ran')
+                self.assertEqual(process.launch_order, ['created_suspended', 'assigned_to_job', 'resumed'])
+            finally:
+                job.terminate()
+                if process is not None:
+                    process.wait(timeout=10)
+                    process.stdout.close()
+                    process.close()
+                job.close()
+
+    def test_immediate_descendant_belongs_to_own_job_and_is_reaped(self):
+        command = [os.sys.executable, '-c',
+                   'import subprocess,sys,time; child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); '
+                   'print(child.pid,flush=True); time.sleep(60)']
+        job = w.WindowsProcessJob()
+        process, child_handle, reader = None, None, None
+        try:
+            process = w.WindowsSuspendedProcess(command)
+            w.assign_and_resume(job, process)
+            pid_queue = queue.Queue()
+            reader = threading.Thread(target=lambda: pid_queue.put(process.stdout.readline()), daemon=True)
+            reader.start()
+            child_pid = int(pid_queue.get(timeout=10))
+            job.api.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+            job.api.OpenProcess.restype = ctypes.c_void_p
+            child_handle = job.api.OpenProcess(0x100000 | 0x1000, False, child_pid)
+            self.assertTrue(child_handle)
+            job.api.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+            job.api.IsProcessInJob.restype = ctypes.c_int
+            belongs = ctypes.c_int()
+            self.assertTrue(job.api.IsProcessInJob(child_handle, job.handle, ctypes.byref(belongs)))
+            self.assertTrue(belongs.value)
+            self.assertGreaterEqual(job.active(), 2)
+            job.terminate()
+            process.wait(timeout=10)
+            self.assertEqual(process.api.WaitForSingleObject(child_handle, 10000), 0)
+            deadline = time.monotonic() + 5
+            while job.active() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(job.active(), 0)
+        finally:
+            job.terminate()
+            if process is not None:
+                process.wait(timeout=10)
+            if reader is not None:
+                reader.join(timeout=2)
+            if process is not None:
+                process.stdout.close()
+                process.close()
+            if child_handle:
+                job.api.CloseHandle(child_handle)
+            job.close()
+
+    def test_native_assignment_and_resume_failures_never_execute_command(self):
+        for method, owner in (('attach', w.WindowsProcessJob), ('resume', w.WindowsSuspendedProcess)):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as tmp:
+                marker = Path(tmp) / 'should-not-run.txt'
+                command = [os.sys.executable, '-c', 'from pathlib import Path; Path(' + repr(str(marker)) + ').write_text("unexpected")']
+                with patch.object(w, 'EVIDENCE', Path(tmp)), patch.object(owner, method, side_effect=RuntimeError('injected ' + method + ' failure')):
+                    with self.assertRaisesRegex(RuntimeError, 'injected ' + method + ' failure'):
+                        w.measure('native-launch', command, 10)
+                record = json.loads((Path(tmp) / 'native-launch-command.json').read_text())
+                self.assertTrue(record['cleanup']['direct_terminal'])
+                self.assertEqual(record['cleanup']['job_active_after_cleanup'], 0)
+                self.assertNotIn('resumed', record['cleanup']['launch_order'])
+                self.assertFalse(marker.exists())
 
 
 class WorkflowSafety(unittest.TestCase):
