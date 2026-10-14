@@ -79,19 +79,29 @@ on:
         required: false
         type: string
         default: ""
+      run_windows_product_qualification:
+        description: Normal focused Windows owning product qualification (NOT full acceptance)
+        required: false
+        type: boolean
+        default: false
+      windows_product_targets:
+        description: One to four literal allowlisted owning unit targets
+        required: false
+        type: string
+        default: test_backend_contract
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification) && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification && 'windows-product-qualification' || github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification) && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
   cancel-in-progress: false
   queue: max
 
 jobs:
   ubuntu-development-pilot:
     name: Experimental Linux pilot - NOT full acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && !inputs.run_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification
     uses: ./.github/workflows/ubuntu-development-pilot.yml
     with:
       expected_head: ${{ inputs.pilot_expected_head }}
@@ -102,7 +112,7 @@ jobs:
 
   ubuntu-product-qualification:
     name: Owning Linux product qualification - NOT full acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.run_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_product_qualification && !inputs.run_windows_product_qualification
     uses: ./.github/workflows/ubuntu-development-pilot.yml
     with:
       expected_head: ${{ inputs.product_workflow_head }}
@@ -114,8 +124,21 @@ jobs:
       product_cache: ${{ inputs.product_cache }}
       conflicting_experiment: ${{ inputs.run_development_pilot }}
 
+  windows-product-qualification:
+    name: Owning Windows product qualification - NOT full acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification
+    uses: ./.github/workflows/windows-product-qualification.yml
+    with:
+      workflow_head: ${{ inputs.product_workflow_head }}
+      product_head: ${{ inputs.product_head }}
+      product_base: ${{ inputs.product_base }}
+      product_targets: ${{ inputs.windows_product_targets }}
+      submitted_at: ${{ inputs.product_submitted_at }}
+      conflicting_mode: ${{ inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_linked_server }}
+      cache_request: ${{ inputs.product_cache }}
+
   build-and-test:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: ubuntu-latest
 
     services:
@@ -320,7 +343,7 @@ jobs:
           if-no-files-found: error
 
   redshift-build:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -360,7 +383,7 @@ jobs:
             "$RUNNER_TEMP/redshift-missing-endpoint.log"
 
   windows-live:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: windows-2025
 
     env:
@@ -519,7 +542,7 @@ jobs:
           retention-days: 7
 
   windows-package:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     timeout-minutes: 15
     needs: windows-live
     runs-on: windows-2025
@@ -550,7 +573,7 @@ jobs:
             ${{ runner.temp }}/odbcpp-postgres.log
 
   windows-linked-server:
-    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot && !inputs.run_product_qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification
     timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
@@ -580,7 +603,7 @@ jobs:
           retention-days: 7
 
   linux-sanitizers:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: ubuntu-latest
 
     env:
@@ -622,7 +645,7 @@ jobs:
           --timeout 60 --output-on-failure
 
   linux-openssl-static:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: ubuntu-latest
 
     services:
@@ -940,7 +963,7 @@ jobs:
           if-no-files-found: error
 
   awslc-adapter-proof:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -1017,7 +1040,7 @@ jobs:
           if-no-files-found: error
 
   iodbc-unicode:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification)) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification)) }}
     runs-on: macos-latest
 
     strategy:

@@ -8,7 +8,7 @@ description: Prepare, qualify, review and integrate a bounded ODBCPP implementat
 Use `AGENTS.md` for repository rules and the active handoff for current facts.
 Apply its build storage and periodic cleanup policy before resource admission and
 at batch closure; the coordinator owns integration, shared resources and cleanup.
-Apply `PARALLEL_WORKFLOW.md` for the human-approved continuous three-owner execution model and
+Apply `PARALLEL_WORKFLOW.md` for the human-approved continuous four-owner execution model and
 separate source, resource and integration/live migration releases. The 12-hour cadence and protected acceptance stay unchanged.
 Do not turn this workflow into new product scope or execution permission.
 
@@ -33,7 +33,7 @@ Read the actual Git state, applicable plans and current task evidence. Name the
 contract gap and observable completion condition before selecting files. Check
 the current Redshift product task, work board and actual agents. After the
 coordinator records `source_lanes_released=true` from the existing owner's scope/
-lease acknowledgment, dispatch three dependency-compatible complete product packages under exact leases. Package
+lease acknowledgment, dispatch four dependency-compatible complete product packages under exact leases. Package
 owners implement and investigate automated focused qualification; independent
 reviewers are drawn from a shared pool when candidates are ready. Do not create
 permanent three-agent sets, per-lane app goals or timers. Setup can proceed now,
@@ -116,6 +116,22 @@ Retain P/W before/after, source/config/dependency/object/executable/XML/inventor
 run-attempt and failure/phase evidence. Maximum child RSS is not aggregate peak;
 missing provider step precision stays explicit. Linux proof leaves macOS/full/
 platform/native/live/final debt. No paid/secrets/services/privatePG authority.
+
+Owner 5 uses the separate default-off Windows owning job in `PARALLEL_WORKFLOW.md`
+under sole coordinator dispatch after independent workflow/safety review. Inspect
+actual x64 MSVC/Visual Studio multiconfig POSTGRESQL Release/Windows ODBC2/OpenSSL
+BUNDLED_SHARED configuration. Live/TLS probes are OFF. First job is cold: no cache,
+restored binaries or graph. Build real owning GoogleTests, new core/driver links
+and SDK23, run six applicable architecture checks, and retain source/configuration,
+actual compiler argv/response/dependency tlogs, objects/libs/DLL/exe hashes and
+complete inventory/XML. One free public Windows 2025 j2/30-minute global
+noncancelling job may overlap the separate Ubuntu slot; local capacity is unchanged.
+Text evidence is <=20 MiB/three days, direct-process peak is not aggregate peak.
+No services/registry/MSI/native SQL/paid/secrets/cloud/privatePG authority. Preserve
+first failures and obtain a narrow root code lease for findings. The owner continues
+substantial source packages after proof; setup does not establish adoption or add
+a feature count. Product approval may be reused only unchanged; Windows results
+and current integration applicability require independent assessment.
 
 ## Review and integrate
 

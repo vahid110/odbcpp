@@ -7,7 +7,7 @@ Product scope, independent review, live-test authority and final acceptance rema
 
 Human-approved parallel execution on 2026-10-13 supersedes the root-only
 implementation/qualification and no-new-agents restrictions of the 2026-10-11
-trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines three continuing product owners,
+trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines four continuing product owners,
 automated qualification, shared independent review, coordinator integration and
 the separate source, resource and integration/live migration releases. The 12-hour cadence and all protected gates remain.
 
@@ -15,7 +15,7 @@ the separate source, resource and integration/live migration releases. The 12-ho
 
 Apply the local development reset in `PARALLEL_WORKFLOW.md` to both existing
 packages and future ordinary local work. One operational coordinator (`odbcpp-1`)
-directs three implementation owners. Owners 2/3 use ordinary owned CMake/CTest
+directs four implementation owners. Owners 2/3 use ordinary owned CMake/CTest
 builds through the shared local slot; owner 4 uses the reviewed one-job standard
 free hosted Ubuntu workflow under automatic coordinator dispatch. Retain measured resource reserve, finite supervised commands and actual
 source/configuration/binary/test evidence. Retained custom-controller failures do
@@ -40,7 +40,7 @@ failures, architecture checks and every full/platform/live/final gate remain.
   concrete safety/ABI defect needing immediate diagnosis, an explicit human
   request; record the reason. Pointer/layout/Unicode
   changes alone do not automatically trigger every profile.
-- Three continuing product owners implement complete bounded deliverables, author tests,
+- Four continuing product owners implement complete bounded deliverables, author tests,
   investigate automated focused qualification and resolve independent review
   findings. A shared reviewer pool reviews ready candidates independently.
   The coordinator owns integration branch Git, combined/full CI, live admission,
@@ -80,6 +80,25 @@ repair concrete affected findings without replaying unchanged accepted audits.
 Use one finite exact-head CI/native-review completion route with verified cleanup.
 No third local heavy graph, paid/storage expansion, secrets or live authority.
 
+## Fourth-owner focused Windows loop
+
+Owner 5 owns continuing substantial Windows-primary packages under exact leases,
+not permanent qualification or coordination. Use the default-off normal Windows
+mode in `PARALLEL_WORKFLOW.md`: one standard free public Windows 2025 x64/MSVC
+job, j2/30 minutes, immutable W separate from P, POSTGRESQL Release multiconfig,
+Windows ODBC width2/OpenSSL BUNDLED_SHARED. The coordinator automatically submits
+one job after independent workflow/safety review. First run is cold with no cache;
+no final binaries/graphs are restored. Preserve actual MSVC flags/dependencies,
+new objects/core libs/DLL/exe, SDK23/six architecture checks, complete owning
+inventory/XML, failures and source binding in <=20 MiB text for three days.
+One global noncancelling Windows group may overlap the separate Ubuntu group;
+local j2 remains one slot. No services, registry/MSI/native SQL, paid runners,
+secrets, goals/timers/watchers or cloud/live/privatePG authority. Direct-process
+peak memory is not aggregate peak. Setup is not operational adoption or feature
+throughput; actual Windows evidence and independent applicability review remain
+required. A compiler/runtime finding needs a narrow root product lease before
+fixing it; full Windows/native/live/package acceptance remains debt.
+
 ## Goals and pending acceptance
 
 Human-approved clarification on 2026-10-11: scheduled acceptance must not block
@@ -104,7 +123,7 @@ The coordinator records reviewed primary-qualified integration, not merely a
 worker's local completion, as accepted implementation throughput. The first six
 real dependency-compatible packages evaluate elapsed delivery time, review/build/
 coordinator waits, integration rework, later failures and acceptance-debt growth.
-The human-approved 2026-10-14 three-owner continuation supersedes the two-lane
+The human-approved 2026-10-14 four-owner continuation supersedes the two-lane
 trial. Six packages are an evaluation milestone, not a project stop. Every owner
 has an exact active lease, a named dependency/resource wait with owner and
 resumption event/deadline, or a genuine human decision promptly reported. Resolve

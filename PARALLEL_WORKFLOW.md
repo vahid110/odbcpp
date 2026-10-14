@@ -58,11 +58,11 @@ SQL/live, private PostgreSQL or final release authority.
   bounded configure/build/focused-regression sequence as one resource assignment.
   Full CI/live/final acceptance debt stays recorded under the existing cadence.
 
-## Three continuing product owners and one coordinator
+## Four continuing product owners and one coordinator
 
 The human-approved 2026-10-14 continuous assignment supersedes the initial
-two-lane trial and temporary infrastructure-only role. `odbcpp-2`, `odbcpp-3`
-and `odbcpp-4` are continuing complete product owners. Use automated qualification and a shared
+two-lane trial and temporary infrastructure-only role. `odbcpp-2`, `odbcpp-3`,
+`odbcpp-4` and `odbcpp-5` are continuing complete product owners. Use automated qualification and a shared
 independent reviewer pool. A package owner implements, authors meaningful tests,
 investigates failures and resolves review findings. Qualification runners execute
 prescribed checks and retain their actual results; an additional agent is not
@@ -228,6 +228,54 @@ experiments and their failures remain preserved, with no benchmark, migration or
 adoption claim. Follow one finite supplied-head/native-ID CI+review completion
 route, then reap it and verify release; no duplicate watchers.
 
+## Windows normal product qualification
+
+The direct human request on 2026-10-14 adds only stable Windows owner `odbcpp-5`
+to owners 2/3/4 under sole coordinator `odbcpp-1`. It supersedes the previous
+three-owner limit, without adding a coordinator, permanent reviewer or qualifier.
+Owner 5 continues substantial nonoverlapping Windows-primary product packages;
+setup and repeated platform proof do not count as new implemented features.
+
+The default-off `run_windows_product_qualification` input selects one standard
+free PUBLIC `vahid110/odbcpp` GitHub-hosted `windows-2025` x64 job, j2/30 minutes.
+It is mutually exclusive with both Ubuntu modes and linked-server acceptance;
+all full jobs are skipped. One global noncancelling Windows concurrency group is
+separate from Ubuntu and may overlap that bounded slot. The one local j2 slot
+and Ubuntu limits are unchanged. No larger/self-hosted/paid runner, secrets,
+services, registry, MSI, native SQL, AWS, private PostgreSQL, goals, timers,
+watchers or additional workers are granted.
+
+The coordinator dispatches once after independent workflow/safety review, using
+immutable separate W/P and an exact product base. Owners never dispatch or review
+their own candidate. Inspect actual Visual Studio/MSVC x64 toolpaths and use the
+existing multiconfiguration POSTGRESQL Release/Windows ODBC SQLWCHAR2/OpenSSL
+BUNDLED_SHARED profile with `C:/Program Files/OpenSSL`. Live profile and native
+TLS probes are OFF. Build literal allowlisted owning GoogleTests, the fresh driver
+DLL/core links and 23 SDK first-only-include units; run the six existing applicable
+architecture checks. Run the changed-GTest control preflight before compilation.
+Initial qualification is COLD, with no cache restore/save at all. Future optional
+compiler-only caching requires a separate reviewed implementation, actual complete
+MSVC dependency/flags/path compatibility and a 256 MiB bound; never restore final
+binaries or graphs.
+
+Retain W/P before/after, actual configure/toolchain/dependency/header identities,
+MSVC command/response/read/link tlogs, fresh objects/libs/DLL/exe hashes, complete
+owning case inventory and XML, run/attempt, cache absence, timings, failures and
+cleanup evidence. Upload only bounded text at most 20 MiB, retained three days.
+Direct process peak working set is not aggregate concurrent peak; missing provider
+step timing remains explicit. Preserve the first compiler/runtime finding and
+request a narrow product-code lease before editing or rerunning affected code.
+
+The first material Windows proof is the already implemented, reviewed numeric
+SQLGetInfo NULL-output typed-length/publication/recovery contract at product
+`112890df9c44edd47b8aa3cf1049eb4ab046a29b`, base
+`0e7fa17616f434c7b65e7d38c01ce477e308dba4`: four checked-in NumericInfo GoogleTests
+plus the complete backend owning suite. Windows execution is UNRUN until actual
+runner results are collected; workflow authoring/spawn/dispatch is not operational
+adoption. Reuse unchanged product approval, then independently assess Windows
+proof and current integration applicability. Full/native/live/MSI/registry and
+periodic Windows sweep acceptance remain separate debt.
+
 ## Board, candidate handoff and integration
 
 Use Agent Orchestrator issues/workers as the package work board. Record the exact
@@ -274,7 +322,7 @@ and the periods waiting on review, builds or coordinator attention. Measure:
 
 Compare against available recent serial-package evidence without inventing missing
 baseline timings. The first-six evaluation is retained evidence, not a stopping
-condition. The human has approved three continuing owners; further concurrency
+condition. The human has approved four continuing owners; further concurrency
 changes require human steering. Keep measuring rework and acceptance-debt growth
 without claiming delivery from agent count. A tool's
 running-agent count or patches produced is not delivery throughput.
@@ -282,7 +330,7 @@ running-agent count or patches produced is not delivery throughput.
 ## Historical migration cutover and retained live checkpoint
 
 The initial two-lane migration below records historical release conditions; it
-does not limit the current three-owner assignment. Preserve its original receipts.
+does not limit the current four-owner assignment. Preserve its original receipts.
 Setup proceeded in an isolated workflow candidate. The original development
 chat retains its in-flight exact `c3a7ab5244083173189c5c99cad48750cd09e4f2` live
 checkpoint, binary/control identities, one-use admission and financial/cleanup
