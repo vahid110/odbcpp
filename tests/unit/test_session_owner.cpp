@@ -2611,3 +2611,244 @@ TEST(SessionLeaseObservationTest, CatalogProtocolMetadataRetiresPhysicalSessionA
   observed->catalog_result.reset(); EXPECT_EQ("fixed invalid metadata", result.error_message());
   retired_once(*observed);
 }
+
+
+namespace {
+TEST(PreparedResultStartupTest, ProtocolMetadataRetiresAcceptedBorrowBeforeReturningError) {
+  for (int fault : {0, 1, 2}) {
+    SCOPED_TRACE(fault);
+    auto observed = std::make_shared<Observed>();
+    authoritative_select_description(observed);
+    auto& column = observed->description_result->value().columns[0];
+    if (fault == 0) {
+      column.normalized_type.reset();
+    } else if (fault == 1) {
+      column.name = std::string("a\0b", 3);
+    } else {
+      column.name = std::string("\xc0\xaf", 2);
+    }
+    const auto original_name = column.name;
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max(), true);
+    ASSERT_TRUE(plan);
+    const auto retained = plan->description();
+    observed->on_disconnect = [&] {
+      EXPECT_FALSE(*lease);
+      EXPECT_FALSE(owner.try_acquire());
+    };
+    auto rejected = lease->start_result_sequence(std::move(*plan), 16);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(BackendErrorClass::Protocol, rejected.backend_error().error_class);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), rejected.error());
+    EXPECT_TRUE(rejected.error_message().empty());
+    EXPECT_EQ(BackendOperation::Unknown, rejected.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire}),
+        rejected.session_snapshot());
+    EXPECT_FALSE(*lease);
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+    EXPECT_EQ(0, observed->queries);
+    EXPECT_EQ(0, observed->resets);
+    EXPECT_EQ(0, observed->health);
+    ASSERT_EQ(1u, retained.columns.size());
+    EXPECT_EQ(original_name, retained.columns[0].name);
+    EXPECT_EQ(fault != 0, retained.columns[0].normalized_type.has_value());
+    observed->on_disconnect = {};
+  }
+}
+
+TEST(PreparedResultStartupTest, ResourceLimitsRetireWithoutPartialSequenceAndAcceptExactBounds) {
+  for (int boundary : {0, 1, 2, 3, 4}) {
+    for (const bool exceeds : {false, true}) {
+      SCOPED_TRACE(boundary);
+      SCOPED_TRACE(exceeds);
+      auto observed = std::make_shared<Observed>();
+      authoritative_select_description(observed);
+      ResultLimits limits;
+      if (boundary == 0 || boundary == 1 || boundary == 4) {
+        observed->description_result->value().columns.push_back(
+            {"ok", NativeTypeInfo{ScalarType::Integer, 10, 0, true}});
+      }
+      if (boundary == 0) {
+        limits.max_columns_per_description = exceeds ? 1 : 2;
+      } else if (boundary == 1) {
+        limits.max_metadata_entries = exceeds ? 1 : 3;
+      } else if (boundary == 2) {
+        limits.max_metadata_entries = exceeds ? 1 : 2;
+      } else if (boundary == 3) {
+        limits.max_column_name_bytes = exceeds ? 1 : 2;
+      } else {
+        limits.max_metadata_name_bytes = exceeds ? 3 : 4;
+      }
+      auto owner = owner_for(observed);
+      auto lease = owner.try_acquire();
+      ASSERT_TRUE(lease);
+      auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, limits,
+          rs::util::Deadline::max(), true);
+      ASSERT_TRUE(plan); // These are existing sequence-start metadata checks.
+      auto result = lease->start_result_sequence(std::move(*plan), 16);
+      if (exceeds) {
+        ASSERT_FALSE(result);
+        EXPECT_EQ(BackendErrorClass::ResourceLimit, result.backend_error().error_class);
+        EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+        EXPECT_EQ((SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire}),
+            result.session_snapshot());
+        EXPECT_FALSE(*lease);
+        EXPECT_EQ(1, observed->disconnects);
+        EXPECT_EQ(1, observed->destructions);
+      } else {
+        ASSERT_TRUE(result);
+        EXPECT_TRUE(result->pending());
+        EXPECT_EQ(boundary == 0 || boundary == 1 || boundary == 4 ? 2u : 1u,
+            result->description().columns.size());
+        EXPECT_TRUE(*lease);
+        EXPECT_EQ(0, observed->disconnects);
+      }
+      EXPECT_EQ(0, observed->queries);
+      EXPECT_EQ(0, observed->resets);
+      EXPECT_EQ(0, observed->health);
+    }
+  }
+}
+
+TEST(PreparedResultStartupTest, PassiveAuthorityRefusalsAndValidZeroFieldStartKeepPrecedence) {
+  CredentialContext credentials;
+  const auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  authoritative_select_description(observed);
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token);
+  ASSERT_TRUE(lease);
+  auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+      rs::util::Deadline::max(), true);
+  ASSERT_TRUE(plan);
+  PreparedCommandPlan moved{std::move(*plan)};
+  auto other_observed = std::make_shared<Observed>();
+  auto other_owner = owner_for(other_observed);
+  auto other = other_owner.try_acquire();
+  ASSERT_TRUE(other);
+  observed->on_passive = [] { ADD_FAILURE() << "Passive refusal must not observe current session"; };
+  other_observed->on_passive = [] { ADD_FAILURE() << "Wrong owner must not observe fresh session"; };
+  auto moved_from = lease->start_result_sequence(std::move(*plan), 16);
+  auto wrong = other->start_result_sequence(std::move(moved), 16);
+  ASSERT_FALSE(moved_from);
+  ASSERT_FALSE(wrong);
+  EXPECT_EQ(BackendErrorClass::InvalidInput, moved_from.backend_error().error_class);
+  EXPECT_EQ(BackendErrorClass::InvalidInput, wrong.backend_error().error_class);
+  EXPECT_TRUE(*lease);
+  EXPECT_TRUE(*other);
+  observed->on_passive = {};
+  other_observed->on_passive = {};
+  ASSERT_TRUE(lease->return_reusable(rs::util::Deadline::max()));
+  auto fresh = owner.try_acquire(token);
+  ASSERT_TRUE(fresh);
+  observed->on_passive = [] { ADD_FAILURE() << "Old plan must not observe reacquired borrow"; };
+  auto stale = fresh->start_result_sequence(std::move(moved), 16);
+  ASSERT_FALSE(stale);
+  EXPECT_EQ(BackendErrorClass::InvalidInput, stale.backend_error().error_class);
+  EXPECT_TRUE(*fresh);
+  EXPECT_EQ(0, observed->disconnects);
+  observed->on_passive = {};
+  for (const bool fields : {false, true}) {
+    authoritative_select_description(observed, fields);
+    auto current = fresh->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max(), true);
+    ASSERT_TRUE(current);
+    auto started = fresh->start_result_sequence(std::move(*current), fields ? 16 : 0);
+    ASSERT_TRUE(started);
+    auto replay = fresh->start_result_sequence(std::move(*current), 16);
+    ASSERT_FALSE(replay);
+    EXPECT_EQ(BackendErrorClass::InvalidInput, replay.backend_error().error_class);
+    auto first = fresh->advance_result_sequence(*started);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(first->result);
+    EXPECT_EQ(ExecutionResultShape::ResultSet, first->result->execution_result_shape);
+    EXPECT_EQ(fields ? 1u : 0u, first->result->columns.size());
+    EXPECT_TRUE(*fresh);
+  }
+  authoritative_command_description(observed);
+  auto command = fresh->prepare_command_batch("UPDATE t SET v=?", fixed_command_sets(), {}, {},
+      rs::util::Deadline::max());
+  ASSERT_TRUE(command);
+  auto not_result = fresh->start_result_sequence(std::move(*command), 16);
+  ASSERT_FALSE(not_result);
+  EXPECT_EQ(BackendErrorClass::InvalidInput, not_result.backend_error().error_class);
+  EXPECT_TRUE(*fresh);
+  EXPECT_EQ(2, observed->queries);
+  EXPECT_EQ(0, observed->disconnects);
+  EXPECT_EQ(0, other_observed->queries);
+  EXPECT_EQ(0, other_observed->disconnects);
+}
+
+TEST(PreparedResultStartupTest, TerminalReplayInvalidatesCachePreservesOwnershipAndAllowsFreshRecovery) {
+  for (const bool throwing_disconnect : {false, true}) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_select_description(observed);
+    CredentialContext credentials;
+    const auto token = credentials.publish_authenticated();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token);
+    ASSERT_TRUE(lease);
+    auto prior = lease->execute_query("prior owning result", rs::util::Deadline::max());
+    ASSERT_TRUE(prior);
+    observed->description_result->value().columns[0].name = std::string("x\0y", 3);
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max(), true);
+    ASSERT_TRUE(plan);
+    auto scope = lease->cache_token();
+    ASSERT_TRUE(scope);
+    ASSERT_TRUE(scope->is_current());
+    observed->throw_disconnect = throwing_disconnect;
+    observed->on_disconnect = [&] {
+      EXPECT_FALSE(scope->is_current());
+      EXPECT_FALSE(*lease);
+      EXPECT_FALSE(owner.try_acquire(token));
+    };
+    auto rejected = lease->start_result_sequence(std::move(*plan), 16);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(BackendErrorClass::Protocol, rejected.backend_error().error_class);
+    EXPECT_FALSE(scope->is_current());
+    EXPECT_FALSE(*lease);
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+    observed->on_passive = [] { ADD_FAILURE() << "Terminal replay cannot observe provider"; };
+    auto replay = lease->start_result_sequence(std::move(*plan), 16);
+    ASSERT_FALSE(replay);
+    EXPECT_EQ(BackendErrorClass::InvalidInput, replay.backend_error().error_class);
+    EXPECT_FALSE(lease->execute_query("no replay", rs::util::Deadline::max()));
+    EXPECT_EQ(1, observed->queries);
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(0, observed->resets);
+    EXPECT_EQ(0, observed->health);
+    observed->description_result.reset();
+    observed->execution_result.reset();
+    ASSERT_EQ(1u, prior->rows.size());
+    EXPECT_EQ(std::optional<std::string>{"11"}, prior->rows[0][0]);
+    EXPECT_EQ("id", prior->columns[0].name);
+    EXPECT_EQ(BackendErrorClass::Protocol, rejected.backend_error().error_class);
+    observed->on_disconnect = {};
+
+    auto fresh_observed = std::make_shared<Observed>();
+    authoritative_select_description(fresh_observed);
+    auto fresh_owner = owner_for(fresh_observed);
+    auto fresh = fresh_owner.try_acquire();
+    ASSERT_TRUE(fresh);
+    auto recovered_plan = fresh->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max(), true);
+    ASSERT_TRUE(recovered_plan);
+    auto sequence = fresh->start_result_sequence(std::move(*recovered_plan), 16);
+    ASSERT_TRUE(sequence);
+    auto first = fresh->advance_result_sequence(*sequence);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(first->result);
+    EXPECT_EQ(1u, first->ordinal);
+    EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
+    EXPECT_EQ(1, fresh_observed->queries);
+    EXPECT_TRUE(*fresh);
+    EXPECT_EQ(0, fresh_observed->disconnects);
+  }
+}
+} // namespace
