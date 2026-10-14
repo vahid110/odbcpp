@@ -486,3 +486,23 @@ CHAR/TIMESTAMP fractions, C TIME warnings, TIME binary/default/input, calendar a
 timezone behavior remain unchanged. Existing noncanonical >9-digit converter
 warnings are retained, without claiming broader grammar closure. Protected
 current-driver/link-list/full/platform/live/final debt and authority remain.
+
+
+### Decimal numeric result binary policy (authored, native execution pending)
+
+`BindColIntegrationTest.DecimalBinarySourceDimensionsAndRecovery` uses three fixed
+one-row SELECTs, no DDL/DML, a five-second statement timeout and a 60-second
+case bound excluding login. It checks NUMERIC(10,2) source metadata, all short
+native SQL_NUMERIC_STRUCT binary capacities, whole publication, fixed completion,
+NULL and bound/indicator-only recovery. Native bodies and vendor-binary parity
+are unrun locally.
+
+The adapter's binary representation is an explicit driver policy: native host
+SQL_NUMERIC_STRUCT with owning source precision1..38 and scale-128..precision.
+Unknown precision0 or unrepresentable dimensions report22003 without output;
+there is no inferred/default precision or ARD numeric rescaling. The primary
+numeric table permits binary retrieval and short-capacity22003 but does not
+uniquely prescribe this representation. Retained AWS text conversion derives
+dimensions from values; this distinction remains explicit, with no wire,
+cross-endian or deployed vendor-binary equivalence claim. Raw C_NUMERIC,
+default character retrieval, parameters, SDK and backend parsers are unchanged.

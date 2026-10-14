@@ -1213,7 +1213,7 @@ TEST(ResultTypesTest, SignedIntegerBinaryResultPairsAreExplicitAndDefaultsStayNa
         EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
-        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
     EXPECT_EQ(SQL_C_SLONG, rs::odbc::ResultTypes::default_c_type(SQL_INTEGER));
@@ -1228,7 +1228,7 @@ TEST(ResultTypesTest, FloatingBinaryResultPairsKeepNativeDefaultsAndOtherRefusal
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_FLOAT));
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_DOUBLE));
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
-        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
 }
 
@@ -1241,7 +1241,7 @@ TEST(ResultTypesTest, TinyintBinaryResultUsesSignedOneByteWithoutChangingDefault
     EXPECT_EQ(-128, (std::numeric_limits<SQLSCHAR>::min)());
     EXPECT_EQ(127, (std::numeric_limits<SQLSCHAR>::max)());
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
-        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
 }
 
@@ -1282,7 +1282,7 @@ TEST(ResultTypesTest, DateBinaryResultPairUsesExistingDateStructureAndKeepsOther
     EXPECT_EQ(SQL_C_DATE, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_DATE));
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_DATE)); // Legacy source policy only.
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL)}) {
-        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_SLONG));
     EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_TYPE_TIME));
@@ -1352,8 +1352,8 @@ TEST(ResultTypesTest, TimeTimestampBinaryClosedPairsAndNativeLayouts) {
     EXPECT_EQ(SQL_C_TIMESTAMP, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_TIMESTAMP));
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_TIME));
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_TIMESTAMP));
-    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_NUMERIC, SQL_C_BINARY));
-    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_DECIMAL, SQL_C_BINARY));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(SQL_NUMERIC, SQL_C_BINARY));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(SQL_DECIMAL, SQL_C_BINARY));
     EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(SQL_TYPE_DATE, SQL_C_TYPE_TIME));
 }
 
@@ -1629,4 +1629,48 @@ TEST_F(RedshiftDataConverterTest, TimeTimestampFractionProjectionRawParserAndTyp
         "12:34:56.1234567891", SQL_C_TYPE_TIMESTAMP, &timestamp, 0, &length, &issue));
     EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
     EXPECT_EQ(123456789u, timestamp.fraction);
+}
+
+TEST_F(RedshiftDataConverterTest, DecimalBinaryPairLayoutAndRawNumericFoundationRemainDistinct) {
+    EXPECT_EQ(19u, sizeof(SQL_NUMERIC_STRUCT));
+    EXPECT_EQ(0u, offsetof(SQL_NUMERIC_STRUCT, precision));
+    EXPECT_EQ(1u, offsetof(SQL_NUMERIC_STRUCT, scale));
+    EXPECT_EQ(2u, offsetof(SQL_NUMERIC_STRUCT, sign));
+    EXPECT_EQ(3u, offsetof(SQL_NUMERIC_STRUCT, val));
+    for (SQLSMALLINT source : {SQLSMALLINT(SQL_NUMERIC),SQLSMALLINT(SQL_DECIMAL)}) {
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(source,SQL_C_BINARY));
+        EXPECT_EQ(SQL_C_CHAR,rs::odbc::ResultTypes::default_c_type(source));
+        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(source,SQL_C_TYPE_DATE));
+    }
+    SQL_NUMERIC_STRUCT expected{};
+    expected.precision=10;expected.scale=2;expected.sign=0;expected.val[0]=0xd2;expected.val[1]=0x04;
+    std::array<unsigned char,sizeof(SQL_NUMERIC_STRUCT)+2> bytes;
+    bytes.fill(0xa5);
+    SQLLEN length=79;
+    rs::odbc::ConversionIssue issue{};
+    ASSERT_EQ(SQL_SUCCESS,RedshiftDataConverter::convert_data("-12.34",SQL_C_NUMERIC,
+        bytes.data()+1,0,&length,&issue,10,2));
+    EXPECT_EQ(0,std::memcmp(bytes.data()+1,&expected,sizeof(expected)));
+    EXPECT_EQ(sizeof(expected),length);
+    EXPECT_EQ(0xa5,bytes.front());
+    EXPECT_EQ(0xa5,bytes.back());
+    const auto before=bytes;
+    length=79;
+    ASSERT_EQ(SQL_ERROR,RedshiftDataConverter::convert_data("bad",SQL_C_NUMERIC,
+        bytes.data()+1,0,&length,&issue,10,2));
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue,issue);
+    EXPECT_EQ(before,bytes);
+    EXPECT_EQ(79,length);
+    ASSERT_EQ(SQL_ERROR,RedshiftDataConverter::convert_data("12.34",SQL_C_NUMERIC,
+        bytes.data()+1,0,&length,&issue,0,0));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange,issue);
+    EXPECT_EQ(before,bytes);
+    EXPECT_EQ(79,length);
+    // Raw converter C_BINARY remains bytes; only the source-aware adapter projects a struct.
+    ASSERT_EQ(SQL_SUCCESS,RedshiftDataConverter::convert_data("12.34",SQL_C_BINARY,
+        bytes.data()+1,5,&length,&issue));
+    EXPECT_EQ(0,std::memcmp(bytes.data()+1,"12.34",5));
+    EXPECT_EQ(5,length);
+    EXPECT_EQ(0xa5,bytes.front());
+    EXPECT_EQ(0xa5,bytes.back());
 }

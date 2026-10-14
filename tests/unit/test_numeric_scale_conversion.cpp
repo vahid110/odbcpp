@@ -5840,3 +5840,261 @@ TEST_F(NumericScaleApiTest, TimeTimestampFractionProjectionArraysPreparedSibling
   EXPECT_EQ(0u, facts->disconnects);
 }
 } // namespace
+
+namespace {
+void expect_decimal_binary(const unsigned char* bytes, SQLCHAR precision,
+    SQLSCHAR scale, SQLCHAR sign, const std::array<SQLCHAR, SQL_MAX_NUMERIC_LEN>& coefficient) {
+  SQL_NUMERIC_STRUCT expected{};
+  expected.precision = precision;
+  expected.scale = scale;
+  expected.sign = sign;
+  std::copy(coefficient.begin(), coefficient.end(), expected.val);
+  EXPECT_EQ(0, std::memcmp(bytes, &expected, sizeof(expected)));
+}
+
+TEST_F(NumericScaleApiTest, DecimalBinarySourceDimensionsCapacityAndCompletion) {
+  struct Case {
+    const char* text; SQLULEN precision; SQLSMALLINT scale; SQLCHAR sign;
+    std::array<SQLCHAR, SQL_MAX_NUMERIC_LEN> coefficient; SQLRETURN result;
+  };
+  const Case cases[] = {
+      {"12.34", 10, 2, 1, {0xd2, 0x04}, SQL_SUCCESS},
+      {"-12.34", 10, 2, 0, {0xd2, 0x04}, SQL_SUCCESS},
+      {"0.00", 1, 1, 1, {0}, SQL_SUCCESS},
+      {"12000", 2, -3, 1, {12}, SQL_SUCCESS},
+      {"1e128", 1, -128, 1, {1}, SQL_SUCCESS},
+      {"0.00000000000000000000000000000000000001", 38, 38, 1, {1}, SQL_SUCCESS},
+      {"1.239", 3, 2, 1, {123}, SQL_SUCCESS_WITH_INFO},
+      {"99999999999999999999999999999999999999", 38, 0, 1,
+          {0xff,0xff,0xff,0xff,0x3f,0x22,0x8a,0x09,0x7a,0xc4,0x86,0x5a,0xa8,0x4c,0x3b,0x4b}, SQL_SUCCESS}};
+  for (ScalarType family : {ScalarType::Numeric, ScalarType::Decimal}) {
+    for (const auto& c : cases) {
+      SCOPED_TRACE(c.text);
+      for (SQLSMALLINT target : {SQLSMALLINT(SQL_C_BINARY), SQLSMALLINT(SQL_ARD_TYPE)}) {
+        facts->result.columns = {{"decimal", NativeTypeInfo{family, c.precision, c.scale, true}}};
+        facts->result.rows = {{c.text}};
+        execute();
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+        const auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+        dimensions(ard, 1, 1, 0);
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_CONCISE_TYPE, (SQLPOINTER)SQL_C_BINARY, 0));
+        std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+        bytes.fill(0xa5);
+        const auto untouched = bytes;
+        SQLLEN length = 79;
+        for (SQLLEN capacity = 0; capacity < SQLLEN(sizeof(SQL_NUMERIC_STRUCT)); ++capacity) {
+          ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, target, bytes.data() + 1, capacity, &length));
+          EXPECT_EQ("22003", state());
+          EXPECT_EQ(untouched, bytes);
+          EXPECT_EQ(79, length);
+        }
+        ASSERT_EQ(c.result, SQLGetData(stmt, 1, target, bytes.data() + 1, sizeof(SQL_NUMERIC_STRUCT), &length));
+        if (c.result == SQL_SUCCESS_WITH_INFO) {
+          EXPECT_EQ("01S07", state());
+        }
+        expect_decimal_binary(bytes.data() + 1, c.precision, c.scale, c.sign, c.coefficient);
+        EXPECT_EQ(sizeof(SQL_NUMERIC_STRUCT), length);
+        EXPECT_EQ(0xa5, bytes.front());
+        EXPECT_EQ(0xa5, bytes.back());
+        const auto published = bytes;
+        length = 83;
+        ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, target, bytes.data() + 1, 0, &length));
+        EXPECT_EQ(published, bytes);
+        EXPECT_EQ(83, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      }
+    }
+  }
+  struct Bad { const char* text; SQLULEN precision; SQLSMALLINT scale; const char* state; };
+  for (const auto& c : {Bad{"12.34",0,0,"22003"}, Bad{"12.34",39,2,"22003"},
+      Bad{"12.34",10,11,"22003"}, Bad{"12.34",10,-129,"22003"},
+      Bad{"123",2,0,"22003"}, Bad{"bad",10,2,"22018"}}) {
+    facts->result.columns = {{"decimal", NativeTypeInfo{ScalarType::Numeric,c.precision,c.scale,true}}};
+    facts->result.rows = {{c.text}};
+    execute();
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+    bytes.fill(0xa5);
+    const auto before = bytes;
+    SQLLEN length = 79;
+    ASSERT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_BINARY, bytes.data() + 1, 0, &length));
+    EXPECT_EQ(c.state, state());
+    EXPECT_EQ(before, bytes);
+    EXPECT_EQ(79, length);
+    char text[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, text, sizeof(text), &length));
+    EXPECT_STREQ(c.text, text);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(NumericScaleApiTest, DecimalBinaryBoundIndicatorNullAndErrorPrecedence) {
+  for (bool indicator_only : {false,true}) {
+    struct Case { std::optional<std::string> text; SQLULEN precision; SQLSMALLINT scale; SQLRETURN rc; const char* state; };
+    const Case cases[] = {{std::nullopt,0,-129,SQL_SUCCESS,""},
+        {"12.34",10,2,SQL_SUCCESS,""}, {"1.239",3,2,SQL_SUCCESS_WITH_INFO,"01S07"},
+        {"bad",10,2,SQL_ERROR,"22018"}, {"12.34",0,0,SQL_ERROR,"22003"}};
+    for (const auto& c : cases) {
+      SCOPED_TRACE(indicator_only);
+      facts->result.columns = {{"decimal",NativeTypeInfo{ScalarType::Numeric,c.precision,c.scale,true}}};
+      facts->result.rows = {{c.text}};
+      std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> bytes;
+      bytes.fill(0xa5);
+      const auto before = bytes;
+      SQLLEN length = 79, indicator = 83;
+      ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt,1,SQL_C_BINARY,
+          indicator_only ? nullptr : bytes.data()+1,sizeof(SQL_NUMERIC_STRUCT),&length));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(descriptor(SQL_ATTR_APP_ROW_DESC),1,SQL_DESC_INDICATOR_PTR,&indicator,0));
+      execute();
+      ASSERT_EQ(c.rc,SQLFetch(stmt));
+      if (c.rc != SQL_SUCCESS) {
+        EXPECT_EQ(c.state,state());
+      }
+      if (!c.text) {
+        EXPECT_EQ(SQL_NULL_DATA,indicator);
+        EXPECT_EQ(79,length);
+        EXPECT_EQ(before,bytes);
+      }
+      if (c.text && c.rc == SQL_ERROR) {
+        EXPECT_EQ(before,bytes);
+        EXPECT_EQ(79,length);
+        EXPECT_EQ(83,indicator);
+      }
+      if (c.text && c.rc != SQL_ERROR) {
+        EXPECT_EQ(sizeof(SQL_NUMERIC_STRUCT),length);
+        EXPECT_EQ(SQLLEN(0),indicator);
+        if (indicator_only) {
+          EXPECT_EQ(before,bytes);
+        } else {
+          expect_decimal_binary(bytes.data()+1,c.precision,c.scale,1,
+              c.rc == SQL_SUCCESS ? std::array<SQLCHAR,SQL_MAX_NUMERIC_LEN>{0xd2,0x04}
+                                  : std::array<SQLCHAR,SQL_MAX_NUMERIC_LEN>{123});
+        }
+      }
+      EXPECT_EQ(0xa5,bytes.front());
+      EXPECT_EQ(0xa5,bytes.back());
+      ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+    }
+  }
+  facts->result.columns = {{"decimal",NativeTypeInfo{ScalarType::Numeric,10,2,true}}};
+  facts->result.rows = {{"bad"}};
+  execute();
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  unsigned char bytes[sizeof(SQL_NUMERIC_STRUCT)]{};
+  SQLLEN length=79;
+  ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,1,SQL_C_BINARY,bytes,-1,&length));
+  EXPECT_EQ("HY090",state());
+  EXPECT_EQ(79,length);
+  ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,1,SQL_C_BINARY,nullptr,0,&length));
+  EXPECT_EQ("HY009",state());
+  ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,1,SQL_C_BINARY,bytes,0,&length));
+  EXPECT_EQ("22018",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+}
+
+TEST_F(NumericScaleApiTest, DecimalBinaryArrayOffsetsOwningPreparedSiblingAndRecovery) {
+  struct Row {
+    unsigned char before{0xa5}, bytes[sizeof(SQL_NUMERIC_STRUCT)]{}, after{0xb5};
+    SQLLEN length{79}, indicator{83};
+  };
+  for (bool row_wise : {false,true}) {
+    SQLHSTMT sibling{};
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+    struct Owner { SQLHSTMT h; ~Owner(){SQLFreeHandle(SQL_HANDLE_STMT,h);} } owner{sibling};
+    facts->result.columns = {{"decimal",NativeTypeInfo{ScalarType::Numeric,10,2,true}}};
+    facts->result.rows = {{"-12.34"}};
+    ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,(SQLCHAR*)"SELECT sibling",SQL_NTS));
+    facts->result.rows = {{"12.34"},{std::nullopt},{"bad"},{"-12.34"}};
+    facts->result.normalized_parameter_types = {}; // No new provider parameter contract.
+    ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT n",SQL_NTS));
+    Row pages[2][4];
+    for (auto& page : pages) {
+      for (auto& row : page) {
+        std::fill(std::begin(row.bytes),std::end(row.bytes),0xee);
+      }
+    }
+    std::array<unsigned char,4*sizeof(SQL_NUMERIC_STRUCT)+2> bytes;
+    bytes.fill(0xee);
+    std::array<unsigned char,4*sizeof(SQLLEN)+2> lengths,indicators;
+    for (auto* storage : {&lengths,&indicators}) {
+      storage->fill(0xa5);
+      for (std::size_t row=0;row<4;++row) {
+        const SQLLEN initial=storage==&lengths ? 79 : 83;
+        std::memcpy(storage->data()+1+row*sizeof(SQLLEN),&initial,sizeof(initial));
+      }
+    }
+    const auto read_length = [](const auto& storage,std::size_t row) {
+      SQLLEN value{};
+      std::memcpy(&value,storage.data()+1+row*sizeof(SQLLEN),sizeof(value));
+      return value;
+    };
+    SQLULEN offset=row_wise ? sizeof(pages[0]) : 1, count=91;
+    SQLUSMALLINT statuses[4]{71,72,73,74};
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_ARRAY_SIZE,(SQLPOINTER)4,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_TYPE,
+        (SQLPOINTER)(row_wise ? sizeof(Row) : SQL_BIND_BY_COLUMN),0));
+    // Column-wise data offset is unaligned; length/status pointers are offset-adjusted bases.
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,&offset,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,statuses,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROWS_FETCHED_PTR,&count,0));
+    SQLLEN* length_base=row_wise ? &pages[0][0].length
+        : reinterpret_cast<SQLLEN*>(lengths.data());
+    void* indicator_base=row_wise ? static_cast<void*>(&pages[0][0].indicator)
+        : indicators.data();
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_BINARY,
+        row_wise ? pages[0][0].bytes : bytes.data(),sizeof(SQL_NUMERIC_STRUCT),length_base));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(descriptor(SQL_ATTR_APP_ROW_DESC),1,SQL_DESC_INDICATOR_PTR,indicator_base,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+    facts->result.rows = {{"7.89"}};
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetch(stmt));
+    EXPECT_EQ(4u,count);
+    EXPECT_EQ(SQL_ROW_SUCCESS,statuses[0]);
+    EXPECT_EQ(SQL_ROW_SUCCESS,statuses[1]);
+    EXPECT_EQ(SQL_ROW_ERROR,statuses[2]);
+    EXPECT_EQ(SQL_ROW_SUCCESS,statuses[3]);
+    for (std::size_t row : {std::size_t(0),std::size_t(3)}) {
+      const auto* output=row_wise ? pages[1][row].bytes : bytes.data()+1+row*sizeof(SQL_NUMERIC_STRUCT);
+      expect_decimal_binary(output,10,2,row==0 ? 1 : 0,{0xd2,0x04});
+      EXPECT_EQ(sizeof(SQL_NUMERIC_STRUCT),row_wise ? pages[1][row].length : read_length(lengths,row));
+    }
+    const auto* null_bytes=row_wise ? pages[1][1].bytes : bytes.data()+1+sizeof(SQL_NUMERIC_STRUCT);
+    EXPECT_TRUE(std::all_of(null_bytes,null_bytes+sizeof(SQL_NUMERIC_STRUCT),[](unsigned char b){return b==0xee;}));
+    EXPECT_EQ(SQL_NULL_DATA,row_wise ? pages[1][1].indicator : read_length(indicators,1));
+    EXPECT_EQ(79,row_wise ? pages[1][2].length : read_length(lengths,2));
+    EXPECT_EQ(83,row_wise ? pages[1][2].indicator : read_length(indicators,2));
+    if (row_wise) {
+      for (std::size_t row=0;row<4;++row) {
+        EXPECT_EQ(0xa5,pages[1][row].before);
+        EXPECT_EQ(0xb5,pages[1][row].after);
+        EXPECT_EQ(79,pages[0][row].length);
+      }
+    } else {
+      EXPECT_EQ(0xee,bytes.front());
+      EXPECT_EQ(0xee,bytes.back());
+    }
+    SQLLEN diag_row{},diag_column{};
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_ROW_NUMBER,&diag_row,0,nullptr));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_COLUMN_NUMBER,&diag_column,0,nullptr));
+    EXPECT_EQ(3,diag_row);
+    EXPECT_EQ(1,diag_column);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+    SQL_NUMERIC_STRUCT copied{};SQLLEN copied_length=79;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_BINARY,&copied,sizeof(copied),&copied_length));
+    expect_decimal_binary(reinterpret_cast<unsigned char*>(&copied),10,2,0,{0xd2,0x04});
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,nullptr,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_TYPE,(SQLPOINTER)SQL_BIND_BY_COLUMN,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_ARRAY_SIZE,(SQLPOINTER)1,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_BINARY,&copied,sizeof(copied),&copied_length));
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    expect_decimal_binary(reinterpret_cast<unsigned char*>(&copied),10,2,1,{0x15,0x03});
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  }
+}
+} // namespace
