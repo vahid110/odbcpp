@@ -14482,3 +14482,165 @@ TEST_F(BackendContractTest, NumericInfoNullOutputKeepsValidationAndStringQueryCo
   EXPECT_EQ(queries, seen->queries);
   EXPECT_EQ(0, seen->disconnects);
 }
+
+TEST_F(BackendContractTest, StringInfoNullOutputIgnoresCapacityBeforeConnection) {
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    const auto unit = api == &SQLGetInfoW ? sizeof(SQLWCHAR) : std::size_t{1};
+    for (SQLSMALLINT capacity : {SQLSMALLINT{-1}, SQLSMALLINT{SQL_NTS},
+                                SQLSMALLINT{-32768}, SQLSMALLINT{0},
+                                SQLSMALLINT{1}, SQLSMALLINT{32767}}) {
+      SCOPED_TRACE(capacity);
+      SQLSMALLINT length = -73;
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ODBC_VER, nullptr, capacity, &length));
+      EXPECT_EQ(5 * unit, static_cast<std::size_t>(length));
+      SQLINTEGER count = -1;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+          SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+      EXPECT_EQ(0, count);
+    }
+  }
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, StringInfoNullOutputReportsStaticDynamicAndEmptyLengths) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  struct StringInfo {
+    SQLUSMALLINT type;
+    std::size_t characters;
+  };
+  const std::array<StringInfo, 3> fields{{
+      {SQL_DBMS_NAME, sizeof("ContractDB") - 1},
+      {SQL_DATABASE_NAME, sizeof("contract") - 1},
+      {SQL_IDENTIFIER_QUOTE_CHAR, 0},
+  }};
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    const auto unit = api == &SQLGetInfoW ? sizeof(SQLWCHAR) : std::size_t{1};
+    for (const auto& field : fields) {
+      SCOPED_TRACE(field.type);
+      for (SQLSMALLINT capacity : {SQLSMALLINT{-1}, SQLSMALLINT{-32768},
+                                  SQLSMALLINT{0}, SQLSMALLINT{1}}) {
+        SQLSMALLINT length = -73;
+        EXPECT_EQ(SQL_SUCCESS, api(dbc, field.type, nullptr, capacity, &length));
+        EXPECT_EQ(field.characters * unit, static_cast<std::size_t>(length));
+        SQLINTEGER count = -1;
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+            SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+        EXPECT_EQ(0, count);
+      }
+    }
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, StringInfoNullOutputPublishesBoundedUnalignedLengthAndRecovers) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    const auto unit = api == &SQLGetInfoW ? sizeof(SQLWCHAR) : std::size_t{1};
+    EXPECT_EQ(SQL_ERROR, api(dbc, 0xffff, nullptr, 0, nullptr));
+    EXPECT_EQ("HY096", state(SQL_HANDLE_DBC, dbc));
+    alignas(SQLSMALLINT) std::array<unsigned char, sizeof(SQLSMALLINT) + 2> bytes{};
+    bytes.fill(0xa5);
+    const SQLSMALLINT initial = -73;
+    std::memcpy(bytes.data() + 1, &initial, sizeof(initial));
+    auto* length = reinterpret_cast<SQLSMALLINT*>(bytes.data() + 1);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_DBMS_NAME, nullptr, -32768, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, bytes.data() + 1, sizeof(required));
+    EXPECT_EQ((sizeof("ContractDB") - 1) * unit,
+              static_cast<std::size_t>(required));
+    EXPECT_EQ(0xa5, bytes.front());
+    EXPECT_EQ(0xa5, bytes.back());
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+
+    alignas(SQLWCHAR) std::array<unsigned char, 32 * sizeof(SQLWCHAR)> output{};
+    output.fill(0xa5);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_DBMS_NAME, output.data(),
+                              static_cast<SQLSMALLINT>(output.size()), length));
+    SQLSMALLINT published = -1;
+    std::memcpy(&published, bytes.data() + 1, sizeof(published));
+    EXPECT_EQ(required, published);
+    if (api == &SQLGetInfoW) {
+      for (std::size_t i = 0; i < sizeof("ContractDB"); ++i) {
+        SQLWCHAR character{};
+        std::memcpy(&character, output.data() + i * unit, sizeof(character));
+        EXPECT_EQ(static_cast<SQLWCHAR>("ContractDB"[i]), character);
+      }
+    } else {
+      EXPECT_EQ(0, std::memcmp(output.data(), "ContractDB", sizeof("ContractDB")));
+    }
+    for (std::size_t i = sizeof("ContractDB") * unit; i < output.size(); ++i) {
+      EXPECT_EQ(0xa5, output[i]);
+    }
+    EXPECT_EQ(0xa5, bytes.front());
+    EXPECT_EQ(0xa5, bytes.back());
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, StringInfoNullOutputPreservesValidationAndRealBufferErrors) {
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    SQLSMALLINT length = -73;
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(nullptr, SQL_ODBC_VER, nullptr, -1, &length));
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(env, SQL_ODBC_VER, nullptr, -1, &length));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_DATABASE_NAME, nullptr, -1, &length));
+    EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+  }
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
+    const auto unit = api == &SQLGetInfoW ? sizeof(SQLWCHAR) : std::size_t{1};
+    SQLSMALLINT length = -73;
+    EXPECT_EQ(SQL_ERROR, api(dbc, 0xffff, nullptr, -1, &length));
+    EXPECT_EQ("HY096", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    alignas(SQLWCHAR) std::array<unsigned char, 32 * sizeof(SQLWCHAR)> output{};
+    output.fill(0xa5);
+    const auto untouched = output;
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_DBMS_NAME, output.data(), -1, &length));
+    EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(untouched, output);
+    if (api == &SQLGetInfoW) {
+      EXPECT_EQ(SQL_ERROR, api(dbc, SQL_DBMS_NAME, output.data(),
+                                static_cast<SQLSMALLINT>(sizeof(SQLWCHAR) + 1), &length));
+      EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc));
+      EXPECT_EQ(-73, length);
+      EXPECT_EQ(untouched, output);
+    }
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_DBMS_NAME, nullptr, -1, &length));
+    EXPECT_EQ((sizeof("ContractDB") - 1) * unit, static_cast<std::size_t>(length));
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, api(dbc, SQL_DBMS_NAME, output.data(),
+                                        static_cast<SQLSMALLINT>(unit), &length));
+    EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ((sizeof("ContractDB") - 1) * unit, static_cast<std::size_t>(length));
+    for (std::size_t i = 0; i < unit; ++i) {
+      EXPECT_EQ(0, output[i]);
+    }
+    for (std::size_t i = unit; i < output.size(); ++i) {
+      EXPECT_EQ(0xa5, output[i]);
+    }
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_DBMS_NAME, output.data(),
+                              static_cast<SQLSMALLINT>(output.size()), &length));
+    EXPECT_EQ((sizeof("ContractDB") - 1) * unit, static_cast<std::size_t>(length));
+    count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}

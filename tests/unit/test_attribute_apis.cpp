@@ -1474,9 +1474,19 @@ TEST_F(AttributeApisTest, DriverVersionProbePreservesBufferValidation) {
   EXPECT_STREQ("03", reinterpret_cast<const char*>(value));
   EXPECT_EQ(5, length);
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  SQLWCHAR wide[3]{static_cast<SQLWCHAR>('x'), 0, 0};
   EXPECT_EQ(SQL_ERROR, SQLGetInfoW(connection_, SQL_DRIVER_ODBC_VER,
-      nullptr, -1, &length));
+      wide, -1, &length));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(static_cast<SQLWCHAR>('x'), wide[0]);
+  EXPECT_EQ(5, length);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfoW(connection_, SQL_DRIVER_ODBC_VER,
+      nullptr, -1, &length));
+  EXPECT_EQ(5 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+  SQLINTEGER count = -1;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+      SQL_HANDLE_DBC, connection_, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+  EXPECT_EQ(0, count);
 }
 
 TEST_F(AttributeApisTest, DriverFilenameReportsExactConfiguredBasenameThroughBothApis) {
