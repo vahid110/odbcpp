@@ -14644,3 +14644,163 @@ TEST_F(BackendContractTest, StringInfoNullOutputPreservesValidationAndRealBuffer
   EXPECT_EQ(queries, seen->queries);
   EXPECT_EQ(0, seen->disconnects);
 }
+
+TEST_F(BackendContractTest, ConnectionAttributeNullOutputReportsSupportedIntegerBytes) {
+  struct AttributeValue {
+    SQLINTEGER attribute;
+    SQLUINTEGER expected;
+  };
+  const std::array<AttributeValue, 4> fields{{
+      {SQL_ATTR_LOGIN_TIMEOUT, 30},
+      {SQL_ATTR_CONNECTION_TIMEOUT, 0},
+      {SQL_ATTR_ACCESS_MODE, SQL_MODE_READ_WRITE},
+      {SQL_ATTR_AUTOCOMMIT, SQL_AUTOCOMMIT_ON},
+  }};
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    for (const auto& field : fields) {
+      SCOPED_TRACE(field.attribute);
+      for (SQLINTEGER capacity : {SQLINTEGER{0}, SQLINTEGER{-1},
+                                  (std::numeric_limits<SQLINTEGER>::min)(),
+                                  (std::numeric_limits<SQLINTEGER>::max)()}) {
+        SQLINTEGER length = -73;
+        EXPECT_EQ(SQL_SUCCESS, api(dbc, field.attribute, nullptr, capacity, &length));
+        EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+        SQLINTEGER count = -1;
+        EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+            SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+        EXPECT_EQ(0, count);
+        SQLUINTEGER actual = 79;
+        length = -73;
+        EXPECT_EQ(SQL_SUCCESS, api(dbc, field.attribute, &actual, capacity, &length));
+        EXPECT_EQ(field.expected, actual);
+        EXPECT_EQ(sizeof(actual), static_cast<std::size_t>(length));
+      }
+    }
+  }
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, ConnectionAttributeNullOutputKeepsPointerWidthAndConnectedState) {
+  const auto window = reinterpret_cast<SQLHWND>(std::uintptr_t{0x12345678});
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_QUIET_MODE, window, 0));
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    SQLINTEGER length = -73;
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_QUIET_MODE, nullptr, -1, &length));
+    EXPECT_EQ(sizeof(SQLHWND), static_cast<std::size_t>(length));
+    SQLHWND actual_window = nullptr;
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_QUIET_MODE, &actual_window, 0, &length));
+    EXPECT_EQ(window, actual_window);
+    EXPECT_EQ(sizeof(actual_window), static_cast<std::size_t>(length));
+    struct AttributeValue {
+      SQLINTEGER attribute;
+      SQLUINTEGER expected;
+    };
+    const std::array<AttributeValue, 3> fields{{
+        {SQL_ATTR_CONNECTION_DEAD, SQL_CD_FALSE},
+        {SQL_ATTR_METADATA_ID, SQL_FALSE},
+        {SQL_ATTR_AUTOCOMMIT, SQL_AUTOCOMMIT_ON},
+    }};
+    for (const auto& field : fields) {
+      SCOPED_TRACE(field.attribute);
+      length = -73;
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, field.attribute, nullptr, -1, &length));
+      EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+      SQLUINTEGER actual = 79;
+      EXPECT_EQ(SQL_SUCCESS, api(dbc, field.attribute, &actual, 0, &length));
+      EXPECT_EQ(field.expected, actual);
+      EXPECT_EQ(sizeof(actual), static_cast<std::size_t>(length));
+    }
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, ConnectionAttributeNullOutputPublishesBoundedUnalignedLengthAndRecovers) {
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_LOGIN_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{7}), 0));
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    SQLUINTEGER untouched = 79;
+    EXPECT_EQ(SQL_ERROR, api(dbc, -12345, &untouched, sizeof(untouched), nullptr));
+    EXPECT_EQ("HY092", state(SQL_HANDLE_DBC, dbc));
+    alignas(SQLINTEGER) std::array<unsigned char, sizeof(SQLINTEGER) + 2> lengths{};
+    lengths.fill(0xa5);
+    const SQLINTEGER initial = -73;
+    std::memcpy(lengths.data() + 1, &initial, sizeof(initial));
+    auto* length = reinterpret_cast<SQLINTEGER*>(lengths.data() + 1);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_LOGIN_TIMEOUT, nullptr, -1, length));
+    SQLINTEGER required = -1;
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(required));
+    EXPECT_EQ(0xa5, lengths.front());
+    EXPECT_EQ(0xa5, lengths.back());
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+
+    alignas(SQLUINTEGER) std::array<unsigned char, sizeof(SQLUINTEGER) + 2> values{};
+    values.fill(0xb5);
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_LOGIN_TIMEOUT, values.data() + 1, 0, length));
+    SQLUINTEGER actual = 79;
+    std::memcpy(&actual, values.data() + 1, sizeof(actual));
+    EXPECT_EQ(7u, actual);
+    std::memcpy(&required, lengths.data() + 1, sizeof(required));
+    EXPECT_EQ(sizeof(actual), static_cast<std::size_t>(required));
+    EXPECT_EQ(0xb5, values.front());
+    EXPECT_EQ(0xb5, values.back());
+    EXPECT_EQ(0xa5, lengths.front());
+    EXPECT_EQ(0xa5, lengths.back());
+    EXPECT_EQ(79u, untouched);
+  }
+  EXPECT_EQ(0, seen->created);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, ConnectionAttributeNullOutputPreservesValidationAndCatalogQueries) {
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    SQLINTEGER length = -73;
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(nullptr, SQL_ATTR_LOGIN_TIMEOUT, nullptr, 0, &length));
+    EXPECT_EQ(SQL_INVALID_HANDLE, api(env, SQL_ATTR_LOGIN_TIMEOUT, nullptr, 0, &length));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &length));
+    EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    SQLUINTEGER dead = 79;
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, &length));
+    EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(79u, dead);
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_PACKET_SIZE, nullptr, 0, &length));
+    EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_ERROR, api(dbc, -12345, nullptr, 0, &length));
+    EXPECT_EQ("HY092", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_ERROR, api(dbc, SQL_ATTR_LOGIN_TIMEOUT, nullptr, 0, nullptr));
+    EXPECT_EQ("HY009", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(SQL_NO_DATA, api(dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, 0, &length));
+    EXPECT_EQ(-73, length);
+  }
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto queries = seen->queries;
+  for (const auto api : {&SQLGetConnectAttr, &SQLGetConnectAttrW}) {
+    SQLINTEGER length = -73;
+    const auto unit = api == &SQLGetConnectAttrW ? sizeof(SQLWCHAR) : std::size_t{1};
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_CURRENT_CATALOG, nullptr, 0, &length));
+    EXPECT_EQ((sizeof("contract") - 1) * unit, static_cast<std::size_t>(length));
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_AUTOCOMMIT, nullptr, -1, &length));
+    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+    SQLUINTEGER autocommit = 79;
+    EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_ATTR_AUTOCOMMIT, &autocommit, -1, nullptr));
+    EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_AUTOCOMMIT_ON), autocommit);
+    SQLINTEGER count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_DBC, dbc, 0, SQL_DIAG_NUMBER, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+  }
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+}
