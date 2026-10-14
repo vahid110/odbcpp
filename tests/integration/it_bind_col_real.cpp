@@ -4335,3 +4335,61 @@ TEST_F(BindColIntegrationTest, TimeTimestampFractionProjectionAndSourceRecovery)
     }
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(60));
 }
+
+TEST_F(BindColIntegrationTest, DecimalBinarySourceDimensionsAndRecovery) {
+    const auto started=std::chrono::steady_clock::now();
+    const auto state = [&]() {
+        SQLCHAR value[6]{};
+        EXPECT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,hstmt,1,
+            value,nullptr,nullptr,0,nullptr));
+        return std::string(reinterpret_cast<char*>(value));
+    };
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)5,0));
+    const char* query="SELECT CAST('-12.34' AS numeric(10,2)), CAST(NULL AS numeric(10,2))";
+    std::array<unsigned char,sizeof(SQL_NUMERIC_STRUCT)+2> bytes;
+    bytes.fill(0xa5);
+    const auto untouched=bytes;
+    SQLLEN length=79;
+    ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt,(SQLCHAR*)query,SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt));
+    SQLSMALLINT type{},scale{};SQLULEN precision{};
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt,1,nullptr,0,nullptr,&type,&precision,&scale,nullptr));
+    EXPECT_EQ(SQL_NUMERIC,type);
+    EXPECT_EQ(10u,precision);
+    EXPECT_EQ(2,scale);
+    for (SQLLEN capacity=0;capacity<SQLLEN(sizeof(SQL_NUMERIC_STRUCT));++capacity) {
+        ASSERT_EQ(SQL_ERROR,SQLGetData(hstmt,1,SQL_C_BINARY,bytes.data()+1,capacity,&length));
+        EXPECT_EQ("22003",state());
+        EXPECT_EQ(untouched,bytes);
+        EXPECT_EQ(79,length);
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt,1,SQL_C_BINARY,bytes.data()+1,sizeof(SQL_NUMERIC_STRUCT),&length));
+    SQL_NUMERIC_STRUCT expected{};
+    expected.precision=10;expected.scale=2;expected.sign=0;expected.val[0]=0xd2;expected.val[1]=0x04;
+    EXPECT_EQ(0,std::memcmp(bytes.data()+1,&expected,sizeof(expected)));
+    EXPECT_EQ(sizeof(expected),length);
+    EXPECT_EQ(0xa5,bytes.front());
+    EXPECT_EQ(0xa5,bytes.back());
+    ASSERT_EQ(SQL_NO_DATA,SQLGetData(hstmt,1,SQL_C_BINARY,bytes.data()+1,0,&length));
+    const auto published=bytes;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt,2,SQL_C_BINARY,bytes.data()+1,0,&length));
+    EXPECT_EQ(SQL_NULL_DATA,length);
+    EXPECT_EQ(published,bytes);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt));
+    for (bool indicator_only : {false,true}) {
+        bytes=untouched;length=79;
+        ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt,1,SQL_C_BINARY,
+            indicator_only ? nullptr : bytes.data()+1,sizeof(SQL_NUMERIC_STRUCT),&length));
+        ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt,(SQLCHAR*)query,SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt));
+        EXPECT_EQ(sizeof(expected),length);
+        if (indicator_only) {
+            EXPECT_EQ(untouched,bytes);
+        } else {
+            EXPECT_EQ(0,std::memcmp(bytes.data()+1,&expected,sizeof(expected)));
+        }
+        ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt,SQL_UNBIND));
+    }
+    EXPECT_LT(std::chrono::steady_clock::now()-started,std::chrono::seconds(60));
+}
