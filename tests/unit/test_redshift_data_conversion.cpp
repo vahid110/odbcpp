@@ -1461,3 +1461,56 @@ TEST_F(RedshiftDataConverterTest, NonfiniteNumericRepairRetainsFiniteScaleAndWho
     EXPECT_EQ(0, std::memcmp(&before, &numeric, sizeof(numeric)));
     EXPECT_EQ(79, length);
 }
+
+TEST_F(RedshiftDataConverterTest, CharacterNonfiniteAdapterPolicyKeepsRawFloatingAndFiniteControls) {
+    using rs::odbc::ConversionIssue;
+    for (SQLSMALLINT target : {SQLSMALLINT(SQL_C_FLOAT), SQLSMALLINT(SQL_C_DOUBLE)}) {
+        const std::size_t width = target == SQL_C_FLOAT ? sizeof(SQLREAL) : sizeof(SQLDOUBLE);
+        for (const char* text : {"NaN", "Infinity", "-Infinity", " \tNaN\r\n", "1.25", "-0", " 1.25e2 "}) {
+            SCOPED_TRACE(text);
+            SCOPED_TRACE(target);
+            std::array<unsigned char, sizeof(SQLDOUBLE) + 2> bytes;
+            bytes.fill(0xa5);
+            SQLLEN length = 79;
+            ConversionIssue issue{};
+            ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(text, target, bytes.data() + 1, 0, &length, &issue));
+            EXPECT_EQ(ConversionIssue::None, issue);
+            EXPECT_EQ(width, length);
+            SQLDOUBLE value{};
+            if (target == SQL_C_FLOAT) {
+                SQLREAL single{};
+                std::memcpy(&single, bytes.data() + 1, sizeof(single));
+                value = single;
+            } else {
+                std::memcpy(&value, bytes.data() + 1, sizeof(value));
+            }
+            const std::string_view token{text};
+            if (token.find("NaN") != std::string_view::npos) {
+                EXPECT_TRUE(std::isnan(value));
+            } else {
+                if (token.find("Infinity") != std::string_view::npos) {
+                    EXPECT_TRUE(std::isinf(value));
+                    EXPECT_EQ(token.starts_with('-'), std::signbit(value));
+                } else {
+                    EXPECT_DOUBLE_EQ(token == "-0" ? 0.0 : token == "1.25" ? 1.25 : 125.0, value);
+                    EXPECT_EQ(token == "-0", std::signbit(value));
+                }
+            }
+            EXPECT_EQ(0xa5, bytes.front());
+            EXPECT_TRUE(std::all_of(bytes.begin() + 1 + width, bytes.end(), [](auto b) { return b == 0xa5; }));
+        }
+        const char* overflow = target == SQL_C_FLOAT ? "3.5e38" : "1e309";
+        const char* underflow = target == SQL_C_FLOAT ? "1e-50" : "1e-400";
+        for (const char* text : {overflow, underflow, "NaNx", "1.25junk"}) {
+            std::array<unsigned char, sizeof(SQLDOUBLE) + 2> bytes;
+            bytes.fill(0xa5);
+            const auto before = bytes;
+            SQLLEN length = 79;
+            ConversionIssue issue{};
+            ASSERT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(text, target, bytes.data() + 1, 0, &length, &issue));
+            EXPECT_EQ(text == overflow || text == underflow ? ConversionIssue::NumericValueOutOfRange : ConversionIssue::InvalidCharacterValue, issue);
+            EXPECT_EQ(before, bytes);
+            EXPECT_EQ(79, length);
+        }
+    }
+}
