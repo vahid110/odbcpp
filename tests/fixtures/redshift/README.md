@@ -413,3 +413,19 @@ primary numeric representability rules do not explicitly specify NaN spellings.
 No source spelling/whitespace/case normalization, SQL_FLOAT native exposure,
 vendor wire/endian or new floating-domain claim. Full/platform/native/live/final
 acceptance and protected exact-principal cleanup remain checkpoint debt.
+
+### Character nonfinite floating result diagnostic queue
+
+`BindColIntegrationTest.CharacterNonfiniteFloatingRefusalAndNativeIeeeRecovery`
+checks VARCHAR `NaN`, `Infinity` and `-Infinity` to C FLOAT/DOUBLE as 22018 with
+unchanged payload/length and same-row text retry. REAL NaN, finite VARCHAR and
+NULL controls retain their existing conversion behavior. Bound data and
+indicator-only bindings repeat the refusal. Six fixed one-row/six-column SELECTs
+maximum, no DDL/DML, 5-second statement timeout and 60-second case assertion
+excluding fixture login; special VARCHAR cells are at most nine bytes.
+
+Authored for separately admitted native qualification. Local qualification is
+configured-row syntax only, with no login or SQL execution; native provider
+exposure, current-driver/link-list/platform/full/live/final acceptance remains
+pending. This does not change numeric grammar, raw floating parsing or input
+parameter behavior, nor claim official-driver binary parity.
