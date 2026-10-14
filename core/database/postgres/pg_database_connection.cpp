@@ -271,23 +271,30 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
     // Selected intent never falls back after capability/state validation or after
     // a native exchange. Returned names are exact identifiers, not patterns.
     const auto& original=std::get<ColumnsCatalogRequest>(semantic_request);
-    if (!budget.name(*columns->schema) ||
-        !budget.retain({0,0,columns->schema->size()+sizeof(std::string),0,columns->schema->size()}))
-      return redshift_routine_limit();
-    const auto schema_name=redshift_columns_schema(*columns);
-    if (!schema_name) return local_backend_error(LocalFailure::InvalidInput,
-        "Invalid schema-wide column names",BackendOperation::ExecuteCatalog,session_state());
+    if (!redshift_columns_patterns_valid(*columns))
+      return local_backend_error(LocalFailure::InvalidInput,
+          "Invalid schema/table/column patterns",BackendOperation::ExecuteCatalog,session_state());
     // A valid literal may simply not match the empty preflight context; the
     // Result's error state, not its contained match value, validates the text.
     auto valid_catalog=redshift_database_matches({},original.catalog,false);
     if (!valid_catalog) return local_backend_error(LocalFailure::InvalidInput,
         valid_catalog.error_message(),BackendOperation::ExecuteCatalog,session_state());
     if (original.catalog && !budget.name(*original.catalog)) return redshift_routine_limit();
-    // The validated caller pattern remains live throughout discovery/fanout;
-    // it is never substituted for a returned exact native table identity.
-    if (columns->table && (!budget.name(*columns->table) ||
-        !budget.retain({0,0,columns->table->size()+sizeof(std::string),0,columns->table->size()})))
-      return redshift_routine_limit();
+    for (const auto* pattern:{&columns->schema,&columns->table,&columns->column}) {
+      if (*pattern && (!budget.name(**pattern) ||
+          !budget.retain({0,0,(*pattern)->size()+sizeof(std::string),0,(*pattern)->size()})))
+        return redshift_routine_limit();
+    }
+    // Pre-admit the possible decoded literal before allocating it. Nonliteral
+    // schema patterns allocate no decoded name and release only this reservation.
+    RedshiftRoutineUsage decoded_schema{};
+    if (columns->schema) {
+      decoded_schema={0,0,columns->schema->size()+sizeof(std::string),0,columns->schema->size()};
+      if (!budget.retain(decoded_schema)) return redshift_routine_limit();
+    }
+    const auto schema_name=redshift_columns_schema(*columns);
+    if (!schema_name) budget.release(decoded_schema);
+    // Caller patterns stay charged; returned identities are quoted exact names.
     const auto native_exchange=[&](std::string_view database,std::string_view schema,
         const std::string* table=nullptr) -> BackendResult<QueryResult> {
       const auto max=std::numeric_limits<std::size_t>::max();
@@ -300,7 +307,10 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
       BackendResult<QueryResult> result=malformed();
       {
         if (expired()) return timeout();
-        const auto command=table?redshift_show_columns_command(database,schema,*table):
+        // An empty private schema selects the database-level schema command;
+        // every returned schema/table identifier is validated nonempty.
+        const auto command=schema.empty()?redshift_show_schemas_command(database):
+            table?redshift_show_columns_command(database,schema,*table):
             redshift_show_tables_command(database,schema);
         result=exchange(command);
       }
@@ -364,64 +374,89 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
       if (original.catalog && *original.catalog!=database) continue;
       if (expired()) return timeout();
       --remaining;
-      RedshiftColumnTables selected;
+      RedshiftRoutineUsage schemas_usage{};
       {
-        auto response=native_exchange(database,*schema_name);
-        if (!response) return response.backend_error();
-        auto tables_selected=redshift_column_tables(database,*schema_name,columns->table,response,budget,deadline);
-        if (!tables_selected) return tables_selected.backend_error();
-        selected=std::move(*tables_selected);
-      } // Raw table rows have actually been destroyed.
-      budget.release(selected.raw_retained);
-      if (selected.names.size()>std::numeric_limits<std::size_t>::max()-remaining ||
-          !budget.exchanges_available(selected.names.size()+remaining)) return redshift_routine_limit();
-      const auto selected_usage=selected.retained;
-      {
-        // Destroy the selection before releasing its charge at the database boundary.
-        auto owned_tables=std::move(selected.names);
-        for (const auto& table:owned_tables) {
-          if (expired()) return timeout();
-          RedshiftRoutineUsage destroyed;
+        RedshiftColumnSchemas discovered;
+        if (!schema_name) {
           {
-            auto response=native_exchange(database,*schema_name,&table);
+            auto response=native_exchange(database,{});
             if (!response) return response.backend_error();
-            auto part=redshift_columns_part(database,*schema_name,table,*columns,std::move(response),budget,deadline);
-            if (!part) return part.backend_error();
-            QueryResult old_headers;
-            if (first) {
-              old_headers.columns=std::move(output.columns);
-              output.columns=std::move(part->columns);first=false;
-            } else {
-              if (part->columns.size()!=output.columns.size()) return malformed();
-              for (std::size_t i=0;i<output.columns.size();++i) {
-                const auto& incoming=part->columns[i];auto& retained=output.columns[i];
-                if (incoming.name!=retained.name || !incoming.normalized_type || !retained.normalized_type) return malformed();
-                const auto& from=*incoming.normalized_type;auto& to=*retained.normalized_type;
-                if (from.type!=to.type || from.known!=to.known || from.decimal_digits!=to.decimal_digits ||
-                    from.declared_type!=to.declared_type || from.declared_column_size!=to.declared_column_size) return malformed();
-                to.column_size=from.column_size==0 || to.column_size==0 ? 0 : std::max(to.column_size,from.column_size);
-              }
-              old_headers.columns=std::move(part->columns);
-            }
-            // Admit the new row index while the old index and per-table index
-            // remain live. Moving cells does not destroy their owning payload.
-            const auto count=output.rows.size()+part->rows.size();
-            if (count<output.rows.size() || count>std::numeric_limits<std::size_t>::max()/sizeof(ResultRow)) return redshift_routine_limit();
-            if (count>output.rows.capacity()) {
-              const auto old_capacity=output.rows.capacity();
-              if (!budget.retain({0,0,count*sizeof(ResultRow),0,0})) return redshift_routine_limit();
-              if (expired()) return timeout();
-              output.rows.reserve(count);
-              budget.release({0,0,old_capacity*sizeof(ResultRow),0,0});
-            }
-            destroyed=redshift_routine_schema_usage(old_headers);
-            destroyed.bytes+=part->rows.capacity()*sizeof(ResultRow);
-            for (auto& row:part->rows) output.rows.push_back(std::move(row));
-          } // Headers and the emptied per-table row index have been destroyed.
-          budget.release(destroyed);
+            auto selected=redshift_column_schemas(database,columns->schema,response,budget,deadline);
+            if (!selected) return selected.backend_error();
+            discovered=std::move(*selected);
+          } // Raw schema response destroyed before releasing its retained charge.
+          budget.release(discovered.raw_retained);
+          schemas_usage=discovered.retained;
         }
-      }
-      budget.release(selected_usage);
+        const auto schemas=schema_name?std::span<const std::string>{&*schema_name,1}:
+            std::span<const std::string>{discovered.names};
+        if (schemas.size()>std::numeric_limits<std::size_t>::max()-remaining ||
+            !budget.exchanges_available(schemas.size()+remaining)) return redshift_routine_limit();
+        for (std::size_t schema_index=0;schema_index<schemas.size();++schema_index) {
+          if (expired()) return timeout();
+          const auto& selected_schema=schemas[schema_index];
+          const auto pending=remaining+(schemas.size()-schema_index-1);
+          RedshiftColumnTables selected;
+          {
+            auto response=native_exchange(database,selected_schema);
+            if (!response) return response.backend_error();
+            auto tables_selected=redshift_column_tables(database,selected_schema,columns->table,response,budget,deadline);
+            if (!tables_selected) return tables_selected.backend_error();
+            selected=std::move(*tables_selected);
+          } // Raw table rows have actually been destroyed.
+          budget.release(selected.raw_retained);
+          if (selected.names.size()>std::numeric_limits<std::size_t>::max()-pending ||
+              !budget.exchanges_available(selected.names.size()+pending)) return redshift_routine_limit();
+          const auto selected_usage=selected.retained;
+          {
+            // Destroy the selection before releasing its charge at the schema boundary.
+            auto owned_tables=std::move(selected.names);
+            for (const auto& table:owned_tables) {
+              if (expired()) return timeout();
+              RedshiftRoutineUsage destroyed;
+              {
+                auto response=native_exchange(database,selected_schema,&table);
+                if (!response) return response.backend_error();
+                auto part=redshift_columns_part(database,selected_schema,table,*columns,std::move(response),budget,deadline);
+                if (!part) return part.backend_error();
+                QueryResult old_headers;
+                if (first) {
+                  old_headers.columns=std::move(output.columns);
+                  output.columns=std::move(part->columns);first=false;
+                } else {
+                  if (part->columns.size()!=output.columns.size()) return malformed();
+                  for (std::size_t i=0;i<output.columns.size();++i) {
+                    const auto& incoming=part->columns[i];auto& retained=output.columns[i];
+                    if (incoming.name!=retained.name || !incoming.normalized_type || !retained.normalized_type) return malformed();
+                    const auto& from=*incoming.normalized_type;auto& to=*retained.normalized_type;
+                    if (from.type!=to.type || from.known!=to.known || from.decimal_digits!=to.decimal_digits ||
+                        from.declared_type!=to.declared_type || from.declared_column_size!=to.declared_column_size) return malformed();
+                    to.column_size=from.column_size==0 || to.column_size==0 ? 0 : std::max(to.column_size,from.column_size);
+                  }
+                  old_headers.columns=std::move(part->columns);
+                }
+                // Admit the new row index while the old index and per-table index
+                // remain live. Moving cells does not destroy their owning payload.
+                const auto count=output.rows.size()+part->rows.size();
+                if (count<output.rows.size() || count>std::numeric_limits<std::size_t>::max()/sizeof(ResultRow)) return redshift_routine_limit();
+                if (count>output.rows.capacity()) {
+                  const auto old_capacity=output.rows.capacity();
+                  if (!budget.retain({0,0,count*sizeof(ResultRow),0,0})) return redshift_routine_limit();
+                  if (expired()) return timeout();
+                  output.rows.reserve(count);
+                  budget.release({0,0,old_capacity*sizeof(ResultRow),0,0});
+                }
+                destroyed=redshift_routine_schema_usage(old_headers);
+                destroyed.bytes+=part->rows.capacity()*sizeof(ResultRow);
+                for (auto& row:part->rows) output.rows.push_back(std::move(row));
+              } // Headers and the emptied per-table row index have been destroyed.
+              budget.release(destroyed);
+            }
+          }
+          budget.release(selected_usage);
+        }
+      } // Selected owning schemas destroyed; accumulated owning output stays live.
+      budget.release(schemas_usage);
     }
     std::sort(output.rows.begin(),output.rows.end(),[](const ResultRow& a,const ResultRow& b) {
       if (std::tie(a[0],a[1],a[2])!=std::tie(b[0],b[1],b[2]))

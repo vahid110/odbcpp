@@ -59,6 +59,22 @@ bool schema_text(const ResultColumnMetadata& column) {
   return type == ScalarType::Char || type == ScalarType::VarChar ||
       type == ScalarType::LongVarChar;
 }
+// The seven-field native SHOW layout is shared by schema enumeration, routine
+// schema discovery and SQLColumns. Caller-specific matching/admission stays local.
+std::optional<std::array<std::size_t,7>> show_schema_indexes(const QueryResult& source) {
+  if (source.columns.size()!=7) return std::nullopt;
+  constexpr std::array<std::string_view,7> fields{"database_name","schema_name","schema_owner",
+      "schema_type","schema_acl","source_database","schema_option"};
+  std::array<std::size_t,7> index{};
+  for (std::size_t n=0;n<fields.size();++n) {
+    unsigned count=0;
+    for (std::size_t c=0;c<source.columns.size();++c) {
+      if (source.columns[c].name==fields[n]) {index[n]=c;++count;}
+    }
+    if (count!=1) return std::nullopt;
+  }
+  return index;
+}
 bool clean_schema_result(const QueryResult& source) {
   return valid_result_structure(source) && source.additional_results.empty() &&
       source.cell_errors.empty() && source.normalized_parameter_types.empty();
@@ -158,19 +174,9 @@ BackendResult<QueryResult> normalize_redshift_schemas(
   if (source.rows.size() > 10000) return invalid_schema_metadata("show-rows");
   if (source.affected_rows != 0 && source.affected_rows != source.rows.size())
     return invalid_schema_metadata("show-completion");
-  constexpr std::array<std::string_view, 7> names{
-      "database_name", "schema_name", "schema_owner", "schema_type",
-      "schema_acl", "source_database", "schema_option"};
-  std::array<std::size_t, 7> indexes{};
-  for (std::size_t expected = 0; expected < names.size(); ++expected) {
-    unsigned matches = 0;
-    for (std::size_t actual = 0; actual < source.columns.size(); ++actual) {
-      if (source.columns[actual].name == names[expected]) {
-        ++matches; indexes[expected] = actual;
-      }
-    }
-    if (matches != 1) return invalid_schema_metadata("show-layout");
-  }
+  const auto layout=show_schema_indexes(source);
+  if (!layout) return invalid_schema_metadata("show-layout");
+  const auto& indexes=*layout;
   if (!schema_text(source.columns[indexes[0]]) ||
       !schema_text(source.columns[indexes[1]])) return invalid_schema_metadata("show-type");
   std::set<std::string> schemas;
@@ -453,12 +459,15 @@ bool redshift_column_names_are_literal(const ColumnsCatalogRequest& request) noe
   return column_literal_pattern(request.schema) && column_literal_pattern(request.table);
 }
 bool redshift_columns_schema_wide(const ColumnsCatalogRequest& request) noexcept {
-  return request.name_matches.existing() && column_literal_pattern(request.schema) &&
-      !column_literal_pattern(request.table);
+  return request.name_matches.existing() && !redshift_column_names_are_literal(request);
+}
+bool redshift_columns_patterns_valid(const ColumnsCatalogRequest& request) {
+  return table_pattern_valid(request.schema) && table_pattern_valid(request.table) &&
+      table_pattern_valid(request.column);
 }
 std::optional<std::string> redshift_columns_schema(const ColumnsCatalogRequest& request) {
-  if (!redshift_columns_schema_wide(request) || !table_pattern_valid(request.table) ||
-      !table_pattern_valid(request.column)) return std::nullopt;
+  if (!redshift_columns_schema_wide(request) || !column_literal_pattern(request.schema) ||
+      !redshift_columns_patterns_valid(request)) return std::nullopt;
   auto schema = column_literal_name(*request.schema);
   return schema_identifier(schema) ? std::optional<std::string>{std::move(schema)} : std::nullopt;
 }
@@ -865,6 +874,82 @@ std::string wide_literal(std::string_view identifier) {
   return out;
 }
 }
+BackendResult<RedshiftColumnSchemas> redshift_column_schemas(std::string_view database,
+    const std::optional<std::string>& schema_pattern,
+    const BackendResult<QueryResult>& input,
+    RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra:input->additional_results) if (extra.error) return *extra.error;
+  const auto bad=[&](const char* why) {return invalid_wide_columns(why,input.session_snapshot());};
+  if (!routine_shape(*input,input.session_snapshot()) || !schema_identifier(database))
+    return bad("schema-completion");
+  const auto layout=show_schema_indexes(*input);
+  if (!layout) return bad("schema-layout");
+  const auto& index=*layout;
+  if (!schema_text(input->columns[index[0]]) || !schema_text(input->columns[index[1]]))
+    return bad("schema-type");
+  // Validate every returned identity before filtering or admitting a second
+  // allocation. The native10000 row ceiling and original deadline bound this
+  // borrowed duplicate check; no hidden malformed row becomes empty success.
+  for (std::size_t r=0;r<input->rows.size();++r) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    const auto& row=input->rows[r];
+    if (!row[index[0]] || !row[index[1]] || *row[index[0]]!=database ||
+        !schema_identifier(*row[index[1]])) return bad("schema-identity");
+    for (std::size_t previous=0;previous<r;++previous) {
+      if (rs::util::Clock::now()>=deadline) return routine_timeout();
+      if (input->rows[previous][index[1]]==row[index[1]]) return bad("schema-duplicate");
+    }
+  }
+  if (!budget.description(input->columns.size())) return redshift_routine_limit();
+  auto raw=redshift_routine_schema_usage(*input);
+  for (const auto& column:input->columns) if (!budget.name(column.name)) return redshift_routine_limit();
+  for (const auto& row:input->rows) {
+    for (const auto n:{0u,1u}) {
+      if (!budget.name(*row[index[n]]) ||
+          !wide_storage_component(raw,row[index[n]]->size(),1,true)) return redshift_routine_limit();
+    }
+  }
+  RedshiftRoutineUsage scratch{};
+  if (!wide_storage_component(scratch,input->rows.size(),sizeof(std::string_view)))
+    return redshift_routine_limit();
+  scratch.metadata=input->rows.size();
+  if (!budget.retain(raw) || !budget.retain(scratch)) return redshift_routine_limit();
+  RedshiftColumnSchemas selected;selected.raw_retained=raw;
+  {
+    std::vector<std::string_view> identities;
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    identities.reserve(input->rows.size());
+    for (const auto& row:input->rows) identities.emplace_back(*row[index[1]]);
+    std::sort(identities.begin(),identities.end());
+    std::size_t count=0,payload=0;
+    for (const auto identity:identities) {
+      if (rs::util::Clock::now()>=deadline) return routine_timeout();
+      if (!table_like(identity,schema_pattern)) continue;
+      if (!wide_storage_component(selected.retained,identity.size()) ||
+          !wide_storage_component(selected.retained,identity.size(),1,true))
+        return redshift_routine_limit();
+      ++count;
+    }
+    payload=selected.retained.bytes;
+    if (!wide_storage_component(selected.retained,count,sizeof(std::string)+1))
+      return redshift_routine_limit();
+    selected.retained.rows=selected.retained.cells=selected.retained.metadata=count;
+    selected.retained.name_bytes=payload;
+    if (!budget.retain(selected.retained)) return redshift_routine_limit();
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    selected.names.reserve(count);
+    for (const auto identity:identities) {
+      if (rs::util::Clock::now()>=deadline) return routine_timeout();
+      if (table_like(identity,schema_pattern)) selected.names.emplace_back(identity);
+    }
+  } // Borrowed index destroyed; caller owns raw and selected name lifetimes.
+  budget.release(scratch);
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  return BackendResult<RedshiftColumnSchemas>{std::move(selected),input.session_snapshot()};
+}
+
 BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view database,
     std::string_view schema, const std::optional<std::string>& table_pattern,
     const BackendResult<QueryResult>& input,
@@ -1025,15 +1110,9 @@ BackendResult<RedshiftRoutineSchemas> normalize_redshift_routine_schemas(
   if(rs::util::Clock::now()>=deadline)return routine_timeout();
   if(!routine_shape(*input,input.session_snapshot()) || input->columns.size()!=7 ||
       !schema_identifier(database))return invalid_routine_metadata("schemas-structure");
-  constexpr std::array<std::string_view,7> fields{"database_name","schema_name","schema_owner",
-      "schema_type","schema_acl","source_database","schema_option"};
-  std::array<std::size_t,7> index{};
-  for(std::size_t n=0;n<fields.size();++n) {
-    unsigned count=0;
-    for(std::size_t c=0;c<input->columns.size();++c)
-      if(input->columns[c].name==fields[n]){index[n]=c;++count;}
-    if(count!=1)return invalid_routine_metadata("schemas-layout");
-  }
+  const auto layout=show_schema_indexes(*input);
+  if(!layout)return invalid_routine_metadata("schemas-layout");
+  const auto& index=*layout;
   if(!schema_text(input->columns[index[0]]) || !schema_text(input->columns[index[1]]))
     return invalid_routine_metadata("schemas-identity-type");
   const auto* names=std::get_if<ProceduresCatalogRequest>(&request);

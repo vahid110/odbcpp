@@ -73,6 +73,25 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     return SQLColumnsW(stmt,db->data(),db->size(),sc->data(),sc->size(),data,
         table?static_cast<SQLSMALLINT>(t->size()):0,nullptr,0);
   }
+  SQLRETURN schema_columns(const std::optional<std::string>& schema_pattern,
+      const std::string& exact_table) {
+    SQLFreeStmt(stmt,SQL_CLOSE);
+    const auto setting=SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_FALSE)),0);
+    if (setting!=SQL_SUCCESS) return setting;
+    const auto table=literal_pattern(exact_table);
+    if (!GetParam()) return SQLColumns(stmt,chars(database),database.size(),
+        schema_pattern?chars(*schema_pattern):nullptr,
+        schema_pattern?static_cast<SQLSMALLINT>(schema_pattern->size()):0,
+        chars(table),table.size(),nullptr,0);
+    auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(schema_pattern.value_or("")),
+        tb=rs::odbc::utf8_to_wide(table);
+    if (!db || !sc || !tb) return SQL_ERROR;
+    SQLWCHAR empty=0;
+    auto* schema_data=schema_pattern?(sc->empty()?&empty:sc->data()):nullptr;
+    return SQLColumnsW(stmt,db->data(),db->size(),schema_data,
+        schema_pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),nullptr,0);
+  }
   std::string text(SQLUSMALLINT column) {
     std::array<char,4096> value{};SQLLEN indicator=0;
     EXPECT_EQ(SQL_SUCCESS,SQLGetData(stmt,column,SQL_C_CHAR,value.data(),value.size(),&indicator));
@@ -121,6 +140,28 @@ TEST_P(ColumnsOmittedTableNative, TableLikePrefixEscapesUnicodeNoMatchAndRecover
   ASSERT_EQ(SQL_SUCCESS,columns(std::string{}));EXPECT_TRUE(rows().empty());
   ASSERT_EQ(SQL_SUCCESS,columns(std::string{"z\\_%"}));
   EXPECT_EQ((std::vector<std::pair<std::string,std::string>>{{tables[1],"id"},{tables[1],"value"}}),rows());
+}
+TEST_P(ColumnsOmittedTableNative, SchemaNullUniversalUtf8PrefixEmptyAndFreshRecovery) {
+  // A unique table inside the already-owned schema narrows NULL/% schema calls.
+  // Five-second statement limit, bounded rows and existing DROP-schema cleanup
+  // remain; compile/link does not admit any SQL or native body execution.
+  const auto table=schema+"_schema_pattern_only";
+  const auto ddl="CREATE TABLE "+quoted_identifier(schema)+"."+quoted_identifier(table)+"(id integer);";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(stmt,chars(ddl),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  const std::vector<std::pair<std::string,std::string>> expected{{table,"id"}};
+  for (const auto& pattern:std::vector<std::optional<std::string>>{std::nullopt,"%",
+      literal_pattern(schema)+"%",literal_pattern(schema.substr(0,schema.size()-3))+"_"}) {
+    ASSERT_EQ(SQL_SUCCESS,schema_columns(pattern,table));
+    EXPECT_EQ(expected,rows());
+  }
+  for (const auto* pattern:{"","missing_schema_pattern%"}) {
+    ASSERT_EQ(SQL_SUCCESS,schema_columns(std::string{pattern},table));
+    EXPECT_TRUE(rows().empty());
+  }
+  ASSERT_EQ(SQL_ERROR,schema_columns(literal_pattern(schema)+"\\",table));
+  ASSERT_EQ(SQL_SUCCESS,schema_columns(literal_pattern(schema)+"%",table));
+  EXPECT_EQ(expected,rows());
 }
 INSTANTIATE_TEST_SUITE_P(AnsiAndWide,ColumnsOmittedTableNative,testing::Values(false,true));
 } // namespace
