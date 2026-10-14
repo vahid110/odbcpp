@@ -197,6 +197,8 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
       }
     case SQL_C_BINARY:
       return sql_type == SQL_TYPE_DATE || sql_type == SQL_DATE ||
+             sql_type == SQL_TYPE_TIME || sql_type == SQL_TIME ||
+             sql_type == SQL_TYPE_TIMESTAMP || sql_type == SQL_TIMESTAMP ||
              sql_type == SQL_TINYINT || sql_type == SQL_SMALLINT ||
              sql_type == SQL_INTEGER ||
              sql_type == SQL_BIGINT || sql_type == SQL_REAL ||

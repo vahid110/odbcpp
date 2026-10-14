@@ -366,3 +366,27 @@ conversion is not backend wire/cross-endian/vendor-release parity. LegacySQL_DAT
 and parser year0000 are source/unit policies only; no native exposure/calendar
 expansion is claimed. Full/platform/native/currentdriver/link-list/live/final
 coverage remains protected checkpoint debt.
+
+### TIME/TIMESTAMP host binary result retrieval — authored checkpoint debt
+
+`BindColIntegrationTest.TimeTimestampBinaryWholeFieldsShortRetryNullAndRefill`
+is authored for the existing gated fixture. This package qualifies the changed
+file by actual compiler-row syntax only; native bodies, login, link/list and
+Redshift execution remain UNRUN locally. No admission or spending authority is
+created. The case uses one existing fixture login and six fixed no-DDL SELECTs
+(two literal SELECTs plus one typed NULL per family), no DML, resources or privilege
+change; query timeout5s and case assertion60s exclude fixture login. API SQL upper6,
+not a wire capture. One row/column/cell per query, at most26 source text bytes;
+output is the current ABI's six-byte SQL_TIME_STRUCT or sixteen-byte
+SQL_TIMESTAMP_STRUCT. TLS/login/exact-principal cleanup require protected authority.
+
+Assertions cover modern native metadata, literal host fields/fraction, every short
+capacity,22003/no payload/indicator/advance, full retry/fixed NO_DATA, bound refill
+and poison-safe NULL. Owning unit tests also preserve existing checked fraction
+warnings01S07, malformed22007 precedence, ARD/default/indicator-only and array
+span/status behavior. Timezone suffixes keep the existing typed parser's ignored
+suffix policy: no timezone adjustment is added. Existing source leap-second60,
+year0000, extra nanosecond digits and legacySQL_TIME/SQL_TIMESTAMP pair assertions
+are source policy, not native exposure or backend wire/vendor/cross-endian claims.
+DATE/numeric/BIT/text/default/input/parser behavior remains covered by retained
+controls. Full/platform/currentdriver/native/live/final acceptance stays pending.
