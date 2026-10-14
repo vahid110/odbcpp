@@ -27,6 +27,7 @@ odbcpp/database/i_database_connection.h|sdk/include/odbcpp/database/i_database_c
 odbcpp/database/native_type_info.h|sdk/include/odbcpp/database/native_type_info.h
 odbcpp/database/query_parameter.h|sdk/include/odbcpp/database/query_parameter.h
 odbcpp/database/query_result.h|sdk/include/odbcpp/database/query_result.h
+odbcpp/database/result_validation.h|sdk/include/odbcpp/database/result_validation.h
 odbcpp/database/session_health.h|sdk/include/odbcpp/database/session_health.h
 odbcpp/session/session_owner.h|sdk/internal/odbcpp/session/session_owner.h
 odbcpp/database/session_reset.h|sdk/include/odbcpp/database/session_reset.h

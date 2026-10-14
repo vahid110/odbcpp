@@ -47,6 +47,7 @@ sdk/include/odbcpp/database/i_database_connection.h
 sdk/include/odbcpp/database/native_type_info.h
 sdk/include/odbcpp/database/query_parameter.h
 sdk/include/odbcpp/database/query_result.h
+sdk/include/odbcpp/database/result_validation.h
 sdk/include/odbcpp/database/session_health.h
 sdk/include/odbcpp/database/session_reset.h
 sdk/include/odbcpp/database/sql_dialect.h

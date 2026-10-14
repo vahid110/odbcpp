@@ -21,6 +21,7 @@ core/database/postgres/pg_value.h
 core/database/postgres/scram_sha256.h
 odbcpp/database/query_parameter.h
 odbcpp/database/query_result.h
+odbcpp/database/result_validation.h
 core/database/result_validation.h
 odbcpp/database/session_health.h
 odbcpp/database/session_reset.h

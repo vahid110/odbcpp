@@ -24,7 +24,7 @@ class ProjectionTests(unittest.TestCase):
         result = p.project(sources)
         self.assertEqual(len(result), 82)
         self.assertEqual(len(set(result) - set(Q6_ADDITIONS) - set(CANCELLATION_ADDITIONS)), 77)
-        self.assertEqual(len(set(p.OWNERS) - set(result)), 22)
+        self.assertEqual(len(set(p.OWNERS) - set(result) - set(p.PRIVATE_DECLARATION_DEPENDENCIES)), 22)
         self.assertNotIn('core/security/crypto.h', result)
         self.assertEqual(result['core/database/mysql/connection_security.h'], b'#include "core/security/crypto.h"\n')
 
@@ -199,10 +199,10 @@ class ProjectionQ6MembershipTests(unittest.TestCase):
 
     def test_exact_selected_additions_and_original_subsets(self):
         result = p.project(self.sources())
-        self.assertEqual(len(p.OWNERS), 104)
+        self.assertEqual(len(p.OWNERS) - len(p.PRIVATE_DECLARATION_DEPENDENCIES), 104)
         self.assertEqual(tuple(sorted(result)), tuple(sorted(ORIGINAL_MEMBERS + Q6_ADDITIONS + CANCELLATION_ADDITIONS)))
         self.assertEqual(tuple(member for member in p.MEMBERS if member not in Q6_ADDITIONS and member not in CANCELLATION_ADDITIONS), ORIGINAL_MEMBERS)
-        self.assertEqual(tuple(sorted(set(p.OWNERS) - set(result))), ORIGINAL_EXCLUSIONS)
+        self.assertEqual(tuple(sorted(set(p.OWNERS) - set(result) - set(p.PRIVATE_DECLARATION_DEPENDENCIES))), ORIGINAL_EXCLUSIONS)
         self.assertEqual(len(ORIGINAL_EXCLUSIONS), 22)
         for member in Q6_ADDITIONS:
             self.assertEqual(p.OWNERS[member], member)
@@ -266,5 +266,70 @@ class ProjectionQ6MembershipTests(unittest.TestCase):
         self.assertTrue(set(Q6_ADDITIONS).issubset(selected))
         self.assertEqual(len(selected), 82)
 
-if __name__ == '__main__':
-    unittest.main()
+
+
+
+class DescriptionValidationCompositionTests(unittest.TestCase):
+    dependency = 'odbcpp/database/result_validation.h'
+    legacy = 'core/database/result_validation.h'
+    owner = 'sdk/include/odbcpp/database/result_validation.h'
+
+    def sources(self):
+        root = Path(__file__).resolve().parents[2]
+        values = {owner: (root / owner).read_bytes() for owner in p.OWNERS.values()}
+        values[self.owner] = (root / self.owner).read_bytes()
+        return values
+
+    def test_real_closed_composition_has_single_sdk_declarations_and_original_members(self):
+        before = self.sources()
+        result = p.project(before)
+        self.assertEqual(set(result), set(p.MEMBERS))
+        self.assertEqual(len(result), 82)
+        self.assertNotIn(self.dependency, result)
+        self.assertEqual(result[self.legacy].count(b'inline bool valid_execution_structure'), 1)
+        self.assertEqual(result[self.legacy].count(b'inline bool valid_description_structure'), 1)
+        self.assertIn(b'!result.statement_kind && result.affected_rows == 0', result[self.legacy])
+        self.assertIn(b'inline bool valid_result_structure', result[self.legacy])
+        self.assertNotIn(b'odbcpp/database/result_validation.h', result[self.legacy])
+        self.assertIn(b'#include "core/database/query_result.h"', result[self.legacy])
+        self.assertEqual(before, self.sources())
+
+    def test_missing_dependency_and_changed_owner_refuse(self):
+        values = self.sources()
+        del values[self.owner]
+        with self.assertRaisesRegex(p.ProjectionError, 'Missing or extra owner'):
+            p.project(values)
+        owners = dict(p.OWNERS)
+        owners[self.dependency] = 'sdk/include/odbcpp/database/wrong_validation.h'
+        with self.assertRaisesRegex(p.ProjectionError, 'Private declaration owner mismatch'):
+            p.project(self.sources(), owners)
+
+    def test_dependency_is_not_an_extra_installed_header_or_general_expansion(self):
+        values = self.sources()
+        values[p.OWNERS['core/database/query_result.h']] = b'#include "odbcpp/database/result_validation.h"\n'
+        with self.assertRaisesRegex(p.ProjectionError, 'outside fixed legacy composition'):
+            p.project(values)
+        values = self.sources()
+        values[self.owner] += b'#include "odbcpp/database/result_validation.h"\n'
+        with self.assertRaisesRegex(p.ProjectionError, 'outside fixed legacy composition'):
+            p.project(values)
+
+    def test_duplicate_directive_and_composite_byte_overflow_refuse(self):
+        values = self.sources()
+        values[p.OWNERS[self.legacy]] += b'#include "odbcpp/database/result_validation.h"\n'
+        with self.assertRaisesRegex(p.ProjectionError, 'Duplicate declaration composition'):
+            p.project(values)
+        values = self.sources()
+        values[self.owner] = b' ' * p.MAX_HEADER
+        with self.assertRaisesRegex(p.ProjectionError, 'Composite header byte limit'):
+            p.project(values)
+
+    def test_dependency_has_private_source_membership_and_bounded_raw_encoding(self):
+        self.assertEqual(p.OWNERS[self.dependency], self.owner)
+        self.assertNotIn(self.dependency, p.MEMBERS)
+        values = self.sources()
+        values[self.owner] = b'\xff'
+        with self.assertRaisesRegex(p.ProjectionError, 'Invalid declaration encoding'):
+            p.project(values)
+
+if __name__ == '__main__': unittest.main()
