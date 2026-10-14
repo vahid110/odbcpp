@@ -192,3 +192,91 @@ TEST(MySqlTextIntegerDomainTest, MixedRowsKeepOrderedErrorsNullBinaryAndNormaliz
   EXPECT_FALSE(query_detail::row(Bytes{std::byte{252}}, bigint_columns, 0, errors, bigint_native));
 }
 }
+
+namespace {
+TEST(MySqlMediumIntDomainTest, TextMetadataSealsSignedUnsignedLogical24BitLimits) {
+  for (const bool unsigned_value : {false, true}) {
+    std::uint8_t type{};
+    bool observed_unsigned{};
+    auto meta = query_detail::column(column(9, 63, unsigned_value ? 32 : 0),
+        ResultLimits{}, nullptr, &type, &observed_unsigned);
+    ASSERT_TRUE(meta);
+    EXPECT_EQ(9u, type);
+    EXPECT_EQ(unsigned_value, observed_unsigned);
+    ASSERT_TRUE(meta->normalized_type);
+    EXPECT_EQ(ScalarType::Integer, meta->normalized_type->type);
+    EXPECT_EQ(8u, meta->normalized_type->column_size);
+    const std::vector<ResultColumnMetadata> columns{*meta};
+    const std::array<query_detail::NativeColumn, 1> native{{{type, observed_unsigned}}};
+    for (const auto value : {unsigned_value ? "0" : "-8388608",
+        unsigned_value ? "16777215" : "8388607", "0", "-0", "0007", "-0000"}) {
+      Bytes bytes;
+      text(bytes, value);
+      std::vector<CellEncodingError> errors;
+      auto decoded = query_detail::row(bytes, columns, 4, errors, native);
+      ASSERT_TRUE(decoded);
+      ASSERT_TRUE((*decoded)[0]);
+      EXPECT_EQ(value, *(*decoded)[0]);
+      EXPECT_TRUE(errors.empty());
+    }
+    for (const auto value : {unsigned_value ? "-1" : "-8388609",
+        unsigned_value ? "16777216" : "8388608", "", "12garbage", "+1"}) {
+      Bytes bytes;
+      text(bytes, value);
+      std::vector<CellEncodingError> errors;
+      auto decoded = query_detail::row(bytes, columns, 4, errors, native);
+      ASSERT_TRUE(decoded);
+      ASSERT_TRUE((*decoded)[0]);
+      EXPECT_TRUE((*decoded)[0]->empty());
+      EXPECT_EQ((std::vector<CellEncodingError>{{4, 0}}), errors);
+    }
+    std::vector<CellEncodingError> errors;
+    auto null = query_detail::row(Bytes{std::byte{251}}, columns, 4, errors, native);
+    ASSERT_TRUE(null);
+    EXPECT_FALSE((*null)[0]);
+    EXPECT_TRUE(errors.empty());
+  }
+}
+
+TEST(MySqlMediumIntDomainTest, MixedTextRowsOwnOrderedErrorsAndPreserveNormalizedFallback) {
+  const std::vector<ResultColumnMetadata> columns{
+      {"signed", NativeTypeInfo{ScalarType::Integer, 8, 0, true}},
+      {"unsigned", NativeTypeInfo{ScalarType::Integer, 8, 0, true}},
+      {"null", NativeTypeInfo{ScalarType::Integer, 8, 0, true}},
+      {"binary", NativeTypeInfo{ScalarType::Binary, 2, 0, true}},
+      {"long", NativeTypeInfo{ScalarType::BigInt, 10, 0, true}}};
+  const std::array<query_detail::NativeColumn, 5> native{{
+      {9, false}, {9, true}, {9, false}, {252, false}, {3, true}}};
+  Bytes bytes;
+  text(bytes, "8388608");
+  text(bytes, "16777216");
+  bytes.push_back(std::byte{251});
+  text(bytes, std::string_view{"\0\xff", 2});
+  text(bytes, "4294967295");
+  std::vector<CellEncodingError> errors;
+  auto result = query_detail::row(bytes, columns, 7, errors, native);
+  ASSERT_TRUE(result);
+  EXPECT_EQ((std::vector<CellEncodingError>{{7, 0}, {7, 1}}), errors);
+  EXPECT_TRUE((*result)[0]->empty());
+  EXPECT_TRUE((*result)[1]->empty());
+  EXPECT_FALSE((*result)[2]);
+  EXPECT_EQ(std::string("\0\xff", 2), *(*result)[3]);
+  EXPECT_EQ("4294967295", *(*result)[4]);
+  std::fill(bytes.begin(), bytes.end(), std::byte{0});
+  EXPECT_EQ(std::string("\0\xff", 2), *(*result)[3]);
+  EXPECT_EQ("4294967295", *(*result)[4]);
+  Bytes fallback;
+  text(fallback, "8388608");
+  text(fallback, "16777216");
+  fallback.push_back(std::byte{251});
+  text(fallback, "");
+  text(fallback, "4294967295");
+  errors.clear();
+  auto normalized = query_detail::row(fallback, columns, 0, errors);
+  ASSERT_TRUE(normalized);
+  EXPECT_EQ("8388608", *(*normalized)[0]);
+  EXPECT_EQ("16777216", *(*normalized)[1]);
+  EXPECT_TRUE(errors.empty());
+  EXPECT_FALSE(query_detail::row(fallback, columns, 0, errors, std::span(native).first(4)));
+}
+}
