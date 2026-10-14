@@ -13659,7 +13659,7 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
   struct Page {
     unsigned char before[3]{0xa1, 0xa2, 0xa3};
-    unsigned char small[2]{0xee, 0xee}; unsigned char middle[3]{0xb1, 0xb2, 0xb3};
+    unsigned char small_value[2]{0xee, 0xee}; unsigned char middle[3]{0xb1, 0xb2, 0xb3};
     unsigned char integer[4]{0xee, 0xee, 0xee, 0xee};
     unsigned char big[8]{0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee};
     SQLLEN lengths[3]{91, 92, 93}; SQLLEN indicators[3]{94, 95, 96};
@@ -13673,7 +13673,7 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status.values, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count.value, 0));
-  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small, 2, &pages[0][0].lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small_value, 2, &pages[0][0].lengths[0]));
   ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 2, SQL_C_BINARY, pages[0][0].integer, 4, &pages[0][0].lengths[1]));
   ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 3, SQL_C_BINARY, pages[0][0].big, 8, &pages[0][0].lengths[2]));
   SQLHDESC ard{}; ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_ROW_DESC, &ard, 0, nullptr));
@@ -13691,8 +13691,8 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   EXPECT_EQ(2u, count.value); EXPECT_EQ(SQL_ROW_SUCCESS, status.values[0]); EXPECT_EQ(SQL_ROW_SUCCESS, status.values[1]);
   const auto verify_values = [&] {
     for (std::size_t row = 0; row < 2; ++row) {
-      const SQLSMALLINT small = row ? 44 : 11; const SQLINTEGER integer = row ? 55 : 22; const SQLBIGINT big = row ? 66 : 33;
-      EXPECT_EQ(0, std::memcmp(&small, pages[1][row].small, 2));
+      const SQLSMALLINT small_value = row ? 44 : 11; const SQLINTEGER integer = row ? 55 : 22; const SQLBIGINT big = row ? 66 : 33;
+      EXPECT_EQ(0, std::memcmp(&small_value, pages[1][row].small_value, 2));
       EXPECT_EQ(0, std::memcmp(&integer, pages[1][row].integer, 4));
       EXPECT_EQ(0, std::memcmp(&big, pages[1][row].big, 8));
       EXPECT_EQ(2, pages[1][row].lengths[0]); EXPECT_EQ(4, pages[1][row].lengths[1]); EXPECT_EQ(8, pages[1][row].lengths[2]);
@@ -13703,13 +13703,13 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   };
   ASSERT_NO_FATAL_FAILURE(verify_values());
   for (auto& page : pages[1]) {
-    std::fill(std::begin(page.small), std::end(page.small), 0xee);
+    std::fill(std::begin(page.small_value), std::end(page.small_value), 0xee);
     std::fill(std::begin(page.integer), std::end(page.integer), 0xee);
     std::fill(std::begin(page.big), std::end(page.big), 0xee);
     page.lengths[0] = 91; page.lengths[1] = 92; page.lengths[2] = 93;
     page.indicators[0] = 94; page.indicators[1] = 95; page.indicators[2] = 96;
   }
-  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small, 1, &pages[0][0].lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small_value, 1, &pages[0][0].lengths[0]));
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicators[0], 0));
   ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0)); EXPECT_EQ("22003", state());
   EXPECT_EQ(SQL_ROW_ERROR, status.values[0]); EXPECT_EQ(SQL_ROW_ERROR, status.values[1]); EXPECT_EQ(2u, count.value);
@@ -13718,7 +13718,7 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_COLUMN_NUMBER, &diagnostic_column, 0, nullptr));
   EXPECT_EQ(1, diagnostic_row); EXPECT_EQ(1, diagnostic_column);
   for (auto& page : pages[1]) {
-    for (auto byte : page.small) {
+    for (auto byte : page.small_value) {
       EXPECT_EQ(0xee, byte);
     }
     for (auto byte : page.integer) {
@@ -13730,7 +13730,7 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
     EXPECT_EQ(91, page.lengths[0]); EXPECT_EQ(92, page.lengths[1]); EXPECT_EQ(93, page.lengths[2]);
     EXPECT_EQ(94, page.indicators[0]); EXPECT_EQ(95, page.indicators[1]); EXPECT_EQ(96, page.indicators[2]);
   }
-  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small, 2, &pages[0][0].lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small_value, 2, &pages[0][0].lengths[0]));
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicators[0], 0));
   ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0)); ASSERT_NO_FATAL_FAILURE(verify_values());
   EXPECT_EQ(queries, seen->queries); EXPECT_EQ(0, seen->disconnects);
@@ -14274,9 +14274,9 @@ TEST_F(BackendContractTest, TinyintBinaryResultSyntheticColumnStrideSplitNullAnd
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)2, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
   std::array<unsigned char, 7> bytes;
-  std::array<unsigned char, 8> small;
+  std::array<unsigned char, 8> small_value;
   bytes.fill(0xa5);
-  small.fill(0xb5);
+  small_value.fill(0xb5);
   std::array<unsigned char, 2 * sizeof(SQLLEN) + 2> lengths, indicators, small_lengths;
   for (auto* storage : {&lengths, &indicators, &small_lengths}) {
     storage->fill(0xa5);
@@ -14290,7 +14290,7 @@ TEST_F(BackendContractTest, TinyintBinaryResultSyntheticColumnStrideSplitNullAnd
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, bytes.data(), 3, reinterpret_cast<SQLLEN*>(lengths.data())));
-  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 2, SQL_C_BINARY, small.data(), 3, reinterpret_cast<SQLLEN*>(small_lengths.data())));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 2, SQL_C_BINARY, small_value.data(), 3, reinterpret_cast<SQLLEN*>(small_lengths.data())));
   SQLHDESC ard{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_ROW_DESC, &ard, 0, nullptr));
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, indicators.data(), 0));
@@ -14301,13 +14301,13 @@ TEST_F(BackendContractTest, TinyintBinaryResultSyntheticColumnStrideSplitNullAnd
   const SQLSCHAR expected = -1;
   EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, 1));
   const SQLSMALLINT positive = 44, negative = -42;
-  EXPECT_EQ(0, std::memcmp(&positive, small.data() + 1, 2));
-  EXPECT_EQ(0, std::memcmp(&negative, small.data() + 4, 2));
+  EXPECT_EQ(0, std::memcmp(&positive, small_value.data() + 1, 2));
+  EXPECT_EQ(0, std::memcmp(&negative, small_value.data() + 4, 2));
   for (std::size_t i : {0u, 2u, 3u, 4u, 5u, 6u}) {
     EXPECT_EQ(0xa5, bytes[i]);
   }
   for (std::size_t i : {0u, 3u, 6u, 7u}) {
-    EXPECT_EQ(0xb5, small[i]);
+    EXPECT_EQ(0xb5, small_value[i]);
   }
   const auto read = [](const auto& storage, std::size_t row) {
     SQLLEN value{};
@@ -14400,13 +14400,13 @@ TEST_F(BackendContractTest, NumericInfoLengthQueriesPreserveOrdinaryScalarPublic
   ASSERT_NO_FATAL_FAILURE(connect());
   const auto queries = seen->queries;
   for (const auto api : {&SQLGetInfo, &SQLGetInfoW}) {
-    SQLUSMALLINT small = 73;
+    SQLUSMALLINT small_value = 73;
     SQLUINTEGER large = 79;
     SQLSMALLINT length = -1;
     EXPECT_EQ(SQL_SUCCESS, api(
-        dbc, SQL_MAX_DRIVER_CONNECTIONS, &small, -1, &length));
-    EXPECT_EQ(0, small);
-    EXPECT_EQ(sizeof(small), static_cast<std::size_t>(length));
+        dbc, SQL_MAX_DRIVER_CONNECTIONS, &small_value, -1, &length));
+    EXPECT_EQ(0, small_value);
+    EXPECT_EQ(sizeof(small_value), static_cast<std::size_t>(length));
     EXPECT_EQ(SQL_SUCCESS, api(dbc, SQL_GETDATA_EXTENSIONS, &large, 0, &length));
     EXPECT_EQ(static_cast<SQLUINTEGER>(
                   SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER | SQL_GD_BLOCK), large);
@@ -14424,7 +14424,7 @@ TEST_F(BackendContractTest, NumericInfoLengthQueriesPreserveOrdinaryScalarPublic
       if (type == SQL_MAX_DRIVER_CONNECTIONS) {
         SQLUSMALLINT actual = 73;
         std::memcpy(&actual, output.data() + 1, sizeof(actual));
-        EXPECT_EQ(small, actual);
+        EXPECT_EQ(small_value, actual);
       } else {
         SQLUINTEGER actual = 79;
         std::memcpy(&actual, output.data() + 1, sizeof(actual));

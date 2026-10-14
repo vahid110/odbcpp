@@ -1507,7 +1507,7 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_HeaderStringUsesIdentifierForEveryRecord
         std::array<SQLCHAR, 8> ansi{};
         EXPECT_EQ(SQL_SUCCESS, SQLGetDiagField(
             SQL_HANDLE_STMT, hstmt, record, SQL_DIAG_DYNAMIC_FUNCTION,
-            ansi.data(), ansi.size(), &length));
+            ansi.data(), static_cast<SQLSMALLINT>(ansi.size()), &length));
         EXPECT_EQ(4, length);
         EXPECT_EQ(0, std::memcmp(ansi.data(), malformed.data(), malformed.size()));
         EXPECT_EQ(malformed, statement->get_diagnostic_header().dynamic_function);
