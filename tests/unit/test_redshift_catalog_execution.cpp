@@ -4525,3 +4525,255 @@ TEST(RedshiftCurrentForeignKeys, LateLookupOrShowAndDeferredNativeFailureNeverPu
   EXPECT_EQ((SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire}), result.session_snapshot());
   EXPECT_EQ(2u, session.commands.size());
 }
+
+
+namespace {
+QueryResult varbyte_catalog_rows(std::string type = "varbyte",
+    ResultCell dimension = std::nullopt, std::string database = "selected",
+    std::string table = "rows") {
+  auto source = columns_response(std::move(database), "fixture", std::move(table));
+  source.rows = {{source.rows[0][0], "fixture", source.rows[0][2], "payload", "1",
+      "'owning default'", "YES", std::move(type), dimension, dimension, dimension,
+      "owning binary remark"}};
+  return source;
+}
+void expect_varbyte_catalog_row(const ResultRow& row, std::string_view label, bool parameter = false) {
+  ASSERT_EQ(parameter ? 19u : 18u, row.size());
+  EXPECT_EQ(ResultCell{"-4"}, row[parameter ? 5 : 4]);
+  EXPECT_EQ(ResultCell{"-4"}, row[parameter ? 14 : 13]);
+  EXPECT_EQ(ResultCell{std::string(label)}, row[parameter ? 6 : 5]);
+  const unsigned offset = parameter ? 1 : 0;
+  for (const unsigned column : {6u, 7u, 8u, 9u, 14u, 15u}) {
+    EXPECT_FALSE(row[column + offset]) << column + offset;
+  }
+}
+}
+
+TEST(RedshiftVarbyteCatalogTypes, ExactAliasesKeepOwningLabelsAndUnknownDimensions) {
+  for (const auto* label : {"varbyte", "VARBYTE", "varbinary", "VaRbInArY", "binary varying", "BINARY VARYING"}) {
+    for (const ResultCell& dimension : {ResultCell{}, ResultCell{"0"}, ResultCell{"1"}, ResultCell{"16777216"}}) {
+      SCOPED_TRACE(label);
+      auto source = varbyte_catalog_rows(label, dimension);
+      auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+          BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}});
+      ASSERT_TRUE(result) << result.error_message();
+      ASSERT_EQ(1u, result->rows.size());
+      ASSERT_EQ(18u, result->columns.size());
+      expect_varbyte_catalog_row(result->rows[0], label);
+      EXPECT_EQ(ResultCell{"payload"}, result->rows[0][3]);
+      EXPECT_EQ(ResultCell{"1"}, result->rows[0][16]);
+      EXPECT_EQ(ResultCell{"YES"}, result->rows[0][17]);
+      source.rows.clear();
+      EXPECT_EQ(ResultCell{"owning binary remark"}, result->rows[0][11]);
+      EXPECT_EQ(ResultCell{"'owning default'"}, result->rows[0][12]);
+    }
+  }
+}
+
+TEST(RedshiftVarbyteCatalogTypes, NearMissAndUnrelatedFamiliesRemainUnknown) {
+  for (const auto* label : {"varbyte[]", "varbyte_domain", " varbyte", "varbyte ",
+      "varbinary(8)", "binary  varying", "binary", "bytea", "SUPER", "geometry"}) {
+    SCOPED_TRACE(label);
+    auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{varbyte_catalog_rows(label),
+            {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(result);
+    ASSERT_EQ(1u, result->rows.size());
+    EXPECT_EQ(ResultCell{"0"}, result->rows[0][4]);
+    EXPECT_EQ(ResultCell{"0"}, result->rows[0][13]);
+    EXPECT_EQ(ResultCell{label}, result->rows[0][5]);
+    EXPECT_FALSE(result->rows[0][6]);
+    EXPECT_FALSE(result->rows[0][15]);
+  }
+}
+
+TEST(RedshiftVarbyteCatalogTypes, ExactAndMetadataIdentifiersKeepTheOriginalDeadline) {
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  for (const bool identifiers : {false, true}) {
+    SchemaSpy session;
+    session.show = varbyte_catalog_rows("VARBYTE");
+    auto input = column_request();
+    if (identifiers) {
+      input.catalog = "selected";
+      input.column = "payload";
+      input.name_matches.catalog = CatalogNameMatch::IdentifierQuoted;
+      input.name_matches.schema = CatalogNameMatch::IdentifierQuoted;
+      input.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+      input.name_matches.member = CatalogNameMatch::IdentifierQuoted;
+    }
+    auto result = session.execute_catalog(input, deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(1u, result->rows.size());
+    expect_varbyte_catalog_row(result->rows[0], "VARBYTE");
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        "SHOW COLUMNS FROM TABLE \"selected\".\"fixture\".\"rows\";"}), session.queries);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(2, deadline), session.deadlines);
+    EXPECT_EQ(0u, session.catalog_builds);
+    EXPECT_EQ(0u, session.prepared_calls);
+  }
+}
+
+TEST(RedshiftVarbyteCatalogTypes, TableFanoutKeepsAllOwningBinaryRowsAndPatternFiltering) {
+  for (const auto& table : {std::optional<std::string>{}, std::optional<std::string>{"a%"}}) {
+    WideColumnsSession session;
+    session.current({"z", "a"});
+    session.replies[2] = BackendResult<QueryResult>{
+        varbyte_catalog_rows("binary varying", std::nullopt, "db", "a"), session.snapshot};
+    session.replies[3] = BackendResult<QueryResult>{
+        varbyte_catalog_rows("varbinary", std::nullopt, "db", "z"), session.snapshot};
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = session.execute_catalog(wide_columns(table), deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(table ? 1u : 2u, result->rows.size());
+    expect_varbyte_catalog_row(result->rows[0], "binary varying");
+    EXPECT_EQ(ResultCell{"a"}, result->rows[0][2]);
+    if (!table) {
+      expect_varbyte_catalog_row(result->rows[1], "varbinary");
+      EXPECT_EQ(ResultCell{"z"}, result->rows[1][2]);
+    }
+    EXPECT_EQ(table ? 3u : 4u, session.commands.size());
+    EXPECT_EQ(std::vector<rs::util::Deadline>(session.commands.size(), deadline), session.deadlines);
+    session.replies.clear();
+    session.connected = false;
+    EXPECT_EQ(ResultCell{"owning binary remark"}, result->rows[0][11]);
+  }
+}
+
+TEST(RedshiftVarbyteCatalogTypes, RoutineInOutInoutAndReturnKeepNineteenFields) {
+  RoutineExecutionSession session;
+  session.discovery({{"db", "s", "p", "2", "varbyte, varbinary", std::nullopt, "owning"}},
+      {{"db", "s", "f", "0", "", "varbyte", std::nullopt}});
+  session.replies.erase(session.replies.begin()); // Explicit catalog skips identity lookup.
+  session.replies.emplace_back(routine_parameters(false, {
+      {"db", "s", "p", "out", "3", "OUT", "binary varying", std::nullopt, std::nullopt, std::nullopt},
+      {"db", "s", "p", "inout", "2", "INOUT", "varbinary", "0", "0", "0"},
+      {"db", "s", "p", "input", "1", "IN", "VARBYTE", "16777216", "0", "0"}}), session.snapshot);
+  session.replies.emplace_back(routine_parameters(true, {
+      {"db", "s", "f", "", "0", "RETURN", "varbyte", std::nullopt, std::nullopt, std::nullopt}}),
+      session.snapshot);
+  std::swap(session.replies[2], session.replies[3]); // Backend sorts f before p for parameter dispatch.
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto result = session.execute_catalog(ProcedureColumnsCatalogRequest{"db", "s", std::nullopt, std::nullopt},
+      deadline);
+  ASSERT_TRUE(result) << result.error_message();
+  ASSERT_EQ(19u, result->columns.size());
+  ASSERT_EQ(4u, result->rows.size());
+  const std::array<const char*, 4> labels{"varbyte", "VARBYTE", "varbinary", "binary varying"};
+  const std::array<const char*, 4> modes{"5", "1", "2", "4"};
+  for (unsigned i = 0; i < 4; ++i) {
+    expect_varbyte_catalog_row(result->rows[i], labels[i], true);
+    EXPECT_EQ(ResultCell{modes[i]}, result->rows[i][4]);
+    EXPECT_EQ(ResultCell{std::to_string(i ? i : 0)}, result->rows[i][17]);
+  }
+  EXPECT_EQ(4u, session.commands.size()); // Explicit catalog skips identity lookup.
+  EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+  session.replies.clear();
+  session.connected = false;
+  EXPECT_EQ(ResultCell{"binary varying"}, result->rows[3][6]);
+}
+
+TEST(RedshiftVarbyteCatalogTypes, HiddenMalformedRowsAndLateNativeFailureNeverPublishPrefix) {
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    WideColumnsSession session;
+    session.current({"a", "z"});
+    session.replies[2] = BackendResult<QueryResult>{
+        varbyte_catalog_rows("varbyte", std::nullopt, "db", "a"), session.snapshot};
+    auto source = varbyte_catalog_rows("varbyte", std::nullopt, "db", "z");
+    if (variant == 0) {
+      source.rows[0][2] = "foreign";
+    } else if (variant == 1) {
+      source.rows[0][4] = "0";
+    } else if (variant == 2) {
+      source.rows[0][8] = "not-a-number";
+    }
+    session.replies[3] = BackendResult<QueryResult>{std::move(source), session.snapshot};
+    if (variant == 3) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "late binary metadata denial"};
+      error.native_state = "42501";
+      error.session_state = SessionState::Idle;
+      error.disposition = SessionDisposition::Reusable;
+      session.replies[3] = error;
+    }
+    auto input = wide_columns();
+    input.column = "no-match"; // Hidden bad rows still have to be validated.
+    auto refused = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(4u, session.commands.size());
+    if (variant == 3) {
+      EXPECT_EQ("42501", refused.backend_error().native_state);
+    } else {
+      EXPECT_EQ(BackendErrorClass::InvalidMetadata, refused.backend_error().error_class);
+    }
+    session.current({"a"});
+    session.replies.back() = BackendResult<QueryResult>{
+        varbyte_catalog_rows("varbyte", std::nullopt, "db", "a"), session.snapshot};
+    auto recovered = session.execute_catalog(wide_columns(), rs::util::Deadline::max());
+    ASSERT_TRUE(recovered) << recovered.error_message();
+    ASSERT_EQ(1u, recovered->rows.size());
+    expect_varbyte_catalog_row(recovered->rows[0], "varbyte");
+  }
+}
+
+TEST(RedshiftVarbyteCatalogTypes, InvalidSnapshotAndCumulativeBudgetStillRefuse) {
+  WideColumnsSession retired;
+  retired.current({"a"});
+  retired.replies.back() = BackendResult<QueryResult>{
+      varbyte_catalog_rows("varbyte", std::nullopt, "db", "a"),
+      {SessionState::Unknown, SessionDisposition::Retire}};
+  auto refused = retired.execute_catalog(wide_columns(), rs::util::Deadline::max());
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, refused.backend_error().error_class);
+  EXPECT_EQ(SessionState::Unknown, refused.backend_error().session_state);
+  EXPECT_EQ(SessionDisposition::Retire, refused.backend_error().disposition);
+
+  WideColumnsSession limited;
+  ResultLimits limits;
+  limits.max_results = 2;
+  ASSERT_TRUE(limited.budgets(limits));
+  limited.current({"a"});
+  auto capped = limited.execute_catalog(wide_columns(), rs::util::Deadline::max());
+  wide_resource(capped);
+  EXPECT_EQ(2u, limited.commands.size()); // No selected-table SHOW after two exchanges.
+  EXPECT_EQ(1u, limited.replies.size());
+}
+
+TEST(RedshiftVarbyteCatalogTypes, EmptyAndExpiredRequestsNeverInventBinaryRows) {
+  SchemaSpy empty;
+  empty.show = varbyte_catalog_rows();
+  empty.show.rows.clear();
+  auto result = empty.execute_catalog(column_request(), rs::util::Deadline::max());
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->rows.empty());
+  EXPECT_EQ(18u, result->columns.size());
+  SchemaSpy expired;
+  expired.show = varbyte_catalog_rows();
+  auto refused = expired.execute_catalog(column_request(), rs::util::Clock::now());
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), refused.error());
+  EXPECT_EQ(0u, expired.direct_calls);
+}
+
+TEST(RedshiftVarbyteCatalogTypes, SchemaPatternFanoutKeepsClosedClassification) {
+  for (const auto& schema : {std::optional<std::string>{}, std::optional<std::string>{"%"},
+      std::optional<std::string>{"fixt%"}}) {
+    WideColumnsSession session;
+    session.replies.emplace_back(routine_identity(), session.snapshot);
+    session.replies.emplace_back(routine_schema_rows({
+        {"db", "fixture", "owner", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+    auto tables = tables_response("db");
+    tables.rows = {{"db", "fixture", "a", "TABLE", std::nullopt, std::nullopt}};
+    session.replies.emplace_back(std::move(tables), session.snapshot);
+    session.replies.emplace_back(varbyte_catalog_rows("varbyte", std::nullopt, "db", "a"), session.snapshot);
+    auto input = wide_columns("a%");
+    input.schema = schema;
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = session.execute_catalog(input, deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(1u, result->rows.size());
+    expect_varbyte_catalog_row(result->rows[0], "varbyte");
+    EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+        "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+  }
+}

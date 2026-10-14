@@ -391,7 +391,7 @@ TEST(CatalogQueryTest, RedshiftColumnsKeepQualifiedDimensionFamiliesAndUnknownFa
   }
   EXPECT_EQ(std::string::npos, query->find("CASE data_type"));
   EXPECT_EQ(std::string::npos, query->find("LOWER(data_type)"));
-  EXPECT_EQ(std::string::npos, query->find("WHEN 'varbyte'"));
+  EXPECT_NE(std::string::npos, query->find("WHEN 'varbyte'"));
   EXPECT_NE(std::string::npos, pg_query->find("WITH RECURSIVE domain_chain"));
   EXPECT_EQ(std::string::npos, pg_query->find("FROM svv_columns"));
   EXPECT_FALSE(redshift.is_connected());
@@ -703,4 +703,31 @@ TEST(CatalogQueryTest, ShowColumnsSchemaPatternsKeepGeneratedLegacyAndMetadataId
   ASSERT_TRUE(lowered);
   EXPECT_TRUE(redshift_column_names_are_literal(std::get<ColumnsCatalogRequest>(*lowered)));
   EXPECT_FALSE(redshift_columns_schema_wide(std::get<ColumnsCatalogRequest>(*lowered)));
+}
+
+
+TEST(CatalogQueryTest, RedshiftVarbyteCatalogAliasesKeepQualifiedTypesAndUnknownDimensions) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  PgDatabaseConnection pg;
+  const auto query = redshift.catalog_query(ColumnsCatalogRequest{"db", "s%", "t%", "b%"});
+  const auto postgres = pg.catalog_query(ColumnsCatalogRequest{"db", "s%", "t%", "b%"});
+  ASSERT_TRUE(query);
+  ASSERT_TRUE(postgres);
+  for (const char* alias : {"varbyte", "varbinary", "binary varying"}) {
+    const std::string clause = std::string("WHEN '") + alias + "' THEN -4";
+    const auto first = query->find(clause);
+    ASSERT_NE(std::string::npos, first);
+    EXPECT_NE(std::string::npos, query->find(clause, first + clause.size())); // SQL_DATA_TYPE reuses the same CASE.
+    EXPECT_EQ(std::string::npos, postgres->find(clause));
+  }
+  EXPECT_NE(std::string::npos, query->find("CASE LOWER(columns.data_type)"));
+  EXPECT_NE(std::string::npos, query->find("ELSE 0 END::smallint AS data_type"));
+  EXPECT_NE(std::string::npos, query->find("columns.data_type::text AS type_name"));
+  EXPECT_EQ(std::string::npos, query->find("CASE data_type"));
+  EXPECT_EQ(std::string::npos, query->find("16777216"));
+  EXPECT_EQ(std::string::npos, query->find("64000"));
+  EXPECT_NE(std::string::npos, query->find("ELSE NULL END::integer AS column_size"));
+  EXPECT_NE(std::string::npos, query->find("ELSE NULL END::integer AS buffer_length"));
+  EXPECT_NE(std::string::npos, query->find("ELSE NULL END::smallint AS num_prec_radix"));
 }
