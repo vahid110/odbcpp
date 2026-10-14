@@ -350,8 +350,10 @@ SQLRETURN convert_bit_result_to_binary(std::string_view value, void* buffer,
   return SQL_SUCCESS;
 }
 
-SQLSMALLINT fixed_numeric_binary_c_type(SQLSMALLINT sql_type) {
+SQLSMALLINT fixed_binary_result_c_type(SQLSMALLINT sql_type) {
   switch (sql_type) {
+    case SQL_TYPE_DATE:
+    case SQL_DATE: return SQL_C_TYPE_DATE;
     case SQL_TINYINT: return SQL_C_STINYINT;
     case SQL_SMALLINT: return SQL_C_SSHORT;
     case SQL_INTEGER: return SQL_C_SLONG;
@@ -363,17 +365,17 @@ SQLSMALLINT fixed_numeric_binary_c_type(SQLSMALLINT sql_type) {
   }
 }
 
-// Fixed numeric SQL-to-C binary is the host representation, not decimal text
+// Fixed numeric and DATE SQL-to-C binary uses the host representation, not text
 // or backend wire bytes. Validate into aligned scratch before any publication.
 // A null output serves our existing indicator-only binding contract.
-SQLRETURN convert_fixed_numeric_result_to_binary(SQLSMALLINT sql_type,
+SQLRETURN convert_fixed_result_to_binary(SQLSMALLINT sql_type,
     const std::string& value, void* buffer, SQLLEN buffer_length,
     SQLLEN* indicator, ConversionIssue* issue) {
   alignas(std::max_align_t) unsigned char scratch[
-      (std::max)(sizeof(SQLBIGINT), sizeof(SQLDOUBLE))]{};
+      (std::max)({sizeof(SQLBIGINT), sizeof(SQLDOUBLE), sizeof(SQL_DATE_STRUCT)})]{};
   SQLLEN width = 0;
   const auto result = TextDataConverter::convert_data(value,
-      fixed_numeric_binary_c_type(sql_type), scratch, sizeof(scratch),
+      fixed_binary_result_c_type(sql_type), scratch, sizeof(scratch),
       &width, issue);
   if (result == SQL_ERROR) return result;
   if (buffer && buffer_length < width) {
@@ -424,8 +426,8 @@ SQLRETURN indicator_only_result_length(SQLSMALLINT sql_type,
     }
     return bytes(units, unit_size);
   }
-  if (target_type == SQL_C_BINARY && fixed_numeric_binary_c_type(sql_type))
-    return convert_fixed_numeric_result_to_binary(sql_type, value,
+  if (target_type == SQL_C_BINARY && fixed_binary_result_c_type(sql_type))
+    return convert_fixed_result_to_binary(sql_type, value,
         nullptr, 0, &length, &issue);
   if (target_type == SQL_C_BINARY)
     return bytes(sql_type == SQL_BIT ? 1 : value.size(), 1); // Character-to-binary is raw bytes.
@@ -4809,8 +4811,8 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
               value, data_ptr, conversion_length, output_length,
               &conversion_issue);
         } else if (target_type == SQL_C_BINARY &&
-                   fixed_numeric_binary_c_type(sql_type)) {
-          conv_result = convert_fixed_numeric_result_to_binary(sql_type,
+                   fixed_binary_result_c_type(sql_type)) {
+          conv_result = convert_fixed_result_to_binary(sql_type,
               value, data_ptr, conversion_length, output_length,
               &conversion_issue);
         } else if (is_character_sql_type(sql_type) &&
@@ -5320,9 +5322,9 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   if (effective_target_type == SQL_C_BINARY) {
-    if (fixed_numeric_binary_c_type(sql_type)) {
+    if (fixed_binary_result_c_type(sql_type)) {
       ConversionIssue issue = ConversionIssue::None;
-      const auto result = convert_fixed_numeric_result_to_binary(sql_type,
+      const auto result = convert_fixed_result_to_binary(sql_type,
           value, buffer, buffer_length, indicator, &issue);
       set_conversion_diagnostic(*this, result, issue);
       if (result != SQL_ERROR) save_offset(complete);

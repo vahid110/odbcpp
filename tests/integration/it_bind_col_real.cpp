@@ -3581,12 +3581,41 @@ TEST_F(BindColIntegrationTest, GetDataValidatesAndResolvesTargetTypes) {
     EXPECT_EQ(completed, binary);
     EXPECT_EQ(83, binary_length);
 
-    // Preserve unsupported SQL-family coverage after enabling signed integers.
+    // Preserve unsupported DATE-to-numeric coverage after enabling DATE binary.
     EXPECT_EQ(SQL_ERROR, SQLGetData(
-        hstmt, 4, SQL_C_BINARY, value, sizeof(value), &value_length));
+        hstmt, 4, SQL_C_SLONG, value, sizeof(value), &value_length));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("42", value);
+    EXPECT_EQ(2, value_length);
+    std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 2> date_bytes;
+    date_bytes.fill(0xa5);
+    const auto date_before = date_bytes;
+    SQLLEN date_length = 79;
+    for (SQLLEN capacity = 0; capacity < static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)); ++capacity) {
+        SCOPED_TRACE(capacity);
+        ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, 4, SQL_C_BINARY,
+            date_bytes.data() + 1, capacity, &date_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        EXPECT_EQ(date_before, date_bytes);
+        EXPECT_EQ(79, date_length);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_BINARY,
+        date_bytes.data() + 1, sizeof(SQL_DATE_STRUCT), &date_length));
+    const SQL_DATE_STRUCT expected_date{2024, 2, 29};
+    EXPECT_EQ(0, std::memcmp(&expected_date, date_bytes.data() + 1, sizeof(expected_date)));
+    EXPECT_EQ(sizeof(expected_date), date_length);
+    EXPECT_EQ(0xa5, date_bytes.front());
+    EXPECT_EQ(0xa5, date_bytes.back());
+    const auto date_completed = date_bytes;
+    date_length = 83;
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 4, SQL_C_BINARY,
+        date_bytes.data() + 1, sizeof(expected_date), &date_length));
+    EXPECT_EQ(date_completed, date_bytes);
+    EXPECT_EQ(83, date_length);
 }
 
 TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
@@ -3854,4 +3883,55 @@ TEST_F(BindColIntegrationTest, SmallintBinaryKeepsNativeWidthBesideSignedByteTar
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_STINYINT, &tiny, 0, &length));
     EXPECT_EQ(-128, tiny);
     EXPECT_EQ(1, length);
+}
+
+
+TEST_F(BindColIntegrationTest, DateBinaryResultWholeStructureShortRetryNullAndRefill) {
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)5, 0));
+    const SQL_DATE_STRUCT expected{2024, 2, 29};
+    std::array<unsigned char, sizeof(SQL_DATE_STRUCT) + 2> bytes;
+    bytes.fill(0xa5);
+    SQLLEN length = 79;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, sizeof(expected), &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT DATE '2024-02-29'", SQL_NTS));
+    SQLSMALLINT type{};
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_TYPE_DATE, type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(0, std::memcmp(&expected, bytes.data() + 1, sizeof(expected)));
+    EXPECT_EQ(sizeof(expected), length);
+    EXPECT_EQ(0xa5, bytes.front());
+    EXPECT_EQ(0xa5, bytes.back());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_UNBIND));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT DATE '2000-02-29'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    bytes.fill(0xa5);
+    const auto before = bytes;
+    length = 79;
+    for (SQLLEN capacity = 0; capacity < static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)); ++capacity) {
+        ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, capacity, &length));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        EXPECT_EQ(before, bytes);
+        EXPECT_EQ(79, length);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, sizeof(expected), &length));
+    const SQL_DATE_STRUCT refill{2000, 2, 29};
+    EXPECT_EQ(0, std::memcmp(&refill, bytes.data() + 1, sizeof(refill)));
+    EXPECT_EQ(sizeof(refill), length);
+    const auto completed = bytes;
+    length = 83;
+    ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_BINARY, bytes.data() + 1, sizeof(expected), &length));
+    EXPECT_EQ(completed, bytes);
+    EXPECT_EQ(83, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT CAST(NULL AS DATE)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+        reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(40));
 }

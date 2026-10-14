@@ -336,3 +336,33 @@ input ownership and same-statement recovery remain asserted. Generic counterpart
 Native/link/list/body and Redshift execution are separately protected checkpoint
 debt; no new raw VARBYTE support, vendor binary parity or application acceptance
 is claimed by local GoogleTests or syntax qualification.
+
+
+### DATE result binary retrieval
+
+`BindColIntegrationTest.DateBinaryResultWholeStructureShortRetryNullAndRefill`
+and the changed DATE section of `GetDataValidatesAndResolvesTargetTypes` are
+new/affected authored native assertions, locally syntax-qualified only when the
+candidate report records it. No native bodies or Redshift SQL were executed by
+local development. Future Redshift execution requires separately reviewed finite
+existing-principal/DSN/TLS admission with the exact current source and binary;
+this ledger creates no admission, login or spending authority.
+
+The new case uses the existing fixture's one login and three fixed SELECTs
+(two DATE literals and one typed NULL), no preparation, DDL/DML/resources or
+privilege change. API SQL upper3, not a wire capture. One column/row/cell per
+query, at most10 text bytes per non-NULL date, fixed6-byte DATE structure output;
+40s case assertion and existing query timeout5s. Login/TLS and exact-principal
+cleanup remain admission responsibilities; the marker or fixture alone proves
+none. The affected old case uses its original one SELECT/four columns and adds
+only local DATE GetData checks; no additional query is introduced there.
+
+Assertions cover native SQL_TYPE_DATE metadata, year/month/day host structure
+bytes, all short capacities0..sizeof(SQL_DATE_STRUCT)-1 with22003/no publication,
+correct retry/fixedSQL_NO_DATA, bound output, close/refill and NULL poison safety.
+The original DATE-to-BINARY negative becomes DATE-to-SLONG07006; ARD/default,
+invalid C typeHY003, integer binary and canaries remain. Host struct/owning Date
+conversion is not backend wire/cross-endian/vendor-release parity. LegacySQL_DATE
+and parser year0000 are source/unit policies only; no native exposure/calendar
+expansion is claimed. Full/platform/native/currentdriver/link-list/live/final
+coverage remains protected checkpoint debt.
