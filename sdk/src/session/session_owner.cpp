@@ -786,8 +786,11 @@ BackendResult<PreparedResultStep> SessionLease::advance_result_sequence(Prepared
           if (!column.normalized_type || column.name.find('\0') != std::string::npos ||
               !rs::util::utf8_code_point_count(column.name) || !expected.normalized_type) { valid = false; continue; }
           const auto& actual = *column.normalized_type; const auto& described = *expected.normalized_type;
-          if (actual.type != described.type || actual.column_size != described.column_size ||
-              actual.decimal_digits != described.decimal_digits || actual.known != described.known) valid = false;
+          // The explicit sequence owns one frozen schema, including presentation origin.
+          if (column.name != expected.name || actual.type != described.type ||
+              actual.column_size != described.column_size || actual.decimal_digits != described.decimal_digits ||
+              actual.known != described.known || actual.declared_type != described.declared_type ||
+              actual.declared_column_size != described.declared_column_size) valid = false;
           if (column.name.size() > sequence.limits_.max_column_name_bytes) bounded = false;
           bounded = consume(column.name.size(), sequence.limits_.max_metadata_name_bytes, sequence.names_) && bounded;
         }

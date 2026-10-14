@@ -1811,6 +1811,215 @@ TEST(PreparedResultSequenceTest, OneOwningResultPerAdvanceExactDeadlineAndOrigin
   EXPECT_FALSE(lease->advance_result_sequence(*sequence)); EXPECT_EQ(2, observed->queries);
   lease->retire(); EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
 }
+TEST(PreparedResultSequenceTest, ExactSchemaIdentityAcceptsOwningResults) {
+  const std::array<NativeTypeInfo, 3> schemas{{
+      {ScalarType::Integer, 10, 0, true},
+      {ScalarType::VarChar, 1, 0, true, ScalarType::Boolean, 1},
+      {ScalarType::LongVarChar, 17, 0, true, ScalarType::VarChar, 250}}};
+  for (const auto& schema : schemas) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_select_description(observed);
+    observed->description_result->value().columns = {{"flag", schema}};
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    const auto deadline = rs::util::Clock::now() + std::chrono::seconds{3};
+    int descriptions = 0;
+    observed->on_description = [&](auto, auto, auto actual) {
+      ++descriptions;
+      EXPECT_EQ(deadline, actual);
+      EXPECT_EQ(0, observed->queries);
+    };
+    observed->on_execution = [&](auto, auto parameters, auto actual, bool prepared) {
+      EXPECT_TRUE(prepared);
+      EXPECT_EQ(deadline, actual);
+      ASSERT_EQ(1u, parameters.size());
+      const bool first = parameters[0].value == std::optional<std::string>{"11"};
+      auto result = literal_sequence_value(first ? "1" : "0");
+      result.columns = {{"flag", schema}};
+      result.rows.push_back({std::nullopt});
+      observed->execution_result = BackendResult<QueryResult>{std::move(result),
+          {SessionState::Idle, SessionDisposition::Reusable}};
+    };
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, deadline, true);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(1, descriptions);
+    auto sequence = lease->start_result_sequence(std::move(*plan), 8);
+    ASSERT_TRUE(sequence);
+    observed->description_result.reset(); // The sequence owns its frozen schema.
+    auto first = lease->advance_result_sequence(*sequence);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(first->result);
+    EXPECT_FALSE(first->error);
+    EXPECT_EQ(1u, first->ordinal);
+    EXPECT_EQ(1u, first->examined);
+    EXPECT_EQ(1, observed->queries);
+    auto third = lease->advance_result_sequence(*sequence);
+    ASSERT_TRUE(third);
+    ASSERT_TRUE(third->result);
+    EXPECT_EQ(3u, third->ordinal);
+    EXPECT_EQ(3u, third->examined);
+    EXPECT_EQ(2, observed->queries);
+    EXPECT_EQ(1, descriptions); // No lookahead or re-description.
+    auto end = lease->advance_result_sequence(*sequence);
+    ASSERT_TRUE(end);
+    EXPECT_FALSE(end->result);
+    EXPECT_FALSE(end->error);
+    EXPECT_EQ(3u, end->examined);
+    EXPECT_EQ(2, observed->queries);
+    lease->retire();
+    EXPECT_EQ(std::optional<std::string>{"1"}, first->result->rows[0][0]);
+    EXPECT_FALSE(first->result->rows[1][0]);
+    EXPECT_EQ("flag", first->result->columns[0].name);
+    EXPECT_EQ(schema.type, first->result->columns[0].normalized_type->type);
+    EXPECT_EQ(schema.declared_type, first->result->columns[0].normalized_type->declared_type);
+    EXPECT_EQ(schema.declared_column_size, first->result->columns[0].normalized_type->declared_column_size);
+    EXPECT_EQ(std::optional<std::string>{"0"}, third->result->rows[0][0]);
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+  }
+}
+
+TEST(PreparedResultSequenceTest, ColumnNameDriftRefusesBeforePublication) {
+  const std::array<std::pair<std::string, std::string>, 3> names{{
+      {"flag", "renamed_flag"}, {"", "flag"}, {"flag", ""}}};
+  for (const auto& [described, actual] : names) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_select_description(observed);
+    observed->description_result->value().columns[0].name = described;
+    observed->execution_result->value().columns[0].name = actual;
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max(), true);
+    ASSERT_TRUE(plan);
+    auto sequence = lease->start_result_sequence(std::move(*plan), 32);
+    ASSERT_TRUE(sequence);
+    auto rejected = lease->advance_result_sequence(*sequence);
+    ASSERT_TRUE(rejected);
+    ASSERT_TRUE(rejected->error);
+    EXPECT_EQ(BackendErrorClass::Protocol, rejected->error->error_class);
+    EXPECT_EQ(BackendOperation::ExecutePrepared, rejected->error->operation);
+    EXPECT_EQ(SessionDisposition::Retire, rejected.session_snapshot().disposition);
+    EXPECT_EQ(SessionState::Disconnected, rejected.session_snapshot().state);
+    EXPECT_EQ(1u, rejected->ordinal);
+    EXPECT_EQ(1u, rejected->examined);
+    EXPECT_FALSE(rejected->result);
+    EXPECT_FALSE(sequence->pending());
+    EXPECT_FALSE(*lease);
+    EXPECT_EQ(1, observed->queries);
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+    EXPECT_FALSE(lease->advance_result_sequence(*sequence));
+    EXPECT_EQ(1, observed->queries);
+  }
+}
+
+TEST(PreparedResultSequenceTest, DeclaredPresentationIdentityDriftRefuses) {
+  const NativeTypeInfo boolean_text{ScalarType::VarChar, 1, 0, true, ScalarType::Boolean, 1};
+  const NativeTypeInfo long_text{ScalarType::LongVarChar, 17, 0, true, ScalarType::Char, 250};
+  const NativeTypeInfo plain_text{ScalarType::VarChar, 1, 0, true};
+  const std::array<std::pair<NativeTypeInfo, NativeTypeInfo>, 10> schemas{{
+      {boolean_text, {ScalarType::VarChar, 1, 0, true, std::nullopt, 1}},
+      {boolean_text, {ScalarType::VarChar, 1, 0, true, ScalarType::Boolean, std::nullopt}},
+      {boolean_text, plain_text},
+      {plain_text, boolean_text},
+      {long_text, {ScalarType::LongVarChar, 17, 0, true, ScalarType::VarChar, 250}},
+      {long_text, {ScalarType::LongVarChar, 17, 0, true, ScalarType::Char, 300}},
+      {plain_text, {ScalarType::Char, 1, 0, true}},
+      {plain_text, {ScalarType::VarChar, 2, 0, true}},
+      {plain_text, {ScalarType::VarChar, 1, 1, true}},
+      {plain_text, {ScalarType::VarChar, 1, 0, false}}}};
+  for (const auto& [described, actual] : schemas) {
+    auto observed = std::make_shared<Observed>();
+    authoritative_select_description(observed);
+    observed->description_result->value().columns = {{"flag", described}};
+    observed->execution_result->value().columns = {{"flag", actual}};
+    observed->execution_result->value().rows = {{"1"}};
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+        rs::util::Deadline::max(), true);
+    ASSERT_TRUE(plan);
+    auto sequence = lease->start_result_sequence(std::move(*plan), 32);
+    ASSERT_TRUE(sequence);
+    auto rejected = lease->advance_result_sequence(*sequence);
+    ASSERT_TRUE(rejected);
+    ASSERT_TRUE(rejected->error);
+    EXPECT_EQ(BackendErrorClass::Protocol, rejected->error->error_class);
+    EXPECT_EQ(1u, rejected->ordinal);
+    EXPECT_FALSE(rejected->result);
+    EXPECT_FALSE(sequence->pending());
+    EXPECT_FALSE(*lease);
+    EXPECT_EQ(1, observed->queries);
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+    EXPECT_FALSE(lease->advance_result_sequence(*sequence));
+    EXPECT_EQ(1, observed->queries);
+  }
+}
+
+TEST(PreparedResultSequenceTest, TerminalMismatchPreservesOwnershipAndFreshRecovery) {
+  auto observed = std::make_shared<Observed>();
+  authoritative_select_description(observed);
+  auto owner = owner_for(observed);
+  auto lease = owner.try_acquire();
+  ASSERT_TRUE(lease);
+  auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+      rs::util::Deadline::max(), true);
+  ASSERT_TRUE(plan);
+  auto sequence = lease->start_result_sequence(std::move(*plan), 32);
+  ASSERT_TRUE(sequence);
+  auto first = lease->advance_result_sequence(*sequence);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(first->result);
+  observed->execution_result->value().columns[0].name = "changed";
+  observed->execution_result->value().rows = {{"33"}};
+  auto rejected = lease->advance_result_sequence(*sequence);
+  ASSERT_TRUE(rejected);
+  ASSERT_TRUE(rejected->error);
+  EXPECT_EQ(BackendErrorClass::Protocol, rejected->error->error_class);
+  EXPECT_EQ(3u, rejected->ordinal); // Original ignored ordinal two is preserved.
+  EXPECT_EQ(3u, rejected->examined);
+  EXPECT_FALSE(rejected->result);
+  EXPECT_FALSE(sequence->pending());
+  EXPECT_EQ(2, observed->queries);
+  EXPECT_EQ(1, observed->disconnects);
+  EXPECT_EQ(1, observed->destructions);
+  EXPECT_EQ("id", first->result->columns[0].name);
+  EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
+  observed->on_passive = [] { ADD_FAILURE() << "Terminal sequence must not inspect a backend"; };
+  EXPECT_FALSE(lease->advance_result_sequence(*sequence));
+  EXPECT_EQ(2, observed->queries);
+
+  auto fresh_observed = std::make_shared<Observed>();
+  authoritative_select_description(fresh_observed);
+  auto fresh_owner = owner_for(fresh_observed);
+  auto fresh_lease = fresh_owner.try_acquire();
+  ASSERT_TRUE(fresh_lease);
+  PreparedResultSequence moved{std::move(*sequence)};
+  fresh_observed->on_passive = [] { ADD_FAILURE() << "Stale sequence must not inspect a fresh borrow"; };
+  EXPECT_FALSE(fresh_lease->advance_result_sequence(moved));
+  EXPECT_TRUE(*fresh_lease);
+  EXPECT_EQ(0, fresh_observed->queries);
+  fresh_observed->on_passive = {};
+  auto fresh_plan = fresh_lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {},
+      rs::util::Deadline::max(), true);
+  ASSERT_TRUE(fresh_plan);
+  auto fresh_sequence = fresh_lease->start_result_sequence(std::move(*fresh_plan), 32);
+  ASSERT_TRUE(fresh_sequence);
+  auto recovered = fresh_lease->advance_result_sequence(*fresh_sequence);
+  ASSERT_TRUE(recovered);
+  ASSERT_TRUE(recovered->result);
+  EXPECT_FALSE(recovered->error);
+  EXPECT_EQ(1u, recovered->ordinal);
+  EXPECT_EQ(1, fresh_observed->queries);
+  EXPECT_EQ(0, fresh_observed->disconnects);
+  EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
+}
+
 TEST(PreparedResultSequenceTest, MissingAuthorityAndZeroFieldResultVersusNoDataRemainDistinct) {
   for (bool supported : {false, true}) {
     auto observed = std::make_shared<Observed>(); authoritative_select_description(observed, false);
