@@ -10461,7 +10461,10 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
     capture(recovered);
     ASSERT_FALSE(HasFatalFailure());
     EXPECT_EQ(owning[mode], recovered);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt_));
+    hstmt_ = nullptr;
     ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc_));
+    connected_ = false;
   }
   EXPECT_EQ(owning[0], owning[1]);
   RecordProperty("native_scope", "existing-table VARBYTE catalog classification; no DDL");
