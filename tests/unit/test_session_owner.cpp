@@ -2211,6 +2211,262 @@ TEST(DeferredCommandAuthorityTest, ResultShapeTypeEntryAndValueLimitsRefuseWitho
   auto plan = lease->finalize_command_batch(std::move(*repaired),fixed_command_sets()); EXPECT_TRUE(plan);
   EXPECT_EQ(0,observed->queries); EXPECT_EQ(0,observed->disconnects);
 }
+TEST(DeferredFinalizationTest, AcceptedCurrentAuthorityExpiryRetiresBeforeReturningTimeout) {
+  for (const bool results : {false, true}) {
+    auto observed = std::make_shared<Observed>();
+    if (results) {
+      authoritative_select_description(observed);
+    } else {
+      authoritative_command_description(observed);
+    }
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    const auto deadline = rs::util::Clock::now() + std::chrono::milliseconds{30};
+    auto authority = lease->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+        3, {}, {}, deadline, results);
+    ASSERT_TRUE(authority);
+    observed->on_description = [](auto, auto, auto) { ADD_FAILURE() << "No re-description on expiry"; };
+    observed->on_passive = [] { ADD_FAILURE() << "No backend observation on expiry"; };
+    observed->on_transaction = [](auto, auto) { ADD_FAILURE() << "No transaction on expiry"; };
+    observed->on_reset = [] { ADD_FAILURE() << "No reset on expiry"; };
+    std::this_thread::sleep_until(deadline);
+    auto expired = results
+        ? lease->finalize_parameter_input(std::move(*authority), fixed_command_sets())
+        : lease->finalize_command_batch(std::move(*authority), fixed_command_sets());
+    ASSERT_FALSE(expired);
+    EXPECT_EQ(BackendErrorClass::Timeout, expired.backend_error().error_class);
+    EXPECT_EQ(SessionState::Unknown, expired.session_snapshot().state);
+    EXPECT_EQ(SessionDisposition::Retire, expired.session_snapshot().disposition);
+    EXPECT_TRUE(expired.error_message().empty());
+    EXPECT_FALSE(*lease);
+    EXPECT_FALSE(owner.try_acquire());
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+    EXPECT_EQ(0, observed->queries);
+    EXPECT_EQ(0, observed->resets);
+    EXPECT_EQ(0, observed->health);
+  }
+}
+
+TEST(DeferredFinalizationTest, StaleMovedWrongAndReacquiredExpiryCannotRetireFreshBorrow) {
+  for (const bool results : {false, true}) {
+    CredentialContext credentials;
+    const auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    if (results) {
+      authoritative_select_description(observed);
+    } else {
+      authoritative_command_description(observed);
+    }
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto first = owner.try_acquire(token);
+    ASSERT_TRUE(first);
+    const auto deadline = rs::util::Clock::now() + std::chrono::milliseconds{30};
+    auto authority = first->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+        3, {}, {}, deadline, results);
+    ASSERT_TRUE(authority);
+    auto moved = std::move(*authority);
+    std::this_thread::sleep_until(deadline);
+    observed->on_passive = [] { ADD_FAILURE() << "Passive refusal must not inspect backend"; };
+    auto moved_from = first->finalize_parameter_input(std::move(*authority), fixed_command_sets());
+    ASSERT_FALSE(moved_from);
+    EXPECT_EQ(BackendErrorClass::InvalidInput, moved_from.backend_error().error_class);
+    EXPECT_TRUE(*first);
+    auto other_observed = std::make_shared<Observed>();
+    auto other_owner = owner_for(other_observed);
+    auto other = other_owner.try_acquire();
+    ASSERT_TRUE(other);
+    other_observed->on_passive = [] { ADD_FAILURE() << "Wrong owner must not observe"; };
+    EXPECT_FALSE(other->finalize_parameter_input(std::move(moved), fixed_command_sets()));
+    EXPECT_TRUE(*other);
+    EXPECT_TRUE(first->accepts_parameter_description(moved));
+    EXPECT_EQ(0, other_observed->disconnects);
+    observed->on_passive = {};
+    ASSERT_TRUE(first->return_reusable(rs::util::Deadline::max()));
+    auto fresh = owner.try_acquire(token);
+    ASSERT_TRUE(fresh);
+    observed->on_passive = [] { ADD_FAILURE() << "Old authority must not inspect fresh borrow"; };
+    EXPECT_FALSE(fresh->finalize_parameter_input(std::move(moved), fixed_command_sets()));
+    EXPECT_TRUE(*fresh);
+    EXPECT_EQ(0, observed->disconnects);
+    EXPECT_EQ(0, observed->queries);
+    EXPECT_EQ(1, observed->resets);
+    observed->on_passive = {};
+    auto current = fresh->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+        3, {}, {}, rs::util::Deadline::max(), results);
+    ASSERT_TRUE(current);
+    auto plan = fresh->finalize_parameter_input(std::move(*current), fixed_command_sets());
+    ASSERT_TRUE(plan);
+    EXPECT_FALSE(fresh->finalize_parameter_input(std::move(*current), fixed_command_sets()));
+    EXPECT_TRUE(*fresh);
+    EXPECT_EQ(0, observed->queries);
+    EXPECT_EQ(0, observed->disconnects);
+  }
+}
+
+TEST(DeferredFinalizationTest, NonexpiredOwningFinalizationAndLocalRefusalKeepPrecedence) {
+  for (const bool results : {false, true}) {
+    auto observed = std::make_shared<Observed>();
+    if (results) {
+      authoritative_select_description(observed);
+    } else {
+      authoritative_command_description(observed);
+    }
+    auto owner = owner_for(observed);
+    auto lease = owner.try_acquire();
+    ASSERT_TRUE(lease);
+    const auto deadline = rs::util::Clock::now() + std::chrono::seconds{3};
+    auto authority = lease->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+        3, {}, {}, deadline, results);
+    ASSERT_TRUE(authority);
+    auto sets = fixed_command_sets();
+    sets[0].values[0].value.reset(); // Owning typed NULL beside ignored ordinal two.
+    observed->on_description = [](auto, auto, auto) { ADD_FAILURE() << "Finalization cannot redescribe"; };
+    auto plan = lease->finalize_parameter_input(std::move(*authority), std::move(sets));
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(0, observed->queries);
+    std::vector<std::optional<std::string>> received;
+    observed->on_execution = [&](auto, auto values, auto actual, bool prepared) {
+      EXPECT_TRUE(prepared);
+      EXPECT_EQ(deadline, actual);
+      ASSERT_EQ(1u, values.size());
+      EXPECT_EQ(QueryParameterType::Int32, values[0].type);
+      received.push_back(values[0].value);
+      QueryResult value;
+      if (results) {
+        value = literal_sequence_value("33");
+        value.rows[0][0] = values[0].value;
+      } else {
+        value.execution_result_shape = ExecutionResultShape::NoResultSet;
+        value.statement_kind = StatementKind::UpdateWhere;
+        value.affected_rows = 4;
+      }
+      observed->execution_result = BackendResult<QueryResult>{std::move(value),
+          {SessionState::Idle, SessionDisposition::Reusable}};
+    };
+    if (results) {
+      auto sequence = lease->start_result_sequence(std::move(*plan), 16);
+      ASSERT_TRUE(sequence);
+      auto first = lease->advance_result_sequence(*sequence);
+      ASSERT_TRUE(first);
+      ASSERT_TRUE(first->result);
+      EXPECT_FALSE(first->result->rows[0][0]);
+      auto third = lease->advance_result_sequence(*sequence);
+      ASSERT_TRUE(third);
+      ASSERT_TRUE(third->result);
+      EXPECT_EQ(3u, third->ordinal);
+      EXPECT_EQ(std::optional<std::string>{"33"}, third->result->rows[0][0]);
+    } else {
+      auto batch = lease->execute_command_batch(std::move(*plan));
+      ASSERT_TRUE(batch);
+      EXPECT_EQ(3u, batch->examined);
+      EXPECT_EQ(PreparedCommandOutcome::State::Skipped, batch->outcomes[1].state);
+    }
+    EXPECT_EQ((std::vector<std::optional<std::string>>{std::nullopt, "33"}), received);
+    EXPECT_EQ(2, observed->queries);
+    EXPECT_EQ(0, observed->disconnects);
+    observed->on_description = {};
+    observed->on_execution = {};
+
+    for (int fault : {0, 1, 2, 3, 4}) {
+      InputLimits limits;
+      if (fault == 3) {
+        limits.max_parameter_bytes = 1;
+      }
+      const auto cutoff = rs::util::Clock::now() + std::chrono::milliseconds{30};
+      auto local = lease->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+          3, limits, {}, cutoff, results);
+      ASSERT_TRUE(local);
+      auto invalid = fixed_command_sets();
+      if (fault == 0) {
+        invalid.pop_back();
+      } else if (fault == 1) {
+        invalid[1].values = {{"22", QueryParameterType::Int32}};
+      } else if (fault == 2) {
+        invalid[2].values[0].type = QueryParameterType::Text;
+      } else if (fault == 4) {
+        for (auto& set : invalid) {
+          set.ignored = true;
+          set.values.clear();
+        }
+      }
+      std::this_thread::sleep_until(cutoff);
+      auto refused = lease->finalize_parameter_input(std::move(*local), std::move(invalid));
+      ASSERT_FALSE(refused);
+      EXPECT_EQ(BackendErrorClass::InvalidInput, refused.backend_error().error_class);
+      EXPECT_TRUE(*lease); // Local validation retains precedence over expiry.
+      EXPECT_EQ(2, observed->queries);
+      EXPECT_EQ(0, observed->disconnects);
+      auto repaired = lease->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+          3, {}, {}, rs::util::Deadline::max(), results);
+      ASSERT_TRUE(repaired);
+      EXPECT_TRUE(lease->finalize_parameter_input(std::move(*repaired), fixed_command_sets()));
+    }
+  }
+}
+
+TEST(DeferredFinalizationTest, TerminalReplayCacheInvalidationPriorOwnershipAndFreshRecovery) {
+  for (const bool throw_disconnect : {false, true}) {
+    CredentialContext credentials;
+    const auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    authoritative_select_description(observed);
+    QueryResult prior;
+    prior.columns = {{"owned", NativeTypeInfo{ScalarType::VarChar, 32, 0, true}}};
+    prior.rows = {{std::string{"own\0value", 9}}};
+    observed->execution_result = BackendResult<QueryResult>{prior,
+        {SessionState::Idle, SessionDisposition::Reusable}};
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token);
+    ASSERT_TRUE(lease);
+    auto retained = lease->execute_query("prior", rs::util::Deadline::max());
+    ASSERT_TRUE(retained);
+    const auto deadline = rs::util::Clock::now() + std::chrono::milliseconds{30};
+    auto authority = lease->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+        3, {}, {}, deadline, true);
+    ASSERT_TRUE(authority);
+    auto scope = lease->cache_token();
+    ASSERT_TRUE(scope);
+    auto copy = *scope;
+    EXPECT_TRUE(copy.is_current());
+    observed->throw_disconnect = throw_disconnect;
+    observed->on_disconnect = [&] {
+      EXPECT_FALSE(*lease);
+      EXPECT_FALSE(copy.is_current()); // Invalidated before backend cleanup callback.
+    };
+    observed->on_passive = [] { ADD_FAILURE() << "Expiry cannot inspect provider"; };
+    std::this_thread::sleep_until(deadline);
+    auto expired = lease->finalize_parameter_input(std::move(*authority), fixed_command_sets());
+    ASSERT_FALSE(expired);
+    EXPECT_EQ(BackendErrorClass::Timeout, expired.backend_error().error_class);
+    EXPECT_FALSE(*lease);
+    EXPECT_FALSE(scope->is_current());
+    EXPECT_FALSE(copy.is_current());
+    EXPECT_FALSE(owner.try_acquire(token));
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ(1, observed->destructions);
+    EXPECT_EQ(1, observed->queries);
+    EXPECT_FALSE(lease->finalize_parameter_input(std::move(*authority), fixed_command_sets()));
+    lease->retire();
+    EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ((std::optional<std::string>{std::string{"own\0value", 9}}), retained->rows[0][0]);
+    EXPECT_EQ("owned", retained->columns[0].name);
+    auto fresh_observed = std::make_shared<Observed>();
+    authoritative_select_description(fresh_observed);
+    auto fresh_owner = owner_for(fresh_observed);
+    auto fresh = fresh_owner.try_acquire();
+    ASSERT_TRUE(fresh);
+    auto current = fresh->describe_parameter_input("fixture ?", {QueryParameterType::Int32},
+        3, {}, {}, rs::util::Deadline::max(), true);
+    ASSERT_TRUE(current);
+    EXPECT_TRUE(fresh->finalize_parameter_input(std::move(*current), fixed_command_sets()));
+    EXPECT_TRUE(*fresh);
+    EXPECT_EQ(0, fresh_observed->queries);
+    EXPECT_EQ(0, fresh_observed->disconnects);
+  }
+}
+
 TEST(DeferredCommandAuthorityTest, OriginalDeadlineIncludesCollectionAndTerminalDescriptionNeverAuthorizesValues) {
   auto observed = std::make_shared<Observed>(); authoritative_command_description(observed);
   auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
@@ -2219,11 +2475,19 @@ TEST(DeferredCommandAuthorityTest, OriginalDeadlineIncludesCollectionAndTerminal
   std::this_thread::sleep_until(deadline);
   auto expired=lease->finalize_command_batch(std::move(*authority),fixed_command_sets()); ASSERT_FALSE(expired);
   EXPECT_EQ(BackendErrorClass::Timeout,expired.backend_error().error_class); EXPECT_EQ(0,observed->queries);
-  authoritative_command_description(observed);
-  observed->description_result=BackendResult<QueryResult>{**observed->description_result,
+  // A separate live owner preserves the terminal-description control after expiry.
+  auto terminal_observed = std::make_shared<Observed>();
+  authoritative_command_description(terminal_observed);
+  auto terminal_owner = owner_for(terminal_observed);
+  auto terminal_lease = terminal_owner.try_acquire();
+  ASSERT_TRUE(terminal_lease);
+  int descriptions = 0;
+  terminal_observed->on_description = [&](auto, auto, auto) { ++descriptions; };
+  terminal_observed->description_result=BackendResult<QueryResult>{**terminal_observed->description_result,
       {SessionState::Unknown,SessionDisposition::Retire}};
-  EXPECT_FALSE(lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()));
-  EXPECT_FALSE(*lease); EXPECT_EQ(1,observed->disconnects); EXPECT_EQ(0,observed->queries);
+  EXPECT_FALSE(terminal_lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()));
+  EXPECT_EQ(1, descriptions);
+  EXPECT_FALSE(*terminal_lease); EXPECT_EQ(1,terminal_observed->disconnects); EXPECT_EQ(0,terminal_observed->queries);
 }
 }
 
