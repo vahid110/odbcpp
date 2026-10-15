@@ -107,40 +107,36 @@ class NativeSqlIntegrationTest : public ::testing::Test {
 
     // Fixture-local forwards cover repetitions, reconnects and sibling handles.
     // The original assertions/arguments below still call the actual public API.
-    template<class... Args>
-    SQLRETURN SQLConnect(SQLHDBC connection, Args... args) {
+    SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
+        SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
+        SQLSMALLINT name_length3) {
       return fixture_connection_budget(fixture_end_, connection, true)
-          ? ::SQLConnect(connection, args...) : SQL_ERROR;
+          ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
+              authentication, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecDirect(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecDirect(statement, args...) : SQL_ERROR;
+          ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecDirectW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecDirectW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecDirectW(statement, args...) : SQL_ERROR;
+          ? ::SQLExecDirectW(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecute(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecute(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecute(statement, args...) : SQL_ERROR;
+          ? ::SQLExecute(statement) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLFetch(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLFetch(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLFetch(statement, args...) : SQL_ERROR;
+          ? ::SQLFetch(statement) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLPrepare(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLPrepare(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLPrepare(statement, args...) : SQL_ERROR;
+          ? ::SQLPrepare(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLPrepareW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLPrepareW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLPrepareW(statement, args...) : SQL_ERROR;
+          ? ::SQLPrepareW(statement, statement_text, text_length) : SQL_ERROR;
     }
 
   void SetUp() override {

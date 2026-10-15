@@ -111,25 +111,27 @@ protected:
 
     // Fixture-local forwards cover repetitions, reconnects and sibling handles.
     // The original assertions/arguments below still call the actual public API.
-    template<class... Args>
-    SQLRETURN SQLConnect(SQLHDBC connection, Args... args) {
+    SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
+        SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
+        SQLSMALLINT name_length3) {
       return fixture_connection_budget(fixture_end_, connection, true)
-          ? ::SQLConnect(connection, args...) : SQL_ERROR;
+          ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
+              authentication, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLDescribeCol(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLDescribeCol(SQLHSTMT statement, SQLUSMALLINT column_number, SQLCHAR* column_name,
+        SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length, SQLSMALLINT* data_type,
+        SQLULEN* column_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLDescribeCol(statement, args...) : SQL_ERROR;
+          ? ::SQLDescribeCol(statement, column_number, column_name, name_buffer_length,
+              name_length, data_type, column_size, decimal_digits, nullable) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecDirect(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecDirect(statement, args...) : SQL_ERROR;
+          ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLFetch(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLFetch(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLFetch(statement, args...) : SQL_ERROR;
+          ? ::SQLFetch(statement) : SQL_ERROR;
     }
 
     void SetUp() override {

@@ -134,145 +134,189 @@ protected:
 
     // Fixture-local forwards cover repetitions, reconnects and sibling handles.
     // The original assertions/arguments below still call the actual public API.
-    template<class... Args>
-    SQLRETURN SQLColumns(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLColumns(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3, SQLCHAR* column_name, SQLSMALLINT name_length4) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLColumns(statement, args...) : SQL_ERROR;
+          ? ::SQLColumns(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, column_name, name_length4) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLColumnsW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLColumnsW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3, SQLWCHAR* column_name, SQLSMALLINT name_length4) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLColumnsW(statement, args...) : SQL_ERROR;
+          ? ::SQLColumnsW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, column_name, name_length4) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLConnect(SQLHDBC connection, Args... args) {
+    SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
+        SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
+        SQLSMALLINT name_length3) {
       return fixture_connection_budget(fixture_end_, connection, true)
-          ? ::SQLConnect(connection, args...) : SQL_ERROR;
+          ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
+              authentication, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLDescribeCol(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLDescribeCol(SQLHSTMT statement, SQLUSMALLINT column_number, SQLCHAR* column_name,
+        SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length, SQLSMALLINT* data_type,
+        SQLULEN* column_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLDescribeCol(statement, args...) : SQL_ERROR;
+          ? ::SQLDescribeCol(statement, column_number, column_name, name_buffer_length,
+              name_length, data_type, column_size, decimal_digits, nullable) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLDescribeColW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLDescribeColW(SQLHSTMT statement, SQLUSMALLINT column_number,
+        SQLWCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+        SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
+        SQLSMALLINT* nullable) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLDescribeColW(statement, args...) : SQL_ERROR;
+          ? ::SQLDescribeColW(statement, column_number, column_name, name_buffer_length,
+              name_length, data_type, column_size, decimal_digits, nullable) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLDescribeParam(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLDescribeParam(SQLHSTMT statement, SQLUSMALLINT parameter_number,
+        SQLSMALLINT* data_type, SQLULEN* parameter_size, SQLSMALLINT* decimal_digits,
+        SQLSMALLINT* nullable) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLDescribeParam(statement, args...) : SQL_ERROR;
+          ? ::SQLDescribeParam(statement, parameter_number, data_type, parameter_size,
+              decimal_digits, nullable) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecDirect(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecDirect(statement, args...) : SQL_ERROR;
+          ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecDirectW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecDirectW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecDirectW(statement, args...) : SQL_ERROR;
+          ? ::SQLExecDirectW(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLExecute(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLExecute(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLExecute(statement, args...) : SQL_ERROR;
+          ? ::SQLExecute(statement) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLFetch(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLFetch(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLFetch(statement, args...) : SQL_ERROR;
+          ? ::SQLFetch(statement) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLFetchScroll(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLFetchScroll(SQLHSTMT statement, SQLSMALLINT fetch_orientation,
+        SQLLEN fetch_offset) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLFetchScroll(statement, args...) : SQL_ERROR;
+          ? ::SQLFetchScroll(statement, fetch_orientation, fetch_offset) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLForeignKeys(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLForeignKeys(SQLHSTMT statement, SQLCHAR* pk_catalog_name,
+        SQLSMALLINT name_length1, SQLCHAR* pk_schema_name, SQLSMALLINT name_length2,
+        SQLCHAR* pk_table_name, SQLSMALLINT name_length3, SQLCHAR* fk_catalog_name,
+        SQLSMALLINT name_length4, SQLCHAR* fk_schema_name, SQLSMALLINT name_length5,
+        SQLCHAR* fk_table_name, SQLSMALLINT name_length6) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLForeignKeys(statement, args...) : SQL_ERROR;
+          ? ::SQLForeignKeys(statement, pk_catalog_name, name_length1, pk_schema_name,
+              name_length2, pk_table_name, name_length3, fk_catalog_name, name_length4,
+              fk_schema_name, name_length5, fk_table_name, name_length6) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLForeignKeysW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLForeignKeysW(SQLHSTMT statement, SQLWCHAR* pk_catalog_name,
+        SQLSMALLINT name_length1, SQLWCHAR* pk_schema_name, SQLSMALLINT name_length2,
+        SQLWCHAR* pk_table_name, SQLSMALLINT name_length3, SQLWCHAR* fk_catalog_name,
+        SQLSMALLINT name_length4, SQLWCHAR* fk_schema_name, SQLSMALLINT name_length5,
+        SQLWCHAR* fk_table_name, SQLSMALLINT name_length6) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLForeignKeysW(statement, args...) : SQL_ERROR;
+          ? ::SQLForeignKeysW(statement, pk_catalog_name, name_length1, pk_schema_name,
+              name_length2, pk_table_name, name_length3, fk_catalog_name, name_length4,
+              fk_schema_name, name_length5, fk_table_name, name_length6) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLNumResultCols(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLNumResultCols(SQLHSTMT statement, SQLSMALLINT* column_count) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLNumResultCols(statement, args...) : SQL_ERROR;
+          ? ::SQLNumResultCols(statement, column_count) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLPrepare(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLPrepare(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLPrepare(statement, args...) : SQL_ERROR;
+          ? ::SQLPrepare(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLPrepareW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLPrepareW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLPrepareW(statement, args...) : SQL_ERROR;
+          ? ::SQLPrepareW(statement, statement_text, text_length) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLPrimaryKeys(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLPrimaryKeys(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLPrimaryKeys(statement, args...) : SQL_ERROR;
+          ? ::SQLPrimaryKeys(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLPrimaryKeysW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLPrimaryKeysW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLPrimaryKeysW(statement, args...) : SQL_ERROR;
+          ? ::SQLPrimaryKeysW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLProcedureColumns(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLProcedureColumns(SQLHSTMT statement, SQLCHAR* catalog_name,
+        SQLSMALLINT name_length1, SQLCHAR* schema_name, SQLSMALLINT name_length2,
+        SQLCHAR* procedure_name, SQLSMALLINT name_length3, SQLCHAR* column_name,
+        SQLSMALLINT name_length4) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLProcedureColumns(statement, args...) : SQL_ERROR;
+          ? ::SQLProcedureColumns(statement, catalog_name, name_length1, schema_name, name_length2,
+              procedure_name, name_length3, column_name, name_length4) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLProcedureColumnsW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLProcedureColumnsW(SQLHSTMT statement, SQLWCHAR* catalog_name,
+        SQLSMALLINT name_length1, SQLWCHAR* schema_name, SQLSMALLINT name_length2,
+        SQLWCHAR* procedure_name, SQLSMALLINT name_length3, SQLWCHAR* column_name,
+        SQLSMALLINT name_length4) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLProcedureColumnsW(statement, args...) : SQL_ERROR;
+          ? ::SQLProcedureColumnsW(statement, catalog_name, name_length1, schema_name,
+              name_length2, procedure_name, name_length3, column_name, name_length4) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLProcedures(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLProcedures(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* procedure_name,
+        SQLSMALLINT name_length3) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLProcedures(statement, args...) : SQL_ERROR;
+          ? ::SQLProcedures(statement, catalog_name, name_length1, schema_name, name_length2,
+              procedure_name, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLProceduresW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLProceduresW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
+        SQLSMALLINT name_length3) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLProceduresW(statement, args...) : SQL_ERROR;
+          ? ::SQLProceduresW(statement, catalog_name, name_length1, schema_name, name_length2,
+              procedure_name, name_length3) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLSpecialColumns(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLSpecialColumns(SQLHSTMT statement, SQLUSMALLINT identifier_type,
+        SQLCHAR* catalog_name, SQLSMALLINT name_length1, SQLCHAR* schema_name,
+        SQLSMALLINT name_length2, SQLCHAR* table_name, SQLSMALLINT name_length3,
+        SQLUSMALLINT scope, SQLUSMALLINT nullable) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLSpecialColumns(statement, args...) : SQL_ERROR;
+          ? ::SQLSpecialColumns(statement, identifier_type, catalog_name, name_length1,
+              schema_name, name_length2, table_name, name_length3, scope, nullable) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLSpecialColumnsW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLSpecialColumnsW(SQLHSTMT statement, SQLUSMALLINT identifier_type,
+        SQLWCHAR* catalog_name, SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+        SQLSMALLINT name_length2, SQLWCHAR* table_name, SQLSMALLINT name_length3,
+        SQLUSMALLINT scope, SQLUSMALLINT nullable) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLSpecialColumnsW(statement, args...) : SQL_ERROR;
+          ? ::SQLSpecialColumnsW(statement, identifier_type, catalog_name, name_length1,
+              schema_name, name_length2, table_name, name_length3, scope, nullable) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLStatistics(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLStatistics(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3, SQLUSMALLINT unique, SQLUSMALLINT reserved) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLStatistics(statement, args...) : SQL_ERROR;
+          ? ::SQLStatistics(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, unique, reserved) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLStatisticsW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLStatisticsW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3, SQLUSMALLINT unique, SQLUSMALLINT reserved) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLStatisticsW(statement, args...) : SQL_ERROR;
+          ? ::SQLStatisticsW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, unique, reserved) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLTables(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLTables(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3, SQLCHAR* table_type, SQLSMALLINT name_length4) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLTables(statement, args...) : SQL_ERROR;
+          ? ::SQLTables(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, table_type, name_length4) : SQL_ERROR;
     }
-    template<class... Args>
-    SQLRETURN SQLTablesW(SQLHSTMT statement, Args... args) {
+    SQLRETURN SQLTablesW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3, SQLWCHAR* table_type, SQLSMALLINT name_length4) {
       return fixture_statement_budget(fixture_end_, statement)
-          ? ::SQLTablesW(statement, args...) : SQL_ERROR;
+          ? ::SQLTablesW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, table_type, name_length4) : SQL_ERROR;
     }
 
     void SetUp() override {
