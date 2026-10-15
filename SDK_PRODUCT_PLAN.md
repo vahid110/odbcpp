@@ -13,20 +13,20 @@ advanced S3 transfer are estimated separately at their Redshift checkpoints.
 
 ## Product intent
 
-ODBCPP will be developed as a database-connectivity SDK, with ODBC as its first
-mature client API. PostgreSQL is the first production reference backend. A
-bounded MySQL 8 implementation will prove that the SDK boundary works for an
-unrelated wire protocol. Redshift remains the next product backend and will
-prove specialization within the PostgreSQL protocol family when endpoint access
-is restored.
+ODBCPP remains the ODBC product and connectivity SDK. Its PostgreSQL reference
+backend, Redshift specialization within that protocol family and bounded MySQL 8
+proof of an unrelated wire protocol retain their existing commitments and
+qualification gates.
 
-ADBC is a planned second client API. This milestone must avoid architecture
-that prevents Arrow columnar batches, but it does not add an Arrow dependency,
-implement the ADBC ABI, or claim ADBC compatibility.
+The Arrow ADBC fork is the current Redshift ADBC delivery route. A separate ODBCPP
+ADBC adapter, Arrow integration and ADBC packaging are deferred until a concrete
+unmet need and a new product decision, with no automatic successor assignment.
+Keep useful internal batch seams without adding an Arrow dependency, implementing
+the ADBC ABI or claiming ADBC compatibility.
 
 The product layers are:
 
-1. **Client API adapters:** ODBC now; ADBC later.
+1. **Client API adapters:** ODBC; a separate ODBCPP ADBC adapter is explicitly deferred.
 2. **Shared connectivity SDK:** session and statement orchestration, ownership,
    deadlines, cancellation contract, normalized metadata and values,
    diagnostics, capabilities, and reusable contract tests.
@@ -39,6 +39,26 @@ The product layers are:
 The shared layer is not an ODBC wrapper around a PostgreSQL implementation.
 ODBC handles and constants stay in the ODBC adapter; native packet formats,
 authentication exchanges, type identifiers and catalog SQL stay in backends.
+
+## Shared authentication reuse gate — 2026-10-15
+
+After ADBC v1 installed-driver/live qualification, the first reuse proof is the
+same temporary-Redshift-credential implementation consumed by ODBCPP and the
+independently built Arrow ADBC driver. It does not require that driver to use
+ODBCPP's database protocol or connectivity SDK. Reuse existing provider-neutral
+AuthCore and optional AWS/provider boundaries, with private interfaces until both
+consumers establish expiry/new-connection/reconnect behavior, target isolation,
+cancellation, safe diagnostics and optional dependencies.
+
+Public auth ABI/bindings, independent packaging and stability/product commitments
+follow this proof and are not prerequisites for either driver's current release.
+The initial shape is an embedded database-auth SDK with optional providers; no
+separately running auth service or universal auth platform is scheduled. Database
+TLS/session/pool ownership stays with consumers/backends, separate from provider
+HTTPS verification; credential expiry does not imply established-session expiry.
+[AUTH_LIBRARY_ARCHITECTURE.md](AUTH_LIBRARY_ARCHITECTURE.md) retains these boundaries
+and eventual method-parity obligations. AUTH implementation remains parked; this
+documentation decision does not resume implementation or change HOLD/paid authority.
 
 ## Shared TLS trust-source extension — 2026-10-07
 
@@ -269,7 +289,8 @@ number of shared ODBC workflow files changed by the sample is **zero**.
   administrative API, native type or server version.
 - Runtime-loadable plugins, a frozen C++ ABI, semantic-version compatibility
   guarantees, or broad source compatibility for third parties.
-- Arrow integration, an ADBC driver, Flight SQL, or ADBC packaging.
+- ODBCPP Arrow integration, a separate ODBCPP ADBC driver, Flight SQL, or ADBC packaging;
+  the Arrow ADBC fork is the current Redshift ADBC delivery route.
 - General query-result caching, a public pooling API, or unmeasured cache/pool
   performance tuning.
 - SQL Server/TDS, Athena, Aurora or another backend.
