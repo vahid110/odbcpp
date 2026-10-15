@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <chrono>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
@@ -13,6 +15,83 @@
 #include <map>
 #include <optional>
 #include <string>
+
+
+namespace {
+// One original per-case window, including reconnects and sibling handles.
+// Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
+// timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
+constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
+  if (left <= 0) return 0;
+  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  return requested == 0 ? cap : std::min(cap, requested);
+}
+static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(4) == 4);
+static_assert(fixture_timeout_seconds(1) == 1);
+static_assert(fixture_timeout_seconds(0) == 0);
+static_assert(fixture_timeout_seconds(-1) == 0);
+static_assert(fixture_timeout_seconds(40, 1) == 1);
+static_assert(fixture_timeout_seconds(40, 2) == 2);
+static_assert(fixture_timeout_seconds(40, 3) == 3);
+
+SQLULEN fixture_seconds_left(std::chrono::steady_clock::time_point end) {
+  const auto seconds = fixture_timeout_seconds(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          end - std::chrono::steady_clock::now()).count());
+  if (seconds == 0) {
+    ADD_FAILURE() << "Original forty-second fixture window expired; no new I/O";
+  }
+  return seconds;
+}
+
+bool fixture_statement_budget(std::chrono::steady_clock::time_point end, SQLHSTMT statement) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLULEN requested = 0;
+  if (SQLGetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, &requested, 0, nullptr) != SQL_SUCCESS) {
+    // Preserve the original API's invalid-handle/local-validation assertion.
+    return true;
+  }
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), requested);
+  if (seconds == requested) return true;
+  if (SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT,
+                     reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture statement timeout";
+    return false;
+  }
+  return true;
+}
+
+bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDBC connection, bool login) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLUINTEGER current = 0;
+  if (login) {
+    SQLUINTEGER dead = SQL_CD_TRUE;
+    if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr) == SQL_SUCCESS && dead == SQL_CD_FALSE) {
+      // An already-connected connect call is a local 08002 test, not new I/O.
+      return true;
+    }
+    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+    if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not apply finite fixture login timeout";
+      return false;
+    }
+  }
+  if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+  if (SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture connection timeout";
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
 
 namespace {
 
@@ -50,6 +129,152 @@ std::optional<std::string> text_cell(SQLHSTMT statement,
 
 class MetadataIntegrationTest : public ::testing::Test {
 protected:
+    const std::chrono::steady_clock::time_point fixture_end_ =
+        std::chrono::steady_clock::now() + std::chrono::seconds(40);
+
+    // Fixture-local forwards cover repetitions, reconnects and sibling handles.
+    // The original assertions/arguments below still call the actual public API.
+    template<class... Args>
+    SQLRETURN SQLColumns(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLColumns(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLColumnsW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLColumnsW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLConnect(SQLHDBC connection, Args... args) {
+      return fixture_connection_budget(fixture_end_, connection, true)
+          ? ::SQLConnect(connection, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLDescribeCol(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLDescribeCol(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLDescribeColW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLDescribeColW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLDescribeParam(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLDescribeParam(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirect(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLExecDirectW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirectW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLExecute(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecute(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLFetch(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLFetch(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLFetchScroll(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLFetchScroll(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLForeignKeys(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLForeignKeys(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLForeignKeysW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLForeignKeysW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLNumResultCols(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLNumResultCols(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLPrepare(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrepare(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLPrepareW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrepareW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLPrimaryKeys(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrimaryKeys(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLPrimaryKeysW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrimaryKeysW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLProcedureColumns(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProcedureColumns(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLProcedureColumnsW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProcedureColumnsW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLProcedures(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProcedures(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLProceduresW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProceduresW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLSpecialColumns(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLSpecialColumns(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLSpecialColumnsW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLSpecialColumnsW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLStatistics(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLStatistics(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLStatisticsW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLStatisticsW(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLTables(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLTables(statement, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLTablesW(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLTablesW(statement, args...) : SQL_ERROR;
+    }
+
     void SetUp() override {
         SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
         SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
@@ -4534,9 +4759,9 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutatio
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
     auto view = rs::odbc::detail::ODBCBackendTestAccess::view(
         rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(hdbc));
-    ASSERT_TRUE(view.check_health(rs::util::make_deadline(std::chrono::seconds(3))));
+    ASSERT_TRUE(view.check_health(std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3)))));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
-    ASSERT_TRUE(view.reset_session(rs::util::make_deadline(std::chrono::seconds(3))));
+    ASSERT_TRUE(view.reset_session(std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3)))));
     columns = 77;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(77, columns);
     EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, hstmt));

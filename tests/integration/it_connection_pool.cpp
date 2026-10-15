@@ -6,12 +6,37 @@
 #include <vector>
 #include <chrono>
 #include <cstdlib>
+#include <algorithm>
 
 using namespace rs::core::database;
+
+namespace {
+std::chrono::seconds fixture_operation_seconds(std::chrono::seconds remaining) {
+  return std::clamp(remaining, std::chrono::seconds(0), std::chrono::seconds(5));
+}
+}
+
+// Pure fixture controls: these cases do not acquire a connection or query.
+TEST(ConnectionPoolFixtureBounds, CapsEachOperationAtFiveSeconds) {
+  EXPECT_EQ(std::chrono::seconds(5), fixture_operation_seconds(std::chrono::seconds(40)));
+  EXPECT_EQ(std::chrono::seconds(5), fixture_operation_seconds(std::chrono::seconds(6)));
+}
+
+TEST(ConnectionPoolFixtureBounds, PreservesRemainingOriginalWindow) {
+  EXPECT_EQ(std::chrono::seconds(4), fixture_operation_seconds(std::chrono::seconds(4)));
+  EXPECT_EQ(std::chrono::seconds(1), fixture_operation_seconds(std::chrono::seconds(1)));
+}
+
+TEST(ConnectionPoolFixtureBounds, ExhaustedWindowNeverBecomesUnlimited) {
+  EXPECT_EQ(std::chrono::seconds(0), fixture_operation_seconds(std::chrono::seconds(0)));
+  EXPECT_EQ(std::chrono::seconds(0), fixture_operation_seconds(std::chrono::seconds(-1)));
+}
+
 
 class ConnectionPoolIntegrationTest : public ::testing::Test {
 protected:
   void SetUp() override {
+    window_end_ = std::chrono::steady_clock::now() + std::chrono::seconds(40);
     config_.min_connections = 1;
     config_.max_connections = 3;
     config_.acquire_timeout = std::chrono::seconds(5);
@@ -27,9 +52,20 @@ protected:
     config_.connection_settings.user = dsn_params["UID"];
     config_.connection_settings.password = dsn_params["PWD"];
     config_.connection_settings.use_ssl = (dsn_params["SSL"] == "1");
-    config_.connection_settings.timeout = std::chrono::seconds(10);
+    config_.connection_settings.ssl_ca_file = dsn_params["SSLCAFILE"];
+    config_.connection_settings.ssl_ca_dir = dsn_params["SSLCADIR"];
+    const auto left = fixture_operation_seconds(std::chrono::duration_cast<std::chrono::seconds>(
+        window_end_ - std::chrono::steady_clock::now()));
+    ASSERT_GT(left.count(), 0) << "Original forty-second fixture window expired";
+    config_.connection_settings.timeout = left;
+    config_.acquire_timeout = left;
   }
   
+  void TearDown() override {
+    EXPECT_LT(std::chrono::steady_clock::now(), window_end_)
+        << "Pool case exceeded its original forty-second window";
+  }
+  std::chrono::steady_clock::time_point window_end_{};
   ConnectionPool::Config config_;
 };
 
@@ -42,7 +78,7 @@ TEST_F(ConnectionPoolIntegrationTest, RealDatabaseConnections) {
   EXPECT_TRUE((*conn)->is_connected());
   
   // Execute a simple query
-  auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto deadline = std::min(window_end_, rs::util::make_deadline(std::chrono::seconds(5)));
   auto result = (*conn)->execute_query("SELECT 1 as test_column", deadline);
   
   if (result.has_value()) {

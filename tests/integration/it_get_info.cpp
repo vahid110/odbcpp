@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
+#include <cstdint>
+#include <algorithm>
+#include <chrono>
 
 #include "odbc/odbc_api.h"
+#include "core/database/database_factory.h"
 #include "tests/test_connection_config.h"
 #include "tests/test_driver_exports.h"
 
@@ -10,11 +14,103 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
+
 namespace {
+// One original per-case window, including reconnects and sibling handles.
+// Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
+// timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
+constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
+  if (left <= 0) return 0;
+  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  return requested == 0 ? cap : std::min(cap, requested);
+}
+static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(4) == 4);
+static_assert(fixture_timeout_seconds(1) == 1);
+static_assert(fixture_timeout_seconds(0) == 0);
+static_assert(fixture_timeout_seconds(-1) == 0);
+static_assert(fixture_timeout_seconds(40, 1) == 1);
+static_assert(fixture_timeout_seconds(40, 2) == 2);
+static_assert(fixture_timeout_seconds(40, 3) == 3);
+
+SQLULEN fixture_seconds_left(std::chrono::steady_clock::time_point end) {
+  const auto seconds = fixture_timeout_seconds(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          end - std::chrono::steady_clock::now()).count());
+  if (seconds == 0) {
+    ADD_FAILURE() << "Original forty-second fixture window expired; no new I/O";
+  }
+  return seconds;
+}
+
+bool fixture_statement_budget(std::chrono::steady_clock::time_point end, SQLHSTMT statement) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLULEN requested = 0;
+  if (SQLGetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, &requested, 0, nullptr) != SQL_SUCCESS) {
+    // Preserve the original API's invalid-handle/local-validation assertion.
+    return true;
+  }
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), requested);
+  if (seconds == requested) return true;
+  if (SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT,
+                     reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture statement timeout";
+    return false;
+  }
+  return true;
+}
+
+bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDBC connection, bool login) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLUINTEGER current = 0;
+  if (login) {
+    SQLUINTEGER dead = SQL_CD_TRUE;
+    if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr) == SQL_SUCCESS && dead == SQL_CD_FALSE) {
+      // An already-connected connect call is a local 08002 test, not new I/O.
+      return true;
+    }
+    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+    if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not apply finite fixture login timeout";
+      return false;
+    }
+  }
+  if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+  if (SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture connection timeout";
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
+
+namespace {
+
+std::optional<bool> fixture_redshift_profile(rs::core::database::DatabaseType type) {
+  using rs::core::database::DatabaseType;
+  if (type == DatabaseType::PostgreSQL) return false;
+  if (type == DatabaseType::Redshift) return true;
+  return std::nullopt;
+}
+
+TEST(GetInfoFixtureProfile, KeepsPostgresAndRedshiftExpectationsDistinct) {
+  using rs::core::database::DatabaseType;
+  EXPECT_EQ(std::optional<bool>(false), fixture_redshift_profile(DatabaseType::PostgreSQL));
+  EXPECT_EQ(std::optional<bool>(true), fixture_redshift_profile(DatabaseType::Redshift));
+  EXPECT_FALSE(fixture_redshift_profile(static_cast<DatabaseType>(-1)).has_value());
+}
 
 std::string diagnostic_state(SQLHDBC connection) {
   SQLCHAR state[6]{};
@@ -26,7 +122,29 @@ std::string diagnostic_state(SQLHDBC connection) {
 
 class GetInfoIntegrationTest : public ::testing::Test {
  protected:
+    const std::chrono::steady_clock::time_point fixture_end_ =
+        std::chrono::steady_clock::now() + std::chrono::seconds(40);
+
+    // Fixture-local forwards cover repetitions, reconnects and sibling handles.
+    // The original assertions/arguments below still call the actual public API.
+    template<class... Args>
+    SQLRETURN SQLConnect(SQLHDBC connection, Args... args) {
+      return fixture_connection_budget(fixture_end_, connection, true)
+          ? ::SQLConnect(connection, args...) : SQL_ERROR;
+    }
+    template<class... Args>
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, Args... args) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirect(statement, args...) : SQL_ERROR;
+    }
+
   void SetUp() override {
+    // Select independent literal expectations by the existing compiled product,
+    // never by learning expected capabilities from the SQLGetInfo output.
+    const auto profile = fixture_redshift_profile(
+        rs::core::database::DatabaseFactory::get_compiled_database_type());
+    ASSERT_TRUE(profile.has_value()) << "Unsupported integration fixture product profile";
+    redshift_profile_ = *profile;
     // Independent API expectation includes local Need Data cancellation on every
     // carrier; this does not claim server cancellation for Async/Auto transports.
     // Refuse malformed controls before connection.
@@ -99,19 +217,20 @@ class GetInfoIntegrationTest : public ::testing::Test {
                                    : odbcpp::test::expected_support(id);
   }
 
+  bool redshift_profile_{false};
   bool expect_sqlcancel_{true};
   SQLHENV environment_{SQL_NULL_HENV};
   SQLHDBC connection_{SQL_NULL_HDBC};
 };
 
 TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
-  constexpr std::array<std::pair<SQLUSMALLINT, std::string_view>, 33>
+  const std::array<std::pair<SQLUSMALLINT, std::string_view>, 33>
       expected_values{{
           {SQL_DRIVER_NAME, ODBCPP_EXPECT_DRIVER_FILENAME},
           {SQL_DRIVER_VER, "01.00.0000"},
           {SQL_DRIVER_ODBC_VER, "03.80"},
           {SQL_ODBC_VER, "03.80"},
-          {SQL_DBMS_NAME, "PostgreSQL"},
+          {SQL_DBMS_NAME, redshift_profile_ ? "Amazon Redshift" : "PostgreSQL"},
           {SQL_IDENTIFIER_QUOTE_CHAR, "\""},
           {SQL_CATALOG_NAME_SEPARATOR, "."},
           {SQL_CATALOG_TERM, "database"},
@@ -162,7 +281,7 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
 }
 
 TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
-  constexpr std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 25>
+  const std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 25>
       small_values{{
           {SQL_ACTIVE_ENVIRONMENTS, 0},
           {SQL_MAX_CONCURRENT_ACTIVITIES, 0},
@@ -171,7 +290,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_TXN_CAPABLE, SQL_TC_ALL},
           {SQL_CURSOR_COMMIT_BEHAVIOR, SQL_CB_PRESERVE},
           {SQL_CURSOR_ROLLBACK_BEHAVIOR, SQL_CB_PRESERVE},
-          {SQL_MAX_IDENTIFIER_LEN, 63},
+          {SQL_MAX_IDENTIFIER_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
           {SQL_IDENTIFIER_CASE, SQL_IC_LOWER},
           {SQL_QUOTED_IDENTIFIER_CASE, SQL_IC_SENSITIVE},
           {SQL_CATALOG_LOCATION, SQL_CL_START},
@@ -183,12 +302,12 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_ODBC_API_CONFORMANCE, SQL_OAC_LEVEL1},
           {SQL_ODBC_SAG_CLI_CONFORMANCE, SQL_OSCC_COMPLIANT},
           {SQL_ODBC_SQL_CONFORMANCE, SQL_OSC_CORE},
-          {SQL_MAX_COLUMN_NAME_LEN, 63},
-          {SQL_MAX_TABLE_NAME_LEN, 63},
-          {SQL_MAX_SCHEMA_NAME_LEN, 63},
-          {SQL_MAX_CATALOG_NAME_LEN, 63},
-          {SQL_MAX_PROCEDURE_NAME_LEN, 63},
-          {SQL_MAX_USER_NAME_LEN, 63},
+          {SQL_MAX_COLUMN_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
+          {SQL_MAX_TABLE_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
+          {SQL_MAX_SCHEMA_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
+          {SQL_MAX_CATALOG_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
+          {SQL_MAX_PROCEDURE_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
+          {SQL_MAX_USER_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
       }};
   for (const auto& [type, expected] : small_values) {
     SQLUSMALLINT value = std::numeric_limits<SQLUSMALLINT>::max();
@@ -215,7 +334,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
     EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(value)), length) << type;
   }
 
-  constexpr std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 36>
+  const std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 36>
       integer_values{{
           {SQL_DEFAULT_TXN_ISOLATION, SQL_TXN_READ_COMMITTED},
           {SQL_TXN_ISOLATION_OPTION,
@@ -248,7 +367,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_PARAM_ARRAY_ROW_COUNTS, SQL_PARC_BATCH},
           {SQL_PARAM_ARRAY_SELECTS, SQL_PAS_BATCH},
           {SQL_SCROLL_CONCURRENCY, SQL_SCCO_READ_ONLY},
-          {SQL_DDL_INDEX, SQL_DI_CREATE_INDEX | SQL_DI_DROP_INDEX},
+          {SQL_DDL_INDEX, redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_DI_CREATE_INDEX | SQL_DI_DROP_INDEX)},
           {SQL_INSERT_STATEMENT,
            SQL_IS_INSERT_LITERALS | SQL_IS_INSERT_SEARCHED |
                SQL_IS_SELECT_INTO},
@@ -260,7 +379,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_CATALOG_USAGE, 0},
           {SQL_SCHEMA_USAGE,
            SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
-               SQL_SU_TABLE_DEFINITION | SQL_SU_INDEX_DEFINITION |
+               SQL_SU_TABLE_DEFINITION | (redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_SU_INDEX_DEFINITION)) |
                SQL_SU_PRIVILEGE_DEFINITION},
       }};
   for (const auto& [type, expected] : integer_values) {
