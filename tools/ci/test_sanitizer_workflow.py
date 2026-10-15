@@ -51,17 +51,46 @@ class SchedulingSafety(unittest.TestCase):
         self.ci = (ROOT / '.github/workflows/ci.yml').read_text()
         self.old = subprocess.check_output(['git', 'show', BASE + ':.github/workflows/ci.yml'], cwd=ROOT, text=True)
 
-    def test_default_off_and_every_existing_mode_unchanged(self):
-        self.assertRegex(self.ci, r'run_sanitizer_only:\n(?:[^\n]*\n){1,5}        default: false')
-        old, new = jobs(self.old), jobs(self.ci)
+    def assert_scheduling_compatible(self, ci):
+        self.assertRegex(ci, r'run_sanitizer_only:\n(?:[^\n]*\n){1,5}        default: false')
+        old, new = jobs(self.old), jobs(ci)
         for event in ['pull_request', 'workflow_dispatch']:
             for values in itertools.product([False, True], repeat=4):
                 flags = dict(zip(['run_development_pilot', 'run_product_qualification',
                                   'run_windows_product_qualification', 'run_linked_server'], values))
                 flags['run_sanitizer_only'] = False
-                with self.subTest(event=event, flags=flags):
+                actual = {n for n,b in new.items() if enabled(b,event,flags)}
+                if event == 'pull_request':
+                    # Human-approved PR builds replace the former PR full graph.
+                    self.assertEqual(actual, {'pr-ubuntu-build', 'pr-windows-build'}, (event, flags))
+                else:
+                    # Every legacy manual mode retains its original selection.
                     self.assertEqual({n for n,b in old.items() if enabled(b,event,flags)},
-                                     {n for n,b in new.items() if enabled(b,event,flags)})
+                                     actual, (event, flags))
+
+    def test_default_off_and_every_existing_mode_unchanged(self):
+        self.assert_scheduling_compatible(self.ci)
+
+    def test_PR_build_event_guard_cannot_drop_a_platform(self):
+        before = "if: github.event_name == 'pull_request'"
+        self.assertIn(before, self.ci)
+        mutant = self.ci.replace(before, "if: github.event_name == 'workflow_dispatch'", 1)
+        with self.assertRaises(AssertionError):
+            self.assert_scheduling_compatible(mutant)
+
+    def test_checkpoint_job_cannot_rejoin_PR_schedule(self):
+        block = jobs(self.ci)['build-and-test']
+        guard = re.search(r'^    if: .*$', block, re.M)[0]
+        mutant = self.ci.replace(guard, "    if: github.event_name != 'push'", 1)
+        with self.assertRaises(AssertionError):
+            self.assert_scheduling_compatible(mutant)
+
+    def test_manual_focused_mode_guard_cannot_be_ignored(self):
+        block = jobs(self.ci)['build-and-test']
+        guard = re.search(r'^    if: .*$', block, re.M)[0]
+        mutant = self.ci.replace(guard, "    if: github.event_name == 'workflow_dispatch'", 1)
+        with self.assertRaises(AssertionError):
+            self.assert_scheduling_compatible(mutant)
 
     def test_only_selector_runs_one_guarded_job_even_with_conflicts(self):
         for values in itertools.product([False, True], repeat=4):

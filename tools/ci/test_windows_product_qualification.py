@@ -1127,9 +1127,16 @@ class WorkflowSafety(unittest.TestCase):
             for values in itertools.product([False, True], repeat=4):
                 flags = dict(zip(modes, values), run_sanitizer_only=False)
                 for name in jobs:
-                    self.assertEqual(enabled(ci, name, event, flags), enabled(old, name, event, flags), name)
-                    if event == 'workflow_dispatch':
+                    if event == 'pull_request':
+                        # PRs build on three platforms; full/live jobs remain checkpoint-only.
+                        self.assertFalse(enabled(ci, name, event, flags), name)
+                    else:
+                        self.assertEqual(enabled(ci, name, event, flags), enabled(old, name, event, flags), name)
                         self.assertFalse(enabled(ci, name, event, dict(flags, run_sanitizer_only=True)), name)
+                for name in ('pr-ubuntu-build', 'pr-windows-build'):
+                    self.assertEqual(enabled(ci, name, event, flags), event == 'pull_request', name)
+                    self.assertEqual(enabled(ci, name, event, dict(flags, run_sanitizer_only=True)),
+                                     event == 'pull_request', name)
         sanitizer_input = ci.split('      run_sanitizer_only:', 1)[1].split('      run_development_pilot:', 1)[0]
         self.assertIn('default: false', sanitizer_input)
         windows_guard = ci.split('\n  windows-product-qualification:', 1)[1].splitlines()[2]
@@ -1140,6 +1147,27 @@ class WorkflowSafety(unittest.TestCase):
         self.assertIn('inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_linked_server', ci)
         self.assertIn('inputs.run_product_qualification && !inputs.run_windows_product_qualification', ci)
         self.assertIn('inputs.run_development_pilot && !inputs.run_product_qualification && !inputs.run_windows_product_qualification', ci)
+
+    def test_PR_build_platform_guard_cannot_be_dropped(self):
+        ci = (ROOT/'.github/workflows/ci.yml').read_text()
+        before = "if: github.event_name == 'pull_request'"
+        self.assertIn(before, ci)
+        with self.assertRaises(AssertionError):
+            self.assert_compatible_workflow(ci.replace(before, "if: github.event_name == 'workflow_dispatch'", 1))
+
+    def test_full_job_cannot_execute_on_PR_or_ignore_manual_conflicts(self):
+        ci = (ROOT/'.github/workflows/ci.yml').read_text()
+        block = ci.split('\n  build-and-test:', 1)[1].split('\n  redshift-build:', 1)[0]
+        guard = block.splitlines()[1]
+        # Preserve every original input guard while changing only event selection.
+        before = "github.event_name == 'workflow_dispatch' && !("
+        self.assertIn(before, guard)
+        with self.assertRaises(AssertionError):
+            self.assert_compatible_workflow(ci.replace(guard, guard.replace(before, "github.event_name != 'push' && !("), 1))
+        before = 'inputs.run_product_qualification || '
+        self.assertIn(before, guard)
+        with self.assertRaises(AssertionError):
+            self.assert_compatible_workflow(ci.replace(guard, guard.replace(before, ''), 1))
 
     def test_default_off_mutual_modes_and_full_body_preservation(self):
         self.assert_compatible_workflow((ROOT / '.github/workflows/ci.yml').read_text())

@@ -1,11 +1,10 @@
 name: ci
 
 on:
+  # All PRs, including docs and drafts, build on Ubuntu and Windows here.
+  # The existing primary workflow supplies the macOS build and regression.
+  # Complete cross-platform tests remain a coordinator-dispatched checkpoint.
   pull_request:
-    # Intermediate lane PRs use primary checks. The coordinator dispatches this
-    # full graph on the frozen integration head at the 12-hour checkpoint.
-    branches-ignore:
-      - codex/transport-foundation
   workflow_dispatch:
     inputs:
       run_sanitizer_only:
@@ -104,6 +103,78 @@ concurrency:
   queue: max
 
 jobs:
+  pr-ubuntu-build:
+    name: PR Ubuntu build (no tests)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout source and tree
+        run: git log -1 --format="%H %T"
+      - name: Check PR scheduling and build safety offline
+        run: python3 -B tools/ci/test_pr_three_platform_builds.py -v
+      - name: Install existing build dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+      - name: Configure PostgreSQL Release build
+        run: >-
+          cmake -S . -B build-pr-ubuntu
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=POSTGRESQL
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_CRYPTO_PROVIDER=OPENSSL
+          -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED
+          -DODBCPP_CRYPTO_PROFILE_LIVE_TESTS=OFF
+          -DODBCPP_CRYPTO_TLS_PROOF=OFF
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+          -DCMAKE_BUILD_TYPE=Release
+      # Default ALL builds the driver, core, SDK isolation/consumer and test images.
+      # Building test executables does not execute their test bodies.
+      - name: Build default ALL j2
+        run: cmake --build build-pr-ubuntu --parallel 2
+
+  pr-windows-build:
+    name: PR Windows build (no tests)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout source and tree
+        run: git log -1 --format="%H %T"
+      - name: Verify existing runner OpenSSL
+        run: openssl version
+      - name: Configure PostgreSQL x64 MSVC build
+        run: >-
+          cmake -S . -B build-pr-windows -A x64
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=POSTGRESQL
+          -DODBCPP_CRYPTO_PROVIDER=OPENSSL
+          -DODBCPP_CRYPTO_LINKAGE=BUNDLED_SHARED
+          -DODBCPP_CRYPTO_PROFILE_LIVE_TESTS=OFF
+          -DODBCPP_CRYPTO_TLS_PROOF=OFF
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+          -DODBCPP_CRYPTO_ROOT="C:/Program Files/OpenSSL"
+      - name: Build default ALL Release j2
+        run: cmake --build build-pr-windows --config Release --parallel 2
+
   sanitizer-only:
     name: Cold sanitizer-only qualification - NOT full acceptance
     if: github.event_name == 'workflow_dispatch' && inputs.run_sanitizer_only
@@ -222,7 +293,7 @@ jobs:
       cache_request: ${{ inputs.product_cache }}
 
   build-and-test:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
 
     services:
@@ -427,7 +498,7 @@ jobs:
           if-no-files-found: error
 
   redshift-build:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -467,7 +538,7 @@ jobs:
             "$RUNNER_TEMP/redshift-missing-endpoint.log"
 
   windows-live:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: windows-2025
 
     env:
@@ -626,7 +697,7 @@ jobs:
           retention-days: 7
 
   windows-package:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     timeout-minutes: 15
     needs: windows-live
     runs-on: windows-2025
@@ -687,7 +758,7 @@ jobs:
           retention-days: 7
 
   linux-sanitizers:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
 
     env:
@@ -729,7 +800,7 @@ jobs:
           --timeout 60 --output-on-failure
 
   linux-openssl-static:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
 
     services:
@@ -1047,7 +1118,7 @@ jobs:
           if-no-files-found: error
 
   awslc-adapter-proof:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -1124,7 +1195,7 @@ jobs:
           if-no-files-found: error
 
   iodbc-unicode:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: macos-latest
 
     strategy:
