@@ -7,6 +7,34 @@ The human-approved 2026-10-13 parallel execution model is defined in
 [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md). It supersedes root-only implementation
 and blanket shared-file author restrictions; architecture and acceptance remain.
 
+## Current human guidance — 2026-10-15
+
+This guidance supersedes conflicting earlier billing, timer and selected-live-batch
+instructions. [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) defines the checkpoint rules.
+General feature, AUTH and roadmap successors remain **HELD**; the standing parallel
+model does not dispatch new product work during that hold.
+
+- Every PR requires at least one actual macOS, Ubuntu/Linux and Windows build.
+  Full cross-platform tests remain a checkpoint requirement, not a per-PR test matrix.
+- Every initiated live checkpoint covers **all existing applicable live tests**
+  across their owning binaries and supported applicable profiles. Finite execution
+  partitions must preserve the full inventory, not select features or omit prior
+  passes. Report actual PASS/FAIL/SKIP and genuine unavailable boundaries; same-checkpoint
+  evidence is reusable only with explicit source/input/profile applicability proof.
+- The human checks billing manually daily. Remove automated billing/cost/budget
+  monitors and probes, including pre-test Cost Explorer, Price List and Serverless
+  budget probes and repeated financial-data/admission recalculation gates. Do not
+  recreate them under a different label. Existing USD100 compute/USD150 total/USD50
+  other/tax limits and all historical liabilities/consumptions remain unchanged.
+- Preserve finite operational one-use admission, source/image/full-CI binding,
+  identity, verified TLS, network, fixtures and exact principal/query/input/process
+  cleanup. Keep the cluster PAUSED during preparation/build/CI gaps and at the end.
+  Existing standing routine-fixture authority remains; this changes no principal,
+  infrastructure, access, runtime or budget scope.
+- The supervisor deleted the 12-hour cost monitor. The legacy 15-minute development
+  continuation and 10-minute oversight remain PAUSED. Do not restart or recreate
+  timers, watchers or monitors.
+
 ## Active workflow correction — 2026-10-13
 
 The human-directed local development reset in `PARALLEL_WORKFLOW.md` supersedes
@@ -114,8 +142,9 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
   from an older binary or another candidate.
 - Reap gate processes and independently verify private PostgreSQL shutdown
   before final acceptance. Integrate reviewed exact bytes. Primary-qualified intermediate Redshift commits
-  may precede periodic full CI; label cross-platform and live acceptance pending. Follow one
+  may precede periodic full CI; label full cross-platform tests and live acceptance pending. Follow one
   immutable exact-head full run to completion before closure of existing full-acceptance goals or final release acceptance.
+  Every PR also needs the three-platform builds above; a primary-only result is insufficient.
   No status-only pushes, automatic cancellation or duplicate watchers.
 
 ## Build storage and periodic cleanup
@@ -162,37 +191,38 @@ On the authorized development host, read
 evidence and protected admission constraints. Replace current facts there;
 archive superseded evidence without copying full history into timer prompts.
 The handoff and a goal do not create new cloud authority. Read the work board for
-package leases and actual lane states. During migration, the existing live chat
-retains its immutable source/binary/control checkpoint and live authority. Setup
-can proceed now; bounded isolated source packages can start after its scope/lease
-acknowledgment and recorded `source_lanes_released=true`. Heavy product builds
-require recorded resource release (`heavy_builds_released=true`); integration/live
-cutover requires terminal/reaps/principal cleanup/accounting release
-(`integration_live_released=true`). Pending live acceptance alone does not block
-isolated source work. See `PARALLEL_WORKFLOW.md`.
+package leases and actual lane states. Historical migration source/resource/live
+release flags and accounting receipts remain in `PARALLEL_WORKFLOW.md`; do not
+reenact their superseded financial gates. Preserve immutable source/binary/control
+checkpoints and actual terminal/reap/principal-cleanup/ownership releases. Pending
+live acceptance alone does not block separately authorized isolated source work;
+the current human HOLD still applies.
 
-Keep the legacy 15-minute continuation PAUSED, the existing 12-hour cost monitor
-ACTIVE and existing human 5-minute supervision intact. Do not resume the paused
-continuation or create timers/goals/watchers. Continuous assignments proceed
-through callbacks independently of timer state. No per-agent timers.
+Keep the legacy 15-minute development continuation and 10-minute oversight PAUSED.
+The supervisor has deleted the 12-hour cost monitor; do not restore it or create
+replacement billing probes, timers, goals or watchers. Current callbacks do not
+resume product/AUTH work held by the human.
 Notify on meaningful completion, failure, material blocker or required action;
 otherwise keep scheduled checks quiet.
 
 Paid/cloud work requires the protected operator handoff and separately reviewed
-finite admission. Preserve the cumulative allowance and old uncertain exposure;
-never infer budget, credentials, SQL coverage or a horizon extension from a
-timer, synthetic pass, goal or billing estimate. Actual AWS SDK acquisition and
-verified-TLS Redshift login remain separate completion requirements.
+finite operational admission. Preserve the unchanged limits, historical uncertain
+exposure and consumed nonces. Automated billing probes and repeated financial
+recalculation are not admission prerequisites; the human checks billing manually.
+Never infer credentials, SQL coverage or a scope/horizon extension from a timer,
+synthetic pass, goal or estimate. Actual AWS SDK acquisition and verified-TLS
+Redshift login remain separate completion requirements.
 
 ## Current Redshift cadence — human approved 12-hour batching 2026-10-11
 
 [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) supersedes the older per-batch
 full-graph/CI sequencing below. The coordinator retains the 12-hour full
 CI-first/live-batch cadence and durable private ci-cadence.json; no new timer.
-Author live tests during development, defer per-feature execution/admission to the
-checkpoint and collect failures into coherent reviewed fixes. Product implementation
-continues while qualification runs. All final scope, review, live authority,
-security and cleanup requirements remain.
+Author live tests during development and execute the full applicable live inventory
+at each initiated checkpoint, collecting failures into coherent reviewed fixes.
+Product implementation may overlap qualification only when authorized; the current
+feature/AUTH/roadmap HOLD remains. All final scope, review, live authority, security
+and cleanup requirements remain.
 
 ## Batch size and diagnostic execution — human agreed 2026-10-07
 
@@ -202,19 +232,22 @@ Run focused checks while developing, then relevant coherent primary regression
 and independent integration review. Intermediate pushes may precede the periodic
 full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
 mandatory.
-Preserve each scenario's assertions and result; never add unrelated work merely
-to fill a batch or replay already qualified milestones.
+Preserve each scenario's assertions and result; never add unrelated product work
+merely to fill a batch. The older no-replay rule does not omit previously passing
+cases from a newly initiated full live checkpoint.
 
 CI and real Redshift tests provide distinct evidence. Under the human-approved
 12-hour policy, first make full GitHub CI green on the exact tested head, then
-execute the accumulated live batch. Earlier diagnostic live execution requires
+execute the complete applicable live suite. Earlier diagnostic live execution requires
 explicit human scheduling direction and unchanged finite authority/admission;
 ordinary feature completion is not an exception. Preserve original failures,
 source/binary binding, independent review and exact-principal cleanup.
 
-Group ready, reviewed live scenarios into one finite cluster session with explicit
-per-case and aggregate statement/time bounds, durable one-use admission and
-verified exact-principal cleanup and pause. Keep the cluster paused during gaps
+Partition the full applicable live suite into finite execution units with explicit
+per-case and aggregate statement/time bounds, durable operational one-use admission
+and verified exact-principal cleanup and pause. Partitions are execution bounds,
+not semantic feature selection or permission to omit older passing cases. Keep the
+cluster paused during gaps
 in its admitted test session, including coding/builds/CI needed for that session;
 do not keep it running to await speculative readiness. A genuinely executing
 bounded live batch may overlap acknowledged isolated source lanes. Spending,

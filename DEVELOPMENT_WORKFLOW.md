@@ -11,6 +11,42 @@ trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines four continuing prod
 automated qualification, shared independent review, coordinator integration and
 the separate source, resource and integration/live migration releases. The 12-hour cadence and all protected gates remain.
 
+## Current human guidance — 2026-10-15
+
+These rules supersede conflicting earlier selected-live-batch, financial-gate and
+timer instructions. They do not expand infrastructure, principals, access, runtime
+or the existing USD100 compute/USD150 total/USD50 other/tax limits.
+
+1. Every PR receives at least one actual macOS, Ubuntu/Linux and Windows build.
+   Bind results to the actual PR head, workflow and profile. Full cross-platform
+   tests remain a checkpoint requirement; this is not full tests on every PR.
+2. Every initiated live checkpoint runs all existing applicable live tests across
+   owning binaries and supported applicable profiles. Use finite execution
+   partitions, not semantic feature selection or omission based on previous PASS.
+   Report the full inventory with actual PASS/FAIL/SKIP and precise genuine
+   unavailable boundaries; unrun coverage remains unqualified. Reuse execution
+   from this same checkpoint only with explicit source/input/profile applicability
+   proof, never by substituting historical passes.
+3. The human checks bills manually daily. Remove automated billing/cost/budget
+   monitoring and probes, including pre-test Price List, Cost Explorer and
+   Serverless budget probes and repeated financial-data/admission recalculation
+   gates. Do not recreate these under an admission, watcher or other label.
+   Preserve financial history and consumed nonces without reopening old gates.
+
+Keep finite operational one-use admission, source/image/green-full-CI binding,
+identity, verified TLS, network, fixtures and exact principal/query/input/process
+cleanup. Keep the cluster PAUSED during preparation/build/CI gaps and at the end.
+The existing standing authority covers routine fixtures and their minimal
+permissions for existing principals without repeated human approval; identity,
+custody and cleanup checks remain. Genuinely wider scope still needs its own
+decision. An already executing finite run finishes with unchanged inputs and safe cleanup; only explicit
+same-checkpoint applicability permits reuse toward the complete inventory.
+
+The supervisor deleted the 12-hour cost monitor. Legacy development and 10-minute
+oversight remain PAUSED; no timer/monitor restart or replacement. General feature,
+AUTH and roadmap successors remain HELD. Standing continuation rules below do not
+resume product work during this hold.
+
 ## Human-directed local workflow correction — 2026-10-13
 
 Apply the local development reset in `PARALLEL_WORKFLOW.md` to both existing
@@ -32,10 +68,13 @@ failures, architecture checks and every full/platform/live/final gate remain.
   work through `tools/development/with_build_slot.py` on this 8 GiB Mac; source
   work and independent review can proceed concurrently. During migration, product
   builds require the legacy owner's recorded resource release. Run focused tests, relevant
-  primary regression and applicable architecture, staging and packaging checks. Reuse its graph. Do not routinely
-  build UCS2, sanitizer, alternative providers, Windows or Linux per candidate.
-- Inspect portability and affected contracts during source review; record other
-  profiles as pending rather than claiming they passed. Collect their checks in
+  primary regression and applicable architecture, staging and packaging checks. Reuse its graph.
+  Every PR also receives the required macOS, Ubuntu/Linux and Windows builds.
+  Do not routinely repeat the full tests, extra Unicode widths, sanitizer or
+  alternative-provider matrix per candidate; those remain checkpoint gates.
+- Inspect portability and affected contracts during source review; record unrun
+  full-test/extra profiles as pending rather than claiming they passed. Record
+  each mandatory per-PR platform build independently. Collect remaining checks in
   the periodic sweep. Run an extra check early only for an actual failure, a
   concrete safety/ABI defect needing immediate diagnosis, an explicit human
   request; record the reason. Pointer/layout/Unicode
@@ -44,7 +83,7 @@ failures, architecture checks and every full/platform/live/final gate remain.
   investigate automated focused qualification and resolve independent review
   findings. A shared reviewer pool reviews ready candidates independently.
   The coordinator owns integration branch Git, combined/full CI, live admission,
-  accounting and cleanup. Workers can commit/push their leased worker branches
+  retained history and cleanup. Workers can commit/push their leased worker branches
   and open PRs; only the coordinator integrates. Shared-file authorship follows
   exact package leases and interface plans rather than a blanket root-only rule.
   Keep the handoff concise; do not add a dedicated API worker or permanent
@@ -53,8 +92,9 @@ failures, architecture checks and every full/platform/live/final gate remain.
   push or PR alone does not establish accepted implementation delivery. The
   existing primary workflow on pushes remains primary regression; it does not prove native Redshift.
 - Author meaningful happy, boundary and recovery GoogleTests with each product
-  change. Queue new and affected live cases for the next 12-hour checkpoint;
-  do not execute a separate live batch or prepare paid admission per feature.
+  change. Register new cases in the complete owning live inventories for the next
+  checkpoint; run the full applicable suite there, not a feature-selected batch.
+  Do not execute separate live tests or prepare paid admission per feature.
   Continue reviewed primary-qualified commits and pushes with full-CI and live
   acceptance explicitly pending. A pending qualification goal does not prevent
   implementation of the next authorized coherent product package.
@@ -100,6 +140,10 @@ required. A compiler/runtime finding needs a narrow root product lease before
 fixing it; full Windows/native/live/package acceptance remains debt.
 
 ## Goals and pending acceptance
+
+The standing implementation model below applies only when product work is
+released. The current human HOLD and paused timers take precedence; it is not a
+new goal, dispatch or timer authorization.
 
 Human-approved clarification on 2026-10-11: scheduled acceptance must not block
 ready product development. Future implementation goals cover one coherent product
@@ -148,42 +192,49 @@ must not prevent ready authorized product implementation. A scheduled due time i
 pending acceptance, not a reason to mark a new implementation goal blocked. Report
 actual no-progress honestly without inventing work or a live process wait. Respect
 human pauses, genuine blockers, budgets and approval dependencies. The human has
-explicitly authorized continued timer development and due-checkpoint qualification
-for the current ACCESS_MODE goal despite its earlier cadence-only blocked label;
-this does not remove its original final acceptance or require an early test run.
+previously authorized continued timer development and due-checkpoint qualification
+for the ACCESS_MODE goal despite its earlier cadence-only blocked label. That is
+historical authorization, superseded by the current HOLD/paused timer state; its
+original final acceptance evidence remains required.
 
 ## Combined 12-hour qualification checkpoint
 
 - The coordinator checks the durable 12-hour due time in
   `continuation/ci-cadence.json`; no additional timer or watcher. When changed
-  source has accumulated, freeze a ready pushed head and the applicable pending
-  test inventory. Reuse a matching completed green or active full GitHub CI run;
+  source has accumulated, freeze a ready pushed head and the complete existing
+  applicable live inventory across owning binaries and supported applicable
+  profiles. Reuse a matching completed green or active full GitHub CI run;
   otherwise dispatch one full platform/profile run on that exact head.
 - First make full GitHub CI green. Collect failures, make coherent independently
   reviewed corrections, run affected local checks, push and qualify the corrected
   head. Follow one immutable run at a time; preserve original failures and avoid
   duplicate runs, automatic cancellation and unchanged accepted-gate replay.
-- Only after that exact tested source head has green full CI, bind its current
-  primary native binary and run one reviewed finite Redshift batch containing
-  accumulated new/affected cases and applicable authorized regression. Author
-  tests during development; batch their execution and admission at this checkpoint.
-  Record the selected inventory, exact source/binary/head, evidence applicability,
-  pending cases and admission dependencies. Parked AUTH/Excel/MySQL and tests
-  outside current authority are excluded, not silently counted as passed.
+- Only after that exact tested source head has green full CI, bind all applicable
+  owning native binaries/profiles and execute the full existing applicable live
+  suite. Record every case and its actual PASS/FAIL/SKIP, or a precise genuinely
+  unavailable/out-of-scope boundary. Do not silently omit older tests, omit a case
+  because it passed before, or use a feature subset as checkpoint completion.
+  Finite partitions may bound execution/fixtures but must account for the whole
+  inventory. Parked AUTH/Excel/MySQL and unsupported profiles remain explicit
+  boundaries, not qualified passes or new access/infrastructure authority.
 - Collect live failures into coherent fixes in the same checkpoint. Review and
   test affected changes, push, restore green full CI for the corrected tested head,
-  then rerun affected live cases with fresh finite admission. Retain unchanged
-  evidence only where source/input applicability actually holds. Never blindly
-  replay a consumed approval, force an unsafe follow-up, or loop without a finite
-  execution/accounting horizon; record concrete unresolved failures for continuation.
+  then complete the checkpoint inventory with fresh finite operational admission.
+  Reuse results from this same checkpoint only where explicit source/input/profile
+  applicability actually holds; otherwise qualify the affected cases. A newly
+  initiated checkpoint covers the full applicable suite regardless of prior PASS.
+  Never replay consumed approval, force an unsafe follow-up or loop without finite
+  execution/cleanup bounds. Preserve failures and identify every unrun remainder;
+  an interrupted partition is not a completed full suite.
 - Keep one bounded reviewed test-heavy cluster window for genuinely ready tests
   and admitted corrections when authorized. Pause during longer development/build/
-  CI gaps in that admitted test session, at window end or spending guards.
-  A genuinely executing bounded live batch may overlap acknowledged isolated
-  source lanes. Paid execution still requires fresh
-  reviewed accounting/controls, canonical lock, one-use consumption, exact source/
-  binary binding, bounded execution and exact-principal cleanup. Scheduling grants
-  no new authority, resource, network, spending or authorization-horizon extension.
+  CI gaps in that admitted test session and at window end.
+  A genuinely executing bounded live checkpoint may overlap separately authorized
+  isolated source work. Paid execution still requires reviewed finite operational
+  controls, canonical lock, one-use consumption, exact source/image/full-CI binding,
+  identity/TLS/network/fixture checks and principal/query/input/process cleanup.
+  Human daily billing replaces automated financial probes/recalculation gates.
+  Scheduling grants no resource, access, spending-limit or runtime/horizon expansion.
 - Do not advance full/live qualification merely to close an individual feature
   goal. Ordinary product pushes stay primary-qualified with acceptance debt until
   the checkpoint. Only an explicit human request or concrete immediate safety
@@ -196,15 +247,16 @@ this does not remove its original final acceptance or require an early test run.
 - Preserve noncancelling CI queue groups and inspect GitHub's pending-run capacity
   before dispatch. Record a real queue wait instead of duplicating watchers.
 
-Keep the legacy 15-minute continuation PAUSED and existing 12-hour cost monitor
-ACTIVE, with the existing human 5-minute supervision; no new timer, goal or watcher.
-Continuous assignment does not resume the paused continuation. Preserve their authorized state;
-the migration does not restart a human-paused continuation. The human-approved
+Keep the legacy 15-minute development continuation and 10-minute oversight PAUSED.
+The supervisor deleted the 12-hour cost monitor; do not restore it, restart paused
+timers or create replacement budget probes, goals or watchers. Current callbacks
+and this policy change do not release the product/AUTH HOLD. The human-approved
 isolated source lanes can overlap the immutable live checkpoint after its owner's
 scope/lease acknowledgment and `source_lanes_released=true`; heavy builds require
-resource release, and integration/live transfer requires terminal/cleanup/accounting
-release. Preserve the legacy warm-source/build pause and existing timer state;
-new lanes do not await full live acceptance. Keep
+resource release, and integration/live transfer requires terminal/cleanup and
+recorded ownership release. Historical accounting-release records remain evidence,
+not a new automated financial gate. Preserve the legacy warm-source/build pause
+and existing timer state; new lanes do not await full live acceptance. Keep
 periodic/ad hoc cleanup under coordinator ownership. The parallel trial is
 reversible; change it only on further human instruction. Preserve old
 results, immutable candidates, original failures and unrelated dirty worktrees.
