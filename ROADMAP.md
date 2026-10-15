@@ -11,7 +11,7 @@ remains evidence, not the release stopping rule.
 1. A dependable PostgreSQL implementation to validate shared ODBC and transport behavior.
 2. A usable Redshift driver, adapted after the PostgreSQL beta checkpoint.
 3. A reusable C++20 connectivity SDK, with database-specific behavior outside
-   client API adapters and a path to both ODBC and ADBC.
+   client API adapters and useful internal batch-result seams.
 4. A bounded MySQL 8 reference slice proving that the SDK supports an unrelated
    wire protocol before public SDK stability is promised.
 
@@ -19,10 +19,42 @@ Active implementation scope is PostgreSQL, Redshift and the bounded MySQL SDK
 proof in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md). RDS, Aurora, Athena, MariaDB
 and SQL Server/TDS are not added. SDK architecture began in PostgreSQL
 consolidation (G9a), is tested across unrelated protocols by MySQL (G12), and is
-refined through Redshift specialization (G9b). ADBC shapes the internal boundary
-but its API, Arrow integration and packaging are deferred. Public SDK stability
-and distribution remain G13. See the
+refined through Redshift specialization (G9b). The Arrow ADBC fork is the current
+Redshift ADBC delivery route. ODBCPP's separate ADBC adapter, Arrow integration
+and ADBC packaging are deferred until a concrete unmet need and a new product
+decision; there is no automatic successor assignment. Retain useful internal
+seams without building a duplicate Redshift ADBC stack. Public connectivity SDK
+stability and distribution remain G13. See the
 [backend boundary and acceptance criteria](BACKEND_BOUNDARY.md).
+
+## Redshift ADBC and shared authentication direction — 2026-10-15
+
+ODBCPP remains the ODBC product and connectivity SDK; PostgreSQL, Redshift and
+bounded MySQL commitments are unchanged. The Redshift ADBC fork's differentiator
+is its inspectable, buildable, modifiable and redistributable open-source
+implementation under its applicable licenses and notices, not a claim to be the
+first driver or to have unmeasured performance superiority.
+
+ADBC v1 retains its caller-owned boto3 IAM helper as a replaceable convenience
+adapter. Installed C archive/Python wheel qualification against real Redshift,
+including that IAM path, requires separate finite live admission; offline tests
+and CI alone do not establish it. The existing CI OIDC blocker remains until
+resolved. This does not schedule native C++ IAM, federation, Identity Center,
+shared credential caching or background refresh for ADBC v1.
+
+After ADBC v1 qualification, the first shared-auth reuse proof is the same
+temporary-Redshift-credential implementation consumed by both ODBCPP and an
+independently built Arrow ADBC driver. Keep private interfaces until that proof
+establishes expiry/new-connection/reconnect behavior, target isolation,
+cancellation, safe diagnostics and optional dependencies. Public auth ABI,
+bindings, independent packaging and product commitments follow proof, not precede
+it, and are not prerequisites for either driver's current release. The initial
+shape is an embedded database-auth SDK with optional providers, not a scheduled
+auth service or universal platform. See
+[the authentication boundary and future method-parity obligations](AUTH_LIBRARY_ARCHITECTURE.md).
+AUTH implementation remains parked and all existing HOLD states remain in force;
+this documentation decision grants no product implementation, live execution or
+release/package/tag/site publication authority.
 
 The PostgreSQL technical and Windows delivery baseline may support SDK work while
 host-dependent G8 application acceptance is deferred by explicit product

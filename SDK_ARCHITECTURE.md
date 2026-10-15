@@ -11,6 +11,26 @@ MySQL/external-author usability, and code/architecture security. It describes
 the intended architecture, not the current implementation state. Existing
 PostgreSQL behavior remains protected by its complete regression gates.
 
+## Current delivery boundary — 2026-10-15
+
+ODBCPP remains the ODBC product and connectivity SDK. The Arrow ADBC fork is the
+current Redshift ADBC delivery route. A separate ODBCPP ADBC adapter, Arrow
+integration and ADBC packaging are deferred until a concrete unmet need and a new
+product decision, with no automatic successor. Retain useful internal batch seams;
+historical S1/checkpoint references to later ADBC delivery do not schedule that work.
+
+After ADBC v1 qualification, shared authentication first proves the same bounded
+temporary-Redshift-credential implementation in ODBCPP and the independently built
+Arrow ADBC driver, without requiring that driver to use this connectivity SDK.
+Reuse provider-neutral AuthCore and optional provider boundaries; private interfaces
+precede public auth ABI/bindings/packaging commitments. Consumer backends retain
+database framing, verified database TLS, authenticated sessions and pool/reconnect
+policy; provider HTTPS verification remains a separate explicit responsibility.
+Credential expiry bounds new authentication, not an assumed server-forced end to
+an established session. The embedded SDK/optional-provider direction, parked AUTH
+and eventual method parity are detailed in
+[AUTH_LIBRARY_ARCHITECTURE.md](AUTH_LIBRARY_ARCHITECTURE.md).
+
 ## Decisions
 
 | ID | Accepted decision | Consequence |
@@ -22,7 +42,7 @@ PostgreSQL behavior remains protected by its complete regression gates.
 | A5 | Results and errors cross the SDK boundary in normalized, owning forms | PostgreSQL OIDs/tags/format codes and MySQL type/flag/packet fields remain private |
 | A6 | Product composition owns compile-time backend registration | G12 requires one documented registration point, not runtime plugins or a stable ABI |
 | A7 | The current `ConnectionPool` is prototype code and will not define the SDK pool contract | Replace its shared-pointer/manual-release model before any reuse claim; keep it internal and unadvertised meanwhile |
-| A8 | ODBC is the first client adapter; ADBC attaches later through a batch-result seam | No Arrow or ADBC dependency enters G12 |
+| A8 | ODBC is the client adapter; internal batch seams do not schedule a separate ODBCPP ADBC adapter | Arrow ADBC fork is the current route; ODBCPP ADBC/Arrow work is deferred to a new product decision; no Arrow or ADBC dependency enters G12 |
 | A9 | Secure transport/authentication, resource budgets and extension trust are architecture concerns | The mandatory rules are in [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 | A10 | Cryptography provider and linkage are explicit build-time product profiles behind private adapters | DSNs cannot select libraries; provider types do not enter SDK/backend contracts; see [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) |
 
@@ -68,7 +88,7 @@ roots must be assessed explicitly before claiming relocatability.
 ```mermaid
 flowchart TD
   ODBC[ODBC adapter]
-  ADBC[Future ADBC adapter]
+  ADBC[Deferred ODBCPP ADBC adapter]
   SDK[SDK orchestration and contracts]
   COMPOSE[Product composition]
   PG[PostgreSQL-family backend]
@@ -77,7 +97,7 @@ flowchart TD
   TRANSPORT[Transport and security primitives]
 
   ODBC --> SDK
-  ADBC -. later .-> SDK
+  ADBC -. new product decision .-> SDK
   COMPOSE --> ODBC
   COMPOSE --> PG
   COMPOSE --> MYSQL
@@ -212,8 +232,10 @@ decodes PostgreSQL bytea/boolean text, MySQL binary-protocol cells, command tags
 native type identifiers or protocol messages.
 
 G12 may materialize bounded row batches. A later batch-reader contract can emit
-row or columnar batches behind the same schema/execution ordering. ADBC/Arrow
-types do not appear in SDK contracts until their own milestone.
+row or columnar batches behind the same schema/execution ordering. This useful
+internal seam does not schedule Arrow integration or an ADBC adapter; that scope
+requires a concrete unmet need and a new product decision. No ADBC/Arrow types
+enter the current SDK contracts.
 
 ## Structured errors and session disposition
 
