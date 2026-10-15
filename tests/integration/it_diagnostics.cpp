@@ -1,6 +1,87 @@
 #include <gtest/gtest.h>
+#include "tests/test_connection_config.h"
+#include <cstdint>
+#include <algorithm>
+#include <chrono>
 #include "odbc/odbc_api.h"
 #include "tests/test_handle_helpers.h"
+
+
+namespace {
+// One original per-case window, including reconnects and sibling handles.
+// Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
+// timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
+constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
+  if (left <= 0) return 0;
+  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  return requested == 0 ? cap : std::min(cap, requested);
+}
+static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(4) == 4);
+static_assert(fixture_timeout_seconds(1) == 1);
+static_assert(fixture_timeout_seconds(0) == 0);
+static_assert(fixture_timeout_seconds(-1) == 0);
+static_assert(fixture_timeout_seconds(40, 1) == 1);
+static_assert(fixture_timeout_seconds(40, 2) == 2);
+static_assert(fixture_timeout_seconds(40, 3) == 3);
+
+SQLULEN fixture_seconds_left(std::chrono::steady_clock::time_point end) {
+  const auto seconds = fixture_timeout_seconds(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          end - std::chrono::steady_clock::now()).count());
+  if (seconds == 0) {
+    ADD_FAILURE() << "Original forty-second fixture window expired; no new I/O";
+  }
+  return seconds;
+}
+
+bool fixture_statement_budget(std::chrono::steady_clock::time_point end, SQLHSTMT statement) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLULEN requested = 0;
+  if (SQLGetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, &requested, 0, nullptr) != SQL_SUCCESS) {
+    // Preserve the original API's invalid-handle/local-validation assertion.
+    return true;
+  }
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), requested);
+  if (seconds == requested) return true;
+  if (SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT,
+                     reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture statement timeout";
+    return false;
+  }
+  return true;
+}
+
+bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDBC connection, bool login) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLUINTEGER current = 0;
+  if (login) {
+    SQLUINTEGER dead = SQL_CD_TRUE;
+    if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr) == SQL_SUCCESS && dead == SQL_CD_FALSE) {
+      // An already-connected connect call is a local 08002 test, not new I/O.
+      return true;
+    }
+    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+    if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not apply finite fixture login timeout";
+      return false;
+    }
+  }
+  if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+  if (SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture connection timeout";
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
 
 class DiagnosticsIntegrationTest : public ::testing::Test {
 protected:
@@ -172,7 +253,28 @@ TEST_F(DiagnosticsIntegrationTest, SQLGetDiagFieldRecordFields) {
     EXPECT_TRUE(strstr(message, "Connection") != nullptr);
 }
 
-TEST(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
+class DiagnosticsConnectedIntegrationTest : public ::testing::Test {
+ protected:
+    const std::chrono::steady_clock::time_point fixture_end_ =
+        std::chrono::steady_clock::now() + std::chrono::seconds(40);
+
+    // Fixture-local forwards cover repetitions, reconnects and sibling handles.
+    // The original assertions/arguments below still call the actual public API.
+    SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
+        SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
+        SQLSMALLINT name_length3) {
+      return fixture_connection_budget(fixture_end_, connection, true)
+          ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
+              authentication, name_length3) : SQL_ERROR;
+    }
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
+    }
+
+};
+
+TEST_F(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
     SQLHENV environment = SQL_NULL_HENV;
     SQLHDBC connection = SQL_NULL_HDBC;
     SQLHSTMT statement = SQL_NULL_HSTMT;
@@ -185,8 +287,7 @@ TEST(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
     ASSERT_EQ(SQL_SUCCESS,
               SQLConnect(connection,
-                         reinterpret_cast<SQLCHAR*>(
-                             const_cast<char*>("DSN=RedshiftProd")),
+                         odbcpp::test::configured_connection_string_data(),
                          SQL_NTS, nullptr, 0, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));

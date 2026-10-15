@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <chrono>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
@@ -13,6 +15,83 @@
 #include <map>
 #include <optional>
 #include <string>
+
+
+namespace {
+// One original per-case window, including reconnects and sibling handles.
+// Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
+// timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
+constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
+  if (left <= 0) return 0;
+  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  return requested == 0 ? cap : std::min(cap, requested);
+}
+static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(4) == 4);
+static_assert(fixture_timeout_seconds(1) == 1);
+static_assert(fixture_timeout_seconds(0) == 0);
+static_assert(fixture_timeout_seconds(-1) == 0);
+static_assert(fixture_timeout_seconds(40, 1) == 1);
+static_assert(fixture_timeout_seconds(40, 2) == 2);
+static_assert(fixture_timeout_seconds(40, 3) == 3);
+
+SQLULEN fixture_seconds_left(std::chrono::steady_clock::time_point end) {
+  const auto seconds = fixture_timeout_seconds(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          end - std::chrono::steady_clock::now()).count());
+  if (seconds == 0) {
+    ADD_FAILURE() << "Original forty-second fixture window expired; no new I/O";
+  }
+  return seconds;
+}
+
+bool fixture_statement_budget(std::chrono::steady_clock::time_point end, SQLHSTMT statement) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLULEN requested = 0;
+  if (SQLGetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, &requested, 0, nullptr) != SQL_SUCCESS) {
+    // Preserve the original API's invalid-handle/local-validation assertion.
+    return true;
+  }
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), requested);
+  if (seconds == requested) return true;
+  if (SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT,
+                     reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture statement timeout";
+    return false;
+  }
+  return true;
+}
+
+bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDBC connection, bool login) {
+  const auto left = fixture_seconds_left(end);
+  if (left == 0) return false;
+  SQLUINTEGER current = 0;
+  if (login) {
+    SQLUINTEGER dead = SQL_CD_TRUE;
+    if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr) == SQL_SUCCESS && dead == SQL_CD_FALSE) {
+      // An already-connected connect call is a local 08002 test, not new I/O.
+      return true;
+    }
+    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+    if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not apply finite fixture login timeout";
+      return false;
+    }
+  }
+  if (SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+  const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
+  if (SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+    ADD_FAILURE() << "Could not apply finite fixture connection timeout";
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
 
 namespace {
 
@@ -50,6 +129,196 @@ std::optional<std::string> text_cell(SQLHSTMT statement,
 
 class MetadataIntegrationTest : public ::testing::Test {
 protected:
+    const std::chrono::steady_clock::time_point fixture_end_ =
+        std::chrono::steady_clock::now() + std::chrono::seconds(40);
+
+    // Fixture-local forwards cover repetitions, reconnects and sibling handles.
+    // The original assertions/arguments below still call the actual public API.
+    SQLRETURN SQLColumns(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3, SQLCHAR* column_name, SQLSMALLINT name_length4) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLColumns(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, column_name, name_length4) : SQL_ERROR;
+    }
+    SQLRETURN SQLColumnsW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3, SQLWCHAR* column_name, SQLSMALLINT name_length4) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLColumnsW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, column_name, name_length4) : SQL_ERROR;
+    }
+    SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
+        SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
+        SQLSMALLINT name_length3) {
+      return fixture_connection_budget(fixture_end_, connection, true)
+          ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
+              authentication, name_length3) : SQL_ERROR;
+    }
+    SQLRETURN SQLDescribeCol(SQLHSTMT statement, SQLUSMALLINT column_number, SQLCHAR* column_name,
+        SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length, SQLSMALLINT* data_type,
+        SQLULEN* column_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLDescribeCol(statement, column_number, column_name, name_buffer_length,
+              name_length, data_type, column_size, decimal_digits, nullable) : SQL_ERROR;
+    }
+    SQLRETURN SQLDescribeColW(SQLHSTMT statement, SQLUSMALLINT column_number,
+        SQLWCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+        SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
+        SQLSMALLINT* nullable) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLDescribeColW(statement, column_number, column_name, name_buffer_length,
+              name_length, data_type, column_size, decimal_digits, nullable) : SQL_ERROR;
+    }
+    SQLRETURN SQLDescribeParam(SQLHSTMT statement, SQLUSMALLINT parameter_number,
+        SQLSMALLINT* data_type, SQLULEN* parameter_size, SQLSMALLINT* decimal_digits,
+        SQLSMALLINT* nullable) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLDescribeParam(statement, parameter_number, data_type, parameter_size,
+              decimal_digits, nullable) : SQL_ERROR;
+    }
+    SQLRETURN SQLExecDirect(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
+    }
+    SQLRETURN SQLExecDirectW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirectW(statement, statement_text, text_length) : SQL_ERROR;
+    }
+    SQLRETURN SQLExecute(SQLHSTMT statement) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecute(statement) : SQL_ERROR;
+    }
+    SQLRETURN SQLFetch(SQLHSTMT statement) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLFetch(statement) : SQL_ERROR;
+    }
+    SQLRETURN SQLFetchScroll(SQLHSTMT statement, SQLSMALLINT fetch_orientation,
+        SQLLEN fetch_offset) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLFetchScroll(statement, fetch_orientation, fetch_offset) : SQL_ERROR;
+    }
+    SQLRETURN SQLForeignKeys(SQLHSTMT statement, SQLCHAR* pk_catalog_name,
+        SQLSMALLINT name_length1, SQLCHAR* pk_schema_name, SQLSMALLINT name_length2,
+        SQLCHAR* pk_table_name, SQLSMALLINT name_length3, SQLCHAR* fk_catalog_name,
+        SQLSMALLINT name_length4, SQLCHAR* fk_schema_name, SQLSMALLINT name_length5,
+        SQLCHAR* fk_table_name, SQLSMALLINT name_length6) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLForeignKeys(statement, pk_catalog_name, name_length1, pk_schema_name,
+              name_length2, pk_table_name, name_length3, fk_catalog_name, name_length4,
+              fk_schema_name, name_length5, fk_table_name, name_length6) : SQL_ERROR;
+    }
+    SQLRETURN SQLForeignKeysW(SQLHSTMT statement, SQLWCHAR* pk_catalog_name,
+        SQLSMALLINT name_length1, SQLWCHAR* pk_schema_name, SQLSMALLINT name_length2,
+        SQLWCHAR* pk_table_name, SQLSMALLINT name_length3, SQLWCHAR* fk_catalog_name,
+        SQLSMALLINT name_length4, SQLWCHAR* fk_schema_name, SQLSMALLINT name_length5,
+        SQLWCHAR* fk_table_name, SQLSMALLINT name_length6) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLForeignKeysW(statement, pk_catalog_name, name_length1, pk_schema_name,
+              name_length2, pk_table_name, name_length3, fk_catalog_name, name_length4,
+              fk_schema_name, name_length5, fk_table_name, name_length6) : SQL_ERROR;
+    }
+    SQLRETURN SQLNumResultCols(SQLHSTMT statement, SQLSMALLINT* column_count) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLNumResultCols(statement, column_count) : SQL_ERROR;
+    }
+    SQLRETURN SQLPrepare(SQLHSTMT statement, SQLCHAR* statement_text, SQLINTEGER text_length) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrepare(statement, statement_text, text_length) : SQL_ERROR;
+    }
+    SQLRETURN SQLPrepareW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrepareW(statement, statement_text, text_length) : SQL_ERROR;
+    }
+    SQLRETURN SQLPrimaryKeys(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrimaryKeys(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3) : SQL_ERROR;
+    }
+    SQLRETURN SQLPrimaryKeysW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLPrimaryKeysW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3) : SQL_ERROR;
+    }
+    SQLRETURN SQLProcedureColumns(SQLHSTMT statement, SQLCHAR* catalog_name,
+        SQLSMALLINT name_length1, SQLCHAR* schema_name, SQLSMALLINT name_length2,
+        SQLCHAR* procedure_name, SQLSMALLINT name_length3, SQLCHAR* column_name,
+        SQLSMALLINT name_length4) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProcedureColumns(statement, catalog_name, name_length1, schema_name, name_length2,
+              procedure_name, name_length3, column_name, name_length4) : SQL_ERROR;
+    }
+    SQLRETURN SQLProcedureColumnsW(SQLHSTMT statement, SQLWCHAR* catalog_name,
+        SQLSMALLINT name_length1, SQLWCHAR* schema_name, SQLSMALLINT name_length2,
+        SQLWCHAR* procedure_name, SQLSMALLINT name_length3, SQLWCHAR* column_name,
+        SQLSMALLINT name_length4) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProcedureColumnsW(statement, catalog_name, name_length1, schema_name,
+              name_length2, procedure_name, name_length3, column_name, name_length4) : SQL_ERROR;
+    }
+    SQLRETURN SQLProcedures(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* procedure_name,
+        SQLSMALLINT name_length3) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProcedures(statement, catalog_name, name_length1, schema_name, name_length2,
+              procedure_name, name_length3) : SQL_ERROR;
+    }
+    SQLRETURN SQLProceduresW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
+        SQLSMALLINT name_length3) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLProceduresW(statement, catalog_name, name_length1, schema_name, name_length2,
+              procedure_name, name_length3) : SQL_ERROR;
+    }
+    SQLRETURN SQLSpecialColumns(SQLHSTMT statement, SQLUSMALLINT identifier_type,
+        SQLCHAR* catalog_name, SQLSMALLINT name_length1, SQLCHAR* schema_name,
+        SQLSMALLINT name_length2, SQLCHAR* table_name, SQLSMALLINT name_length3,
+        SQLUSMALLINT scope, SQLUSMALLINT nullable) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLSpecialColumns(statement, identifier_type, catalog_name, name_length1,
+              schema_name, name_length2, table_name, name_length3, scope, nullable) : SQL_ERROR;
+    }
+    SQLRETURN SQLSpecialColumnsW(SQLHSTMT statement, SQLUSMALLINT identifier_type,
+        SQLWCHAR* catalog_name, SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+        SQLSMALLINT name_length2, SQLWCHAR* table_name, SQLSMALLINT name_length3,
+        SQLUSMALLINT scope, SQLUSMALLINT nullable) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLSpecialColumnsW(statement, identifier_type, catalog_name, name_length1,
+              schema_name, name_length2, table_name, name_length3, scope, nullable) : SQL_ERROR;
+    }
+    SQLRETURN SQLStatistics(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3, SQLUSMALLINT unique, SQLUSMALLINT reserved) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLStatistics(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, unique, reserved) : SQL_ERROR;
+    }
+    SQLRETURN SQLStatisticsW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3, SQLUSMALLINT unique, SQLUSMALLINT reserved) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLStatisticsW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, unique, reserved) : SQL_ERROR;
+    }
+    SQLRETURN SQLTables(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
+        SQLSMALLINT name_length3, SQLCHAR* table_type, SQLSMALLINT name_length4) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLTables(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, table_type, name_length4) : SQL_ERROR;
+    }
+    SQLRETURN SQLTablesW(SQLHSTMT statement, SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+        SQLWCHAR* schema_name, SQLSMALLINT name_length2, SQLWCHAR* table_name,
+        SQLSMALLINT name_length3, SQLWCHAR* table_type, SQLSMALLINT name_length4) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLTablesW(statement, catalog_name, name_length1, schema_name, name_length2,
+              table_name, name_length3, table_type, name_length4) : SQL_ERROR;
+    }
+
     void SetUp() override {
         SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
         SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
@@ -4534,9 +4803,9 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutatio
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
     auto view = rs::odbc::detail::ODBCBackendTestAccess::view(
         rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(hdbc));
-    ASSERT_TRUE(view.check_health(rs::util::make_deadline(std::chrono::seconds(3))));
+    ASSERT_TRUE(view.check_health(std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3)))));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
-    ASSERT_TRUE(view.reset_session(rs::util::make_deadline(std::chrono::seconds(3))));
+    ASSERT_TRUE(view.reset_session(std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3)))));
     columns = 77;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(77, columns);
     EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, hstmt));
