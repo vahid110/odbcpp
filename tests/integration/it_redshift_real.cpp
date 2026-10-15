@@ -1808,24 +1808,71 @@ TEST_F(RedshiftVarbyteTextParameterRealTest, PreparedHexTextToVarbyteBytes) {
 }
 
 // Representative discovery -> metadata -> prepared application workflow.
-// SHOW/LEGACY currently selects PRIMARY KEYS only: SQLTables still uses
-// information_schema for tables, SVV_REDSHIFT_SCHEMAS for schema enumeration,
-// and SVV_COLUMNS for columns. These cases do not claim modern
-// SHOW TABLES/COLUMNS routing or grant fixture/setup authority.
+// SHOW uses native schema/table/column discovery; LEGACY retains the generated
+// catalog queries. Exact fixture identities are separate from ODBC LIKE inputs.
+// Neither case grants fixture/setup authority or exercises primary keys.
 class RedshiftMetadataWorkflowRealTest : public RedshiftRealTest {
 protected:
+  rs::util::Deadline workflow_end_{};
   void SetUp() override {
+    workflow_end_=rs::util::Clock::now()+std::chrono::seconds{40};
     const char* marker=std::getenv("ODBCPP_REDSHIFT_METADATA_WORKFLOW_ADMISSION");
     if(marker==nullptr) { GTEST_SKIP() << "Metadata workflow scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="metadata-prepared-workflow-v1");
     RedshiftRealTest::SetUp();
+    if (HasFatalFailure()) {
+      return;
+    }
+  }
+  std::uintptr_t workflow_seconds() const {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(
+        workflow_end_-rs::util::Clock::now()).count();
+    return left>0 ? static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5)) : 0;
+  }
+  bool workflow_budget(bool statement) {
+    const auto seconds=workflow_seconds();
+    if (seconds==0) {
+      ADD_FAILURE() << "Metadata workflow original forty-second window expired";
+      return false;
+    }
+    if (SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      ADD_FAILURE() << get_error(SQL_HANDLE_DBC,hdbc_);
+      return false;
+    }
+    if (statement && SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      ADD_FAILURE() << get_error(SQL_HANDLE_STMT,hstmt_);
+      return false;
+    }
+    return true;
+  }
+  void connect_workflow() {
+    ASSERT_TRUE(workflow_budget(false));
+    const auto seconds=workflow_seconds();
+    ASSERT_GT(seconds,0u);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(seconds),0));
+    ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+    // The shared helper sets fifteen seconds; replace it before any SQL.
+    ASSERT_TRUE(workflow_budget(true));
+  }
+  static std::string literal_pattern(std::string_view identifier) {
+    std::string pattern;
+    for (const char ch:identifier) {
+      if (ch=='%' || ch=='_' || ch=='\\') {
+        pattern+='\\';
+      }
+      pattern+=ch;
+    }
+    return pattern;
   }
   static std::string quoted(const std::string& identifier) {
     std::string output="\"";
     for(char c:identifier) { if(c=='\"') { output+='\"'; } output+=c; }
     return output+'\"';
   }
-  enum class DescriptorScope { Tables, AllSchemas, ShowSchemas, Columns };
+  enum class DescriptorScope { Tables, ShowTables, AllSchemas, ShowSchemas, Columns };
   struct DescriptorSnapshot {
     std::string name;
     SQLSMALLINT type,digits,nullable;
@@ -1844,36 +1891,53 @@ protected:
       ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&length,&type,&size,&digits,&nullable));
       ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLSMALLINT>(name.size()));
       std::string actual(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(length));
-      if(scope==DescriptorScope::ShowSchemas) {
+      if(scope==DescriptorScope::ShowSchemas || scope==DescriptorScope::ShowTables) {
         const std::array<std::string_view,5> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
         ASSERT_LE(column,names.size());EXPECT_EQ(names[column-1],actual);
       }
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
       EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);
       EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
-      if(type==SQL_SMALLINT) { EXPECT_EQ(5U,size); }
-      else if(type==SQL_INTEGER) { EXPECT_EQ(10U,size); }
-      else if(type==SQL_VARCHAR) {
-        if(scope==DescriptorScope::ShowSchemas) {
-          // Backend preserves SHOW's schema capacity; synthetic NULL fields
-          // have unknown capacity0. No legacy SVV typmod is inherited.
-          if(column==2) { EXPECT_LE(size,65535U); }
-          else { EXPECT_EQ(0U,size); }
-        } else if(scope==DescriptorScope::AllSchemas) {
-          // Selected schema enumeration: SVV schema_name retains VARCHAR(128).
-          const std::array<SQLULEN,5> widths{65535,128,65535,65535,65535};
-          ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
-        } else if(scope==DescriptorScope::Tables) {
-          // This selected database expression is12; TABLE_TYPE's CASE is15.
-          // Catalog header capacity is separate from a user column's size.
-          const std::array<SQLULEN,5> widths{12,65535,65535,15,65535};
-          ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
+      if(type==SQL_SMALLINT) {
+        EXPECT_EQ(5U,size);
+      } else {
+        if(type==SQL_INTEGER) {
+          EXPECT_EQ(10U,size);
         } else {
-          // SVV_COLUMNS text has no prescribed projected typmod here. Keep
-          // its declared bounded capacity (0 means unknown), not guessed65535.
-          EXPECT_LE(size,65535U);
+          if(type==SQL_VARCHAR) {
+            if(scope==DescriptorScope::ShowSchemas) {
+              // Preserve SHOW's schema capacity; synthetic fields are unknown0.
+              if(column==2) {
+                EXPECT_LE(size,65535U);
+              } else {
+                EXPECT_EQ(0U,size);
+              }
+            } else {
+              if(scope==DescriptorScope::ShowTables) {
+                // Native SHOW preserves declared capacities. text_capacity()
+                // also checks nonzero capacities cover returned ASCII values.
+                EXPECT_LE(size,65535U);
+              } else {
+                if(scope==DescriptorScope::AllSchemas) {
+                  const std::array<SQLULEN,5> widths{65535,128,65535,65535,65535};
+                  ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
+                } else {
+                  if(scope==DescriptorScope::Tables) {
+                    // LEGACY database expression is12; TABLE_TYPE CASE is15.
+                    const std::array<SQLULEN,5> widths{12,65535,65535,15,65535};
+                    ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
+                  } else {
+                    // Unprescribed projected text keeps its bounded capacity.
+                    EXPECT_LE(size,65535U);
+                  }
+                }
+              }
+            }
+          } else {
+            ADD_FAILURE() << "Unexpected catalog descriptor type";
+          }
         }
-      } else { ADD_FAILURE() << "Unexpected catalog descriptor type"; }
+      }
       catalog_descriptors_.push_back({std::move(actual),type,digits,nullable,size});
     }
   }
@@ -1948,15 +2012,19 @@ protected:
       pair.second->assign(pair.first,count);
     }
     ASSERT_TRUE(schema=="odbcpp_fixture");
+    const auto schema_pattern=literal_pattern(schema),table_pattern=literal_pattern(table);
     connection_string_+=";RedshiftCatalogMode=";connection_string_+=mode;connection_string_+=';';
-    ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+    connect_workflow();
+    ASSERT_FALSE(HasFatalFailure());
     SQLCHAR identity[]="SELECT current_database(),TRIM(current_user)";
+    ASSERT_TRUE(workflow_budget(true));
     ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,identity,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
     SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(2,count);
     ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));EXPECT_TRUE(text(1)=="odbcpp_pilot");EXPECT_TRUE(text(2)=="odbcpp_pilot_test");
     ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     const CatalogField tables[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"table_type",SQL_VARCHAR},{"remarks",SQL_VARCHAR}};
     SQLCHAR empty[]="";SQLCHAR all_schemas[]=SQL_ALL_SCHEMAS;
+    ASSERT_TRUE(workflow_budget(true));
     ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,empty,SQL_NTS,all_schemas,SQL_NTS,empty,SQL_NTS,nullptr,0)) << schema_catalog_diagnostic();
     descriptors(tables,std::string_view(mode)=="SHOW" ? DescriptorScope::ShowSchemas : DescriptorScope::AllSchemas);ASSERT_FALSE(HasFailure());
     unsigned selected_schemas=0;bool exhausted=false;
@@ -1969,13 +2037,20 @@ protected:
     ASSERT_TRUE(exhausted);ASSERT_EQ(1U,selected_schemas);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     auto bytes=[](const std::string& value){return reinterpret_cast<SQLCHAR*>(const_cast<char*>(value.c_str()));};
     SQLCHAR database[]="odbcpp_pilot";SQLCHAR table_type[]="TABLE";
-    ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,database,SQL_NTS,bytes(schema),SQL_NTS,bytes(table),SQL_NTS,table_type,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
-    descriptors(tables);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    const auto table_scope=std::string_view(mode)=="SHOW" ? DescriptorScope::ShowTables : DescriptorScope::Tables;
+    ASSERT_TRUE(workflow_budget(true));
+    ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,database,SQL_NTS,bytes(schema_pattern),SQL_NTS,bytes(table_pattern),SQL_NTS,table_type,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    descriptors(tables,table_scope);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    const auto owned_table_descriptors=catalog_descriptors_;
     EXPECT_TRUE(text(1)=="odbcpp_pilot");const auto discovered_schema=text(2);const auto discovered_table=text(3);
     EXPECT_TRUE(discovered_schema==schema);EXPECT_TRUE(discovered_table==table);EXPECT_TRUE(text(4)=="TABLE");null(5);
     ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
-    ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,database,SQL_NTS,bytes(schema),SQL_NTS,empty,SQL_NTS,table_type,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
-    descriptors(tables);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+    ASSERT_TRUE(workflow_budget(true));
+    ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,database,SQL_NTS,bytes(schema_pattern),SQL_NTS,empty,SQL_NTS,table_type,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    descriptors(tables,table_scope);ASSERT_FALSE(HasFailure());
+    EXPECT_EQ(owned_table_descriptors,catalog_descriptors_);ASSERT_FALSE(HasFailure());
+    const auto owned_empty_table_descriptors=catalog_descriptors_;
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     const CatalogField columns[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"column_name",SQL_VARCHAR},
       {"data_type",SQL_SMALLINT},{"type_name",SQL_VARCHAR},{"column_size",SQL_INTEGER},{"buffer_length",SQL_INTEGER},
       {"decimal_digits",SQL_SMALLINT},{"num_prec_radix",SQL_SMALLINT},{"nullable",SQL_SMALLINT},{"remarks",SQL_VARCHAR},
@@ -1993,14 +2068,16 @@ protected:
       if(value_column) { number(16,32); } else { null(16); }
       number(17,value_column?2:1);EXPECT_TRUE(text(18)=="YES");
     };
-    ASSERT_EQ(SQL_SUCCESS,SQLColumns(hstmt_,database,SQL_NTS,bytes(schema),SQL_NTS,bytes(table),SQL_NTS,nullptr,0)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    ASSERT_TRUE(workflow_budget(true));
+    ASSERT_EQ(SQL_SUCCESS,SQLColumns(hstmt_,database,SQL_NTS,bytes(schema_pattern),SQL_NTS,bytes(table_pattern),SQL_NTS,nullptr,0)) << get_error(SQL_HANDLE_STMT,hstmt_);
     descriptors(columns,DescriptorScope::Columns);ASSERT_FALSE(HasFailure());
     const auto owned_column_descriptors=catalog_descriptors_;
     for(bool value_column:{false,true}) { ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));column_row(value_column);ASSERT_FALSE(HasFailure()); }
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     for(const char* pattern:{"","v\\%lue","v\\_lue","v%lue","v_lue"}) {
       ASSERT_FALSE(HasFailure());
-      ASSERT_EQ(SQL_SUCCESS,SQLColumns(hstmt_,database,SQL_NTS,bytes(schema),SQL_NTS,bytes(table),SQL_NTS,
+      ASSERT_TRUE(workflow_budget(true));
+      ASSERT_EQ(SQL_SUCCESS,SQLColumns(hstmt_,database,SQL_NTS,bytes(schema_pattern),SQL_NTS,bytes(table_pattern),SQL_NTS,
           reinterpret_cast<SQLCHAR*>(const_cast<char*>(pattern)),SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
       descriptors(columns,DescriptorScope::Columns);ASSERT_FALSE(HasFailure());
       EXPECT_EQ(owned_column_descriptors,catalog_descriptors_);ASSERT_FALSE(HasFailure());
@@ -2012,11 +2089,12 @@ protected:
     const auto owned_last_column_descriptors=catalog_descriptors_;
     catalog_descriptors_.clear(); // Later application results have their own descriptors.
     // Query targets only the exact selected/discovered identifiers; quote before
-    // construction. Mode does not change this information_schema/SVV workflow.
+    // construction. Catalog mode never changes the selected application query.
     const auto sql="WITH odbcpp_input AS (SELECT CAST(? AS INTEGER) AS min_id, CAST(? AS VARCHAR(32)) AS marker) "
       "SELECT fixture.id,fixture.value,odbcpp_input.marker,CAST(CASE WHEN fixture.id=2 THEN NULL ELSE fixture.value END AS VARCHAR(32)) AS maybe_value "
       "FROM "+quoted(discovered_schema)+"."+quoted(discovered_table)+" AS fixture CROSS JOIN odbcpp_input "
       "WHERE fixture.id>=odbcpp_input.min_id ORDER BY fixture.id";
+    ASSERT_TRUE(workflow_budget(true));
     ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())),SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
     SQLSMALLINT parameter_count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameter_count));ASSERT_EQ(2,parameter_count);
     static_assert(sizeof(SQLWCHAR)==2||sizeof(SQLWCHAR)==4);
@@ -2032,6 +2110,7 @@ protected:
       ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,2,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_VARCHAR,32,0,marker.data(),sizeof(marker),&marker_length));
       struct {SQLINTEGER before{17},id{-99},after{83};} bound;
       SQLLEN id_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_SLONG,&bound.id,sizeof(bound.id),&id_length));
+      ASSERT_TRUE(workflow_budget(true));
       ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
       minimum=99;marker.fill('!'); // Owned inputs/results survive caller mutation.
       ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(4,count);
@@ -2068,11 +2147,14 @@ protected:
       ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
     }
     ASSERT_FALSE(HasFailure());
-    SQLCHAR recovery[]="SELECT 1";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    SQLCHAR recovery[]="SELECT 1";
+    ASSERT_TRUE(workflow_budget(true));
+    ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
     ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));number(1,1);ASSERT_FALSE(HasFailure());
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;
     ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));connected_=false;
+    EXPECT_EQ(owned_table_descriptors,owned_empty_table_descriptors);
     EXPECT_EQ(owned_column_descriptors,owned_last_column_descriptors);
     ASSERT_EQ(18U,owned_column_descriptors.size());
     EXPECT_TRUE(owned_columns[0]=="id");EXPECT_TRUE(owned_columns[1]=="value");ASSERT_EQ(4U,snapshots.size());
@@ -2083,6 +2165,7 @@ protected:
       if(index<2) { EXPECT_TRUE(std::equal(expected_marker.begin(),expected_marker.end(),row.marker.begin())); }
       else { EXPECT_TRUE(std::all_of(row.marker.begin(),row.marker.end(),[](auto unit){return unit==0x5a;})); }
     }
+    EXPECT_LT(rs::util::Clock::now(),workflow_end_);
   }
 };
 
