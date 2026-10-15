@@ -6,6 +6,26 @@ This supersedes root-only implementation/qualification, blanket root authorship
 of shared files and the earlier prohibition on creating implementation agents.
 It does not supersede cloud authority, qualification cadence or retained evidence.
 
+## Current qualification and hold — human directed 2026-10-15
+
+Every PR requires at least one macOS, Ubuntu/Linux and Windows build; full tests
+remain at the checkpoint. Every initiated live checkpoint includes all existing
+applicable tests across owning binaries and supported applicable profiles, using
+finite partitions rather than feature selection or prior-PASS omission. Record
+actual PASS/FAIL/SKIP and genuine unavailable boundaries. Same-checkpoint reuse
+requires explicit source/input/profile applicability proof.
+
+The human checks billing manually daily. Automated periodic and pre-test billing,
+cost, Price List, Cost Explorer and Serverless budget probes, and repeated financial
+recalculation/admission gates, are removed. The 12-hour cost monitor is deleted;
+legacy development and 10-minute oversight remain PAUSED, with no restart or
+replacement. USD100 compute/USD150 total/USD50 other/tax limits, history, nonces,
+finite operational admission, security/cleanup and PAUSED preparation/end states
+remain unchanged. Standing routine-fixture authority remains effective.
+General product, AUTH and roadmap successors are HELD. The standing owner model
+below does not override that hold. [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)
+is the current checkpoint policy; conflicting historical rules are superseded.
+
 ## Local development reset — human directed 2026-10-13
 
 The human instruction “Stop everything. Fix it and resume the work” replaces the
@@ -74,8 +94,8 @@ follow-up review.
 The coordinator selects dependency-compatible packages, leases files/contracts,
 schedules constrained resources, checks combined behavior and integrates reviewed
 exact bytes. It owns the integration branch and its commits/pushes, full CI,
-live admission/accounting, acceptance backlog and cleanup. It does not repeat a
-lane's entire implementation or focused qualification investigation.
+live operational admission, retained history, acceptance backlog and cleanup. It
+does not repeat a lane's entire implementation or focused qualification investigation.
 
 | Action | Package owner | Independent reviewer | Coordinator |
 |---|---|---|---|
@@ -84,7 +104,7 @@ lane's entire implementation or focused qualification investigation.
 | Change shared SDK/CMake/CI/crypto/ODBC files | Allowed under exact bounded lease/interface plan | Assess physical ownership and compatibility | Grant/sequence lease and integrate |
 | Commit/push and open a candidate PR | Assigned worker branch only | Read candidate | Integration branch only; merge/integrate |
 | Run combined regression/full CI | Supply candidate evidence; investigate assigned failures | Assess applicable results | Own execution and exact-head binding |
-| Paid live work, principal/resource cleanup, finance | No authority from lane assignment | Independent admission/result review when assigned | Existing protected operator authority only |
+| Paid live work and principal/resource cleanup | No authority from lane assignment | Independent operational admission/result review when assigned | Existing protected operator authority; human daily billing, no automated financial gate |
 
 Worker branch commits, pushes and PRs are deliverables, not integration acceptance.
 Do not enable automatic integration merges. Existing finite authority still governs
@@ -170,19 +190,25 @@ assessment. Candidate ownership tables must state that rationale when applicable
 Run focused checks during development, relevant primary regression once per
 coherent package, and combined checks for the integrated candidate where affected
 inputs require them. A worker's primary pass does not prove combined behavior.
-Do not rerun unchanged applicable evidence merely to fill a transition.
-`DEVELOPMENT_WORKFLOW.md` retains the 12-hour full-CI-first/live-batch checkpoint,
+Do not rerun unchanged applicable development evidence merely to fill a transition.
+This does not omit any applicable case from a newly initiated full live checkpoint;
+previous PASS alone is not an exclusion. `DEVELOPMENT_WORKFLOW.md` retains the
+12-hour full-CI-first/live-batch checkpoint,
 one immutable exact-head full run, original full-acceptance goal requirements and
 all final release gates. Additional lanes do not create additional live sessions,
 cloud admission, resources, principals, budget or authorization horizons.
 
-Worker PRs target `codex/transport-foundation` and receive the primary workflow.
-The full `ci.yml` graph excludes PRs targeting that intermediate branch; the
-coordinator dispatches it on the exact frozen integration head at the checkpoint.
-PRs targeting other branches retain automatic full CI. Keep every full job,
-manual-dispatch input and final acceptance requirement; primary-only PR status
-does not establish full/live/final qualification. Scheduling-tool offline tests
-run in the primary workflow as well as during changes to that tooling.
+Worker PRs target `codex/transport-foundation`. Each PR must receive at least one
+actual build on macOS, Ubuntu/Linux and Windows, bound to its reviewed head and
+actual workflow/profile. Collect each platform's build result; a macOS primary pass
+alone does not satisfy this requirement. These builds do not require the complete
+cross-platform test matrix per PR. Existing focused owning qualification remains.
+
+The coordinator owns one exact frozen-head full platform/profile CI checkpoint
+and the complete applicable live suite afterward. Preserve every full job,
+manual-dispatch input and final acceptance requirement; per-PR build success does
+not establish full/live/final qualification. Scheduling-tool offline tests remain
+in the primary workflow and in qualification of changes to that tooling.
 
 ## Ubuntu normal product qualification
 
@@ -328,6 +354,11 @@ without claiming delivery from agent count. A tool's
 running-agent count or patches produced is not delivery throughput.
 
 ## Historical migration cutover and retained live checkpoint
+
+**Historical evidence, not current instructions:** the migration, accounting and
+timer statements below retain the original cutover record. Conflicting automated
+financial gates/cost-monitor states and selected-live restrictions are superseded
+by the 2026-10-15 guidance above. No historical approval or nonce is reactivated.
 
 The initial two-lane migration below records historical release conditions; it
 does not limit the current four-owner assignment. Preserve its original receipts.
