@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -33,6 +34,18 @@ static_assert(!can_drop_owned(true,false,5));
 static_assert(!can_drop_owned(true,true,0));
 static_assert(can_drop_owned(true,true,1));
 
+
+// This fixture expects no SQL_ERROR. A live handle never proves completion.
+constexpr bool known_completion(SQLRETURN result, std::string_view = {}, bool = false) {
+  return result==SQL_SUCCESS || result==SQL_SUCCESS_WITH_INFO;
+}
+static_assert(known_completion(SQL_SUCCESS));
+static_assert(known_completion(SQL_SUCCESS_WITH_INFO));
+static_assert(!known_completion(SQL_ERROR,"HY000",true));
+static_assert(!known_completion(SQL_ERROR,"40003",true));
+static_assert(!known_completion(SQL_ERROR,"ZZ999",true));
+static_assert(!known_completion(SQL_ERROR,"HY009",true));
+static_assert(!known_completion(SQL_STILL_EXECUTING));
 
 std::string quoted_identifier(const std::string& value) {
   std::string out{"\""};for(char ch:value){if(ch=='\"')out+='\"';out+=ch;}return out+'\"';
@@ -91,26 +104,8 @@ class RoutineSchemaNative : public testing::TestWithParam<bool> {
     RecordProperty("profile_max_results",std::to_string(maximum));
   }
   SQLRETURN observe(SQLRETURN result) {
-    if (result==SQL_SUCCESS || result==SQL_SUCCESS_WITH_INFO) {
-      return result;
-    }
-    if (result==SQL_ERROR) {
-      std::array<SQLCHAR,6> state{};
-      SQLUINTEGER dead=SQL_CD_TRUE;
-      const auto diagnostic=SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state.data(),nullptr,
-          nullptr,0,nullptr);
-      const bool diagnostic_present=diagnostic==SQL_SUCCESS || diagnostic==SQL_SUCCESS_WITH_INFO;
-      // Preserve known local metadata refusals. Timeout/transport/dead/unknown
-      // completion never authorizes another SQL operation, including cleanup.
-      if (diagnostic_present && state[5]==0 && state[0]!=0 &&
-          !(state[0]=='0' && state[1]=='8') &&
-          !(state[0]=='H' && state[1]=='Y' && state[2]=='T') &&
-          SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr)==SQL_SUCCESS &&
-          dead==SQL_CD_FALSE) {
-        return result;
-      }
-    }
-    completion_known_=false;
+    // Sticky unknown completion prevents every subsequent cap()/DROP dispatch.
+    completion_known_=completion_known_ && known_completion(result);
     return result;
   }
   SQLRETURN execute_fixture(const std::string& sql) {

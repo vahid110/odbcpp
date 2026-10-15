@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,40 @@ static_assert(!can_drop_owned(true,false,5));
 static_assert(!can_drop_owned(true,true,0));
 static_assert(can_drop_owned(true,true,1));
 
+
+enum class LocalRefusal { None, MetadataNull, ColumnPattern, TablePattern };
+// Only the deliberate, source-proven pre-dispatch refusals used below recover.
+constexpr bool known_completion(SQLRETURN result, std::string_view state = {},
+    std::string_view message = {}, bool live = false,
+    LocalRefusal expected = LocalRefusal::None) {
+  if (result==SQL_SUCCESS || result==SQL_SUCCESS_WITH_INFO) {
+    return true;
+  }
+  if (result!=SQL_ERROR || !live) {
+    return false;
+  }
+  return (expected==LocalRefusal::MetadataNull && state=="HY009" &&
+          message=="Metadata identifier argument is required") ||
+      (expected==LocalRefusal::ColumnPattern && state=="HY000" &&
+          message=="Invalid schema/table/column patterns") ||
+      (expected==LocalRefusal::TablePattern && state=="HY000" &&
+          message=="Invalid table catalog patterns");
+}
+static_assert(known_completion(SQL_SUCCESS));
+static_assert(known_completion(SQL_SUCCESS_WITH_INFO));
+static_assert(!known_completion(SQL_ERROR,"HY000","generic error",true));
+static_assert(!known_completion(SQL_ERROR,"40003","completion unknown",true));
+static_assert(!known_completion(SQL_ERROR,"ZZ999","unclassified",true));
+static_assert(!known_completion(SQL_ERROR,"HY000","generic error",true,LocalRefusal::ColumnPattern));
+static_assert(!known_completion(SQL_ERROR,"40003","Invalid table catalog patterns",true,LocalRefusal::TablePattern));
+static_assert(!known_completion(SQL_ERROR,"HY009","Metadata identifier argument is required",true));
+static_assert(!known_completion(SQL_ERROR,"HY009","Metadata identifier argument is required",false,LocalRefusal::MetadataNull));
+static_assert(!known_completion(SQL_ERROR,"HYT00","Invalid schema/table/column patterns",true,LocalRefusal::ColumnPattern));
+static_assert(!known_completion(SQL_ERROR,"08S01","Invalid table catalog patterns",true,LocalRefusal::TablePattern));
+static_assert(known_completion(SQL_ERROR,"HY009","Metadata identifier argument is required",true,LocalRefusal::MetadataNull));
+static_assert(known_completion(SQL_ERROR,"HY000","Invalid schema/table/column patterns",true,LocalRefusal::ColumnPattern));
+static_assert(known_completion(SQL_ERROR,"HY000","Invalid table catalog patterns",true,LocalRefusal::TablePattern));
+static_assert(!known_completion(SQL_STILL_EXECUTING));
 
 std::string quoted_identifier(std::string_view value) {
   std::string out{"\""};for(char ch:value){if(ch=='"')out+='"';out+=ch;}return out+'"';
@@ -94,27 +129,31 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     }
     RecordProperty("profile_max_results",std::to_string(maximum));
   }
-  SQLRETURN observe(SQLRETURN result) {
+  SQLRETURN observe(SQLRETURN result,LocalRefusal expected=LocalRefusal::None) {
     if (result==SQL_SUCCESS || result==SQL_SUCCESS_WITH_INFO) {
       return result;
     }
-    if (result==SQL_ERROR) {
+    const bool previously_known=completion_known_;
+    completion_known_=false; // Fence first, before inspecting any error evidence.
+    if (previously_known && result==SQL_ERROR && expected!=LocalRefusal::None) {
       std::array<SQLCHAR,6> state{};
-      SQLUINTEGER dead=SQL_CD_TRUE;
+      std::array<SQLCHAR,256> message{};
+      SQLSMALLINT length=0;
       const auto diagnostic=SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state.data(),nullptr,
-          nullptr,0,nullptr);
-      const bool diagnostic_present=diagnostic==SQL_SUCCESS || diagnostic==SQL_SUCCESS_WITH_INFO;
-      // Preserve known local metadata refusals. Timeout/transport/dead/unknown
-      // completion never authorizes another SQL operation, including cleanup.
-      if (diagnostic_present && state[5]==0 && state[0]!=0 &&
-          !(state[0]=='0' && state[1]=='8') &&
-          !(state[0]=='H' && state[1]=='Y' && state[2]=='T') &&
-          SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr)==SQL_SUCCESS &&
-          dead==SQL_CD_FALSE) {
-        return result;
+          message.data(),message.size(),&length);
+      // Truncated/missing diagnostics and unrelated errors remain unknown. Only
+      // these exact calls fail local validation before any backend exchange.
+      if (diagnostic==SQL_SUCCESS && state[5]==0 && length>=0 &&
+          static_cast<std::size_t>(length)<message.size() &&
+          known_completion(result,reinterpret_cast<const char*>(state.data()),
+              std::string_view(reinterpret_cast<const char*>(message.data()),length),true,expected)) {
+        SQLUINTEGER dead=SQL_CD_TRUE;
+        if (SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr)==SQL_SUCCESS &&
+            dead==SQL_CD_FALSE) {
+          completion_known_=true;
+        }
       }
     }
-    completion_known_=false;
     return result;
   }
   SQLRETURN execute_fixture(const std::string& sql) {
@@ -233,17 +272,18 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     SQLFreeStmt(stmt,SQL_CLOSE);
     const auto setting=SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(metadata?SQL_TRUE:SQL_FALSE)),0);
     if(setting!=SQL_SUCCESS)return setting;
+    const auto expected=metadata && !table?LocalRefusal::MetadataNull:LocalRefusal::None;
     const auto s=metadata?quoted_identifier(schema):literal_pattern(schema);
     // No column filter, so NULL and % equivalence is measured across all tables.
     if (!GetParam()) {
       return observe(SQLColumns(stmt,chars(database),database.size(),chars(s),s.size(),
-          table?chars(*table):nullptr,table?static_cast<SQLSMALLINT>(table->size()):0,nullptr,0));
+          table?chars(*table):nullptr,table?static_cast<SQLSMALLINT>(table->size()):0,nullptr,0),expected);
     }
     auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(s),t=rs::odbc::utf8_to_wide(table.value_or(""));
     if(!db || !sc || !t)return SQL_ERROR;
     SQLWCHAR empty=0;auto* data=table?(t->empty()?&empty:t->data()):nullptr;
     return observe(SQLColumnsW(stmt,db->data(),db->size(),sc->data(),sc->size(),data,
-        table?static_cast<SQLSMALLINT>(t->size()):0,nullptr,0));
+        table?static_cast<SQLSMALLINT>(t->size()):0,nullptr,0),expected);
   }
   SQLRETURN schema_columns(const std::optional<std::string>& schema_pattern,
       const std::string& exact_table) {
@@ -254,12 +294,14 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     const auto setting=SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_FALSE)),0);
     if (setting!=SQL_SUCCESS) return setting;
+    const auto expected=schema_pattern && *schema_pattern==literal_pattern(schema)+"\\"?
+        LocalRefusal::ColumnPattern:LocalRefusal::None;
     const auto table=literal_pattern(exact_table);
     if (!GetParam()) {
       return observe(SQLColumns(stmt,chars(database),database.size(),
           schema_pattern?chars(*schema_pattern):nullptr,
           schema_pattern?static_cast<SQLSMALLINT>(schema_pattern->size()):0,
-          chars(table),table.size(),nullptr,0));
+          chars(table),table.size(),nullptr,0),expected);
     }
     auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(schema_pattern.value_or("")),
         tb=rs::odbc::utf8_to_wide(table);
@@ -267,7 +309,7 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     SQLWCHAR empty=0;
     auto* schema_data=schema_pattern?(sc->empty()?&empty:sc->data()):nullptr;
     return observe(SQLColumnsW(stmt,db->data(),db->size(),schema_data,
-        schema_pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),nullptr,0));
+        schema_pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),nullptr,0),expected);
   }
   SQLRETURN schema_tables(const std::optional<std::string>& pattern,const std::string& table) {
     if (!cap()) {
@@ -277,19 +319,21 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     const auto setting=SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_FALSE)),0);
     if (setting!=SQL_SUCCESS) return setting;
+    const auto expected=pattern && *pattern==literal_pattern(schema)+"\\"?
+        LocalRefusal::TablePattern:LocalRefusal::None;
     const auto catalog=literal_pattern(database),object=literal_pattern(table);
     const std::string types="TABLE";
     if (!GetParam()) {
       return observe(SQLTables(stmt,chars(catalog),catalog.size(),
           pattern?chars(*pattern):nullptr,pattern?static_cast<SQLSMALLINT>(pattern->size()):0,
-          chars(object),object.size(),chars(types),types.size()));
+          chars(object),object.size(),chars(types),types.size()),expected);
     }
     auto c=rs::odbc::utf8_to_wide(catalog),sc=rs::odbc::utf8_to_wide(pattern.value_or("")),
         tb=rs::odbc::utf8_to_wide(object),ty=rs::odbc::utf8_to_wide(types);
     if (!c || !sc || !tb || !ty) return SQL_ERROR;
     SQLWCHAR empty=0;auto* schema_data=pattern?(sc->empty()?&empty:sc->data()):nullptr;
     return observe(SQLTablesW(stmt,c->data(),c->size(),schema_data,
-        pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),ty->data(),ty->size()));
+        pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),ty->data(),ty->size()),expected);
   }
   std::vector<std::string> table_rows() {
     SQLSMALLINT count=0;EXPECT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(5,count);
