@@ -5892,7 +5892,7 @@ TEST_F(NumericScaleApiTest, DecimalBinarySourceDimensionsCapacityAndCompletion) 
         if (c.result == SQL_SUCCESS_WITH_INFO) {
           EXPECT_EQ("01S07", state());
         }
-        expect_decimal_binary(bytes.data() + 1, c.precision, c.scale, c.sign, c.coefficient);
+        expect_decimal_binary(bytes.data() + 1, static_cast<SQLCHAR>(c.precision), static_cast<SQLSCHAR>(c.scale), c.sign, c.coefficient);
         EXPECT_EQ(sizeof(SQL_NUMERIC_STRUCT), length);
         EXPECT_EQ(0xa5, bytes.front());
         EXPECT_EQ(0xa5, bytes.back());
@@ -5966,7 +5966,7 @@ TEST_F(NumericScaleApiTest, DecimalBinaryBoundIndicatorNullAndErrorPrecedence) {
         if (indicator_only) {
           EXPECT_EQ(before,bytes);
         } else {
-          expect_decimal_binary(bytes.data()+1,c.precision,c.scale,1,
+          expect_decimal_binary(bytes.data()+1,static_cast<SQLCHAR>(c.precision),static_cast<SQLSCHAR>(c.scale),1,
               c.rc == SQL_SUCCESS ? std::array<SQLCHAR,SQL_MAX_NUMERIC_LEN>{0xd2,0x04}
                                   : std::array<SQLCHAR,SQL_MAX_NUMERIC_LEN>{123});
         }
