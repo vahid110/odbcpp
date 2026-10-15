@@ -4296,10 +4296,10 @@ protected:
     if(rs::util::Clock::now()>=window_end_) { ADD_FAILURE() << "Materialized envelope original finite window expired";return false; }
     return true;
   }
-  bool cap(rs::util::Deadline cutoff,bool statement,bool prepared_payload=false) {
+  bool cap(rs::util::Deadline cutoff,bool statement,bool /*prepared_payload*/=false) {
     const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
     if(left<=0) { ADD_FAILURE() << "Materialized envelope finite operation window expired";return false; }
-    const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(left,prepared_payload?15:5));
+    const auto seconds=checkpoint_timeout_seconds(std::chrono::seconds{left});
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
       ADD_FAILURE() << get_error(SQL_HANDLE_DBC,hdbc_);return false;
     }
