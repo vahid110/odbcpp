@@ -53,7 +53,7 @@ std::span<const TypeDefinition> PgBackendProvider::result_type_catalog(
 }
 
 TransactionCapabilities PgBackendProvider::transaction_capabilities() const noexcept {
-  return pg_transaction_capabilities();
+  return pg_transaction_capabilities(catalog_profile_);
 }
 
 rs::util::Result<ConnectionSettings>

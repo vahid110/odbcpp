@@ -36,6 +36,9 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   result.max_identifier_length = 127;
   result.create_index = result.drop_index = false;
   result.schema_in_index_definitions = false;
+  // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
+  // native database mode is not selected by session isolation aliases.
+  result.sql92_entry = false;
   return result;
 }
 

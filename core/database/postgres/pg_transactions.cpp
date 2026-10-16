@@ -3,13 +3,20 @@
 
 namespace rs::core::database::postgres {
 
-TransactionCapabilities pg_transaction_capabilities() noexcept {
+TransactionCapabilities pg_transaction_capabilities(PgCatalogProfile profile) noexcept {
+  if (profile == PgCatalogProfile::Redshift) {
+    // Database SNAPSHOT/SERIALIZABLE mode is not a session-settable ODBC level.
+    // BEGIN accepts standard aliases, but they do not establish that mode.
+    // Keep transaction/DDL support independent of the unknown native default.
+    return {true, true, TransactionIsolation::ReadCommitted,
+            {false, false, false, false}, false};
+  }
   return {true, true, TransactionIsolation::ReadCommitted,
           {true, true, true, true}};
 }
 
 TransactionCapabilities PgDatabaseConnection::transaction_capabilities() const {
-  return pg_transaction_capabilities();
+  return pg_transaction_capabilities(catalog_profile_);
 }
 
 BackendResult<void> PgDatabaseConnection::transaction(
@@ -54,6 +61,11 @@ BackendResult<void> PgDatabaseConnection::set_transaction_isolation(
     case TransactionIsolation::Serializable: name = "SERIALIZABLE"; break;
     default: return local_backend_error(LocalFailure::InvalidInput,
         "Invalid transaction isolation", BackendOperation::SetTransactionIsolation, session_state());
+  }
+  if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    return local_backend_error(LocalFailure::Unsupported,
+        "Database isolation mode cannot be selected with a session isolation alias",
+        BackendOperation::SetTransactionIsolation, session_state());
   }
   auto result = execute_query(
       std::string("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ") +

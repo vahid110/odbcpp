@@ -1679,6 +1679,13 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CB_PRESERVE));
     case SQL_DEFAULT_TXN_ISOLATION: {
       const auto capabilities = conn->transaction_capabilities();
+      if (capabilities.supported && !capabilities.default_isolation_known) {
+        // A standard InfoType cannot use the driver-specific HYC00 refusal.
+        // Report the projection failure without publishing a fabricated value.
+        conn->set_error(SQLSTATE_GENERAL_ERROR,
+            "Native default transaction isolation has no known standard ODBC representation");
+        return SQL_ERROR;
+      }
       return write_uinteger(capabilities.supported
           ? transaction_isolation_to_odbc(capabilities.default_isolation) : 0);
     }

@@ -302,7 +302,8 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_GROUP_BY, SQL_GB_NO_RELATION},
           {SQL_ODBC_API_CONFORMANCE, SQL_OAC_LEVEL1},
           {SQL_ODBC_SAG_CLI_CONFORMANCE, SQL_OSCC_COMPLIANT},
-          {SQL_ODBC_SQL_CONFORMANCE, SQL_OSC_CORE},
+          {SQL_ODBC_SQL_CONFORMANCE, static_cast<SQLUSMALLINT>(
+              redshift_profile_ ? SQL_OSC_MINIMUM : SQL_OSC_CORE)},
           {SQL_MAX_COLUMN_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
           {SQL_MAX_TABLE_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
           {SQL_MAX_SCHEMA_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
@@ -373,7 +374,8 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
            SQL_IS_INSERT_LITERALS | SQL_IS_INSERT_SEARCHED |
                SQL_IS_SELECT_INTO},
           {SQL_ODBC_INTERFACE_CONFORMANCE, SQL_OIC_CORE},
-          {SQL_SQL_CONFORMANCE, SQL_SC_SQL92_ENTRY},
+          {SQL_SQL_CONFORMANCE, redshift_profile_ ? 0u :
+              static_cast<SQLUINTEGER>(SQL_SC_SQL92_ENTRY)},
           {SQL_STANDARD_CLI_CONFORMANCE, SQL_SCC_XOPEN_CLI_VERSION1},
           {SQL_UNION, SQL_U_UNION | SQL_U_UNION_ALL},
           {SQL_DTC_TRANSITION_COST, 0},
