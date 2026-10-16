@@ -3,6 +3,8 @@
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "odbcpp/database/query_parameter.h"
 
+#include <cerrno>
+#include <cfenv>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -1578,3 +1580,218 @@ TEST(RedshiftParameterContractTest, ExactBudgetsCountFormatFieldsAndRefuseBefore
   EXPECT_EQ(PgProtocolParser{}.create_prepared_query("SELECT ?", text),
             parser.create_prepared_query("SELECT ?", text));
 }
+
+// Explicit owning driver policy. Native original tags were not captured.
+TEST(RedshiftBareSelectCountTest, CompletedIdleOwnsMaterializedCountWithoutReplacingExplicitCounts) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser redshift(PgCatalogProfile::Redshift);
+  PgProtocolParser postgres;
+  const Message idle{'Z', {std::byte{'I'}}};
+  const auto rows = std::vector<Message>{one_column_description("value"),
+      one_column_row("1"), one_column_row("2"), one_column_row("3")};
+  auto bare = rows;
+  bare.push_back(command_complete("SELECT"));
+  bare.push_back(idle);
+  const auto result = redshift.extract_query_result(bare);
+  EXPECT_EQ(3u, result.affected_rows);
+  EXPECT_EQ(3u, result.rows.size());
+  EXPECT_EQ(0u, postgres.extract_query_result(bare).affected_rows);
+  for (const auto& counted : {std::pair{"SELECT 0", 0u}, std::pair{"SELECT 7", 7u}}) {
+    auto messages = rows;
+    messages.push_back(command_complete(counted.first));
+    messages.push_back(idle);
+    EXPECT_EQ(counted.second, redshift.extract_query_result(messages).affected_rows);
+    EXPECT_EQ(counted.second, postgres.extract_query_result(messages).affected_rows);
+  }
+  EXPECT_EQ(0u, redshift.extract_query_result(
+      {one_column_description("empty"), command_complete("SELECT"), idle}).affected_rows);
+  for (const char state : {'T', 'E'}) {
+    auto messages = rows;
+    messages.push_back(command_complete("SELECT"));
+    messages.push_back({'Z', {static_cast<std::byte>(state)}});
+    EXPECT_EQ(0u, redshift.extract_query_result(messages).affected_rows);
+  }
+  auto incomplete = rows;
+  incomplete.push_back(command_complete("SELECT"));
+  EXPECT_EQ(0u, redshift.extract_query_result(incomplete).affected_rows);
+  EXPECT_EQ(0u, redshift.extract_query_result({command_complete("SELECT"), idle}).affected_rows);
+  auto multiple = bare;
+  multiple.pop_back();
+  multiple.push_back(command_complete("UPDATE 5"));
+  multiple.push_back(one_column_description("last"));
+  multiple.push_back(one_column_row("4"));
+  multiple.push_back(command_complete("SELECT"));
+  multiple.push_back(idle);
+  const auto ordered = redshift.extract_query_result(multiple);
+  ASSERT_EQ(2u, ordered.additional_results.size());
+  EXPECT_EQ(3u, ordered.affected_rows);
+  EXPECT_EQ(5u, ordered.additional_results[0].affected_rows);
+  EXPECT_EQ(1u, ordered.additional_results[1].affected_rows);
+  EXPECT_EQ(0u, redshift.extract_query_result(
+      {command_complete("UPDATE"), idle}).affected_rows);
+  EXPECT_EQ(0u, redshift.extract_query_result(
+      {one_column_description("description_only"), idle}).affected_rows);
+  Message error{'E', {}};
+  append_cstring(error.payload, "SERROR");
+  append_cstring(error.payload, "C22012");
+  append_cstring(error.payload, "Mfixed error");
+  error.payload.push_back(std::byte{0});
+  auto failed = bare;
+  failed.pop_back();
+  failed.push_back(error);
+  failed.push_back(idle);
+  const auto retained_error = redshift.extract_query_result(failed);
+  EXPECT_EQ(0u, retained_error.affected_rows);
+  ASSERT_EQ(1u, retained_error.additional_results.size());
+  ASSERT_TRUE(retained_error.additional_results[0].error);
+  EXPECT_EQ("22012", retained_error.additional_results[0].error->native_state);
+  auto malformed = command_complete("SELECT");
+  malformed.payload.pop_back();
+  EXPECT_THROW(redshift.extract_query_result({one_column_description("bad"), malformed, idle}),
+      std::runtime_error);
+  EXPECT_THROW(redshift.extract_query_result({one_column_row("orphan"), command_complete("SELECT"), idle}),
+      std::runtime_error);
+  const auto recovery = redshift.extract_query_result(bare);
+  EXPECT_EQ(3u, recovery.affected_rows);
+  EXPECT_EQ("1", *result.rows[0][0]); // Later extraction cannot mutate an earlier owner.
+}
+
+// AWS JDBC773fa16 setFloat/setDouble + ByteConverter: BE IEEE4/8, native700/701.
+TEST(RedshiftFloatingParameterTest, FullLiteralWiresKeepExtremesSubnormalsAndSignedZero) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser parser(PgCatalogProfile::Redshift);
+  struct Case { QueryParameterType type; const char* text; const char* full_wire; };
+  const Case cases[]{
+      {QueryParameterType::Float32, "3.4028235e38", "50000000150053454c454354202431000001000002bc4400000006530042000000160000000100010001000000047f7fffff000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "1e-45", "50000000150053454c454354202431000001000002bc44000000065300420000001600000001000100010000000400000001000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "1e-38", "50000000150053454c454354202431000001000002bc440000000653004200000016000000010001000100000004006ce3ee000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "-0", "50000000150053454c454354202431000001000002bc44000000065300420000001600000001000100010000000480000000000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "0", "50000000150053454c454354202431000001000002bc44000000065300420000001600000001000100010000000400000000000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "1.7976931348623157e308", "50000000150053454c454354202431000001000002bd44000000065300420000001a0000000100010001000000087fefffffffffffff000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "5e-324", "50000000150053454c454354202431000001000002bd44000000065300420000001a0000000100010001000000080000000000000001000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "-0", "50000000150053454c454354202431000001000002bd44000000065300420000001a0000000100010001000000088000000000000000000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "0", "50000000150053454c454354202431000001000002bd44000000065300420000001a0000000100010001000000080000000000000000000044000000065000450000000900000000005300000004"},
+  };
+  for (const auto& item : cases) {
+    SCOPED_TRACE(item.text);
+    const std::vector<QueryParameter> parameters{{item.text, item.type}};
+    const auto expected = rs::util::decode_hex(item.full_wire);
+    ASSERT_TRUE(expected);
+    const auto actual = parser.create_prepared_query("SELECT ?", parameters);
+    EXPECT_EQ(*expected, std::string(reinterpret_cast<const char*>(actual.data()), actual.size()));
+    EXPECT_EQ(item.text, *parameters[0].value);
+  }
+}
+
+TEST(RedshiftFloatingParameterTest, MixedFormatsExactBudgetsAndFallbackPreserveOriginalText) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser parser(PgCatalogProfile::Redshift);
+  PgProtocolParser postgres;
+  const std::vector<QueryParameter> parameters{
+      {"1e-38", QueryParameterType::Float32}, {"keep", QueryParameterType::Text},
+      {std::nullopt, QueryParameterType::Float64},
+      {std::string("\0\xff", 2), QueryParameterType::Binary},
+      {"5e-324", QueryParameterType::Float64}};
+  const auto expected = rs::util::decode_hex("50000000350053454c4543542024312c2024322c2024332c2024342c202435000005000002bc00000019000002bd00001997000002bd44000000065300420000003c0000000500010000000000010001000500000004006ce3ee000000046b656570ffffffff0000000200ff000000080000000000000001000044000000065000450000000900000000005300000004");
+  ASSERT_TRUE(expected);
+  const auto actual = parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", parameters);
+  EXPECT_EQ(*expected, std::string(reinterpret_cast<const char*>(actual.data()), actual.size()));
+  EXPECT_EQ(actual, parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", parameters, actual.size()));
+  EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", parameters, actual.size()-1),
+      rs::core::database::RequestWireLimitExceeded);
+  EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", parameters, 0),
+      rs::core::database::RequestWireLimitExceeded);
+  for (const auto type : {QueryParameterType::Float32, QueryParameterType::Float64}) {
+    for (const char* text : {"NaN", "Infinity", "-Infinity", "nan", "1e", "0x1p2",
+                           " 1", "1 ", "+1", "", "1e9999", "1e-9999"}) {
+      SCOPED_TRACE(text);
+      const std::vector<QueryParameter> fallback{{text, type}};
+      EXPECT_EQ(postgres.create_prepared_query("SELECT ?", fallback),
+          parser.create_prepared_query("SELECT ?", fallback));
+    }
+    const std::vector<QueryParameter> nulls{{std::nullopt, type}};
+    EXPECT_EQ(postgres.create_prepared_query("SELECT ?", nulls),
+        parser.create_prepared_query("SELECT ?", nulls));
+    const std::vector<QueryParameter> binary_input{{"1.5", type, true}};
+    EXPECT_EQ(postgres.create_prepared_query("SELECT ?", binary_input),
+        parser.create_prepared_query("SELECT ?", binary_input));
+  }
+  const std::vector<QueryParameter> pg_real{{"1e-45", QueryParameterType::Float32}};
+  const auto expected_pg = rs::util::decode_hex("50000000150053454c454354202431000001000002bc4400000006530042000000150000000000010000000531652d3435000044000000065000450000000900000000005300000004");
+  ASSERT_TRUE(expected_pg);
+  const auto pg_wire = postgres.create_prepared_query("SELECT ?", pg_real);
+  EXPECT_EQ(*expected_pg, std::string(reinterpret_cast<const char*>(pg_wire.data()), pg_wire.size()));
+  EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?", parameters), std::invalid_argument);
+  EXPECT_EQ(actual, parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", parameters));
+}
+
+#ifdef _MSC_VER
+// Compile the environment-sensitive assertions with the codec's scoped policy.
+#pragma float_control(precise, on, push)
+#pragma fenv_access(on)
+#endif
+
+TEST(RedshiftFloatingParameterTest, CallerRoundingFlagsAndErrnoSurviveEveryCodecPath) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  const int original_errno = errno;
+  std::fenv_t original;
+  ASSERT_EQ(0, std::fegetenv(&original));
+  struct RestoreCaller {
+    std::fenv_t environment;
+    int error;
+    ~RestoreCaller() { std::fesetenv(&environment); errno = error; }
+  } restore{original, original_errno};
+  PgProtocolParser parser(PgCatalogProfile::Redshift);
+  struct Case { QueryParameterType type; const char* text; const char* full_wire; };
+  // The first midpoint+epsilon distinguishes direct float parsing from a
+  // double parse rounded again to float. Exact double midpoint ties to even.
+  const Case cases[]{
+      {QueryParameterType::Float32, "1e-45", "50000000150053454c454354202431000001000002bc44000000065300420000001600000001000100010000000400000001000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "1.00000005960464477539062500000000000000000000000000000000000000001", "50000000150053454c454354202431000001000002bc4400000006530042000000160000000100010001000000043f800001000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "1.00000000000000011102230246251565404236316680908203125", "50000000150053454c454354202431000001000002bd44000000065300420000001a0000000100010001000000083ff0000000000000000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "-0", "50000000150053454c454354202431000001000002bc44000000065300420000001600000001000100010000000480000000000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "5e-324", "50000000150053454c454354202431000001000002bd44000000065300420000001a0000000100010001000000080000000000000001000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float32, "1e-50", "50000000150053454c454354202431000001000002bc4400000006530042000000150000000000010000000531652d3530000044000000065000450000000900000000005300000004"},
+      {QueryParameterType::Float64, "1e-400", "50000000150053454c454354202431000001000002bd4400000006530042000000160000000000010000000631652d343030000044000000065000450000000900000000005300000004"},
+  };
+  for (const int rounding : {FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO, FE_TONEAREST}) {
+    for (const auto& item : cases) {
+      SCOPED_TRACE(item.text);
+      const auto expected = rs::util::decode_hex(item.full_wire);
+      ASSERT_TRUE(expected);
+      const std::vector<QueryParameter> parameters{{item.text, item.type}};
+      ASSERT_EQ(0, std::fesetenv(FE_DFL_ENV));
+      ASSERT_EQ(0, std::fesetround(rounding));
+      ASSERT_EQ(0, std::feraiseexcept(FE_DIVBYZERO | FE_INEXACT));
+      const int before_flags = std::fetestexcept(FE_ALL_EXCEPT);
+      errno = EDOM;
+      const auto actual = parser.create_prepared_query("SELECT ?", parameters);
+      const int after_errno = errno;
+      const int after_rounding = std::fegetround();
+      const int after_flags = std::fetestexcept(FE_ALL_EXCEPT);
+      EXPECT_EQ(EDOM, after_errno);
+      EXPECT_EQ(rounding, after_rounding);
+      EXPECT_EQ(before_flags, after_flags);
+      EXPECT_EQ(*expected, std::string(reinterpret_cast<const char*>(actual.data()), actual.size()));
+      errno = EDOM;
+      bool refused = false;
+      try {
+        (void)parser.create_prepared_query("SELECT ?", parameters, 0);
+      } catch (const rs::core::database::RequestWireLimitExceeded&) {
+        refused = true;
+      }
+      const int refused_errno = errno;
+      const int refused_rounding = std::fegetround();
+      const int refused_flags = std::fetestexcept(FE_ALL_EXCEPT);
+      EXPECT_TRUE(refused);
+      EXPECT_EQ(EDOM, refused_errno);
+      EXPECT_EQ(rounding, refused_rounding);
+      EXPECT_EQ(before_flags, refused_flags);
+    }
+  }
+}
+
+#ifdef _MSC_VER
+#pragma fenv_access(off)
+#pragma float_control(pop)
+#endif

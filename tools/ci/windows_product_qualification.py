@@ -23,7 +23,8 @@ import xml.etree.ElementTree as ET
 
 TARGETS = ('test_backend_contract', 'test_diagnostics_apis',
            'test_numeric_scale_conversion', 'test_redshift_data_conversion',
-           'test_redshift_catalog_execution', 'test_sql_escape')
+           'test_redshift_catalog_execution', 'test_sql_escape',
+           'test_pg_protocol_parser')
 CHECKS = ('test_architecture_boundaries', 'test_sdk_contract_boundary',
           'test_sdk_contract_boundary_failures', 'test_internal_source_partitions',
           'test_internal_include_closure', 'test_crypto_manifest')

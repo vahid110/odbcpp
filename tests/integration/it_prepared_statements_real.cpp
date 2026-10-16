@@ -1197,6 +1197,12 @@ TEST_F(PreparedStatementIntegrationTest,
 
 TEST_F(PreparedStatementIntegrationTest,
        CharacterInputToSqlFloatingTargetsValidatesRange) {
+    if (fixture_redshift_product()) {
+        // This case asserts exact floating roundtrip values, not default display precision.
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"SET extra_float_digits TO 2", SQL_NTS));
+    }
+
     struct Target {
         const char* sql;
         SQLSMALLINT type;
@@ -4532,6 +4538,12 @@ TEST_F(PreparedStatementIntegrationTest,
 
 TEST_F(PreparedStatementIntegrationTest,
        NumericStructureFloatingParametersHandleScaleAndSmallValues) {
+    if (fixture_redshift_product()) {
+        // This case asserts exact floating roundtrip values, not default display precision.
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"SET extra_float_digits TO 2", SQL_NTS));
+    }
+
     SQL_NUMERIC_STRUCT numeric{};
     numeric.sign = 1;
     numeric.val[0] = 0x39;
