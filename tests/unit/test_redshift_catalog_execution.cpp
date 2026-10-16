@@ -5642,3 +5642,160 @@ TEST(RedshiftCurrentSchemaStorage, QuotedOverlapRefusalPreservesNativeValidation
     EXPECT_EQ(2u, session.commands.size());
   }
 }
+
+namespace {
+QueryResult observed_show_databases_with_connection_metadata() {
+  auto source = visible_databases();
+  source.columns.push_back({"allow_connections", NativeTypeInfo{ScalarType::Boolean, 1, 0, true}});
+  source.rows = {
+      {"awsdatacatalog", "1", "auto mounted catalog", std::nullopt, std::nullopt, "UNKNOWN", "f"},
+      {"dev", "1", "local", std::nullopt, std::nullopt, "Snapshot Isolation", "t"},
+      {"odbcpp_pilot", "100", "local", std::nullopt, std::nullopt, "Snapshot Isolation", "t"}};
+  return source;
+}
+}
+
+TEST(RedshiftMetadataDatabaseScope, SevenFieldsPreserveAllObservedCatalogsAndPermutedOwningNames) {
+  const std::vector<std::string> expected{"awsdatacatalog", "dev", "odbcpp_pilot"};
+  for (const bool permuted : {false, true}) {
+    auto source = observed_show_databases_with_connection_metadata();
+    if (permuted) {
+      std::reverse(source.columns.begin(), source.columns.end());
+      for (auto& row : source.rows) {
+        std::reverse(row.begin(), row.end());
+      }
+    }
+    BackendResult<QueryResult> input{source, {SessionState::Idle, SessionDisposition::Reusable}};
+    auto owning = normalize_redshift_databases(input);
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    auto borrowed = redshift_table_databases(true, input, budget, rs::util::Deadline::max());
+    ASSERT_TRUE(owning) << owning.error_message();
+    ASSERT_TRUE(borrowed) << borrowed.error_message();
+    EXPECT_EQ(expected, *owning);
+    EXPECT_EQ(expected, borrowed->names);
+    source.rows.clear();
+    input->rows.clear();
+    EXPECT_EQ(expected, *owning);
+    EXPECT_EQ(expected, borrowed->names);
+  }
+}
+
+TEST(RedshiftMetadataDatabaseScope, OptionalConnectionMetadataIsOpaqueAndLegacySixRemainsCompatible) {
+  const std::vector<ResultCell> opaque{std::nullopt, "t", "f", "not-a-boolean", std::string("opaque\0value", 12)};
+  for (const auto type : {ScalarType::Boolean, ScalarType::Integer, ScalarType::VarChar}) {
+    for (const auto& value : opaque) {
+      auto source = observed_show_databases_with_connection_metadata();
+      source.columns.back().normalized_type->type = type;
+      for (auto& row : source.rows) {
+        row.back() = value;
+      }
+      BackendResult<QueryResult> input{source, {SessionState::Idle, SessionDisposition::Reusable}};
+      auto owning = normalize_redshift_databases(input);
+      RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+      auto borrowed = redshift_table_databases(true, input, budget, rs::util::Deadline::max());
+      ASSERT_TRUE(owning) << owning.error_message();
+      ASSERT_TRUE(borrowed) << borrowed.error_message();
+      EXPECT_EQ((std::vector<std::string>{"awsdatacatalog", "dev", "odbcpp_pilot"}), *owning);
+      EXPECT_EQ(*owning, borrowed->names);
+    }
+  }
+  const auto legacy = visible_databases(); // Includes an existing shared catalog.
+  BackendResult<QueryResult> input{legacy, {SessionState::Idle, SessionDisposition::Reusable}};
+  auto owning = normalize_redshift_databases(input);
+  RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+  auto borrowed = redshift_table_databases(true, input, budget, rs::util::Deadline::max());
+  ASSERT_TRUE(owning);
+  ASSERT_TRUE(borrowed);
+  EXPECT_EQ((std::vector<std::string>{"a_雪", "z_db"}), *owning);
+  EXPECT_EQ(*owning, borrowed->names);
+}
+
+TEST(RedshiftMetadataDatabaseScope, BothConsumersRefuseUnexpectedLayoutsIdentityAndCompletions) {
+  for (int variant = 0; variant != 12; ++variant) {
+    auto source = observed_show_databases_with_connection_metadata();
+    switch (variant) {
+      case 0: source.columns.back().name = "future_column"; break;
+      case 1:
+        source.columns.push_back(source.columns.back());
+        for (auto& row : source.rows) {
+          row.push_back("t");
+        }
+        break;
+      case 2: source.columns[1].name = "allow_connections"; break;
+      case 3:
+        source.columns.erase(source.columns.begin() + 1);
+        for (auto& row : source.rows) {
+          row.erase(row.begin() + 1);
+        }
+        break;
+      case 4: source.columns[1].name = "database_name"; break;
+      case 5: source.rows[0][0].reset(); break;
+      case 6: source.rows[0][0] = std::string("\xff", 1); break;
+      case 7: source.rows.push_back(source.rows.front()); break;
+      case 8: source.rows[0].pop_back(); break;
+      case 9: source.affected_rows = 4; break;
+      case 10: source.statement_kind.reset(); break;
+      case 11: source.additional_results.emplace_back(); break;
+    }
+    BackendResult<QueryResult> input{source, {SessionState::Idle, SessionDisposition::Reusable}};
+    auto owning = normalize_redshift_databases(input);
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    auto borrowed = redshift_table_databases(true, input, budget, rs::util::Deadline::max());
+    EXPECT_FALSE(owning) << variant;
+    EXPECT_FALSE(borrowed) << variant;
+  }
+}
+
+TEST(RedshiftMetadataDatabaseScope, NativeErrorsSessionAndBorrowedStorageBoundsRemain) {
+  auto source = observed_show_databases_with_connection_metadata();
+  BackendResult<QueryResult> retired{source, {SessionState::Idle, SessionDisposition::Retire}};
+  EXPECT_FALSE(normalize_redshift_databases(retired));
+  RedshiftRoutineBudget retired_budget{ResponseLimits{}, ResultLimits{}};
+  EXPECT_FALSE(redshift_table_databases(true, retired, retired_budget, rs::util::Deadline::max()));
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "native permission denied"};
+  denied.native_state = "42501";
+  BackendResult<QueryResult> failed{denied};
+  auto owning_error = normalize_redshift_databases(failed);
+  RedshiftRoutineBudget failed_budget{ResponseLimits{}, ResultLimits{}};
+  auto borrowed_error = redshift_table_databases(true, failed, failed_budget, rs::util::Deadline::max());
+  ASSERT_FALSE(owning_error);
+  ASSERT_FALSE(borrowed_error);
+  EXPECT_EQ("42501", owning_error.backend_error().native_state);
+  EXPECT_EQ("42501", borrowed_error.backend_error().native_state);
+  EXPECT_EQ(owning_error.error_message(), borrowed_error.error_message());
+  BackendResult<QueryResult> input{source, {SessionState::Idle, SessionDisposition::Reusable}};
+  ResultLimits limits;
+  limits.max_columns_per_description = 6;
+  RedshiftRoutineBudget narrow{ResponseLimits{}, limits};
+  auto too_many_columns = redshift_table_databases(true, input, narrow, rs::util::Deadline::max());
+  ASSERT_FALSE(too_many_columns);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), too_many_columns.error());
+  limits.max_columns_per_description = 7;
+  RedshiftRoutineBudget exact{ResponseLimits{}, limits};
+  EXPECT_TRUE(redshift_table_databases(true, input, exact, rs::util::Deadline::max()));
+  source.rows[0].back() = std::string(8192, 'x');
+  BackendResult<QueryResult> large{source, {SessionState::Idle, SessionDisposition::Reusable}};
+  ResponseLimits response;
+  response.max_wire_bytes = 512;
+  RedshiftRoutineBudget bounded{response, ResultLimits{}};
+  auto too_large = redshift_table_databases(true, large, bounded, rs::util::Deadline::max());
+  ASSERT_FALSE(too_large);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), too_large.error());
+  RedshiftRoutineBudget expired{ResponseLimits{}, ResultLimits{}};
+  EXPECT_FALSE(redshift_table_databases(true, input, expired, rs::util::Clock::now()));
+  // All three catalogs remain visible. A three-exchange cap cannot silently
+  // discard the external catalog to make this broader schema fanout fit.
+  WideColumnsSession fanout;
+  fanout.external = "on";
+  limits = ResultLimits{};
+  limits.max_results = 3;
+  ASSERT_TRUE(fanout.budgets(limits));
+  fanout.replies.emplace_back(observed_show_databases_with_connection_metadata(), fanout.snapshot);
+  for (const auto* database : {"awsdatacatalog", "dev", "odbcpp_pilot"}) {
+    schema_pattern_response(fanout, {}, database);
+  }
+  auto limited = fanout.execute_catalog(schema_pattern_tables("%"), rs::util::Deadline::max());
+  ASSERT_FALSE(limited);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), limited.error());
+  EXPECT_LE(fanout.commands.size(), 3u);
+}
