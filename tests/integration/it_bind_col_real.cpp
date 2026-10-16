@@ -169,9 +169,27 @@ public:
         }
     }
     bool open(SQLHENV env, SQLHSTMT waiter) {
+#if defined(_MSC_VER)
+        std::array<char, 64> schema_value{}, table_value{};
+        // Retain all Windows-valid ASCII OIDs, including leading zeros. The
+        // platform environment-value limit is 32767 characters, not ten digits.
+        std::array<char, 32768> oid_value{};
+        const auto read_public = [](const char* name, auto& value) {
+            std::size_t required = 0;
+            return ::getenv_s(&required, value.data(), value.size(), name) == 0 &&
+                required > 0 && required <= value.size();
+        };
+        if (!read_public("ODBCPP_REDSHIFT_TIMEOUT_SCHEMA", schema_value) ||
+            !read_public("ODBCPP_REDSHIFT_TIMEOUT_TABLE", table_value) ||
+            !read_public("ODBCPP_REDSHIFT_TIMEOUT_OID", oid_value)) return fail("public timeout environment read");
+        const auto* schema = schema_value.data();
+        const auto* table = table_value.data();
+        const auto* oid = oid_value.data();
+#else
         const auto* schema = std::getenv("ODBCPP_REDSHIFT_TIMEOUT_SCHEMA");
         const auto* table = std::getenv("ODBCPP_REDSHIFT_TIMEOUT_TABLE");
         const auto* oid = std::getenv("ODBCPP_REDSHIFT_TIMEOUT_OID");
+#endif
         if (!schema || std::string_view(schema) != "odbcpp_fixture" || !table ||
             !timeout_table_name(table) || !oid || !timeout_positive_id(oid)) return fail("required public schema/table/OID");
         table_ = table;
