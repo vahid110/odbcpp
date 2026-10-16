@@ -118,7 +118,8 @@ BackendResult<std::vector<std::string>> normalize_redshift_databases(
   if (source.error) return *source.error;
   for (const auto& extra : source.additional_results)
     if (extra.error) return *extra.error;
-  if (!clean_schema_result(source) || source.columns.size() != 6 ||
+  if (!clean_schema_result(source) ||
+      (source.columns.size() != 6 && source.columns.size() != 7) ||
       source.rows.size() > 10000 ||
       !source.statement_kind || (*source.statement_kind != StatementKind::Unknown &&
                                 *source.statement_kind != StatementKind::SelectCursor) ||
@@ -141,6 +142,13 @@ BackendResult<std::vector<std::string>> normalize_redshift_databases(
     }
     if (matches != 1) return invalid_schema_metadata("databases-layout");
   }
+  // This projection owns names only. The optional field is opaque server
+  // metadata, just like the five existing nonidentity fields; never filter on it.
+  if (source.columns.size() == 7 &&
+      std::count_if(source.columns.begin(), source.columns.end(), [](const auto& column) {
+        return column.name == "allow_connections";
+      }) != 1)
+    return invalid_schema_metadata("databases-layout");
   if (!schema_text(source.columns[identity])) return invalid_schema_metadata("databases-type");
   std::set<std::string> databases;
   for (const auto& row : source.rows) {
@@ -1324,7 +1332,8 @@ BackendResult<RedshiftColumnSchemas> redshift_table_databases(bool visible,
   } else {
     constexpr std::array<std::string_view,6> fields{"database_name","database_owner","database_type",
         "database_acl","parameters","database_isolation_level"};
-    if (input->columns.size()!=fields.size()) return bad("table-database-layout");
+    if (input->columns.size()!=fields.size() && input->columns.size()!=fields.size()+1)
+      return bad("table-database-layout");
     for (const auto field:fields) {
       unsigned count=0;
       for (std::size_t c=0;c<input->columns.size();++c) if (input->columns[c].name==field) {
@@ -1332,6 +1341,13 @@ BackendResult<RedshiftColumnSchemas> redshift_table_databases(bool visible,
       }
       if (count!=1) return bad("table-database-layout");
     }
+    // Keep the same exact optional named layout as the owning names projection.
+    // Its value/type is unused; the raw response still receives its full charge.
+    if (input->columns.size()==fields.size()+1 &&
+        std::count_if(input->columns.begin(),input->columns.end(),[](const auto& column) {
+          return column.name=="allow_connections";
+        })!=1)
+      return bad("table-database-layout");
     if (!schema_text(input->columns[identity])) return bad("table-database-type");
   }
   std::size_t bytes=0;
