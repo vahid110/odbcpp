@@ -8657,23 +8657,124 @@ class RedshiftMetadataScopeShowRealTest : public RedshiftMetadataScopeRealTest {
     second_database_ = second; common_schema_ = schema; ASSERT_NE("odbcpp_pilot", second_database_);
     // Explicit finite controls are prerequisites, not silently enlarged here.
     const auto options = rs::odbc::ConnectionString::parse(connection_string_);
-    for (const auto& required : {std::pair{"MAXRESULTS", "3"}, std::pair{"MAXROWS", "128"},
+    for (const auto& required : {std::pair{"MAXRESULTS", "4"}, std::pair{"MAXROWS", "128"},
                                 std::pair{"MAXCELLS", "4096"}, std::pair{"MAXCOLUMNS", "18"}}) {
       ASSERT_TRUE(options.contains(required.first)); ASSERT_EQ(required.second, options.at(required.first));
     }
   }
+  struct VisibleDatabase {
+    std::string name;
+    std::optional<std::string> type;
+  };
+  std::vector<VisibleDatabase> visible_snapshot_;
+  void visible_catalog_snapshot(std::vector<std::string>& catalogs) {
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, (SQLCHAR*)"SHOW DATABASES;", SQL_NTS)));
+    SQLSMALLINT columns = -1;
+    ASSERT_TRUE(observed(SQLNumResultCols(hstmt_, &columns)));
+    if (columns != 6 && columns != 7) { unknown_completion_ = true; }
+    ASSERT_TRUE(columns == 6 || columns == 7) << "Unsupported raw SHOW DATABASES layout";
+    constexpr std::array<std::string_view, 7> fields{
+        "database_name", "database_owner", "database_type", "database_acl",
+        "parameters", "database_isolation_level", "allow_connections"};
+    std::array<unsigned, 7> occurrences{};
+    SQLUSMALLINT name_column = 0, type_column = 0;
+    for (SQLUSMALLINT column = 1; column <= static_cast<SQLUSMALLINT>(columns); ++column) {
+      struct { SQLCHAR value[128]{}; SQLCHAR guard = 77; } header;
+      SQLSMALLINT bytes = -1, type = -1;
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLDescribeCol(hstmt_, column, header.value, sizeof(header.value),
+          &bytes, &type, nullptr, nullptr, nullptr)));
+      if (bytes <= 0 || bytes >= static_cast<SQLSMALLINT>(sizeof(header.value))) {
+        unknown_completion_ = true;
+      }
+      ASSERT_GT(bytes, 0); ASSERT_LT(bytes, static_cast<SQLSMALLINT>(sizeof(header.value)));
+      EXPECT_EQ(77, header.guard); EXPECT_EQ(0, header.value[static_cast<std::size_t>(bytes)]);
+      const std::string_view name{reinterpret_cast<char*>(header.value), static_cast<std::size_t>(bytes)};
+      const auto field = std::find(fields.begin(), fields.end(), name);
+      if (field == fields.end()) { unknown_completion_ = true; }
+      ASSERT_NE(fields.end(), field) << "Unexpected raw SHOW DATABASES field";
+      const auto index = static_cast<std::size_t>(field - fields.begin());
+      if (++occurrences[index] != 1) { unknown_completion_ = true; }
+      ASSERT_EQ(1u, occurrences[index]);
+      if (index == 0 || index == 2) {
+        if (type != SQL_CHAR && type != SQL_VARCHAR && type != SQL_LONGVARCHAR) {
+          unknown_completion_ = true;
+        }
+        ASSERT_TRUE(type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARCHAR);
+        if (index == 0) { name_column = column; }
+        else { type_column = column; }
+      }
+    }
+    for (std::size_t field = 0; field < 6; ++field) {
+      if (occurrences[field] != 1) { unknown_completion_ = true; }
+      ASSERT_EQ(1u, occurrences[field]);
+    }
+    if (occurrences[6] != static_cast<unsigned>(columns == 7)) { unknown_completion_ = true; }
+    ASSERT_EQ(static_cast<unsigned>(columns == 7), occurrences[6]);
+    for (;;) {
+      ASSERT_TRUE(cap(window_end_, true));
+      const auto rc = SQLFetch(hstmt_);
+      if (rc == SQL_NO_DATA) { break; }
+      ASSERT_TRUE(observed(rc));
+      if (visible_snapshot_.size() >= 64) {
+        unknown_completion_ = true;
+        FAIL() << "Raw catalog snapshot exceeded admitted row bound";
+      }
+      VisibleDatabase database;
+      for (SQLUSMALLINT column = 1; column <= static_cast<SQLUSMALLINT>(columns); ++column) {
+        if (column != name_column && column != type_column) { continue; }
+        struct { SQLCHAR value[512]{}; SQLCHAR guard = 77; } cell;
+        SQLLEN bytes = -1;
+        ASSERT_TRUE(cap(window_end_, true));
+        ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, cell.value, sizeof(cell.value), &bytes)));
+        EXPECT_EQ(77, cell.guard);
+        if (column == type_column && bytes == SQL_NULL_DATA) { continue; }
+        if (bytes < 0 || bytes >= static_cast<SQLLEN>(sizeof(cell.value))) { unknown_completion_ = true; }
+        ASSERT_GE(bytes, 0); ASSERT_LT(bytes, static_cast<SQLLEN>(sizeof(cell.value)));
+        EXPECT_EQ(0, cell.value[static_cast<std::size_t>(bytes)]);
+        std::string value{reinterpret_cast<char*>(cell.value), static_cast<std::size_t>(bytes)};
+        if (value.find('\0') != std::string::npos || !rs::odbc::utf8_code_point_count(value)) {
+          unknown_completion_ = true;
+        }
+        ASSERT_EQ(std::string::npos, value.find('\0'));
+        ASSERT_TRUE(rs::odbc::utf8_code_point_count(value));
+        if (column == name_column) {
+          if (value.empty()) { unknown_completion_ = true; }
+          ASSERT_FALSE(value.empty());
+          database.name = std::move(value);
+        } else { database.type = std::move(value); }
+      }
+      catalogs.push_back(database.name);
+      visible_snapshot_.push_back(std::move(database));
+    }
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+    std::sort(catalogs.begin(), catalogs.end());
+    if (std::adjacent_find(catalogs.begin(), catalogs.end()) != catalogs.end()) { unknown_completion_ = true; }
+    ASSERT_EQ(catalogs.end(), std::adjacent_find(catalogs.begin(), catalogs.end()));
+    // Read the complete raw snapshot before this finite fanout precondition.
+    // No database_type/allow_connections filter, LIMIT or prefix is an oracle.
+    ASSERT_GE(catalogs.size(), 2u);
+    ASSERT_LE(catalogs.size(), 3u) << "This positive fixture requires at most three visible catalogs";
+    ASSERT_NE(catalogs.end(), std::find(catalogs.begin(), catalogs.end(), "odbcpp_pilot"));
+    ASSERT_NE(catalogs.end(), std::find(catalogs.begin(), catalogs.end(), second_database_));
+  }
 };
 
-// Source ledger: one TLS login, at most six SQL exchanges: catalog discovery1,
-// fixed NULL SELECT1, empty-catalog columns1, database discovery1 and schemas2.
-// Full catalog enumeration must prove exactly the two admitted visible DBs
-// before schema fanout. Each result remains bounded; no source LIMIT/clipping.
+// Source ledger: one TLS login, at most eight native catalog/SELECT exchanges:
+// independent raw SHOW DATABASES1, API catalog discovery1, fixed NULL SELECT1,
+// empty-catalog columns0 (local owning empty), schema discovery1 + schemasN<=3.
+// Thus at most seven executed exchanges (eight conservatively including empty).
+// Each API schema operation requires 1+N<=4; this fixture alone requires supplied
+// MAXRESULTS4. The owning M3 ResourceLimit/no-partial tests remain separate.
+// All visible catalogs are compared, while two local/common-schema identities
+// remain mandatory. No database-type filter or source LIMIT/clipping is used.
 // Existing common-schema collision is mandatory; 40s aggregate/per-operation5s.
 TEST_F(RedshiftMetadataScopeShowRealTest, TwoVisibleDatabasesKeepCommonSchemaIdentityThroughWideFanoutAndSibling) {
   ASSERT_NO_FATAL_FAILURE(open_scope("FALSE", true, "SHOW"));
+  std::vector<std::string> expected_catalogs;
+  ASSERT_NO_FATAL_FAILURE(visible_catalog_snapshot(expected_catalogs));
   std::vector<std::string> catalogs; ASSERT_NO_FATAL_FAILURE(catalogs_with_sibling(true, catalogs));
-  std::vector<std::string> expected_catalogs{"odbcpp_pilot", second_database_};
-  std::sort(expected_catalogs.begin(), expected_catalogs.end());
   if (catalogs != expected_catalogs) unknown_completion_ = true;
   ASSERT_TRUE(catalogs == expected_catalogs) << "Visible catalog prerequisite mismatch";
   ASSERT_TRUE(cap(window_end_, true));
@@ -8695,7 +8796,7 @@ TEST_F(RedshiftMetadataScopeShowRealTest, TwoVisibleDatabasesKeepCommonSchemaIde
       auto& name = column == 1 ? catalog : schema;
       name.assign(reinterpret_cast<char*>(cell.value), static_cast<std::size_t>(bytes));
     }
-    EXPECT_TRUE(catalog == "odbcpp_pilot" || catalog == second_database_);
+    EXPECT_TRUE(std::binary_search(expected_catalogs.begin(), expected_catalogs.end(), catalog));
     EXPECT_TRUE(identities.emplace(catalog, schema).second);
     for (SQLUSMALLINT column : {3, 4, 5}) {
       SQLCHAR unchanged = 71; SQLLEN bytes = 97; ASSERT_TRUE(cap(window_end_, true));
