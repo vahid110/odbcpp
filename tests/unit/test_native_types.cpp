@@ -535,11 +535,27 @@ TEST(BackendValueTest, RedshiftVarbyteDecodesOnlyStrictPlainHexAndPreservesBytea
 TEST(NativeTypeTest, RedshiftVarbyteParameterMetadataFailsLocallyWithoutDiscoverySql) {
   using namespace rs::core::database::postgres;
   PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
-  const std::uint32_t ids[]{23, 6551};
+  std::uint32_t ids[]{23, 6551, 17, 6551};
+  // Known metadata is pure: neither a transport nor an unexpired deadline is needed.
   const auto result = redshift.resolve_types(ids, rs::util::Deadline{});
-  ASSERT_TRUE(result.has_error());
-  EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class);
-  EXPECT_EQ(BackendOperation::ResolveTypes, result.backend_error().operation);
-  EXPECT_EQ(SessionState::Disconnected, result.backend_error().session_state);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(3u, result->size());
+  EXPECT_EQ(ScalarType::Integer, result->at(23).type);
+  EXPECT_EQ(10u, result->at(23).column_size);
+  EXPECT_EQ(ScalarType::Binary, result->at(17).type);
+  const auto& native = result->at(6551);
+  EXPECT_TRUE(native.known);
+  EXPECT_EQ(ScalarType::LongVarBinary, native.type);
+  EXPECT_EQ(0u, native.column_size); // Unknown dimension, not an invented maximum.
+  EXPECT_EQ(0, native.decimal_digits);
+  EXPECT_FALSE(native.declared_type);
+  EXPECT_FALSE(native.declared_column_size);
+  ids[1] = 999999; // The returned map owns its keys and normalized descriptions.
+  EXPECT_EQ(1u, result->count(6551));
+  EXPECT_EQ(0u, result->count(999999));
+  const std::uint32_t retry_ids[]{6551};
+  const auto retry = redshift.resolve_types(retry_ids, rs::util::Deadline{});
+  ASSERT_TRUE(retry);
+  EXPECT_EQ(ScalarType::LongVarBinary, retry->at(6551).type);
   EXPECT_FALSE(redshift.is_connected());
 }

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
+#include "core/database/database_factory.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 #include "tests/test_time_helpers.h"
@@ -20,6 +21,13 @@
 
 
 namespace {
+// SQL fixture grammar follows the actual compiled native product; byte and
+// diagnostic expectations below remain identical across both profiles.
+bool fixture_redshift_product() {
+  return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
+      rs::core::database::DatabaseType::Redshift;
+}
+
 // One original per-case window, including reconnects and sibling handles.
 // Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
 // timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
@@ -594,8 +602,7 @@ TEST_F(BindColIntegrationTest, ReportsSingleRowFetchStatus) {
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
         hstmt, SQL_ATTR_ROWS_FETCHED_PTR, &rows_fetched, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SELECT value FROM (VALUES ('abcdef'::text), "
-                         "('xy'::text)) rows(value)", SQL_NTS));
+        hstmt, (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, 'abcdef'::text AS value UNION ALL SELECT 2, 'xy'::text) rows ORDER BY ord", SQL_NTS));
 
     char value[4]{};
     SQLLEN length = 0;
@@ -628,9 +635,7 @@ TEST_F(BindColIntegrationTest, RowStatusOutputsHandleUnalignedBuffers) {
         hstmt, SQL_ATTR_ROW_STATUS_PTR, status_output, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)
-            "SELECT value FROM (VALUES (1, 'abcdef'::text), "
-            "(2, 'xy'::text), (3, NULL::text)) rows(position, value) "
-            "ORDER BY position",
+            "SELECT value FROM (SELECT 1 AS position, 'abcdef'::text AS value UNION ALL SELECT 2, 'xy'::text UNION ALL SELECT 3, NULL::text) rows ORDER BY position",
         SQL_NTS));
 
     char value[4]{};
@@ -856,7 +861,9 @@ TEST_F(BindColIntegrationTest, BoundCharacterBuffersRequireTerminatorSpace) {
 TEST_F(BindColIntegrationTest, GetDataHonorsBinaryBufferBoundaries) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
-        (SQLCHAR*)"SELECT decode('', 'hex'), decode('aa', 'hex')",
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX(''), FROM_HEX('aa')"
+            : "SELECT decode('', 'hex'), decode('aa', 'hex')"),
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
@@ -882,8 +889,9 @@ TEST_F(BindColIntegrationTest, GetDataHonorsBinaryBufferBoundaries) {
 TEST_F(BindColIntegrationTest,
        GetDataFormatsBinaryAsCompleteHexPairs) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT decode('00ff7f', 'hex'), "
-                  "decode('00ff7f', 'hex'), decode('', 'hex')",
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('00ff7f'), FROM_HEX('00ff7f'), FROM_HEX('')"
+            : "SELECT decode('00ff7f', 'hex'), decode('00ff7f', 'hex'), decode('', 'hex')"),
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     SQLLEN remaining = -1;
@@ -942,9 +950,9 @@ TEST_F(BindColIntegrationTest,
 TEST_F(BindColIntegrationTest,
        BoundBinaryTextPreservesCompleteHexPairs) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT decode('00ff7f', 'hex'), "
-                  "decode('00ff7f', 'hex'), decode('', 'hex'), "
-                  "decode('00ff7f', 'hex')",
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('00ff7f'), FROM_HEX('00ff7f'), FROM_HEX(''), FROM_HEX('00ff7f')"
+            : "SELECT decode('00ff7f', 'hex'), decode('00ff7f', 'hex'), decode('', 'hex'), decode('00ff7f', 'hex')"),
         SQL_NTS));
 
     char narrow[4]{'x', 'x', 'x', 'x'};
@@ -1202,8 +1210,8 @@ TEST_F(BindColIntegrationTest, BitToNumericGetDataUsesZeroAndOne) {
 
 TEST_F(BindColIntegrationTest, SignedTinyintGetDataChecksRangeAndFraction) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT -128::numeric, 127::numeric, -129::numeric, "
-                  "128::numeric, 12.75::numeric, true, false", SQL_NTS));
+        (SQLCHAR*)"SELECT -128::numeric(3,0), 127::numeric(3,0), -129::numeric(3,0), "
+                  "128::numeric(3,0), 12.75::numeric(4,2), true, false", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLSCHAR value = 44;
@@ -1304,8 +1312,8 @@ TEST_F(BindColIntegrationTest, SignedTinyintRejectsTemporalResults) {
 
 TEST_F(BindColIntegrationTest, UnsignedTinyintGetDataChecksRangeAndFraction) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 0::numeric, 255::numeric, -1::numeric, "
-                  "256::numeric, 255.75::numeric, true, false", SQL_NTS));
+        (SQLCHAR*)"SELECT 0::numeric(1,0), 255::numeric(3,0), -1::numeric(1,0), "
+                  "256::numeric(3,0), 255.75::numeric(5,2), true, false", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR value = 44;
@@ -1365,9 +1373,7 @@ TEST_F(BindColIntegrationTest, UnsignedTinyintGetDataChecksRangeAndFraction) {
 
 TEST_F(BindColIntegrationTest, UnsignedTinyintBoundColumnChecksNullAndOverflow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES (1, 255::numeric), "
-                  "(2, NULL::numeric), (3, 256::numeric)) AS v(ord, value) "
-                  "ORDER BY ord", SQL_NTS));
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, 255::numeric(3,0) AS value UNION ALL SELECT 2, NULL::numeric(3,0) UNION ALL SELECT 3, 256::numeric(3,0)) v ORDER BY ord", SQL_NTS));
     SQLCHAR value = 44;
     SQLLEN length = 91;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_UTINYINT,
@@ -1408,8 +1414,8 @@ TEST_F(BindColIntegrationTest, UnsignedTinyintRejectsTemporalResults) {
 
 TEST_F(BindColIntegrationTest, UnsignedShortGetDataChecksRangeAndFraction) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 0::numeric, 65535::numeric, -1::numeric, "
-                  "65536::numeric, 65535.75::numeric, true, false",
+        (SQLCHAR*)"SELECT 0::numeric(1,0), 65535::numeric(5,0), -1::numeric(1,0), "
+                  "65536::numeric(5,0), 65535.75::numeric(7,2), true, false",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
@@ -1452,9 +1458,7 @@ TEST_F(BindColIntegrationTest, UnsignedShortGetDataChecksRangeAndFraction) {
 
 TEST_F(BindColIntegrationTest, UnsignedShortBoundColumnChecksNullAndOverflow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES (1, 65535::numeric), "
-                  "(2, NULL::numeric), (3, 65536::numeric)) AS v(ord, value) "
-                  "ORDER BY ord", SQL_NTS));
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, 65535::numeric(5,0) AS value UNION ALL SELECT 2, NULL::numeric(5,0) UNION ALL SELECT 3, 65536::numeric(5,0)) v ORDER BY ord", SQL_NTS));
     SQLUSMALLINT value = 44;
     SQLLEN length = 91;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_USHORT,
@@ -1498,8 +1502,8 @@ TEST_F(BindColIntegrationTest, UnsignedWideTargetsRejectTemporalResults) {
 
 TEST_F(BindColIntegrationTest, UnsignedLongGetDataChecksRangeAndFraction) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 0::numeric, 4294967295::numeric, -1::numeric, "
-                  "4294967296::numeric, 4294967295.75::numeric, true, false",
+        (SQLCHAR*)"SELECT 0::numeric(1,0), 4294967295::numeric(10,0), -1::numeric(1,0), "
+                  "4294967296::numeric(10,0), 4294967295.75::numeric(12,2), true, false",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
@@ -1542,9 +1546,7 @@ TEST_F(BindColIntegrationTest, UnsignedLongGetDataChecksRangeAndFraction) {
 
 TEST_F(BindColIntegrationTest, UnsignedLongBoundColumnChecksNullAndOverflow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES (1, 4294967295::numeric), "
-                  "(2, NULL::numeric), (3, 4294967296::numeric)) "
-                  "AS v(ord, value) ORDER BY ord", SQL_NTS));
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, 4294967295::numeric(10,0) AS value UNION ALL SELECT 2, NULL::numeric(10,0) UNION ALL SELECT 3, 4294967296::numeric(10,0)) v ORDER BY ord", SQL_NTS));
     SQLUINTEGER value = 44;
     SQLLEN length = 91;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_ULONG,
@@ -1567,10 +1569,10 @@ TEST_F(BindColIntegrationTest, UnsignedLongBoundColumnChecksNullAndOverflow) {
 
 TEST_F(BindColIntegrationTest, UnsignedBigintGetDataChecksExactLimits) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 0::numeric, 9223372036854775808::numeric, "
-                  "18446744073709551615::numeric, -1::numeric, "
-                  "18446744073709551616::numeric, "
-                  "18446744073709551615.75::numeric, true, false, "
+        (SQLCHAR*)"SELECT 0::numeric(1,0), 9223372036854775808::numeric(19,0), "
+                  "18446744073709551615::numeric(20,0), -1::numeric(1,0), "
+                  "18446744073709551616::numeric(20,0), "
+                  "18446744073709551615.75::numeric(22,2), true, false, "
                   "'1.8446744073709551615e19'::text", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
@@ -1638,11 +1640,7 @@ TEST_F(BindColIntegrationTest, UnsignedBigintGetDataChecksExactLimits) {
 
 TEST_F(BindColIntegrationTest, UnsignedBigintBoundColumnChecksNullAndOverflow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT value FROM "
-                  "(VALUES (1, 18446744073709551615::numeric), "
-                  "(2, NULL::numeric), "
-                  "(3, 18446744073709551616::numeric)) AS v(ord, value) "
-                  "ORDER BY ord", SQL_NTS));
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, 18446744073709551615::numeric(20,0) AS value UNION ALL SELECT 2, NULL::numeric(20,0) UNION ALL SELECT 3, 18446744073709551616::numeric(20,0)) v ORDER BY ord", SQL_NTS));
     SQLUBIGINT value = 44;
     SQLLEN length = 91;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_UBIGINT,
@@ -1736,7 +1734,9 @@ TEST_F(BindColIntegrationTest, BitRejectsTemporalResultTargets) {
 
 TEST_F(BindColIntegrationTest, BinaryRejectsNonCharacterScalarTargets) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT decode('01', 'hex')", SQL_NTS));
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('01')"
+            : "SELECT decode('01', 'hex')"), SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
@@ -1760,7 +1760,9 @@ TEST_F(BindColIntegrationTest, BinaryRejectsNonCharacterScalarTargets) {
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT decode('01', 'hex')", SQL_NTS));
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('01')"
+            : "SELECT decode('01', 'hex')"), SQL_NTS));
     SQLINTEGER number = 4242;
     SQLLEN length = 86;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_SLONG,
@@ -1963,7 +1965,7 @@ TEST_F(BindColIntegrationTest, NullValueStillChecksResultConversion) {
 
 TEST_F(BindColIntegrationTest, NumericGetDataDefaultsAndNull) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 12.34::numeric, NULL::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT 12.34::numeric(4,2), NULL::numeric", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQL_NUMERIC_STRUCT numeric{};
@@ -1992,7 +1994,7 @@ TEST_F(BindColIntegrationTest, NumericGetDataDefaultsAndNull) {
 
 TEST_F(BindColIntegrationTest, NumericArdScaleAndOverflow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 12.34::numeric, 12345.67::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT 12.34::numeric(4,2), 12345.67::numeric(7,2)", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     SQLHDESC ard = SQL_NULL_HDESC;
     ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_ROW_DESC,
@@ -2035,7 +2037,7 @@ TEST_F(BindColIntegrationTest, NumericArdScaleAndOverflow) {
 
 TEST_F(BindColIntegrationTest, BoundNumericUsesArdScaleAndPreservesNull) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 12.34::numeric UNION ALL SELECT NULL::numeric",
+        (SQLCHAR*)"SELECT 12.34::numeric(4,2) UNION ALL SELECT NULL::numeric",
         SQL_NTS));
     SQL_NUMERIC_STRUCT numeric{};
     SQLLEN length = 92;
@@ -2148,9 +2150,7 @@ TEST_F(BindColIntegrationTest, CharacterNumericGetDataReportsExactDiagnostics) {
 
 TEST_F(BindColIntegrationTest, BoundCharacterNumericErrorPreservesOutput) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES (1, '1.25e1'::text), "
-                  "(2, 'bad'::text), (3, NULL::text)) AS rows(ord, value) "
-                  "ORDER BY ord", SQL_NTS));
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, '1.25e1'::text AS value UNION ALL SELECT 2, 'bad'::text UNION ALL SELECT 3, NULL::text) rows ORDER BY ord", SQL_NTS));
     SQL_NUMERIC_STRUCT numeric{};
     SQLLEN length = 91;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_NUMERIC,
@@ -2237,9 +2237,7 @@ TEST_F(BindColIntegrationTest, ApproximateNumericToNumericHandlesBoundaries) {
 
 TEST_F(BindColIntegrationTest, BoundApproximateNumericUsesScale) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES (1, 1.25::real), "
-                  "(2, 1e30::real), (3, NULL::real)) AS rows(ord, value) "
-                  "ORDER BY ord", SQL_NTS));
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ord, 1.25::real AS value UNION ALL SELECT 2, 1e30::real UNION ALL SELECT 3, NULL::real) rows ORDER BY ord", SQL_NTS));
     SQL_NUMERIC_STRUCT numeric{};
     SQLLEN length = 91;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_NUMERIC,
@@ -2406,7 +2404,7 @@ TEST_F(BindColIntegrationTest, IntegerTextNeedsWholeValueBuffer) {
 
 TEST_F(BindColIntegrationTest, DecimalTextCanTruncateOnlyFractionalDigits) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 1234.56::numeric, 1234.56::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT 1234.56::numeric(6,2), 1234.56::numeric(6,2)", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
@@ -2472,7 +2470,7 @@ TEST_F(BindColIntegrationTest, DecimalTextCanTruncateOnlyFractionalDigits) {
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT -1234.56::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT -1234.56::numeric(6,2)", SQL_NTS));
     char bound_tiny[5]{'x', 'x', 'x', 'x', 'x'};
     SQLLEN bound_length = 95;
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR,
@@ -2875,8 +2873,7 @@ TEST_F(BindColIntegrationTest, RequestsIsoDateStyle) {
 TEST_F(BindColIntegrationTest, GetDataOffsetsResetForEachFetchedRow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES (1, 'abcdefgh'::text), "
-                  "(2, 'ijklmnop'::text)) AS rows(id, value) ORDER BY id",
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS id, 'abcdefgh'::text AS value UNION ALL SELECT 2, 'ijklmnop'::text) rows ORDER BY id",
         SQL_NTS));
 
     char chunk[5]{};
@@ -3207,7 +3204,7 @@ TEST_F(BindColIntegrationTest, FloatingConversionIgnoresProcessLocale) {
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)
-            "SELECT 1.5::numeric, '1.5e2'::text, '1,5'::text",
+            "SELECT 1.5::numeric(2,1), '1.5e2'::text, '1,5'::text",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
@@ -3584,12 +3581,14 @@ TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
 
 TEST_F(BindColIntegrationTest, ByteaUsesBinaryDefaultAndSupportsChunks) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SELECT decode('00017fff', 'hex')", SQL_NTS));
+        hstmt, (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('00017fff')"
+            : "SELECT decode('00017fff', 'hex')"), SQL_NTS));
 
     SQLSMALLINT sql_type = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
         hstmt, 1, nullptr, 0, nullptr, &sql_type, nullptr, nullptr, nullptr));
-    EXPECT_EQ(SQL_VARBINARY, sql_type);
+    EXPECT_EQ(fixture_redshift_product() ? SQL_LONGVARBINARY : SQL_VARBINARY, sql_type);
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     unsigned char first[2]{};
@@ -3610,7 +3609,9 @@ TEST_F(BindColIntegrationTest, ByteaUsesBinaryDefaultAndSupportsChunks) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SELECT decode('10203040', 'hex')", SQL_NTS));
+        hstmt, (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('10203040')"
+            : "SELECT decode('10203040', 'hex')"), SQL_NTS));
     unsigned char bound[4]{};
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
         hstmt, 1, SQL_C_DEFAULT, bound, sizeof(bound), &indicator));
@@ -3748,7 +3749,9 @@ TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SELECT decode('01', 'hex')", SQL_NTS));
+        hstmt, (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT FROM_HEX('01')"
+            : "SELECT decode('01', 'hex')"), SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     SQLINTEGER binary_to_number = 42;
     EXPECT_EQ(SQL_ERROR, SQLGetData(
@@ -3763,7 +3766,7 @@ TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
 TEST_F(BindColIntegrationTest, ConversionDiagnosticsDistinguishFailureKinds) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
-        (SQLCHAR*)"SELECT 32768::integer, 12.75::numeric, "
+        (SQLCHAR*)"SELECT 32768::integer, 12.75::numeric(4,2), "
                   "'not-a-number'::text, '2025-02-29'::text",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));

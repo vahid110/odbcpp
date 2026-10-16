@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
+#include "core/database/database_factory.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 #include "tests/test_time_helpers.h"
@@ -21,6 +22,13 @@
 
 
 namespace {
+// Native fixture SQL follows the explicitly compiled backend; parameter bytes
+// and all adapter diagnostics remain the subject of the same assertions.
+bool fixture_redshift_product() {
+    return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
+        rs::core::database::DatabaseType::Redshift;
+}
+
 // One original per-case window, including reconnects and sibling handles.
 // Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
 // timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
@@ -521,6 +529,12 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
 
 TEST_F(PreparedStatementIntegrationTest,
        FloatingParametersRetainRoundTripPrecision) {
+    if (fixture_redshift_product()) {
+        // Redshift defaults to display precision, not an exact text round trip.
+        // Its documented maximum adds the digits required by this assertion.
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"SET extra_float_digits TO 2", SQL_NTS));
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::double precision, ?::real, "
                   "?::double precision, ?::double precision", SQL_NTS));
@@ -1640,7 +1654,7 @@ TEST_F(PreparedStatementIntegrationTest,
     for (const SQLSMALLINT sql_type :
          std::initializer_list<SQLSMALLINT>{SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
         SCOPED_TRACE(sql_type);
-        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::bytea", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)(fixture_redshift_product() ? "SELECT ?::varbyte" : "SELECT ?::bytea"), SQL_NTS));
         unsigned char input[]{0x00, 0xff, 0x7f};
         SQLLEN length = 2;
         SQLUSMALLINT status = SQL_PARAM_UNUSED;
@@ -1654,7 +1668,8 @@ TEST_F(PreparedStatementIntegrationTest,
         SQLSMALLINT described_type = 0;
         ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
             &described_type, nullptr, nullptr, nullptr));
-        EXPECT_EQ(SQL_VARBINARY, described_type);
+        EXPECT_EQ(fixture_redshift_product() ? SQL_LONGVARBINARY : SQL_VARBINARY,
+                  described_type);
         for (const SQLLEN size : {SQLLEN{2}, SQLLEN{0}, SQLLEN{3},
                                  SQLLEN{SQL_NTS}, SQLLEN{SQL_NULL_DATA}, SQLLEN{2}}) {
             SCOPED_TRACE(size);
@@ -1773,7 +1788,7 @@ TEST_F(PreparedStatementIntegrationTest,
         for (const SQLSMALLINT c_type :
              std::initializer_list<SQLSMALLINT>{SQL_C_CHAR, SQL_C_WCHAR}) {
             SCOPED_TRACE(c_type);
-            ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::bytea", SQL_NTS));
+            ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)(fixture_redshift_product() ? "SELECT ?::varbyte" : "SELECT ?::bytea"), SQL_NTS));
             char narrow[]{'f', 'F', 0, 'a'};
             SQLWCHAR wide[]{'f', 'F', 0, 'a'};
             const SQLLEN unit = c_type == SQL_C_CHAR
@@ -1792,7 +1807,8 @@ TEST_F(PreparedStatementIntegrationTest,
             SQLSMALLINT described_type = 0;
             ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
                 &described_type, nullptr, nullptr, nullptr));
-            EXPECT_EQ(SQL_VARBINARY, described_type);
+            EXPECT_EQ(fixture_redshift_product() ? SQL_LONGVARBINARY : SQL_VARBINARY,
+                  described_type);
             std::vector<SQLLEN> lengths{2 * unit, 0, 3 * unit, 4 * unit,
                                         SQL_NULL_DATA, SQL_NTS, 2 * unit};
             if (c_type == SQL_C_WCHAR) {
@@ -3085,12 +3101,25 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
     EXPECT_EQ(1, parameter_count);
 
+    if (fixture_redshift_product()) {
+        // Construct the trailing backslash without profile-dependent literal
+        // escaping. The original lexical/marker assertion above is still checked.
+        char native_sql[] = "SELECT 'slash' || CHR(92) AS literal, ?::integer AS value";
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(native_sql), SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+        EXPECT_EQ(1, parameter_count);
+    }
     SQLINTEGER input = 42;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
         hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
         0, 0, &input, 0, nullptr));
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char literal[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        literal, sizeof(literal), nullptr));
+    EXPECT_STREQ("slash\\", literal);
     SQLINTEGER output = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 2, SQL_C_SLONG, &output, sizeof(output), nullptr));
@@ -3181,7 +3210,9 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        ParameterIndicatorsMayUseUnalignedBuffers) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
-        hstmt, (SQLCHAR*)"SELECT ?::text, ?::bytea, ?::integer, ?::text",
+        hstmt, (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT ?::text, ?::varbyte, ?::integer, ?::text"
+            : "SELECT ?::text, ?::bytea, ?::integer, ?::text"),
         SQL_NTS));
 
     alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> text_length{};
@@ -3610,9 +3641,13 @@ TEST_F(PreparedStatementIntegrationTest,
        DescribesInferredParameterTypesBeforeExecution) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt,
-        (SQLCHAR*)"SELECT ?::boolean, ?::smallint, ?::integer, "
-                  "?::bigint, ?::real, ?::double precision, ?::date, "
-                  "?::time, ?::timestamp, ?::bytea, ?::text",
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT ?::boolean, ?::smallint, ?::integer, "
+              "?::bigint, ?::real, ?::double precision, ?::date, "
+              "?::time, ?::timestamp, ?::varbyte, ?::text"
+            : "SELECT ?::boolean, ?::smallint, ?::integer, "
+              "?::bigint, ?::real, ?::double precision, ?::date, "
+              "?::time, ?::timestamp, ?::bytea, ?::text"),
         SQL_NTS));
 
     SQLSMALLINT first_type = 0;
@@ -3639,7 +3674,8 @@ TEST_F(PreparedStatementIntegrationTest,
         {SQL_TYPE_DATE, 10, 0},
         {SQL_TYPE_TIME, 15, 6},
         {SQL_TYPE_TIMESTAMP, 26, 6},
-        {SQL_VARBINARY, 0, 0},
+        {static_cast<SQLSMALLINT>(fixture_redshift_product()
+            ? SQL_LONGVARBINARY : SQL_VARBINARY), 0, 0},
         {SQL_VARCHAR, 0, 0},
     };
     for (SQLUSMALLINT index = 0; index < parameter_count; ++index) {
@@ -4046,7 +4082,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        NumericStructureParameterUsesApdScaleAndHandlesNull) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(5,2)", SQL_NTS));
     SQL_NUMERIC_STRUCT numeric{};
     numeric.sign = 1;
     numeric.precision = 1;
@@ -4097,7 +4133,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        NumericStructureParameterRejectsOverflowAndRecovers) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(4,2)", SQL_NTS));
     SQL_NUMERIC_STRUCT numeric{};
     numeric.sign = 1;
     numeric.val[0] = 0x39;
@@ -4681,7 +4717,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        UnsignedBigintToNumericChecksDeclaredPrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(20,0)", SQL_NTS));
     SQLUBIGINT value = std::numeric_limits<SQLUBIGINT>::max();
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_UBIGINT, SQL_NUMERIC, 20, 0,
@@ -4715,7 +4751,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        CharacterToDecimalHonorsDeclaredWholeDigitsAfterDescribe) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(3,1)", SQL_NTS));
     char value[32] = "  +00100.0  ";
     SQLLEN value_length = SQL_NTS;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
@@ -4763,7 +4799,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        WideCharacterToNumericHonorsDeclaredWholeDigits) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(3,1)", SQL_NTS));
     SQLWCHAR value[]{'1', '0', '0', '.', '0', 0};
     SQLLEN value_length = SQL_NTS;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
@@ -4791,7 +4827,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        ScientificCharacterToNumericHonorsDeclaredWholeDigits) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(3,1)", SQL_NTS));
     char value[64] = "1e2";
     SQLLEN value_length = SQL_NTS;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
@@ -4826,10 +4862,15 @@ TEST_F(PreparedStatementIntegrationTest,
     assign_parameter_text(value, "9.9e1");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    // The query explicitly fixes scale one on both native backends.
+    SQLSMALLINT result_scale = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr,
+        nullptr, nullptr, &result_scale, nullptr));
+    EXPECT_EQ(1, result_scale);
     char output[32]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
         output, sizeof(output), nullptr));
-    EXPECT_STREQ("99", output);
+    EXPECT_STREQ("99.0", output);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     assign_parameter_text(value, "1000e-1");
@@ -4966,7 +5007,7 @@ TEST_F(PreparedStatementIntegrationTest,
 TEST_F(PreparedStatementIntegrationTest,
        FloatingToExactNumericRejectsNonfiniteValuesAndRecovers) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+        (SQLCHAR*)"SELECT ?::numeric(10,2)", SQL_NTS));
     SQLDOUBLE double_value = std::numeric_limits<SQLDOUBLE>::infinity();
     SQLLEN indicator = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
@@ -5237,14 +5278,23 @@ TEST_F(PreparedStatementIntegrationTest, AdvertisedTransactionalDdlRollsBackAndC
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE odbcpp_backend_ddl(value integer)", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT to_regclass('pg_temp.odbcpp_backend_ddl')::text", SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    char name[64]{};
-    SQLLEN length = 0;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, name, sizeof(name), &length));
-    EXPECT_EQ(SQL_NULL_DATA, length);
-    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    if (fixture_redshift_product()) {
+        EXPECT_EQ(SQL_ERROR, SQLExecDirect(hstmt,
+            (SQLCHAR*)"SELECT count(*) FROM odbcpp_backend_ddl", SQL_NTS));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("42P01", reinterpret_cast<char*>(state));
+    } else {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"SELECT to_regclass('pg_temp.odbcpp_backend_ddl')::text", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char name[64]{};
+        SQLLEN length = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, name, sizeof(name), &length));
+        EXPECT_EQ(SQL_NULL_DATA, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE odbcpp_backend_ddl(value integer)", SQL_NTS));
@@ -5603,7 +5653,8 @@ TEST_F(PreparedStatementIntegrationTest, NegativeTests) {
 
 TEST_F(PreparedStatementIntegrationTest, BinaryParameterPreservesLiteralEscapeBytesOnServer) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT encode(?::bytea, 'hex')", SQL_NTS));
+        (SQLCHAR*)(fixture_redshift_product()
+            ? "SELECT TO_HEX(?::varbyte)" : "SELECT encode(?::bytea, 'hex')"), SQL_NTS));
     unsigned char input[]{0, 255, '\\', 'x', '4', '1'};
     SQLLEN length = sizeof(input);
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,

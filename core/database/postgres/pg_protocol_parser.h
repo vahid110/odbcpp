@@ -1,5 +1,6 @@
 #pragma once
 #include "core/database/i_protocol_parser.h"
+#include "pg_catalog_profile.h"
 #include "pg_messages.h"
 #include "pg_value.h"
 #include "scram_sha256.h"
@@ -11,6 +12,9 @@ namespace rs::core::database::postgres {
 
 class PgProtocolParser : public IProtocolParser {
 public:
+  explicit PgProtocolParser(PgCatalogProfile profile = PgCatalogProfile::PostgreSQL)
+      : profile_(profile) {}
+
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override {
     return normalize_pg_result_value(type, value);
@@ -61,6 +65,7 @@ public:
   ParsedQueryResult extract_query_result(const std::vector<Message>& messages) override;
 
 private:
+  const PgCatalogProfile profile_;
   static std::string md5_hex(const void* data, size_t n);
   static rs::pg::Authentication decode_auth(const std::vector<std::byte>& payload);
   static rs::pg::ErrorResponse decode_error_fields(

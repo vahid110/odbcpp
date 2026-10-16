@@ -13,6 +13,7 @@
 namespace {
 
 using rs::core::database::QueryParameterType;
+using rs::core::database::postgres::PgCatalogProfile;
 
 void append_u16(std::vector<std::byte>& out, std::uint16_t value) {
   out.push_back(static_cast<std::byte>((value >> 8) & 0xff));
@@ -59,11 +60,12 @@ void finish_message(std::vector<std::byte>& out, std::size_t start) {
   out[start + 4] = static_cast<std::byte>(value & 0xff);
 }
 
-std::uint32_t postgres_type_oid(QueryParameterType type) {
+std::uint32_t postgres_type_oid(QueryParameterType type, PgCatalogProfile profile) {
   switch (type) {
     case QueryParameterType::Unspecified: return 0;
     case QueryParameterType::Boolean: return 16;
-    case QueryParameterType::Binary: return 17;
+    case QueryParameterType::Binary:
+      return profile == PgCatalogProfile::Redshift ? 6551 : 17;
     case QueryParameterType::Int64: return 20;
     case QueryParameterType::Int16: return 21;
     case QueryParameterType::Int32: return 23;
@@ -588,6 +590,11 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
         "parameter marker count does not match bound parameter count");
   }
   const auto& rewritten_sql = rewritten.sql;
+  const auto raw_binary = [&](const QueryParameter& param) {
+    return profile_ == PgCatalogProfile::Redshift &&
+        param.type == QueryParameterType::Binary;
+  };
+  const bool explicit_formats = std::any_of(params.begin(), params.end(), raw_binary);
   // Count the complete Parse/Describe/Bind/Describe/Execute/Sync exchange,
   // including binary hex expansion, before allocating wire or value buffers.
   std::size_t wire_bytes = 0;
@@ -598,9 +605,11 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   add(51);
   add(rewritten_sql.size());
   add(8 * params.size());
+  if (explicit_formats) add(2 * params.size());
   for (const auto& param : params) {
     if (!param.value) continue;
-    const bool binary = param.type == QueryParameterType::Binary || param.binary_input;
+    const bool binary = !raw_binary(param) &&
+        (param.type == QueryParameterType::Binary || param.binary_input);
     const auto maximum = static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
     if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
       throw std::length_error("PostgreSQL parameter value is too large");
@@ -615,7 +624,7 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   append_cstring(out, {});
   append_cstring(out, rewritten_sql);
   append_u16(out, static_cast<std::uint16_t>(params.size()));
-  for (const auto& param : params) append_u32(out, postgres_type_oid(param.type));
+  for (const auto& param : params) append_u32(out, postgres_type_oid(param.type, profile_));
   finish_message(out, start);
 
   // Describing the statement produces ParameterDescription before binding.
@@ -624,19 +633,23 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   append_cstring(out, {});
   finish_message(out, start);
 
-  // Bind text-format values to the unnamed portal. A length of -1 is SQL NULL.
+  // PostgreSQL retains text bytea; Redshift VARBYTE uses its native binary
+  // parameter format. Result columns remain text. A length of -1 is SQL NULL.
   start = begin_message(out, 'B');
   append_cstring(out, {});
   append_cstring(out, {});
-  append_u16(out, 0); // all parameter values use text format
+  append_u16(out, explicit_formats ? static_cast<std::uint16_t>(params.size()) : 0);
+  if (explicit_formats) {
+    for (const auto& param : params) append_u16(out, raw_binary(param) ? 1 : 0);
+  }
   append_u16(out, static_cast<std::uint16_t>(params.size()));
   for (const auto& param : params) {
     if (!param.value.has_value()) {
       append_u32(out, std::numeric_limits<std::uint32_t>::max());
       continue;
     }
-    const bool binary = param.type == QueryParameterType::Binary ||
-        param.binary_input;
+    const bool binary = !raw_binary(param) &&
+        (param.type == QueryParameterType::Binary || param.binary_input);
     const auto maximum = static_cast<std::size_t>(
         std::numeric_limits<std::int32_t>::max());
     if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
@@ -695,7 +708,7 @@ std::vector<std::byte> PgProtocolParser::create_statement_description(
   append_cstring(out, rewritten.sql);
   append_u16(out, static_cast<std::uint16_t>(parameter_types.size()));
   for (const auto type : parameter_types) {
-    append_u32(out, postgres_type_oid(type));
+    append_u32(out, postgres_type_oid(type, profile_));
   }
   finish_message(out, start);
 
