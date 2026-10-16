@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include "odbc/odbc_api.h"
+#include "core/database/database_factory.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 #include "tests/test_connection_config.h"
@@ -14,6 +15,7 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 
 
@@ -404,7 +406,7 @@ TEST_F(MetadataIntegrationTest, NotificationDoesNotCorruptQueryResults) {
 
 TEST_F(MetadataIntegrationTest, ReportsCurrentRowNumberOnlyWhilePositioned) {
     SQLCHAR query[] =
-        "SELECT value FROM (VALUES (10), (20)) AS rows(value) ORDER BY value";
+        "SELECT value FROM (SELECT 10 AS value UNION ALL SELECT 20) AS rows ORDER BY value";
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, query, SQL_NTS));
 
     SQLULEN row_number = 99;
@@ -673,8 +675,8 @@ TEST_F(MetadataIntegrationTest, GetDataWideHandlesUnalignedBuffer) {
 TEST_F(MetadataIntegrationTest, GetDataRejectsTargetChangeMidChunk) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
-        (SQLCHAR*)"SELECT value FROM (VALUES ('abcdef'::text), "
-                  "('ghij'::text)) AS rows(value)",
+        (SQLCHAR*)"SELECT value FROM (SELECT 1 AS ordinal, CAST('abcdef' AS varchar(6)) AS value "
+                  "UNION ALL SELECT 2, CAST('ghij' AS varchar(6))) AS rows ORDER BY ordinal",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
@@ -1692,14 +1694,17 @@ TEST_F(MetadataIntegrationTest, TypeInfoSchemaUsesNormalizedDescriptorMetadata) 
 }
 
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt,
-        (SQLCHAR*)"SELECT current_setting('server_version_num')::integer",
-        SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    const auto server_version = integer_cell(hstmt, 1);
-    ASSERT_TRUE(server_version.has_value());
-    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    const bool redshift = rs::core::database::DatabaseFactory::get_compiled_database_type() ==
+        rs::core::database::DatabaseType::Redshift;
+    std::optional<SQLINTEGER> server_version = 0;
+    if (!redshift) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+            hstmt, (SQLCHAR*)"SELECT current_setting('server_version_num')::integer", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        server_version = integer_cell(hstmt, 1);
+        ASSERT_TRUE(server_version.has_value());
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
 
     EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, 12345));
     EXPECT_EQ("HY004", diagnostic_state(SQL_HANDLE_STMT, hstmt));
@@ -1718,7 +1723,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         SQLSMALLINT data_type;
         SQLINTEGER column_size;
     };
-    constexpr std::array<ExpectedType, 18> expected_types{{
+    constexpr std::array<ExpectedType, 18> postgres_types{{
         {"boolean", SQL_BIT, 1},
         {"bigint", SQL_BIGINT, 19},
         {"bytea", SQL_VARBINARY, 1073741824},
@@ -1738,6 +1743,23 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         {"time", SQL_TYPE_TIME, 15},
         {"timestamp", SQL_TYPE_TIMESTAMP, 26},
     }};
+
+    // Redshift DDL advertisements are separate from PostgreSQL limits and from
+    // actual result dimensions; no PostgreSQL server_version_num query is used.
+    constexpr std::array<ExpectedType, 17> redshift_types{{
+        {"boolean", SQL_BIT, 1}, {"bigint", SQL_BIGINT, 19},
+        {"char", SQL_CHAR, 4096}, {"numeric", SQL_NUMERIC, 38},
+        {"decimal", SQL_DECIMAL, 38}, {"integer", SQL_INTEGER, 10},
+        {"smallint", SQL_SMALLINT, 5}, {"real", SQL_REAL, 7},
+        {"double precision", SQL_DOUBLE, 15}, {"date", SQL_DATE, 10},
+        {"time", SQL_TIME, 15}, {"timestamp", SQL_TIMESTAMP, 26},
+        {"varchar", SQL_VARCHAR, 65535}, {"varbyte", SQL_LONGVARBINARY, 16777216},
+        {"date", SQL_TYPE_DATE, 10}, {"time", SQL_TYPE_TIME, 15},
+        {"timestamp", SQL_TYPE_TIMESTAMP, 26},
+    }};
+    const auto expected_types = redshift
+        ? std::span<const ExpectedType>(redshift_types)
+        : std::span<const ExpectedType>(postgres_types);
 
     ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_ALL_TYPES));
     SQLLEN row_count = -1;
@@ -1784,7 +1806,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
                   text_cell(hstmt, 4));
         EXPECT_EQ(quoted_type ? std::optional<std::string>("'") : std::nullopt,
                   text_cell(hstmt, 5));
-        if (type == SQL_CHAR || type == SQL_VARCHAR) {
+        if (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARBINARY) {
             EXPECT_EQ(std::optional<std::string>("length"), text_cell(hstmt, 6));
         } else if (type == SQL_NUMERIC || type == SQL_DECIMAL) {
             EXPECT_EQ(std::optional<std::string>("precision,scale"),
@@ -1814,13 +1836,13 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         EXPECT_EQ(std::nullopt, text_cell(hstmt, 13));
         const auto minimum_scale =
             (type == SQL_NUMERIC || type == SQL_DECIMAL) &&
-                    *server_version >= 150000
+                    !redshift && *server_version >= 150000
                 ? std::optional<SQLINTEGER>(-1000)
                 : ((exact_numeric_type || time_type)
                        ? std::optional<SQLINTEGER>(0) : std::nullopt);
         EXPECT_EQ(minimum_scale, integer_cell(hstmt, 14));
         const auto maximum_scale = type == SQL_NUMERIC || type == SQL_DECIMAL
-            ? std::optional<SQLINTEGER>(1000)
+            ? std::optional<SQLINTEGER>(redshift ? 37 : 1000)
             : (time_type ? std::optional<SQLINTEGER>(6)
                          : (exact_numeric_type
                                 ? std::optional<SQLINTEGER>(0)
@@ -1859,7 +1881,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
 
     ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfoW(hstmt, SQL_NUMERIC));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    EXPECT_EQ(*server_version >= 150000
+    EXPECT_EQ(!redshift && *server_version >= 150000
                   ? std::optional<SQLINTEGER>(-1000)
                   : std::optional<SQLINTEGER>(0),
               integer_cell(hstmt, 14));
@@ -4375,27 +4397,28 @@ TEST_F(MetadataIntegrationTest, InvalidTextCastUsesOdbcSqlstate) {
 }
 
 TEST_F(MetadataIntegrationTest, IntegrityViolationsUseOdbcSqlstate) {
+    // NOT NULL is enforced by both profiles; Redshift primary keys are informational.
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_integrity_diag("
-                         "id integer PRIMARY KEY)", SQL_NTS));
+                         "id integer NOT NULL PRIMARY KEY)", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (1)",
         SQL_NTS));
 
     EXPECT_EQ(SQL_ERROR, SQLExecDirect(
-        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (1)",
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (NULL)",
         SQL_NTS));
     EXPECT_EQ("23000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
-        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (1)",
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (NULL)",
         SQL_NTS));
     EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
     EXPECT_EQ("23000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 7; "
-                         "INSERT INTO odbcpp_integrity_diag VALUES (1)",
+                         "INSERT INTO odbcpp_integrity_diag VALUES (NULL)",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     EXPECT_EQ(7, integer_cell(hstmt, 1));
@@ -4412,7 +4435,7 @@ TEST_F(MetadataIntegrationTest, IntegrityViolationsUseOdbcSqlstate) {
 
 TEST_F(MetadataIntegrationTest, MissingObjectsUseOdbcSqlstates) {
     constexpr auto missing_table =
-        "SELECT * FROM pg_temp.odbcpp_missing_diag_table";
+        "SELECT * FROM odbcpp_missing_diag_table";
     EXPECT_EQ(SQL_ERROR, SQLExecDirect(
         hstmt, (SQLCHAR*)missing_table, SQL_NTS));
     EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, hstmt));
@@ -4424,7 +4447,7 @@ TEST_F(MetadataIntegrationTest, MissingObjectsUseOdbcSqlstates) {
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 7; "
-                         "SELECT * FROM pg_temp.odbcpp_missing_diag_table",
+                         "SELECT * FROM odbcpp_missing_diag_table",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     EXPECT_EQ(7, integer_cell(hstmt, 1));
@@ -4432,7 +4455,7 @@ TEST_F(MetadataIntegrationTest, MissingObjectsUseOdbcSqlstates) {
     EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     constexpr auto missing_column =
-        "SELECT absent_column FROM (VALUES (1)) AS t(existing_column)";
+        "SELECT absent_column FROM (SELECT 1 AS existing_column) AS t";
     EXPECT_EQ(SQL_ERROR, SQLExecDirect(
         hstmt, (SQLCHAR*)missing_column, SQL_NTS));
     EXPECT_EQ("42S22", diagnostic_state(SQL_HANDLE_STMT, hstmt));

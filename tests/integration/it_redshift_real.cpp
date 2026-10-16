@@ -996,8 +996,8 @@ TEST_F(RedshiftRealTest, ProcedureCatalogContract) {
   constexpr char procedure[] = "sp_m2_catalog_modes_20261003_c01";
   constexpr std::array<CatalogField, 8> fields{{
       {"procedure_cat", SQL_VARCHAR}, {"procedure_schem", SQL_VARCHAR},
-      {"procedure_name", SQL_VARCHAR}, {"num_input_params", SQL_VARCHAR},
-      {"num_output_params", SQL_VARCHAR}, {"num_result_sets", SQL_VARCHAR},
+      {"procedure_name", SQL_VARCHAR}, {"num_input_params", SQL_SMALLINT},
+      {"num_output_params", SQL_SMALLINT}, {"num_result_sets", SQL_SMALLINT},
       {"remarks", SQL_VARCHAR}, {"procedure_type", SQL_SMALLINT}}};
   ASSERT_TRUE(catalog_succeeded(SQLProcedures(checkpoint_statement(hstmt_), nullptr, 0,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
@@ -1016,8 +1016,9 @@ TEST_F(RedshiftRealTest, ProcedureCatalogContract) {
         sizeof(actual_name), &identity_length));
     if (std::strcmp(actual_schema, schema) || std::strcmp(actual_name, procedure)) continue;
     ++matched;
-    for (const SQLUSMALLINT column : std::array<SQLUSMALLINT, 3>{4, 5, 6})
+    for (const SQLUSMALLINT column : std::array<SQLUSMALLINT, 3>{4, 5, 6}) {
       expect_catalog_null(column);
+    }
     // Upstream supplies "" with length1 for this field; capture rather than
     // inventing a zero-length/NULL disposition before real-client evidence.
     char remarks[128]{}; SQLLEN length = -9;
@@ -1045,12 +1046,12 @@ TEST_F(RedshiftRealTest, ProcedureParameterCatalogContract) {
   constexpr std::array<CatalogField, 19> fields{{
       {"procedure_cat", SQL_VARCHAR}, {"procedure_schem", SQL_VARCHAR},
       {"procedure_name", SQL_VARCHAR}, {"column_name", SQL_VARCHAR},
-      {"column_type", SQL_SMALLINT}, {"data_type", SQL_INTEGER},
+      {"column_type", SQL_SMALLINT}, {"data_type", SQL_SMALLINT},
       {"type_name", SQL_VARCHAR}, {"column_size", SQL_INTEGER},
       {"buffer_length", SQL_INTEGER}, {"decimal_digits", SQL_SMALLINT},
       {"num_prec_radix", SQL_SMALLINT}, {"nullable", SQL_SMALLINT},
       {"remarks", SQL_VARCHAR}, {"column_def", SQL_VARCHAR},
-      {"sql_data_type", SQL_INTEGER}, {"sql_datetime_sub", SQL_INTEGER},
+      {"sql_data_type", SQL_SMALLINT}, {"sql_datetime_sub", SQL_SMALLINT},
       {"char_octet_length", SQL_INTEGER}, {"ordinal_position", SQL_INTEGER},
       {"is_nullable", SQL_VARCHAR}}};
   ASSERT_TRUE(catalog_succeeded(SQLProcedureColumns(checkpoint_statement(hstmt_), nullptr, 0,
@@ -1078,13 +1079,13 @@ TEST_F(RedshiftRealTest, ProcedureParameterCatalogContract) {
     EXPECT_EQ(static_cast<SQLLEN>(std::strlen(name)), length);
     expect_catalog_integer(5, input ? SQL_PARAM_INPUT : SQL_PARAM_INPUT_OUTPUT);
     expect_catalog_integer(6, SQL_INTEGER);
-    expect_catalog_text(7, "int4");
+    expect_catalog_text(7, "integer");
     expect_catalog_integer(8, 10);
     expect_catalog_integer(9, 4);
-    expect_catalog_null(10);
+    expect_catalog_integer(10, 0);
     expect_catalog_integer(11, 10);
     expect_catalog_integer(12, SQL_NULLABLE_UNKNOWN);
-    expect_catalog_text(13, "");
+    expect_catalog_null(13);
     expect_catalog_null(14);
     expect_catalog_integer(15, SQL_INTEGER);
     expect_catalog_null(16);
@@ -4290,6 +4291,11 @@ protected:
     for(const char* key:{"MAXROWS","MAXCELLS","MAXRESPONSEBYTES","MAXRESPONSEMESSAGES"}) {
       ASSERT_FALSE(settings.contains(key)) << "Conflicting materialized envelope resource option";
     }
+    // This scope asserts the declared 4096/8192-byte VARCHAR metadata. The
+    // separate sizing-option scopes exercise Redshift's default255 threshold;
+    // choose the supported disabled-threshold profile here instead of changing
+    // the exact descriptor/payload/canary assertions to its LONGVARCHAR view.
+    ASSERT_FALSE(settings.contains("MAXVARCHARSIZE"));
     original_connection_=connection_string_;
   }
   bool within() {
@@ -4314,7 +4320,7 @@ protected:
     if(connection_string_.back()!=';') { connection_string_+=';'; }
     // Append only fixed nonsecret policy keys; preserve ordinary verified-TLS credentials.
     connection_string_+="MAXROWS="+std::to_string(rows)+";MAXCELLS=3000;MAXRESPONSEBYTES="+
-        std::to_string(bytes)+";MAXRESPONSEMESSAGES=4096;";
+        std::to_string(bytes)+";MAXRESPONSEMESSAGES=4096;MAXVARCHARSIZE=0;";
     ASSERT_TRUE(cap(window_end_,false));
     const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
@@ -4587,7 +4593,8 @@ protected:
     const char* marker=std::getenv("ODBCPP_REDSHIFT_SHOW_TABLES_ADMISSION");
     if(marker==nullptr) { GTEST_SKIP() << "SHOW tables scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="show-tables-v1") << "Invalid SHOW tables scope marker";
-    ASSERT_EQ(2u,sizeof(SQLWCHAR)) << "SHOW tables native scope requires SQLWCHAR width2";
+    ASSERT_TRUE(sizeof(SQLWCHAR)==2u || sizeof(SQLWCHAR)==4u)
+        << "SHOW tables native scope requires supported UTF16 or UCS4 SQLWCHAR";
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
     const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
@@ -4858,7 +4865,8 @@ protected:
     const char* marker=std::getenv("ODBCPP_REDSHIFT_SHOW_COLUMNS_ADMISSION");
     if(marker==nullptr) {GTEST_SKIP() << "SHOW columns scope is not admitted";}
     ASSERT_TRUE(std::string_view(marker)=="show-columns-v1") << "Invalid SHOW columns scope marker";
-    ASSERT_EQ(2u,sizeof(SQLWCHAR)) << "SHOW columns native scope requires SQLWCHAR width2";
+    ASSERT_TRUE(sizeof(SQLWCHAR)==2u || sizeof(SQLWCHAR)==4u)
+        << "SHOW columns native scope requires supported UTF16 or UCS4 SQLWCHAR";
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
     // Do not invoke the unrelated SHOW TABLES marker gate.
     RedshiftRealTest::SetUp();if(HasFatalFailure()) {return;}
