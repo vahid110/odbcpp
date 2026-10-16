@@ -38,6 +38,30 @@ class RequestSafety(unittest.TestCase):
         self.assertEqual(w.selection('test_backend_contract,test_diagnostics_apis'),
                          ['test_backend_contract', 'test_diagnostics_apis'])
 
+    def test_parser_literal_selection_keeps_existing_targets_and_cold_guards(self):
+        self.assertEqual(w.TARGETS, (
+            'test_backend_contract', 'test_diagnostics_apis',
+            'test_numeric_scale_conversion', 'test_redshift_data_conversion',
+            'test_redshift_catalog_execution', 'test_sql_escape',
+            'test_pg_protocol_parser'))
+        self.assertEqual(w.selection('test_pg_protocol_parser'), ['test_pg_protocol_parser'])
+        self.assertIsNotNone(w.request_guard(dict(
+            self.env, WINDOWS_PRODUCT_HEAD='c' * 40,
+            WINDOWS_PRODUCT_TARGETS='test_pg_protocol_parser')))
+
+    def test_parser_selection_rejects_expansion_and_preserves_first_product_sentinel(self):
+        for bad in ('test_pg_protocol_parser_unknown', 'test_pg_protocol_parser.*',
+                    'test_pg_protocol_parser,test_pg_protocol_parser',
+                    'test_pg_protocol_parser;whoami',
+                    'test_pg_protocol_parser,test_backend_contract,test_diagnostics_apis,'
+                    'test_numeric_scale_conversion,test_redshift_data_conversion'):
+            with self.subTest(targets=bad), self.assertRaises(ValueError):
+                w.selection(bad)
+        with self.assertRaisesRegex(ValueError, 'first numeric product'):
+            w.request_guard(dict(self.env, WINDOWS_PRODUCT_TARGETS='test_pg_protocol_parser'))
+        self.assertIsNotNone(w.request_guard(dict(
+            self.env, WINDOWS_PRODUCT_TARGETS='test_pg_protocol_parser,test_backend_contract')))
+
     def test_reject_mutable_refs_and_injected_or_duplicate_targets(self):
         for key in ('WINDOWS_WORKFLOW_HEAD', 'WINDOWS_PRODUCT_HEAD', 'WINDOWS_PRODUCT_BASE'):
             for bad in ('main', 'a' * 39, 'A' * 40, 'a' * 40 + '; echo bad'):
