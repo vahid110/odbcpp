@@ -80,8 +80,8 @@ TEST(PgStagedPreparedRefusalTest, DescriptionOnlyRawIdsDeclineWithoutResolverAnd
     raw->on_query=[&]{sql="changed";params[0].value="changed";params[0].type=QueryParameterType::Text;};
     const auto read_before=seen->reads.size();const auto deadline=rs::util::Clock::now()+std::chrono::seconds(3);const auto result=observe(backend,sql,params,deadline);ASSERT_TRUE(result.has_error());EXPECT_EQ(BackendErrorClass::Unsupported,result.backend_error().error_class);EXPECT_EQ(BackendOperation::ExecutePrepared,result.backend_error().operation);EXPECT_EQ(SessionState::Idle,result.backend_error().session_state);EXPECT_EQ(SessionDisposition::Reusable,result.backend_error().disposition);EXPECT_TRUE(backend.is_connected());EXPECT_EQ(0u,seen->close_count);
     ASSERT_EQ(2u,seen->writes.size());EXPECT_EQ("PDS",tags(seen->writes[1]));const auto& request=seen->writes[1];
-    // Literal unnamed Parse of SELECT $1 with a single intended OID17.
-    const unsigned char expected[]{'P',0,0,0,21,0,'S','E','L','E','C','T',' ','$','1',0,0,1,0,0,0,17,'D',0,0,0,6,'S',0,'S',0,0,0,4};
+    // Literal unnamed Parse of SELECT $1 with a single intended Redshift OID6551.
+    const unsigned char expected[]{'P',0,0,0,21,0,'S','E','L','E','C','T',' ','$','1',0,0,1,0,0,25,151,'D',0,0,0,6,'S',0,'S',0,0,0,4};
     ASSERT_EQ(sizeof(expected),request.size());for(std::size_t i=0;i<request.size();++i){EXPECT_EQ(expected[i],std::to_integer<unsigned>(request[i]))<<i;}
     EXPECT_EQ(deadline,seen->sends[1]);for(std::size_t i=read_before;i<seen->reads.size();++i){EXPECT_EQ(deadline,seen->reads[i]);}
     ASSERT_TRUE(backend.execute_query("SELECT 0",deadline));ASSERT_EQ(3u,seen->writes.size());EXPECT_EQ("Q",tags(seen->writes[2]));EXPECT_TRUE(backend.is_connected());EXPECT_EQ(0u,seen->close_count);

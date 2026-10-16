@@ -1479,3 +1479,102 @@ TEST(PgEmptyPreparedAuthorityTest, SimpleEmptyAndOrdinaryCommandSemanticsRemainS
   EXPECT_EQ(rs::core::database::ExecutionResultShape::NoResultSet,command.execution_result_shape);
 }
 }
+
+
+// Native reference: AWS Redshift JDBC commit
+// 773fa16aabbd589e9e2c93684c7ca2543e3ce31a, Oid.VARBYTE=6551;
+// setVarbyte/raw StreamWrapper and sendBind per-parameter binary format.
+TEST(RedshiftParameterContractTest, FullExchangeKeepsRawVarbyteAndPostgresHexDistinct) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser redshift(PgCatalogProfile::Redshift);
+  PgProtocolParser postgres(PgCatalogProfile::PostgreSQL);
+  const std::string raw("\0\xff\\x41", 6);
+  const std::vector<QueryParameter> params{{raw, QueryParameterType::Binary}};
+  const auto rs_wire = redshift.create_prepared_query("SELECT ?", params);
+  const auto pg_wire = postgres.create_prepared_query("SELECT ?", params);
+  // Complete literal Parse/Describe/Bind/Describe/Execute/Sync exchanges.
+  const auto rs_expected = rs::util::decode_hex("50000000150053454c4543542024310000010000199744000000065300420000001800000001000100010000000600ff5c783431000044000000065000450000000900000000005300000004");
+  const auto pg_expected = rs::util::decode_hex("50000000150053454c4543542024310000010000001144000000065300420000001e0000000000010000000e5c78303066663563373833343331000044000000065000450000000900000000005300000004");
+  ASSERT_TRUE(rs_expected.has_value());
+  ASSERT_TRUE(pg_expected.has_value());
+  EXPECT_EQ(*rs_expected, std::string(reinterpret_cast<const char*>(rs_wire.data()), rs_wire.size()));
+  EXPECT_EQ(*pg_expected, std::string(reinterpret_cast<const char*>(pg_wire.data()), pg_wire.size()));
+  EXPECT_EQ(pg_wire, PgProtocolParser{}.create_prepared_query("SELECT ?", params));
+  ASSERT_TRUE(params[0].value.has_value());
+  EXPECT_EQ(raw, *params[0].value);
+}
+
+TEST(RedshiftParameterContractTest, MixedValuesKeepNullEmptyTextAndBinaryInputDistinct) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser parser(PgCatalogProfile::Redshift);
+  const std::string raw("\0\xff\\x41", 6);
+  const std::vector<QueryParameter> params{
+      {raw, QueryParameterType::Binary}, {"", QueryParameterType::Binary},
+      {std::nullopt, QueryParameterType::Binary}, {"\\x41", QueryParameterType::Text},
+      {raw, QueryParameterType::Text, true}};
+  const auto frames = split_frames(parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", params));
+  ASSERT_EQ(6u, frames.size());
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ("SELECT $1, $2, $3, $4, $5", read_cstring(frames[0].payload, offset));
+  ASSERT_EQ(5u, read_u16(frames[0].payload, offset));
+  offset += 2;
+  for (const auto oid : {6551u, 6551u, 6551u, 25u, 25u}) {
+    EXPECT_EQ(oid, read_u32(frames[0].payload, offset));
+    offset += 4;
+  }
+  EXPECT_EQ(offset, frames[0].payload.size());
+  const auto expected_bind = rs::util::decode_hex("000000050001000100010000000000050000000600ff5c78343100000000ffffffff000000045c7834310000000e5c783030666635633738333433310000");
+  ASSERT_TRUE(expected_bind.has_value());
+  EXPECT_EQ(*expected_bind, std::string(reinterpret_cast<const char*>(frames[2].payload.data()), frames[2].payload.size()));
+  EXPECT_EQ(raw, *params[0].value);
+  EXPECT_EQ("", *params[1].value);
+  EXPECT_FALSE(params[2].value.has_value());
+  EXPECT_EQ("\\x41", *params[3].value);
+  EXPECT_EQ(raw, *params[4].value);
+}
+
+TEST(RedshiftParameterContractTest, DescriptionUsesNativeOidWithoutBindOrExecute) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser parser(PgCatalogProfile::Redshift);
+  const std::vector<QueryParameterType> types{QueryParameterType::Binary, QueryParameterType::Text};
+  const auto wire = parser.create_statement_description("SELECT ?, ?", types);
+  const auto expected = rs::util::decode_hex("500000001d0053454c4543542024312c2024320000020000199700000019440000000653005300000004");
+  ASSERT_TRUE(expected.has_value());
+  EXPECT_EQ(*expected, std::string(reinterpret_cast<const char*>(wire.data()), wire.size()));
+  const auto frames = split_frames(wire);
+  ASSERT_EQ(3u, frames.size());
+  EXPECT_EQ('P', frames[0].tag);
+  EXPECT_EQ('D', frames[1].tag);
+  EXPECT_EQ('S', frames[2].tag);
+  EXPECT_EQ(wire, parser.create_statement_description("SELECT ?, ?", types, wire.size()));
+  EXPECT_THROW(parser.create_statement_description("SELECT ?, ?", types, wire.size()-1),
+               rs::core::database::RequestWireLimitExceeded);
+}
+
+TEST(RedshiftParameterContractTest, ExactBudgetsCountFormatFieldsAndRefuseBeforePublication) {
+  using rs::core::database::postgres::PgCatalogProfile;
+  PgProtocolParser parser(PgCatalogProfile::Redshift);
+  for (const auto size : {0u, 1u, 4u, 128u}) {
+    const std::string payload(size, '\0');
+    const std::vector<QueryParameter> params{
+        {payload, QueryParameterType::Binary}, {std::nullopt, QueryParameterType::Binary},
+        {"safe", QueryParameterType::Text}};
+    const auto wire = parser.create_prepared_query("SELECT ?, ?, ?", params);
+    EXPECT_EQ(wire, parser.create_prepared_query("SELECT ?, ?, ?", params, wire.size()));
+    EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?, ?", params, wire.size()-1),
+                 rs::core::database::RequestWireLimitExceeded);
+    EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?, ?", params, 0),
+                 rs::core::database::RequestWireLimitExceeded);
+    EXPECT_EQ(payload, *params[0].value);
+    EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?", params), std::invalid_argument);
+  }
+  const std::vector<QueryParameter> too_many(65536);
+  EXPECT_THROW(parser.create_prepared_query("SELECT ?", too_many), std::length_error);
+  const std::vector<QueryParameterType> too_many_types(65536, QueryParameterType::Binary);
+  EXPECT_THROW(parser.create_statement_description("SELECT ?", too_many_types), std::length_error);
+  // No raw Binary parameter: existing text-format framing remains byte-identical.
+  const std::vector<QueryParameter> text{{"42", QueryParameterType::Int32}};
+  EXPECT_EQ(PgProtocolParser{}.create_prepared_query("SELECT ?", text),
+            parser.create_prepared_query("SELECT ?", text));
+}

@@ -20,7 +20,7 @@ namespace rs::core::database::postgres {
 PgDatabaseConnection::PgDatabaseConnection(
     std::unique_ptr<rs::core::transport::ITransport> transport,
     std::optional<SessionResetProfile> reset_profile, PgCatalogProfile catalog_profile)
-    : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(),
+    : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(catalog_profile),
                                 std::move(transport)), reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
 BackendResult<QueryResult> PgDatabaseConnection::observe_and_decline_binary_prepared_for_test(
@@ -1466,14 +1466,6 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
 
 BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     std::span<const std::uint32_t> ids, rs::util::Deadline deadline) {
-  if (catalog_profile_ == PgCatalogProfile::Redshift &&
-      std::find(ids.begin(), ids.end(), 6551u) != ids.end()) {
-    // This rejects unqualified parameter metadata, not execution before I/O:
-    // the combined prepared exchange may already have sent Execute.
-    return local_backend_error(LocalFailure::Unsupported,
-        "Redshift VARBYTE parameters are not qualified", BackendOperation::ResolveTypes,
-        session_state());
-  }
   ResolvedTypeMap resolved;
   std::vector<std::uint32_t> unresolved;
   for (const auto id : ids) {

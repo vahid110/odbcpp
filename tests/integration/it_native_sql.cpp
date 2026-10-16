@@ -5,6 +5,7 @@
 #include "odbc/odbc_api.h"
 #include "odbc/unicode.h"
 #include "tests/test_connection_config.h"
+#include "core/database/database_factory.h"
 
 #include <array>
 #include <cstddef>
@@ -545,7 +546,14 @@ TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideBackslashQuotedStrings) {
                          nullptr));
   EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
 
-  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, input, SQL_NTS));
+  // E-prefixed strings exercise the translator above. Redshift execution uses
+  // its ordinary quoted spelling with the identical value and escape payload.
+  SQLCHAR redshift_input[] =
+      "SELECT 'it''s {fn UCASE(ignored)}', {fn UCASE('ok')}";
+  const bool redshift = rs::core::database::DatabaseFactory::get_compiled_database_type() ==
+      rs::core::database::DatabaseType::Redshift;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_,
+      redshift ? redshift_input : input, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
   SQLCHAR first[64]{};
   SQLCHAR second[8]{};
