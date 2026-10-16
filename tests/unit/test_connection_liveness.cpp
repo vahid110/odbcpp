@@ -197,7 +197,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, RedshiftVarbyteCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedEmptyQuery, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, BeginCompletesIdle, BeginCompletesAborted, CommitCompletesTransaction, CommitCompletesAborted, RollbackCompletesTransaction, RollbackCompletesAborted, QueryAllocationFailure, Md5Authentication
+    RedshiftBareSelectRows, QueryReadTimeout, PartialQueryWrite, PreparedEmptyQuery, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, BeginCompletesIdle, BeginCompletesAborted, CommitCompletesTransaction, CommitCompletesAborted, RollbackCompletesTransaction, RollbackCompletesAborted, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -496,6 +496,19 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('C', "COMMIT", sizeof("COMMIT")); append_message('Z', "I", 1);
       append_message('C', "ROLLBACK", sizeof("ROLLBACK")); append_message('Z', "I", 1);
       append_message('C', "SET", sizeof("SET")); append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::RedshiftBareSelectRows) {
+      constexpr char description[] =
+          "\0\1value\0" "\0\0\0\0" "\0\0" "\0\0\0\27"
+          "\0\4" "\377\377\377\377" "\0\0";
+      append_message('T', description, sizeof(description) - 1);
+      for (const char value : {'1', '2', '3'}) {
+        const char row[]{0, 1, 0, 0, 0, 1, value};
+        append_message('D', row, sizeof(row));
+      }
+      append_message('C', "SELECT", sizeof("SELECT"));
+      append_message('Z', "I", 1);
+      append_message('C', "UPDATE 2", sizeof("UPDATE 2"));
+      append_message('Z', "I", 1);
     } else if (mode == ResponseMode::PreparedVarbyteParameter) {
       append_message('1', "", 0);
       constexpr char parameters[] = "\0\1\0\0\31\227";
@@ -5261,4 +5274,51 @@ TEST(DescriptionResultContractTest, DrainedParserCompletionFieldsRejectOwningDes
     EXPECT_EQ(BackendErrorClass::InvalidMetadata, rejected.backend_error().error_class);
     EXPECT_EQ(SessionState::Idle, rejected.backend_error().session_state);
   }
+}
+
+TEST(NormalizedCompletionTest, RedshiftBareSelectOwnsCountIdleAndExplicitRecovery) {
+  using namespace rs::core::database;
+  using namespace rs::core::database::postgres;
+  QueryResult owned;
+  {
+    auto transport = std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::RedshiftBareSelectRows);
+    auto* observed = transport.get();
+    PgDatabaseConnection backend(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+    auto settings = pg_fixture_settings();
+    settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto sends = observed->send_count();
+    auto result = backend.execute_query("SELECT value FROM t", rs::util::Deadline::max());
+    ASSERT_TRUE(result);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+    ASSERT_EQ(3u, result->rows.size());
+    EXPECT_EQ(3u, result->affected_rows);
+    EXPECT_EQ(std::optional<StatementKind>(StatementKind::SelectCursor), result->statement_kind);
+    EXPECT_EQ(sends+1, observed->send_count());
+    owned = std::move(*result);
+    const auto update = backend.execute_query("UPDATE t SET value=1", rs::util::Deadline::max());
+    ASSERT_TRUE(update);
+    EXPECT_EQ(2u, update->affected_rows);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), update.session_snapshot());
+    const auto before_expiry = observed->send_count();
+    const auto expired = backend.execute_query("SELECT value FROM t", rs::util::Deadline{});
+    ASSERT_TRUE(expired.has_error());
+    EXPECT_EQ(BackendErrorClass::Timeout, expired.backend_error().error_class);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), expired.session_snapshot());
+    EXPECT_EQ(before_expiry, observed->send_count());
+  }
+  auto fresh_transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::RedshiftBareSelectRows);
+  PgDatabaseConnection fresh(std::move(fresh_transport), std::nullopt, PgCatalogProfile::Redshift);
+  auto settings = pg_fixture_settings();
+  settings.use_ssl = false;
+  ASSERT_TRUE(fresh.connect(settings));
+  const auto recovered = fresh.execute_query("SELECT value FROM t", rs::util::Deadline::max());
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(3u, recovered->affected_rows);
+  EXPECT_EQ(3u, owned.affected_rows);
+  ASSERT_EQ(3u, owned.rows.size());
+  EXPECT_EQ(std::optional<std::string>("1"), owned.rows[0][0]);
+  EXPECT_EQ(std::optional<std::string>("3"), owned.rows[2][0]);
 }

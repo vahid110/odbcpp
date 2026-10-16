@@ -4,6 +4,15 @@
 #include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <cerrno>
+#include <cfenv>
+#include <cstdlib>
+#include <locale.h>
+#include <cmath>
+#include <cstdint>
+#include <optional>
 #include <cctype>
 #include <charconv>
 #include <cstring>
@@ -12,6 +21,7 @@
 
 namespace {
 
+using rs::core::database::QueryParameter;
 using rs::core::database::QueryParameterType;
 using rs::core::database::postgres::PgCatalogProfile;
 
@@ -78,6 +88,153 @@ std::uint32_t postgres_type_oid(QueryParameterType type, PgCatalogProfile profil
     case QueryParameterType::Timestamp: return 1114;
   }
   return 0;
+}
+
+// This is a private native-wire bridge, not a new SDK numeric contract.
+// ASCII eligibility matches complete finite general-decimal conversion; every
+// other spelling retains its original textual parameter and backend diagnostics.
+bool native_ieee_decimal(const std::string& text, bool& nonzero_coefficient) {
+  std::size_t position = 0;
+  if (position < text.size() && text[position] == '-') ++position;
+  const auto digit = [](char value) { return value >= '0' && value <= '9'; };
+  std::size_t digits = 0;
+  const auto coefficient = [&] {
+    while (position < text.size() && digit(text[position])) {
+      nonzero_coefficient = nonzero_coefficient || text[position] != '0';
+      ++position;
+      ++digits;
+    }
+  };
+  coefficient();
+  if (position < text.size() && text[position] == '.') {
+    ++position;
+    coefficient();
+  }
+  if (digits == 0) return false;
+  if (position < text.size() && (text[position] == 'e' || text[position] == 'E')) {
+    ++position;
+    if (position < text.size() && (text[position] == '+' || text[position] == '-')) ++position;
+    const auto exponent_start = position;
+    while (position < text.size() && digit(text[position])) ++position;
+    if (position == exponent_start) return false;
+  }
+  return position == text.size();
+}
+
+// One conversion owns its locale. Never change the process locale or cache a
+// mutable handle. Normal exits check restoration; unwinding is already failure.
+class NativeIeeeContext {
+ public:
+  NativeIeeeContext() : saved_errno_(errno) {
+    if (std::fegetenv(&environment_) != 0) return;
+    captured_ = true;
+    if (std::fesetenv(FE_DFL_ENV) != 0 || std::fesetround(FE_TONEAREST) != 0) return;
+#ifdef _WIN32
+    locale_ = _create_locale(LC_NUMERIC, "C");
+#else
+    locale_ = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+#endif
+  }
+  NativeIeeeContext(const NativeIeeeContext&) = delete;
+  NativeIeeeContext& operator=(const NativeIeeeContext&) = delete;
+  ~NativeIeeeContext() {
+    if (!finished_) {
+      release_locale();
+      if (captured_) (void)std::fesetenv(&environment_);
+    }
+    errno = saved_errno_;
+  }
+  bool ready() const noexcept { return locale_ != nullptr; }
+  auto locale() const noexcept { return locale_; }
+  void finish() {
+    if (finished_) return;
+    release_locale();
+    const bool restored = !captured_ || std::fesetenv(&environment_) == 0;
+    finished_ = true;
+    errno = saved_errno_;
+    if (!restored) {
+      throw std::runtime_error("Native IEEE conversion could not restore caller floating environment");
+    }
+  }
+ private:
+  void release_locale() noexcept {
+    if (!locale_) return;
+#ifdef _WIN32
+    _free_locale(locale_);
+#else
+    freelocale(locale_);
+#endif
+    locale_ = nullptr;
+  }
+  std::fenv_t environment_{};
+  int saved_errno_;
+  bool captured_{false};
+  bool finished_{false};
+#ifdef _WIN32
+  _locale_t locale_{nullptr};
+#else
+  locale_t locale_{nullptr};
+#endif
+};
+
+struct NativeIeeeParameter {
+  std::array<std::byte, 8> bytes{};
+  std::size_t size{};
+};
+
+template <typename T, typename UInt>
+std::optional<NativeIeeeParameter> encode_native_ieee(
+    const std::string& text, NativeIeeeContext& context) {
+  static_assert(sizeof(T) == sizeof(UInt) && std::numeric_limits<T>::is_iec559);
+  bool nonzero_coefficient = false;
+  if (!native_ieee_decimal(text, nonzero_coefficient)) return std::nullopt;
+  std::optional<NativeIeeeParameter> result;
+  if (context.ready()) {
+    char* end = nullptr;
+    errno = 0;
+    T value{};
+#ifdef _WIN32
+    if constexpr (sizeof(T) == 4) value = _strtof_l(text.c_str(), &end, context.locale());
+    else value = _strtod_l(text.c_str(), &end, context.locale());
+#else
+    if constexpr (sizeof(T) == 4) value = strtof_l(text.c_str(), &end, context.locale());
+    else value = strtod_l(text.c_str(), &end, context.locale());
+#endif
+    const int conversion_errno = errno;
+    // ERANGE alone also describes representable nonzero subnormals. Reject
+    // overflow/nonzero-to-zero, not those genuine IEEE values. No clamping.
+    if (end == text.c_str() + text.size() && std::isfinite(value) &&
+        (conversion_errno == 0 || conversion_errno == ERANGE) &&
+        (value != 0 || !nonzero_coefficient)) {
+      const auto bits = std::bit_cast<UInt>(value);
+      NativeIeeeParameter encoded;
+      encoded.size = sizeof(T);
+      for (std::size_t i = 0; i < sizeof(T); ++i) {
+        encoded.bytes[i] = static_cast<std::byte>(
+            (bits >> (8 * (sizeof(T) - 1 - i))) & 0xff);
+      }
+      result = encoded;
+    }
+  }
+  return result;
+}
+
+std::optional<NativeIeeeParameter> native_ieee_parameter(
+    const QueryParameter& parameter, PgCatalogProfile profile,
+    NativeIeeeContext* context) {
+  if (!context || !context->ready() || profile != PgCatalogProfile::Redshift || parameter.binary_input ||
+      !parameter.value || parameter.value->empty() ||
+      parameter.value->size() > static_cast<std::size_t>(
+          std::numeric_limits<std::int32_t>::max())) return std::nullopt;
+  if (parameter.type == QueryParameterType::Float32) {
+    static_assert(sizeof(float) == 4);
+    return encode_native_ieee<float, std::uint32_t>(*parameter.value, *context);
+  }
+  if (parameter.type == QueryParameterType::Float64) {
+    static_assert(sizeof(double) == 8);
+    return encode_native_ieee<double, std::uint64_t>(*parameter.value, *context);
+  }
+  return std::nullopt;
 }
 
 std::uint16_t read_u16(std::span<const std::byte> data, std::size_t offset) {
@@ -590,97 +747,129 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
         "parameter marker count does not match bound parameter count");
   }
   const auto& rewritten_sql = rewritten.sql;
-  const auto raw_binary = [&](const QueryParameter& param) {
-    return profile_ == PgCatalogProfile::Redshift &&
-        param.type == QueryParameterType::Binary;
-  };
-  const bool explicit_formats = std::any_of(params.begin(), params.end(), raw_binary);
-  // Count the complete Parse/Describe/Bind/Describe/Execute/Sync exchange,
-  // including binary hex expansion, before allocating wire or value buffers.
-  std::size_t wire_bytes = 0;
-  const auto add = [&](std::size_t bytes) {
-    if (bytes > max_wire_bytes - wire_bytes) throw RequestWireLimitExceeded{};
-    wire_bytes += bytes;
-  };
-  add(51);
-  add(rewritten_sql.size());
-  add(8 * params.size());
-  if (explicit_formats) add(2 * params.size());
-  for (const auto& param : params) {
-    if (!param.value) continue;
-    const bool binary = !raw_binary(param) &&
-        (param.type == QueryParameterType::Binary || param.binary_input);
-    const auto maximum = static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
-    if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
-      throw std::length_error("PostgreSQL parameter value is too large");
+  // One request owns one conversion context. Sizing, format and payload passes
+  // must share setup eligibility; a later locale allocation failure must not
+  // turn a counted binary payload into text or change its format code.
+  std::optional<NativeIeeeContext> floating_context;
+  if (profile_ == PgCatalogProfile::Redshift &&
+      std::any_of(params.begin(), params.end(), [](const auto& param) {
+        return !param.binary_input && param.value &&
+            (param.type == QueryParameterType::Float32 || param.type == QueryParameterType::Float64);
+      })) floating_context.emplace();
+  auto* const context = floating_context ? &*floating_context : nullptr;
+  try {
+    const auto raw_binary = [&](const QueryParameter& param) {
+      return profile_ == PgCatalogProfile::Redshift &&
+          param.type == QueryParameterType::Binary;
+    };
+    const bool explicit_formats = std::any_of(params.begin(), params.end(), [&](const auto& param) {
+      return raw_binary(param) || native_ieee_parameter(param, profile_, context).has_value();
+    });
+    // Count the complete Parse/Describe/Bind/Describe/Execute/Sync exchange,
+    // including binary hex expansion, before allocating wire or value buffers.
+    std::size_t wire_bytes = 0;
+    const auto add = [&](std::size_t bytes) {
+      if (bytes > max_wire_bytes - wire_bytes) throw RequestWireLimitExceeded{};
+      wire_bytes += bytes;
+    };
+    add(51);
+    add(rewritten_sql.size());
+    add(8 * params.size());
+    if (explicit_formats) add(2 * params.size());
+    for (const auto& param : params) {
+      if (!param.value) continue;
+      if (const auto native = native_ieee_parameter(param, profile_, context)) {
+        add(native->size);
+        continue;
+      }
+      const bool binary = !raw_binary(param) &&
+          (param.type == QueryParameterType::Binary || param.binary_input);
+      const auto maximum = static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+      if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
+        throw std::length_error("PostgreSQL parameter value is too large");
+      }
+      add(binary ? 2 + 2 * param.value->size() : param.value->size());
     }
-    add(binary ? 2 + 2 * param.value->size() : param.value->size());
+    std::vector<std::byte> out;
+    out.reserve(wire_bytes);
+
+    // Parse the unnamed statement and supply protocol-native type hints.
+    auto start = begin_message(out, 'P');
+    append_cstring(out, {});
+    append_cstring(out, rewritten_sql);
+    append_u16(out, static_cast<std::uint16_t>(params.size()));
+    for (const auto& param : params) append_u32(out, postgres_type_oid(param.type, profile_));
+    finish_message(out, start);
+
+    // Describing the statement produces ParameterDescription before binding.
+    start = begin_message(out, 'D');
+    out.push_back(std::byte{'S'});
+    append_cstring(out, {});
+    finish_message(out, start);
+
+    // PostgreSQL retains text framing. Redshift VARBYTE and complete finite
+    // typed floating values use per-parameter native binary. Results stay text;
+    // NULL stays length -1, including a typed NULL with its original text format.
+    start = begin_message(out, 'B');
+    append_cstring(out, {});
+    append_cstring(out, {});
+    append_u16(out, explicit_formats ? static_cast<std::uint16_t>(params.size()) : 0);
+    if (explicit_formats) {
+      for (const auto& param : params) {
+        append_u16(out, raw_binary(param) || native_ieee_parameter(param, profile_, context) ? 1 : 0);
+      }
+    }
+    append_u16(out, static_cast<std::uint16_t>(params.size()));
+    for (const auto& param : params) {
+      if (!param.value.has_value()) {
+        append_u32(out, std::numeric_limits<std::uint32_t>::max());
+        continue;
+      }
+      if (const auto native = native_ieee_parameter(param, profile_, context)) {
+        append_u32(out, static_cast<std::uint32_t>(native->size));
+        out.insert(out.end(), native->bytes.begin(), native->bytes.begin() + native->size);
+        continue;
+      }
+      const bool binary = !raw_binary(param) &&
+          (param.type == QueryParameterType::Binary || param.binary_input);
+      const auto maximum = static_cast<std::size_t>(
+          std::numeric_limits<std::int32_t>::max());
+      if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
+        throw std::length_error("PostgreSQL parameter value is too large");
+      }
+      const std::string encoded = binary
+          ? "\\x" + rs::util::encode_hex(*param.value) : std::string{};
+      const std::string_view value = binary
+          ? std::string_view(encoded) : std::string_view(*param.value);
+      append_u32(out, static_cast<std::uint32_t>(value.size()));
+      if (!value.empty()) {
+        const auto* first = reinterpret_cast<const std::byte*>(value.data());
+        out.insert(out.end(), first, first + value.size());
+      }
+    }
+    append_u16(out, 0); // all result columns use text format
+    finish_message(out, start);
+
+    start = begin_message(out, 'D');
+    out.push_back(std::byte{'P'}); // describe the unnamed portal
+    append_cstring(out, {});
+    finish_message(out, start);
+
+    start = begin_message(out, 'E');
+    append_cstring(out, {});
+    append_u32(out, 0); // no row limit
+    finish_message(out, start);
+
+    start = begin_message(out, 'S');
+    finish_message(out, start);
+    if (context) context->finish();
+    return out;
+  } catch (...) {
+    // Check restoration even when encoding/budget allocation already failed.
+    // A failed restore propagates an error, never a successful text fallback.
+    if (context) context->finish();
+    throw;
   }
-  std::vector<std::byte> out;
-  out.reserve(wire_bytes);
-
-  // Parse the unnamed statement and supply protocol-native type hints.
-  auto start = begin_message(out, 'P');
-  append_cstring(out, {});
-  append_cstring(out, rewritten_sql);
-  append_u16(out, static_cast<std::uint16_t>(params.size()));
-  for (const auto& param : params) append_u32(out, postgres_type_oid(param.type, profile_));
-  finish_message(out, start);
-
-  // Describing the statement produces ParameterDescription before binding.
-  start = begin_message(out, 'D');
-  out.push_back(std::byte{'S'});
-  append_cstring(out, {});
-  finish_message(out, start);
-
-  // PostgreSQL retains text bytea; Redshift VARBYTE uses its native binary
-  // parameter format. Result columns remain text. A length of -1 is SQL NULL.
-  start = begin_message(out, 'B');
-  append_cstring(out, {});
-  append_cstring(out, {});
-  append_u16(out, explicit_formats ? static_cast<std::uint16_t>(params.size()) : 0);
-  if (explicit_formats) {
-    for (const auto& param : params) append_u16(out, raw_binary(param) ? 1 : 0);
-  }
-  append_u16(out, static_cast<std::uint16_t>(params.size()));
-  for (const auto& param : params) {
-    if (!param.value.has_value()) {
-      append_u32(out, std::numeric_limits<std::uint32_t>::max());
-      continue;
-    }
-    const bool binary = !raw_binary(param) &&
-        (param.type == QueryParameterType::Binary || param.binary_input);
-    const auto maximum = static_cast<std::size_t>(
-        std::numeric_limits<std::int32_t>::max());
-    if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
-      throw std::length_error("PostgreSQL parameter value is too large");
-    }
-    const std::string encoded = binary
-        ? "\\x" + rs::util::encode_hex(*param.value) : std::string{};
-    const std::string_view value = binary
-        ? std::string_view(encoded) : std::string_view(*param.value);
-    append_u32(out, static_cast<std::uint32_t>(value.size()));
-    if (!value.empty()) {
-      const auto* first = reinterpret_cast<const std::byte*>(value.data());
-      out.insert(out.end(), first, first + value.size());
-    }
-  }
-  append_u16(out, 0); // all result columns use text format
-  finish_message(out, start);
-
-  start = begin_message(out, 'D');
-  out.push_back(std::byte{'P'}); // describe the unnamed portal
-  append_cstring(out, {});
-  finish_message(out, start);
-
-  start = begin_message(out, 'E');
-  append_cstring(out, {});
-  append_u32(out, 0); // no row limit
-  finish_message(out, start);
-
-  start = begin_message(out, 'S');
-  finish_message(out, start);
-  return out;
 }
 
 std::vector<std::byte> PgProtocolParser::create_statement_description(
@@ -812,6 +1001,11 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
   bool extended_execution = false;
   bool saw_bind_complete = false;
   std::optional<ExecutionResultShape> phase_shape;
+  // Count only a complete successful idle exchange. A native counted tag stays
+  // authoritative; the bare-SELECT policy is local to this explicit profile.
+  const bool completed_idle = !messages.empty() && messages.back().tag == 'Z' &&
+      messages.back().payload.size() == 1 && messages.back().payload[0] == std::byte{'I'} &&
+      std::none_of(messages.begin(), messages.end(), [](const auto& message) { return message.tag == 'E'; });
 
   for (const auto& message : messages) {
     const std::span<const std::byte> payload(message.payload);
@@ -920,6 +1114,11 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
           ? std::nullopt : phase_shape;
       if (!extended_execution && !phase_shape)
         current.execution_result_shape = ExecutionResultShape::NoResultSet;
+      if (profile_ == PgCatalogProfile::Redshift && completed_idle &&
+          command_tag == "SELECT" && has_row_description &&
+          current.execution_result_shape == ExecutionResultShape::ResultSet) {
+        current.affected_rows = current.rows.size();
+      }
       completed.push_back(std::move(current));
       current = ParsedQueryResult{};
       has_row_description = false;
