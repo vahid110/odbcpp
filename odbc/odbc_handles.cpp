@@ -8798,6 +8798,16 @@ HandleRegistry& HandleRegistry::instance() {
   return registry;
 }
 
+HandleRegistry::~HandleRegistry() {
+  std::map<SQLHANDLE, Entry> retired;
+  {
+    std::lock_guard lock(mutex_);
+    retired.swap(handles_);
+  }
+  // Statement destruction unregisters implicit descriptors. Keep the registry
+  // empty and its mutex alive during that reentry; release objects outside it.
+}
+
 void HandleRegistry::register_handle(SQLHANDLE handle,
                                      std::unique_ptr<ODBCHandle> obj,
                                      SQLHANDLE parent) {

@@ -784,6 +784,7 @@ private:
 class HandleRegistry {
 public:
   static HandleRegistry& instance();
+  ~HandleRegistry();
   
   void register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj,
                        SQLHANDLE parent = SQL_NULL_HANDLE);
