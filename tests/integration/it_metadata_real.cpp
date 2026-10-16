@@ -17,6 +17,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 
 namespace {
@@ -319,6 +320,38 @@ protected:
       return fixture_statement_budget(fixture_end_, statement)
           ? ::SQLTablesW(statement, catalog_name, name_length1, schema_name, name_length2,
               table_name, name_length3, table_type, name_length4) : SQL_ERROR;
+    }
+
+    static bool redshift_profile() {
+        return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
+            rs::core::database::DatabaseType::Redshift;
+    }
+
+    void resolve_redshift_temporary_schema(const char* table, std::string& schema) {
+        // PG_TABLE_DEF is documented to expose the current session's visible
+        // temporary tables. Resolve its real namespace; never guess pg_temp or
+        // replace a session-local object with a persistent shared fixture.
+        std::string literal{"'"};
+        for (const char* ch = table; *ch; ++ch) {
+            if (*ch == '\'') {
+                literal += '\'';
+            }
+            literal += *ch;
+        }
+        literal += '\'';
+        const std::string query = "SELECT DISTINCT schemaname FROM pg_table_def WHERE tablename = " +
+            literal + " AND LEFT(schemaname, 8) = 'pg_temp_'";
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(query.c_str())), SQL_NTS))
+            << diagnostic_state(SQL_HANDLE_STMT, hstmt);
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        const auto resolved = text_cell(hstmt, 1);
+        ASSERT_TRUE(resolved.has_value());
+        ASSERT_EQ(0u, resolved->find("pg_temp_"));
+        ASSERT_GT(resolved->size(), 8u);
+        schema = *resolved;
+        ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     }
 
     void SetUp() override {
@@ -3148,6 +3181,71 @@ TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {
 }
 
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
+    if (redshift_profile()) {
+        // ODBC ordinary optional NULL arguments are driver-dependent. This
+        // modern Redshift scope requires the actual nonempty session schema;
+        // the PostgreSQL NULL-schema behavior below remains unchanged.
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"CREATE TEMP TABLE odbcpp_primary_key_test("
+                      "tenant_id integer, item_id integer, "
+                      "CONSTRAINT odbcpp_primary_key_test_pkey "
+                      "PRIMARY KEY(tenant_id, item_id))", SQL_NTS));
+        std::string session_schema;
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp_primary_key_test", session_schema));
+        std::array<SQLCHAR, 1025> database_name{};
+        SQLSMALLINT database_length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_DATABASE_NAME, database_name.data(),
+            static_cast<SQLSMALLINT>(database_name.size()), &database_length));
+        ASSERT_GT(database_length, 0);
+        ASSERT_LT(static_cast<std::size_t>(database_length), database_name.size());
+        const std::string database(reinterpret_cast<const char*>(database_name.data()),
+            static_cast<std::size_t>(database_length));
+        SQLCHAR table_name[] = "odbcpp_primary_key_test";
+        auto* schema_name = reinterpret_cast<SQLCHAR*>(session_schema.data());
+        const auto read_keys = [&] {
+            SQLSMALLINT columns = -1;
+            ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+            ASSERT_EQ(6, columns);
+            char column_name[64]{};
+            char key_name[128]{};
+            SQLSMALLINT key_sequence = 0;
+            for (SQLSMALLINT row = 1; row <= 2; ++row) {
+                ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+                EXPECT_EQ(std::optional<std::string>(database), text_cell(hstmt, 1));
+                EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+                EXPECT_EQ(std::optional<std::string>("odbcpp_primary_key_test"), text_cell(hstmt, 3));
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_CHAR,
+                    column_name, sizeof(column_name), nullptr));
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 5, SQL_C_SSHORT,
+                    &key_sequence, 0, nullptr));
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 6, SQL_C_CHAR,
+                    key_name, sizeof(key_name), nullptr));
+                EXPECT_STREQ(row == 1 ? "tenant_id" : "item_id", column_name);
+                EXPECT_EQ(row, key_sequence);
+                EXPECT_STREQ("odbcpp_primary_key_test_pkey", key_name);
+            }
+            EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        };
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, table_name, SQL_NTS));
+        ASSERT_NO_FATAL_FAILURE(read_keys());
+
+        SQLCHAR empty[] = "";
+        EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(hstmt,
+            nullptr, 0, nullptr, 0, table_name, SQL_NTS));
+        EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(hstmt,
+            nullptr, 0, empty, SQL_NTS, table_name, SQL_NTS));
+        EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, empty, SQL_NTS));
+        EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, table_name, SQL_NTS));
+        ASSERT_NO_FATAL_FAILURE(read_keys());
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE odbcpp_primary_key_test("
@@ -3269,19 +3367,25 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
                   "tenant_id integer, item_id integer, "
                   "PRIMARY KEY(tenant_id, item_id))",
         SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt,
-        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_foreign_child("
-                  "tenant_id integer, item_id integer, "
-                  "CONSTRAINT odbcpp_child_parent_fk "
-                  "FOREIGN KEY(tenant_id, item_id) REFERENCES "
-                  "odbcpp_foreign_parent(tenant_id, item_id) "
-                  "ON UPDATE CASCADE ON DELETE SET NULL)",
-        SQL_NTS));
+    const char* foreign_definition = redshift_profile()
+        ? "CREATE TEMP TABLE odbcpp_foreign_child(tenant_id integer, item_id integer, "
+          "CONSTRAINT odbcpp_child_parent_fk FOREIGN KEY(tenant_id, item_id) REFERENCES "
+          "odbcpp_foreign_parent(tenant_id, item_id))"
+        : "CREATE TEMP TABLE odbcpp_foreign_child(tenant_id integer, item_id integer, "
+          "CONSTRAINT odbcpp_child_parent_fk FOREIGN KEY(tenant_id, item_id) REFERENCES "
+          "odbcpp_foreign_parent(tenant_id, item_id) ON UPDATE CASCADE ON DELETE SET NULL)";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(foreign_definition)), SQL_NTS));
+    std::string session_schema;
+    if (redshift_profile()) {
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp_foreign_child", session_schema));
+    }
     SQLCHAR foreign_table[] = "odbcpp_foreign_child";
     ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
-        nullptr, 0, nullptr, 0, foreign_table, SQL_NTS));
+        nullptr, 0,
+        redshift_profile() ? reinterpret_cast<SQLCHAR*>(session_schema.data()) : nullptr,
+        redshift_profile() ? SQL_NTS : 0, foreign_table, SQL_NTS));
 
     char primary_column[64]{};
     char foreign_column[64]{};
@@ -3309,10 +3413,14 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
     EXPECT_STREQ("tenant_id", primary_column);
     EXPECT_STREQ("tenant_id", foreign_column);
     EXPECT_EQ(1, key_sequence);
-    EXPECT_EQ(SQL_CASCADE, update_rule);
-    EXPECT_EQ(SQL_SET_NULL, delete_rule);
+    EXPECT_EQ(redshift_profile() ? SQL_NO_ACTION : SQL_CASCADE, update_rule);
+    EXPECT_EQ(redshift_profile() ? SQL_NO_ACTION : SQL_SET_NULL, delete_rule);
     EXPECT_STREQ("odbcpp_child_parent_fk", foreign_key_name);
     EXPECT_EQ(SQL_NOT_DEFERRABLE, deferrability);
+    if (redshift_profile()) {
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 6));
+    }
 
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
@@ -3328,6 +3436,186 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
 }
 
 TEST_F(MetadataIntegrationTest, ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdbc) {
+    if (redshift_profile()) {
+        // These five constraints refer to the primary key. The sixth declared
+        // reference targets UNIQUE and must NOT appear in SQLForeignKeys.
+        const std::map<std::string, std::string> primary_references{
+            {"fk_rule_cascade", "cascade_id"},
+            {"fk_rule_restrict", "restrict_id"},
+            {"fk_rule_set_null", "null_id"},
+            {"fk_rule_set_default", "default_id"},
+            {"fk_rule_no_action", "no_action_id"},
+        };
+        ASSERT_EQ(5u, primary_references.size());
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_parent("
+                      "id integer PRIMARY KEY, alternate integer UNIQUE)", SQL_NTS));
+        // Redshift declarations are informational: PostgreSQL referential
+        // actions and DEFERRABLE syntax are not part of its CREATE TABLE grammar.
+        // Retain the same six relationships and constraint names, not six
+        // expected primary-reference rows.
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_child("
+                      "cascade_id integer, restrict_id integer, null_id integer, "
+                      "default_id integer DEFAULT 1, no_action_id integer, unique_id integer, "
+                      "CONSTRAINT fk_rule_cascade FOREIGN KEY(cascade_id) "
+                      "REFERENCES odbcpp_fk_rules_parent(id), "
+                      "CONSTRAINT fk_rule_restrict FOREIGN KEY(restrict_id) "
+                      "REFERENCES odbcpp_fk_rules_parent(id), "
+                      "CONSTRAINT fk_rule_set_null FOREIGN KEY(null_id) "
+                      "REFERENCES odbcpp_fk_rules_parent(id), "
+                      "CONSTRAINT fk_rule_set_default FOREIGN KEY(default_id) "
+                      "REFERENCES odbcpp_fk_rules_parent(id), "
+                      "CONSTRAINT fk_rule_no_action FOREIGN KEY(no_action_id) "
+                      "REFERENCES odbcpp_fk_rules_parent(id), "
+                      "CONSTRAINT fk_rule_unique FOREIGN KEY(unique_id) "
+                      "REFERENCES odbcpp_fk_rules_parent(alternate))", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_other("
+                      "id integer, CONSTRAINT fk_rule_cascade FOREIGN KEY(id) "
+                      "REFERENCES odbcpp_fk_rules_parent(id))", SQL_NTS));
+
+        std::string session_schema;
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp_fk_rules_child", session_schema));
+        std::array<SQLCHAR, 1025> database_name{};
+        SQLSMALLINT database_length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_DATABASE_NAME, database_name.data(),
+            static_cast<SQLSMALLINT>(database_name.size()), &database_length));
+        ASSERT_GT(database_length, 0);
+        ASSERT_LT(static_cast<std::size_t>(database_length), database_name.size());
+        const std::string database(reinterpret_cast<const char*>(database_name.data()),
+            static_cast<std::size_t>(database_length));
+        SQLCHAR parent[] = "odbcpp_fk_rules_parent";
+        SQLCHAR child[] = "odbcpp_fk_rules_child";
+        auto* schema_name = reinterpret_cast<SQLCHAR*>(session_schema.data());
+
+        // Own all ten text fields and assert all four numeric fields. A row
+        // belonging to the UNIQUE reference is an error, never filtered here.
+        using Names = std::array<std::optional<std::string>, 10>;
+        using Rows = std::map<std::pair<std::string, std::string>, Names>;
+        const auto read_keys = [&](Rows& rows, std::vector<std::string>* table_order) {
+            SQLRETURN fetched = SQL_ERROR;
+            while ((fetched = SQLFetch(hstmt)) == SQL_SUCCESS) {
+                Names names;
+                std::array<std::optional<SQLINTEGER>, 4> numbers;
+                std::size_t name_index = 0;
+                std::size_t number_index = 0;
+                for (SQLUSMALLINT column = 1; column <= 14; ++column) {
+                    if ((column >= 9 && column <= 11) || column == 14) {
+                        numbers[number_index++] = integer_cell(hstmt, column);
+                    } else {
+                        names[name_index++] = text_cell(hstmt, column);
+                    }
+                }
+                for (std::size_t i = 0; i < names.size() - 1; ++i) {
+                    ASSERT_TRUE(names[i].has_value());
+                }
+                EXPECT_EQ(std::optional<std::string>(database), names[0]);
+                EXPECT_EQ(std::optional<std::string>(session_schema), names[1]);
+                EXPECT_EQ(std::optional<std::string>("odbcpp_fk_rules_parent"), names[2]);
+                EXPECT_EQ(std::optional<std::string>("id"), names[3]);
+                EXPECT_EQ(std::optional<std::string>(database), names[4]);
+                EXPECT_EQ(std::optional<std::string>(session_schema), names[5]);
+                EXPECT_NE("fk_rule_unique", *names[8]);
+                EXPECT_EQ(std::optional<SQLINTEGER>(1), numbers[0]);
+                EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NO_ACTION), numbers[1]);
+                EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NO_ACTION), numbers[2]);
+                EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NOT_DEFERRABLE), numbers[3]);
+                if (*names[6] == "odbcpp_fk_rules_child") {
+                    const auto expected = primary_references.find(*names[8]);
+                    ASSERT_NE(primary_references.end(), expected);
+                    EXPECT_EQ(std::optional<std::string>(expected->second), names[7]);
+                } else {
+                    EXPECT_EQ(std::optional<std::string>("odbcpp_fk_rules_other"), names[6]);
+                    EXPECT_EQ(std::optional<std::string>("id"), names[7]);
+                    EXPECT_EQ(std::optional<std::string>("fk_rule_cascade"), names[8]);
+                }
+                const auto key = std::pair{*names[6], *names[8]};
+                ASSERT_TRUE(rows.emplace(key, names).second);
+                if (table_order) {
+                    table_order->push_back(*names[6]);
+                }
+            }
+            ASSERT_EQ(SQL_NO_DATA, fetched);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        };
+
+        ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(hstmt,
+            nullptr, 0, nullptr, 0, nullptr, 0,
+            nullptr, 0, schema_name, SQL_NTS, child, SQL_NTS));
+        Rows imported;
+        ASSERT_NO_FATAL_FAILURE(read_keys(imported, nullptr));
+        ASSERT_EQ(5u, imported.size());
+        std::map<std::string, std::string> imported_references;
+        for (const auto& [key, names] : imported) {
+            EXPECT_EQ("odbcpp_fk_rules_child", key.first);
+            imported_references.emplace(key.second, *names[7]);
+        }
+        EXPECT_EQ(primary_references, imported_references);
+
+        ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, parent, SQL_NTS,
+            nullptr, 0, nullptr, 0, nullptr, 0));
+        Rows exported;
+        std::vector<std::string> exported_order;
+        ASSERT_NO_FATAL_FAILURE(read_keys(exported, &exported_order));
+        EXPECT_EQ(6u, exported.size());
+        const std::vector<std::string> expected_order{
+            "odbcpp_fk_rules_child", "odbcpp_fk_rules_child", "odbcpp_fk_rules_child",
+            "odbcpp_fk_rules_child", "odbcpp_fk_rules_child", "odbcpp_fk_rules_other"};
+        EXPECT_EQ(expected_order, exported_order);
+        for (const auto& [key, names] : imported) {
+            const auto match = exported.find(key);
+            ASSERT_NE(exported.end(), match);
+            EXPECT_EQ(names, match->second);
+        }
+
+        ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, parent, SQL_NTS,
+            nullptr, 0, schema_name, SQL_NTS, child, SQL_NTS));
+        Rows both;
+        ASSERT_NO_FATAL_FAILURE(read_keys(both, nullptr));
+        EXPECT_EQ(5u, both.size());
+        EXPECT_EQ(imported, both);
+
+        auto wide_catalog = rs::odbc::utf8_to_wide(database);
+        auto wide_schema = rs::odbc::utf8_to_wide(session_schema);
+        auto wide_parent = rs::odbc::utf8_to_wide("odbcpp_fk_rules_parent");
+        auto wide_child = rs::odbc::utf8_to_wide("odbcpp_fk_rules_child");
+        ASSERT_TRUE(wide_catalog.has_value());
+        ASSERT_TRUE(wide_schema.has_value());
+        ASSERT_TRUE(wide_parent.has_value());
+        ASSERT_TRUE(wide_child.has_value());
+        ASSERT_EQ(SQL_SUCCESS, SQLForeignKeysW(hstmt,
+            wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+            wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+            wide_parent->data(), static_cast<SQLSMALLINT>(wide_parent->size()),
+            wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+            wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+            wide_child->data(), static_cast<SQLSMALLINT>(wide_child->size())));
+        Rows both_wide;
+        ASSERT_NO_FATAL_FAILURE(read_keys(both_wide, nullptr));
+        EXPECT_EQ(5u, both_wide.size());
+        EXPECT_EQ(both, both_wide);
+
+        // Modern ordinary requests require exact nonempty selected schemas.
+        // Preserve the PostgreSQL empty/wildcard successful-empty controls below;
+        // here explicitly assert the existing local NULL-schema refusal instead.
+        EXPECT_EQ(SQL_ERROR, SQLForeignKeys(hstmt,
+            nullptr, 0, nullptr, 0, parent, SQL_NTS,
+            nullptr, 0, nullptr, 0, nullptr, 0));
+        EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        EXPECT_EQ(SQL_ERROR, SQLForeignKeys(hstmt,
+            nullptr, 0, nullptr, 0, nullptr, 0,
+            nullptr, 0, nullptr, 0, child, SQL_NTS));
+        EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT CAST(1 AS INTEGER)", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 1));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_parent("
@@ -4698,14 +4986,26 @@ TEST_F(MetadataIntegrationTest, InvalidHandleTests) {
 }
 
 TEST_F(MetadataIntegrationTest, BackendScalarMetadataAgreesBeforeAndAfterExecution) {
-    SQLCHAR sql[] = "SELECT NULL::numeric(12,3), NULL::numeric(8,-2), "
+    const char* postgres_sql = "SELECT NULL::numeric(12,3), NULL::numeric(8,-2), "
                     "NULL::varchar(17), NULL::time(3), NULL::timestamp(0), "
                     "NULL::uuid, NULL::int4[]";
     struct Expected { SQLSMALLINT type; SQLULEN size; SQLSMALLINT scale; };
-    const std::array<Expected, 7> expected{{
+    const std::array<Expected, 7> postgres_expected{{
         {SQL_NUMERIC, 12, 3}, {SQL_NUMERIC, 8, -2}, {SQL_VARCHAR, 17, 0},
         {SQL_TYPE_TIME, 12, 3}, {SQL_TYPE_TIMESTAMP, 19, 0},
         {SQL_VARCHAR, 36, 0}, {SQL_VARCHAR, 0, 0}}};
+    // Redshift has no UUID/array or negative-scale numeric declaration. Keep
+    // the PostgreSQL matrix intact and assert seven supported native families
+    // with independent literal dimensions on Redshift, including the NULL cells.
+    const char* redshift_sql = "SELECT NULL::numeric(12,3), NULL::numeric(8,2), "
+        "NULL::varchar(17), NULL::time, NULL::timestamp, NULL::date, NULL::bigint";
+    const std::array<Expected, 7> redshift_expected{{
+        {SQL_NUMERIC, 12, 3}, {SQL_NUMERIC, 8, 2}, {SQL_VARCHAR, 17, 0},
+        {SQL_TYPE_TIME, 15, 6}, {SQL_TYPE_TIMESTAMP, 26, 6},
+        {SQL_TYPE_DATE, 10, 0}, {SQL_BIGINT, 19, 0}}};
+    const auto& expected = redshift_profile() ? redshift_expected : postgres_expected;
+    const auto* selected_sql = redshift_profile() ? redshift_sql : postgres_sql;
+    auto* sql = reinterpret_cast<SQLCHAR*>(const_cast<char*>(selected_sql));
     for (const bool prepared : {false, true}) {
         SCOPED_TRACE(prepared);
         ASSERT_EQ(SQL_SUCCESS, prepared ? SQLPrepare(hstmt, sql, SQL_NTS)
@@ -4828,6 +5128,44 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutatio
         rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(hdbc));
     ASSERT_TRUE(view.check_health(std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3)))));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
+    if (redshift_profile()) {
+        // The compiled Redshift provider deliberately has no same-session reset
+        // facet. Refusal must invalidate cached descriptions and retire the lease.
+        ASSERT_FALSE(view.has_reset());
+        const auto reset = view.reset_session(
+            std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3))));
+        ASSERT_FALSE(reset);
+        EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), reset.error());
+        EXPECT_EQ(rs::core::database::SessionState::Disconnected, reset.session_snapshot().state);
+        EXPECT_EQ(rs::core::database::SessionDisposition::Retire, reset.session_snapshot().disposition);
+        EXPECT_FALSE(view.is_connected());
+        columns = 77;
+        EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(77, columns);
+        EXPECT_EQ("08S01", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        // Public disconnect invalidates child handles. Release both explicitly,
+        // then allocate fresh handles and reprepare in the new server session.
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt));
+        hstmt = SQL_NULL_HSTMT;
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other));
+        other = SQL_NULL_HSTMT;
+        cleanup.value = SQL_NULL_HSTMT;
+        ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc));
+        ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
+            odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
+        cleanup.value = other;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+            (SQLCHAR*)"CREATE TEMP TABLE metadata_epoch_scope (value text, extra boolean, third integer)", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            (SQLCHAR*)"SELECT * FROM metadata_epoch_scope", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(3, columns);
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(3, columns);
+        return;
+    }
     ASSERT_TRUE(view.reset_session(std::min(fixture_end_, rs::util::make_deadline(std::chrono::seconds(3)))));
     columns = 77;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(77, columns);
