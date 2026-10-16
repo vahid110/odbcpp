@@ -16,6 +16,11 @@ struct TransactionCapabilities {
   bool transactional_ddl{false};
   TransactionIsolation default_isolation{TransactionIsolation::ReadCommitted};
   std::array<bool, 4> isolation_levels{};
+  // Transaction support does not imply that a native database default has a
+  // truthful representation in the four standard isolation values. When false,
+  // default_isolation is not an observation and must not drive an implicit SET.
+  // Last/defaulted to preserve existing provider aggregate initialization.
+  bool default_isolation_known{true};
 
   bool supports(TransactionIsolation level) const {
     const auto index = static_cast<std::size_t>(level);

@@ -2099,8 +2099,11 @@ SQLRETURN ODBCConnection::connect(
       throw std::runtime_error("Backend session observation failed");
     backend_observation_ = std::move(*observation);
 
-    if (transaction_isolation_ != transaction_isolation_to_odbc(
-            transaction_capabilities().default_isolation)) {
+    const auto transaction_policy = transaction_capabilities();
+    if (transaction_isolation_explicit_ &&
+        (!transaction_policy.default_isolation_known ||
+         transaction_isolation_ != transaction_isolation_to_odbc(
+             transaction_policy.default_isolation))) {
       auto isolation_result = backend_isolation(
           *transaction_isolation_from_odbc(transaction_isolation_),
           rs::util::make_deadline(settings.timeout));
@@ -2278,6 +2281,7 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
       }
     }
     transaction_isolation_ = static_cast<SQLUINTEGER>(value);
+    transaction_isolation_explicit_ = true;
     return SQL_SUCCESS;
   }
   if (attribute == SQL_ATTR_CONNECTION_TIMEOUT) {
@@ -2372,9 +2376,17 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
     case SQL_ATTR_AUTOCOMMIT:
       write_uinteger(autocommit_);
       return SQL_SUCCESS;
-    case SQL_ATTR_TXN_ISOLATION:
-      write_uinteger(transaction_isolation_);
+    case SQL_ATTR_TXN_ISOLATION: {
+      const auto policy = transaction_capabilities();
+      if (!transaction_isolation_explicit_ && !policy.default_isolation_known) {
+        set_error(SQLSTATE_GENERAL_ERROR,
+                  "Native transaction isolation has no known standard ODBC representation");
+        return SQL_ERROR;
+      }
+      write_uinteger(transaction_isolation_explicit_ ? transaction_isolation_
+          : transaction_isolation_to_odbc(policy.default_isolation));
       return SQL_SUCCESS;
+    }
     case SQL_ATTR_QUIET_MODE:
       std::memcpy(value, &quiet_mode_, sizeof(quiet_mode_));
       return SQL_SUCCESS;

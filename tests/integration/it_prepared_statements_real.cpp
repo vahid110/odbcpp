@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
+#include "core/database/database_factory.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 #include "tests/test_time_helpers.h"
@@ -21,6 +22,13 @@
 
 
 namespace {
+// Native fixture SQL follows the explicitly compiled backend; parameter bytes
+// and all adapter diagnostics remain the subject of the same assertions.
+bool fixture_redshift_product() {
+    return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
+        rs::core::database::DatabaseType::Redshift;
+}
+
 // One original per-case window, including reconnects and sibling handles.
 // Apply caps only on I/O entry, leaving allocation defaults and deliberate shorter
 // timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
@@ -5190,42 +5198,84 @@ TEST_F(PreparedStatementIntegrationTest, DefaultCTypeUsesSqlTypeMapping) {
 }
 
 TEST_F(PreparedStatementIntegrationTest, AdvertisedIsolationLevelsMatchSessionCommands) {
-    SQLUINTEGER mask = 0, default_level = 0;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_TXN_ISOLATION_OPTION, &mask, sizeof(mask), nullptr));
-    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_DEFAULT_TXN_ISOLATION, &default_level, sizeof(default_level), nullptr));
-    EXPECT_EQ(SQL_TXN_READ_COMMITTED, default_level);
-    struct Level { SQLUINTEGER flag; const char* name; };
-    for (const auto& level : std::array<Level, 4>{{
-             {SQL_TXN_READ_UNCOMMITTED, "read uncommitted"},
-             {SQL_TXN_READ_COMMITTED, "read committed"},
-             {SQL_TXN_REPEATABLE_READ, "repeatable read"},
-             {SQL_TXN_SERIALIZABLE, "serializable"}}}) {
-        ASSERT_NE(0u, mask & level.flag);
-        ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
-            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(level.flag)), 0));
-        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-            hstmt, (SQLCHAR*)"SHOW default_transaction_isolation", SQL_NTS));
+    if (fixture_redshift_product()) {
+        // BEGIN aliases do not select the database SNAPSHOT/SERIALIZABLE mode.
+        // A native unknown default is not a fabricated standard isolation bit.
+        SQLUINTEGER mask = 99;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_TXN_ISOLATION_OPTION,
+            &mask, sizeof(mask), nullptr));
+        EXPECT_EQ(0u, mask);
+        SQLUINTEGER untouched = 0xaabbccdd;
+        SQLSMALLINT length = 71;
+        EXPECT_EQ(SQL_ERROR, SQLGetInfo(hdbc, SQL_DEFAULT_TXN_ISOLATION,
+            &untouched, sizeof(untouched), &length));
+        EXPECT_EQ(0xaabbccddu, untouched); EXPECT_EQ(71, length);
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("HY000", reinterpret_cast<char*>(state));
+        for (const SQLUINTEGER level : {SQL_TXN_READ_UNCOMMITTED,
+                SQL_TXN_READ_COMMITTED, SQL_TXN_REPEATABLE_READ, SQL_TXN_SERIALIZABLE}) {
+            EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+                reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(level)), 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1,
+                state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_AUTOCOMMIT,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-        char value[32]{};
-        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
-        EXPECT_STREQ(level.name, value);
+        SQLINTEGER one = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG, &one, sizeof(one), nullptr));
+        EXPECT_EQ(1, one);
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        SQLINTEGER attribute_length = 73;
+        EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+            &untouched, sizeof(untouched), &attribute_length));
+        EXPECT_EQ(0xaabbccddu, untouched); EXPECT_EQ(73, attribute_length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("HY000", reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+    } else {
+        SQLUINTEGER mask = 0, default_level = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_TXN_ISOLATION_OPTION, &mask, sizeof(mask), nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_DEFAULT_TXN_ISOLATION, &default_level, sizeof(default_level), nullptr));
+        EXPECT_EQ(SQL_TXN_READ_COMMITTED, default_level);
+        struct Level { SQLUINTEGER flag; const char* name; };
+        for (const auto& level : std::array<Level, 4>{{
+                 {SQL_TXN_READ_UNCOMMITTED, "read uncommitted"},
+                 {SQL_TXN_READ_COMMITTED, "read committed"},
+                 {SQL_TXN_REPEATABLE_READ, "repeatable read"},
+                 {SQL_TXN_SERIALIZABLE, "serializable"}}}) {
+            ASSERT_NE(0u, mask & level.flag);
+            ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+                reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(level.flag)), 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+                hstmt, (SQLCHAR*)"SHOW default_transaction_isolation", SQL_NTS));
+            ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+            char value[32]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
+            EXPECT_STREQ(level.name, value);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_AUTOCOMMIT,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_READ_COMMITTED)), 0));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("HY011", reinterpret_cast<char*>(state));
+        SQLUINTEGER retained = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION, &retained, sizeof(retained), nullptr));
+        EXPECT_EQ(SQL_TXN_SERIALIZABLE, retained);
+        ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_READ_COMMITTED)), 0));
     }
-    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_AUTOCOMMIT,
-        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
-        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_READ_COMMITTED)), 0));
-    SQLCHAR state[6]{};
-    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1, state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("HY011", reinterpret_cast<char*>(state));
-    SQLUINTEGER retained = 0;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION, &retained, sizeof(retained), nullptr));
-    EXPECT_EQ(SQL_TXN_SERIALIZABLE, retained);
-    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
-    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
-        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_READ_COMMITTED)), 0));
 }
 
 TEST_F(PreparedStatementIntegrationTest, AdvertisedTransactionalDdlRollsBackAndCommits) {
@@ -5268,18 +5318,34 @@ TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback)
         hdbc, SQL_ATTR_AUTOCOMMIT,
         reinterpret_cast<SQLPOINTER>(
             static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
-    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
-        hdbc, SQL_ATTR_TXN_ISOLATION,
-        reinterpret_cast<SQLPOINTER>(
-            static_cast<std::uintptr_t>(SQL_TXN_REPEATABLE_READ)), 0));
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SHOW transaction_isolation", SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    char isolation[32]{};
-    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
-        hstmt, 1, SQL_C_CHAR, isolation, sizeof(isolation), nullptr));
-    EXPECT_STREQ("repeatable read", isolation);
-    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    if (fixture_redshift_product()) {
+        EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_REPEATABLE_READ)), 0));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
+        // Transactions and their rollback/commit assertions below still execute.
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER one = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG, &one, sizeof(one), nullptr));
+        EXPECT_EQ(1, one);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    } else {
+        ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+            hdbc, SQL_ATTR_TXN_ISOLATION,
+            reinterpret_cast<SQLPOINTER>(
+                static_cast<std::uintptr_t>(SQL_TXN_REPEATABLE_READ)), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+            hstmt, (SQLCHAR*)"SHOW transaction_isolation", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char isolation[32]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+            hstmt, 1, SQL_C_CHAR, isolation, sizeof(isolation), nullptr));
+        EXPECT_STREQ("repeatable read", isolation);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(

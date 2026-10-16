@@ -353,6 +353,8 @@ private:
   SQLUINTEGER access_mode_ = SQL_MODE_READ_WRITE;
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
   SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
+  // A default placeholder is not application intent or an observed native mode.
+  bool transaction_isolation_explicit_ = false;
   SQLHWND quiet_mode_ = nullptr;
   bool transaction_active_ = false;
   std::optional<std::string> requested_catalog_;

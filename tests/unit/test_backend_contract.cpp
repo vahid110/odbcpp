@@ -319,6 +319,7 @@ struct Observations {
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool advertised_transactions{false};
+  std::optional<TransactionCapabilities> transaction_capability_override;
   bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
   int isolation_mode{};
@@ -451,6 +452,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   ITransactionSession* transaction_session() noexcept override { return seen_->isolation_mode ? this : nullptr; }
   TransactionCapabilities transaction_capabilities() const override {
+    if (seen_->transaction_capability_override) return *seen_->transaction_capability_override;
     return {true, true, TransactionIsolation::ReadCommitted, {true, true, true, true}};
   }
   BackendResult<void> transaction(TransactionAction action, Deadline deadline) override {
@@ -795,6 +797,7 @@ class FakeProvider final : public IBackendProvider {
     return std::nullopt;
   }
   TransactionCapabilities transaction_capabilities() const noexcept override {
+    if (seen_->transaction_capability_override) return *seen_->transaction_capability_override;
     return seen_->advertised_transactions
         ? TransactionCapabilities{true, true, TransactionIsolation::ReadCommitted, {true, true, true, true}}
         : TransactionCapabilities{};
@@ -15936,5 +15939,185 @@ TEST_F(BackendContractTest, DescriptorFieldNullTextPreservesDescriptorAndNumeric
         (std::numeric_limits<SQLINTEGER>::min)(), &length));
     EXPECT_EQ(nullptr, data);
     EXPECT_EQ(-73, length); // Typed fields do not publish a string length.
+  }
+}
+
+
+TEST_F(BackendContractTest, UnknownTransactionDefaultPreservesOutputsAndConnectDoesNotSetIsolation) {
+  seen->advertised_transactions = true;
+  seen->isolation_mode = 1;
+  seen->transaction_capability_override = TransactionCapabilities{
+      true, true, TransactionIsolation::ReadCommitted, {false, false, false, false}, false};
+  seen->isolation_result = BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  SQLUINTEGER value = 0xaabbccdd;
+  SQLINTEGER attribute_length = 73;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      &value, sizeof(value), &attribute_length));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(0xaabbccddu, value); EXPECT_EQ(73, attribute_length);
+  connect(); ASSERT_FALSE(HasFatalFailure());
+  EXPECT_EQ(0, seen->isolation_calls); EXPECT_EQ(0, seen->queries);
+  SQLSMALLINT info_length = 79;
+  for (const bool wide : {false, true}) {
+    SCOPED_TRACE(wide);
+    EXPECT_EQ(SQL_ERROR, wide
+        ? SQLGetInfoW(dbc, SQL_DEFAULT_TXN_ISOLATION, &value, sizeof(value), &info_length)
+        : SQLGetInfo(dbc, SQL_DEFAULT_TXN_ISOLATION, &value, sizeof(value), &info_length));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0xaabbccddu, value); EXPECT_EQ(79, info_length);
+  }
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      nullptr, 0, &attribute_length));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(73, attribute_length);
+  SQLUSMALLINT capability = SQL_TC_NONE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TXN_CAPABLE, &capability, 0, nullptr));
+  EXPECT_EQ(SQL_TC_ALL, capability);
+  SQLUINTEGER mask = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TXN_ISOLATION_OPTION, &mask, 0, nullptr));
+  EXPECT_EQ(0u, mask); // No session-controllable standard level; transactions still work.
+  for (const auto level : {SQL_TXN_READ_UNCOMMITTED, SQL_TXN_READ_COMMITTED,
+                           SQL_TXN_REPEATABLE_READ, SQL_TXN_SERIALIZABLE}) {
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(level)), 0));
+    EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
+  }
+  EXPECT_EQ(0, seen->isolation_calls); EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[0]);
+  EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[1]);
+}
+
+TEST_F(BackendContractTest, KnownTransactionDefaultIsAdoptedWithoutUnsolicitedSet) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  seen->transaction_capability_override = TransactionCapabilities{
+      true, true, TransactionIsolation::Serializable, {false, false, false, true}};
+  seen->isolation_result = BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  connect(); ASSERT_FALSE(HasFatalFailure());
+  EXPECT_EQ(0, seen->isolation_calls); EXPECT_EQ(0, seen->queries);
+  SQLUINTEGER value = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION, &value, 0, nullptr));
+  EXPECT_EQ(SQL_TXN_SERIALIZABLE, value);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DEFAULT_TXN_ISOLATION, &value, 0, nullptr));
+  EXPECT_EQ(SQL_TXN_SERIALIZABLE, value);
+}
+
+TEST_F(BackendContractTest, ExplicitIsolationIntentSurvivesUnknownDefaultAndReconnect) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  seen->transaction_capability_override = TransactionCapabilities{
+      true, true, TransactionIsolation::ReadCommitted, {false, false, false, true}, false};
+  seen->isolation_result = BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE), 0));
+  EXPECT_EQ(0, seen->isolation_calls);
+  connect(); ASSERT_FALSE(HasFatalFailure()); EXPECT_EQ(1, seen->isolation_calls);
+  SQLUINTEGER value = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION, &value, 0, nullptr));
+  EXPECT_EQ(SQL_TXN_SERIALIZABLE, value);
+  SQLSMALLINT length = 77;
+  EXPECT_EQ(SQL_ERROR, SQLGetInfo(dbc, SQL_DEFAULT_TXN_ISOLATION, &value, 0, &length));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(SQL_TXN_SERIALIZABLE, value); EXPECT_EQ(77, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  connect(); ASSERT_FALSE(HasFatalFailure()); EXPECT_EQ(2, seen->isolation_calls);
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST(ExplicitTransactionProfileTest, PostgresDefaultsStayKnownAndRedshiftDoesNotInventDatabaseMode) {
+  using namespace rs::core::database::postgres;
+  const auto pg = pg_transaction_capabilities();
+  EXPECT_TRUE(pg_backend_capabilities("PostgreSQL").sql92_entry);
+  EXPECT_TRUE(pg.supported); EXPECT_TRUE(pg.transactional_ddl);
+  EXPECT_TRUE(pg.default_isolation_known);
+  EXPECT_EQ(TransactionIsolation::ReadCommitted, pg.default_isolation);
+  for (const auto level : transaction_isolations) {
+    EXPECT_TRUE(pg.supports(level));
+  }
+  PgBackendProvider provider{{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      {"host", 5439, "db", true}, std::nullopt, PgCatalogProfile::Redshift};
+  const auto rs = provider.transaction_capabilities();
+  EXPECT_FALSE(provider.capabilities().sql92_entry);
+  EXPECT_TRUE(rs.supported); EXPECT_TRUE(rs.transactional_ddl);
+  EXPECT_FALSE(rs.default_isolation_known);
+  for (const auto level : transaction_isolations) {
+    EXPECT_FALSE(rs.supports(level));
+  }
+  auto session = provider.create_session(nullptr);
+  ASSERT_NE(nullptr, session);
+  auto* transactions = session->transaction_session(); ASSERT_NE(nullptr, transactions);
+  EXPECT_FALSE(transactions->transaction_capabilities().default_isolation_known);
+  for (const auto level : transaction_isolations) {
+    const auto refused = transactions->set_transaction_isolation(level, Deadline::max());
+    ASSERT_TRUE(refused.has_error());
+    EXPECT_EQ(BackendErrorClass::Unsupported, refused.backend_error().error_class);
+  }
+}
+
+TEST_F(BackendContractTest, FailedExplicitIsolationKeepsUnknownOutputAndRecoversWithoutReconnect) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  seen->transaction_capability_override = TransactionCapabilities{
+      true, true, TransactionIsolation::ReadCommitted, {false, false, false, true}, false};
+  BackendError rejected{rs::util::make_error_code(DbErrorCode::QueryFailed), "explicit setting refused"};
+  rejected.native_state = "42501";
+  rejected.operation = BackendOperation::SetTransactionIsolation;
+  rejected.session_state = SessionState::Idle;
+  rejected.disposition = SessionDisposition::Reusable;
+  seen->isolation_result = BackendResult<void>{std::move(rejected)};
+  connect(); ASSERT_FALSE(HasFatalFailure()); EXPECT_EQ(0, seen->isolation_calls);
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE), 0));
+  EXPECT_EQ("42501", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(1, seen->isolation_calls);
+  SQLUINTEGER value = 0x12345678;
+  SQLINTEGER length = 93;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      &value, sizeof(value), &length));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(0x12345678u, value); EXPECT_EQ(93, length);
+  seen->isolation_result = BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE), 0));
+  EXPECT_EQ(2, seen->isolation_calls);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      &value, sizeof(value), &length));
+  EXPECT_EQ(SQL_TXN_SERIALIZABLE, value);
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+
+TEST_F(BackendContractTest, TransactionProfileConformanceUsesLiteralStandardClaimsWithoutIo) {
+  using namespace rs::core::database::postgres;
+  for (const bool redshift : {false, true}) {
+    SCOPED_TRACE(redshift);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc)); dbc = nullptr;
+    auto profile = std::make_shared<PgBackendProvider>(
+        BackendIdentity{"profile", "profile", "profile"},
+        BackendConnectionDefaults{"host", 5439, "db", true}, std::nullopt,
+        redshift ? PgCatalogProfile::Redshift : PgCatalogProfile::PostgreSQL);
+    seen->advertised_transactions = true; seen->isolation_mode = 1;
+    seen->transaction_capability_override = profile->transaction_capabilities();
+    auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+        nullptr, std::make_shared<FakeProvider>(seen, profile));
+    dbc = reinterpret_cast<SQLHDBC>(connection.get());
+    rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+    connect(); ASSERT_FALSE(HasFatalFailure());
+    SQLUSMALLINT odbc_level = 91;
+    SQLUINTEGER sql_level = 93;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_ODBC_SQL_CONFORMANCE,
+        &odbc_level, sizeof(odbc_level), nullptr));
+    EXPECT_EQ(redshift ? SQL_OSC_MINIMUM : SQL_OSC_CORE, odbc_level);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_SQL_CONFORMANCE,
+        &sql_level, sizeof(sql_level), nullptr));
+    EXPECT_EQ(redshift ? 0u : static_cast<SQLUINTEGER>(SQL_SC_SQL92_ENTRY), sql_level);
+    EXPECT_EQ(0, seen->isolation_calls); EXPECT_EQ(0, seen->queries);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   }
 }

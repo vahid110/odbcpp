@@ -12,7 +12,8 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
 std::span<const TypeDefinition> pg_type_catalog(std::string_view server_version) noexcept;
 std::span<const TypeDefinition> redshift_type_catalog() noexcept;
 std::span<const TypeDefinition> redshift_result_type_catalog() noexcept;
-TransactionCapabilities pg_transaction_capabilities() noexcept;
+TransactionCapabilities pg_transaction_capabilities(
+    PgCatalogProfile profile = PgCatalogProfile::PostgreSQL) noexcept;
 
 class PgBackendProvider final : public IBackendProvider {
  public:
