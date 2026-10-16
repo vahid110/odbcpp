@@ -35,18 +35,33 @@ private:
 };
 class DriverNameMetadataProvider final : public rs::core::database::IBackendProvider {
 public:
-  explicit DriverNameMetadataProvider(std::size_t& queries) : queries_(queries),profile_({"metadata","MetadataDB","ODBCPP"},{"fixture",5439,std::nullopt,false}) {}
+  explicit DriverNameMetadataProvider(
+      std::size_t& queries,
+      rs::core::database::TransactionCapabilities transactions = {})
+      : queries_(queries),
+        profile_({"metadata", "MetadataDB", "ODBCPP"},
+                 {"fixture", 5439, std::nullopt, false}),
+        transactions_(transactions) {}
   const rs::core::database::BackendIdentity& identity() const noexcept override { return profile_.identity(); }
   const rs::core::database::BackendConnectionDefaults& connection_defaults() const noexcept override { return profile_.connection_defaults(); }
   const rs::core::database::ISqlDialect& sql_dialect() const noexcept override { return profile_.sql_dialect(); }
   rs::core::database::BackendCapabilities capabilities() const noexcept override { return profile_.capabilities(); }
   std::span<const rs::core::database::TypeDefinition> type_catalog(std::string_view version) const noexcept override { return profile_.type_catalog(version); }
-  rs::core::database::TransactionCapabilities transaction_capabilities() const noexcept override { return {}; }
+  rs::core::database::TransactionCapabilities transaction_capabilities() const noexcept override {
+    return transactions_;
+  }
   rs::util::Result<rs::core::database::ConnectionSettings> resolve_connection_options(rs::core::database::ConnectionOptions options) const override { return profile_.resolve_connection_options(std::move(options)); }
-  std::unique_ptr<rs::core::database::IDatabaseConnection> create_session(std::unique_ptr<rs::core::transport::ITransport>) const override { return std::make_unique<DriverNameMetadataSession>(queries_); }
+  std::unique_ptr<rs::core::database::IDatabaseConnection> create_session(
+      std::unique_ptr<rs::core::transport::ITransport>) const override {
+    ++session_creations_;
+    return std::make_unique<DriverNameMetadataSession>(queries_);
+  }
+  std::size_t session_creations() const noexcept { return session_creations_; }
 private:
   std::size_t& queries_;
   rs::core::database::postgres::PgBackendProvider profile_;
+  rs::core::database::TransactionCapabilities transactions_;
+  mutable std::size_t session_creations_ = 0;
 };
 
 
@@ -82,6 +97,22 @@ protected:
     return reinterpret_cast<const char*>(state);
   }
 
+  void install_transaction_metadata_profile(
+      rs::core::database::postgres::PgCatalogProfile profile) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement_));
+    statement_ = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+    connection_ = nullptr;
+    transaction_metadata_provider_ = std::make_shared<DriverNameMetadataProvider>(
+        metadata_queries_,
+        rs::core::database::postgres::pg_transaction_capabilities(profile));
+    auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+        nullptr, transaction_metadata_provider_);
+    connection_ = reinterpret_cast<SQLHDBC>(connection.get());
+    rs::odbc::HandleRegistry::instance().register_handle(
+        connection_, std::move(connection), environment_);
+  }
+
   void connect_metadata_only() {
     ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,statement_));statement_=nullptr;
     ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,connection_));connection_=nullptr;
@@ -92,6 +123,7 @@ protected:
     SQLCHAR input[]="SERVER=fixture;DATABASE=fixture;UID=fixture;SSL=0";
     ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(connection_,nullptr,input,SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
   }
+  std::shared_ptr<DriverNameMetadataProvider> transaction_metadata_provider_;
   std::size_t metadata_queries_=0;
   SQLHENV environment_{nullptr};
   SQLHDBC connection_{nullptr};
@@ -575,6 +607,11 @@ TEST_F(AttributeApisTest, StoresCurrentCatalogBeforeConnecting) {
 }
 
 TEST_F(AttributeApisTest, StoresTransactionIsolation) {
+  // This is the known-provider storage contract, independent of the product's
+  // default provider. Redshift intentionally has no known standard default.
+  install_transaction_metadata_profile(
+      rs::core::database::postgres::PgCatalogProfile::PostgreSQL);
+  ASSERT_FALSE(HasFatalFailure());
   SQLUINTEGER value = 0;
   EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
       connection_, SQL_ATTR_TXN_ISOLATION, &value, sizeof(value), nullptr));
@@ -590,6 +627,61 @@ TEST_F(AttributeApisTest, StoresTransactionIsolation) {
   EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(
       connection_, SQL_ATTR_TXN_ISOLATION, integer_value(0), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(0u, transaction_metadata_provider_->session_creations());
+  EXPECT_EQ(0u, metadata_queries_);
+}
+
+TEST_F(AttributeApisTest, RedshiftUnknownTransactionIsolationPreservesOutputsWithoutIo) {
+  install_transaction_metadata_profile(
+      rs::core::database::postgres::PgCatalogProfile::Redshift);
+  ASSERT_FALSE(HasFatalFailure());
+  for (const bool wide : {false, true}) {
+    SCOPED_TRACE(wide);
+    SQLUINTEGER value = 0xaabbccdd;
+    SQLINTEGER length = 73;
+    EXPECT_EQ(SQL_ERROR, wide
+        ? SQLGetConnectAttrW(connection_, SQL_ATTR_TXN_ISOLATION,
+                             &value, sizeof(value), &length)
+        : SQLGetConnectAttr(connection_, SQL_ATTR_TXN_ISOLATION,
+                            &value, sizeof(value), &length));
+    EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+    EXPECT_EQ(0xaabbccddu, value);
+    EXPECT_EQ(73, length);
+
+    for (const SQLULEN level : {SQL_TXN_READ_UNCOMMITTED, SQL_TXN_READ_COMMITTED,
+                                SQL_TXN_REPEATABLE_READ, SQL_TXN_SERIALIZABLE}) {
+      SCOPED_TRACE(level);
+      EXPECT_EQ(SQL_ERROR, wide
+          ? SQLSetConnectAttrW(connection_, SQL_ATTR_TXN_ISOLATION,
+                               integer_value(level), 0)
+          : SQLSetConnectAttr(connection_, SQL_ATTR_TXN_ISOLATION,
+                              integer_value(level), 0));
+      EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+    }
+    EXPECT_EQ(SQL_ERROR, wide
+        ? SQLSetConnectAttrW(connection_, SQL_ATTR_TXN_ISOLATION, integer_value(0), 0)
+        : SQLSetConnectAttr(connection_, SQL_ATTR_TXN_ISOLATION, integer_value(0), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+    // Failed setters never turn unknown native state into an observed default.
+    EXPECT_EQ(SQL_ERROR, wide
+        ? SQLGetConnectAttrW(connection_, SQL_ATTR_TXN_ISOLATION,
+                             &value, sizeof(value), &length)
+        : SQLGetConnectAttr(connection_, SQL_ATTR_TXN_ISOLATION,
+                            &value, sizeof(value), &length));
+    EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+    EXPECT_EQ(0xaabbccddu, value);
+    EXPECT_EQ(73, length);
+  }
+  // Unrelated attributes remain usable after the refusals.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT,
+      integer_value(7), 0));
+  SQLUINTEGER timeout = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT,
+      &timeout, sizeof(timeout), nullptr));
+  EXPECT_EQ(7u, timeout);
+  EXPECT_EQ(0u, transaction_metadata_provider_->session_creations());
+  EXPECT_EQ(0u, metadata_queries_);
 }
 
 TEST_F(AttributeApisTest, EndTransactionValidatesState) {
