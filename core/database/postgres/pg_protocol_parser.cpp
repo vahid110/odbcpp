@@ -121,6 +121,13 @@ bool native_ieee_decimal(const std::string& text, bool& nonzero_coefficient) {
   return position == text.size();
 }
 
+#ifdef _MSC_VER
+// MSVC must observe the codec's control-mode and status accesses under /O2.
+// Keep precise/environment-sensitive compilation local to these native helpers.
+#pragma float_control(precise, on, push)
+#pragma fenv_access(on)
+#endif
+
 // One conversion owns its locale. Never change the process locale or cache a
 // mutable handle. Normal exits check restoration; unwinding is already failure.
 class NativeIeeeContext {
@@ -236,6 +243,11 @@ std::optional<NativeIeeeParameter> native_ieee_parameter(
   }
   return std::nullopt;
 }
+
+#ifdef _MSC_VER
+#pragma fenv_access(off)
+#pragma float_control(pop)
+#endif
 
 std::uint16_t read_u16(std::span<const std::byte> data, std::size_t offset) {
   if (offset + 2 > data.size()) {

@@ -1725,6 +1725,12 @@ TEST(RedshiftFloatingParameterTest, MixedFormatsExactBudgetsAndFallbackPreserveO
   EXPECT_EQ(actual, parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", parameters));
 }
 
+#ifdef _MSC_VER
+// Compile the environment-sensitive assertions with the codec's scoped policy.
+#pragma float_control(precise, on, push)
+#pragma fenv_access(on)
+#endif
+
 TEST(RedshiftFloatingParameterTest, CallerRoundingFlagsAndErrnoSurviveEveryCodecPath) {
   using rs::core::database::postgres::PgCatalogProfile;
   const int original_errno = errno;
@@ -1784,3 +1790,8 @@ TEST(RedshiftFloatingParameterTest, CallerRoundingFlagsAndErrnoSurviveEveryCodec
     }
   }
 }
+
+#ifdef _MSC_VER
+#pragma fenv_access(off)
+#pragma float_control(pop)
+#endif
