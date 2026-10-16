@@ -146,6 +146,31 @@ static_assert(timeout_server_allows_client("3000ms"));
 static_assert(!timeout_server_allows_client("2999ms"));
 static_assert(!timeout_server_allows_client("18446744073709551616"));
 
+// Redshift NAME display values can carry trailing ASCII padding. This is
+// fixture identity display only; relation authority also requires the server UID.
+constexpr std::string_view timeout_identity_display(std::string_view value) {
+    while (!value.empty() && value.back() == ' ') {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+static_assert(timeout_identity_display("odbcpp_pilot_test   ") == "odbcpp_pilot_test");
+static_assert(timeout_identity_display("odbcpp_pilot_other   ") != "odbcpp_pilot_test");
+static_assert(timeout_identity_display(" leading ") == " leading");
+static_assert(timeout_identity_display("internal space ") == "internal space");
+static_assert(timeout_identity_display("tab\t") == "tab\t");
+static_assert(timeout_identity_display("name\t ") == "name\t");
+static_assert(timeout_identity_display("\xC3\xA9 ") == "\xC3\xA9");
+static_assert(timeout_identity_display("").empty());
+static_assert(timeout_identity_display("   ").empty());
+static_assert([] {
+    std::array<char, 127> padded{};
+    padded.fill(' ');
+    constexpr std::string_view ordinary{"odbcpp_pilot_test"};
+    std::copy(ordinary.begin(), ordinary.end(), padded.begin());
+    return timeout_identity_display(std::string_view(padded.data(), padded.size())) == ordinary;
+}());
+
 class SharedTimeoutBlocker {
 public:
     explicit SharedTimeoutBlocker(std::chrono::steady_clock::time_point end) : end_(end) {
@@ -214,9 +239,15 @@ public:
         if (!query(stmt_, "SELECT c.oid, u.usename FROM pg_catalog.pg_class c "
             "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
             "JOIN pg_catalog.pg_user u ON u.usesysid=c.relowner WHERE c.oid=" + oid_ +
-            " AND n.nspname='odbcpp_fixture' AND c.relname='" + table_ + "' AND c.relkind='r'") ||
+            " AND n.nspname='odbcpp_fixture' AND c.relname='" + table_ +
+            "' AND c.relkind='r' AND c.relowner=CURRENT_USER_ID") ||
             !row(stmt_, object) || !end_row(stmt_)) return false;
-        if (object[0] != oid_ || object[1] != owner_) return fail("ROOT relation identity/ordinary owner mismatch");
+        property("timeout_catalog_oid", object[0]);
+        property("timeout_catalog_owner_raw_size", std::to_string(object[1].size()));
+        property("timeout_catalog_owner", std::string(timeout_identity_display(object[1])));
+        if (object[0] != oid_ || timeout_identity_display(object[1]) != owner_) {
+            return fail("ROOT relation identity/ordinary owner mismatch");
+        }
         return true;
     }
     bool lock() {
@@ -317,6 +348,11 @@ private:
             "WHERE process=pg_backend_pid() AND user_name=current_user AND db_name=current_database()") ||
             !row(statement, fields) || !end_row(statement)) return false;
         if (!timeout_positive_id(fields[2]) || fields[3].empty()) return fail("session birth identity");
+        property(prefix + "_owner_raw_size", std::to_string(fields[0].size()));
+        fields[0] = std::string(timeout_identity_display(fields[0]));
+        if (fields[0].empty()) {
+            return fail("empty session principal");
+        }
         if (owner_.empty()) {
             owner_ = fields[0];
             database_ = fields[1];
