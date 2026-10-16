@@ -4252,20 +4252,63 @@ TEST(NormalizedCellTest, ExplicitRedshiftVarbyteOwnsDecodedResultsAndDeferredErr
 TEST(NormalizedParameterTest, RedshiftVarbyteMetadataRejectionOccursAfterPreparedExchange) {
   using namespace rs::core::database;
   using namespace rs::core::database::postgres;
-  auto transport = std::make_unique<ScriptedBackendTransport>(
-      ScriptedBackendTransport::ResponseMode::PreparedVarbyteParameter);
-  auto* observed = transport.get();
-  PgDatabaseConnection backend(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
-  auto settings = pg_fixture_settings(); settings.use_ssl = false;
-  ASSERT_TRUE(backend.connect(settings));
-  const auto before = observed->send_count();
-  const QueryParameter parameters[]{{"00", QueryParameterType::Text}};
-  const auto result = backend.execute_prepared("UPDATE sample SET value=?", parameters,
-      rs::util::Deadline::max());
-  ASSERT_TRUE(result.has_error());
-  EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class);
-  EXPECT_EQ(before + 1, observed->send_count()); // This is not pre-execution validation.
-  EXPECT_TRUE(backend.is_connected());
+  QueryResult owned;
+  {
+    auto transport = std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::PreparedVarbyteParameter);
+    auto* observed = transport.get();
+    observed->capture_writes();
+    PgDatabaseConnection backend(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+    auto settings = pg_fixture_settings();
+    settings.use_ssl = false;
+    // 51 fixed bytes + 26 rewritten SQL + 8 OID/length + 2 format + 2 raw bytes.
+    settings.input_limits.max_request_wire_bytes = 89;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto before = observed->send_count();
+    const auto reads = observed->bytes_read();
+    const QueryParameter oversized[]{{std::string("\0\xffx", 3), QueryParameterType::Binary}};
+    const auto refused = backend.execute_prepared("UPDATE sample SET value=?", oversized,
+        rs::util::Deadline::max());
+    ASSERT_TRUE(refused.has_error());
+    EXPECT_EQ(BackendErrorClass::ResourceLimit, refused.backend_error().error_class);
+    EXPECT_EQ(BackendOperation::ExecutePrepared, refused.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), refused.session_snapshot());
+    EXPECT_EQ(before, observed->send_count());
+    EXPECT_EQ(reads, observed->bytes_read());
+    EXPECT_EQ(0u, observed->close_count());
+    const QueryParameter parameters[]{{std::string("\0\xff", 2), QueryParameterType::Binary}};
+    auto result = backend.execute_prepared("UPDATE sample SET value=?", parameters,
+        rs::util::Deadline::max());
+    ASSERT_TRUE(result);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+    EXPECT_EQ(before + 1, observed->send_count()); // One exchange; no discovery SQL.
+    ASSERT_EQ(before + 1, observed->captured_writes().size());
+    EXPECT_EQ(89u, observed->captured_writes().back().size());
+    EXPECT_EQ(1u, result->affected_rows);
+    EXPECT_TRUE(result->rows.empty());
+    ASSERT_EQ(1u, result->normalized_parameter_types.size());
+    const auto& native = result->normalized_parameter_types[0];
+    EXPECT_TRUE(native.known);
+    EXPECT_EQ(ScalarType::LongVarBinary, native.type);
+    EXPECT_EQ(0u, native.column_size);
+    EXPECT_EQ(0, native.decimal_digits);
+    EXPECT_FALSE(native.declared_type);
+    EXPECT_FALSE(native.declared_column_size);
+    EXPECT_TRUE(backend.is_connected());
+    owned = std::move(*result);
+    const auto sends = observed->send_count();
+    const auto expired = backend.execute_prepared("UPDATE sample SET value=?", parameters,
+        rs::util::Deadline{});
+    ASSERT_TRUE(expired.has_error());
+    EXPECT_EQ(BackendErrorClass::Timeout, expired.backend_error().error_class);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), expired.session_snapshot());
+    EXPECT_EQ(sends, observed->send_count());
+    EXPECT_FALSE(backend.is_connected());
+  }
+  ASSERT_EQ(1u, owned.normalized_parameter_types.size());
+  EXPECT_TRUE(owned.normalized_parameter_types[0].known);
+  EXPECT_EQ(ScalarType::LongVarBinary, owned.normalized_parameter_types[0].type);
+  EXPECT_EQ(1u, owned.affected_rows);
 }
 
 TEST(NormalizedCellTest, PostgresDoesNotInterpretRedshiftVarbyteOidOrHex) {

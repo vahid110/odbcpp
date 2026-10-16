@@ -3588,7 +3588,7 @@ TEST_F(BindColIntegrationTest, ByteaUsesBinaryDefaultAndSupportsChunks) {
     SQLSMALLINT sql_type = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
         hstmt, 1, nullptr, 0, nullptr, &sql_type, nullptr, nullptr, nullptr));
-    EXPECT_EQ(SQL_VARBINARY, sql_type);
+    EXPECT_EQ(fixture_redshift_product() ? SQL_LONGVARBINARY : SQL_VARBINARY, sql_type);
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     unsigned char first[2]{};
