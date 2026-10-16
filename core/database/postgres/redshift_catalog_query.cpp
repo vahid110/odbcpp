@@ -1316,6 +1316,118 @@ BackendResult<QueryResult> redshift_columns_part(std::string_view database,std::
   return part;
 }
 
+BackendResult<QueryResult> redshift_special_columns_headers(
+    RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  constexpr std::array<std::string_view,8> names{"SCOPE","COLUMN_NAME","DATA_TYPE","TYPE_NAME",
+      "COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","PSEUDO_COLUMN"};
+  RedshiftRoutineUsage charge{0,0,8*sizeof(ResultColumnMetadata),8,0};
+  if (!budget.description(names.size())) return redshift_routine_limit();
+  for (const auto name:names) {
+    if (!budget.name(name) || !wide_storage_component(charge,name.size()+1) ||
+        !wide_storage_component(charge,name.size(),1,true)) return redshift_routine_limit();
+  }
+  if (!budget.retain(charge)) return redshift_routine_limit();
+  QueryResult output;
+  output.columns.reserve(names.size());
+  for (std::size_t i=0;i<names.size();++i) {
+    const bool text=i==1 || i==3;
+    const bool integer=i==4 || i==5;
+    output.columns.push_back({std::string(names[i]),NativeTypeInfo{text?ScalarType::VarChar:
+        integer?ScalarType::Integer:ScalarType::SmallInt,text?0u:integer?10u:5u,0,true}});
+  }
+  output.statement_kind=StatementKind::SelectCursor;
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  return BackendResult<QueryResult>{std::move(output),{SessionState::Idle,SessionDisposition::Reusable}};
+}
+
+BackendResult<QueryResult> redshift_special_columns_result(
+    const BackendResult<QueryResult>& keys,const BackendResult<QueryResult>& columns,
+    bool require_non_nullable,RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if (!keys) return keys.backend_error();
+  if (!columns) return columns.backend_error();
+  if (keys->error) return *keys->error;
+  if (columns->error) return *columns->error;
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  const auto malformed=[&] {return invalid_wide_columns("special-column-join",columns.session_snapshot());};
+  // Inputs are normalized by the existing exact-table parsers, never raw SHOW
+  // guesses. Validate their closed shape before borrowing any indexed cell.
+  if (!clean_schema_result(*keys) || !clean_schema_result(*columns) || keys->error || columns->error ||
+      keys.session_snapshot()!=SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable} ||
+      columns.session_snapshot()!=keys.session_snapshot() || keys->columns.size()!=6 || columns->columns.size()!=18)
+    return malformed();
+  constexpr std::array<std::string_view,6> key_headers{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME","KEY_SEQ","PK_NAME"};
+  constexpr std::array<std::string_view,18> column_headers{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME",
+      "DATA_TYPE","TYPE_NAME","COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","NUM_PREC_RADIX","NULLABLE",
+      "REMARKS","COLUMN_DEF","SQL_DATA_TYPE","SQL_DATETIME_SUB","CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
+  for (std::size_t i=0;i<key_headers.size();++i) {
+    if (keys->columns[i].name!=key_headers[i]) return malformed();
+  }
+  for (std::size_t i=0;i<column_headers.size();++i) {
+    if (columns->columns[i].name!=column_headers[i] || !columns->columns[i].normalized_type ||
+        !columns->columns[i].normalized_type->known) return malformed();
+  }
+  const auto find_column=[&](const ResultRow& key)->const ResultRow* {
+    const ResultRow* found=nullptr;
+    for (const auto& column:columns->rows) {
+      if (rs::util::Clock::now()>=deadline) return nullptr;
+      if (column[3]!=key[3]) continue;
+      if (found || column[0]!=key[0] || column[1]!=key[1] || column[2]!=key[2]) return nullptr;
+      found=&column;
+    }
+    return found;
+  };
+  RedshiftRoutineUsage peak{};
+  bool eligible=true;
+  for (std::size_t i=0;i<keys->rows.size();++i) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    const auto& key=keys->rows[i];
+    unsigned sequence=0;
+    if (!key[3] || !key[4]) return malformed();
+    const auto& text=*key[4];
+    const auto parsed=std::from_chars(text.data(),text.data()+text.size(),sequence);
+    if (parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || sequence!=i+1) return malformed();
+    const auto* column=find_column(key);
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    if (!column || !(*column)[4] || !(*column)[5] ||
+        ((*column)[10]!=ResultCell{"0"} && (*column)[10]!=ResultCell{"1"} && (*column)[10]!=ResultCell{"2"}))
+      return malformed();
+    // Exclude the complete candidate, never only its nullable member. Unknown
+    // nullability cannot satisfy SQL_NO_NULLS; SQL_NULLABLE retains it.
+    if (require_non_nullable && (*column)[10]!=ResultCell{"0"}) eligible=false;
+    if (!wide_storage_component(peak,1,sizeof(ResultRow)+8*sizeof(ResultCell)+64)) return redshift_routine_limit();
+    for (const auto n:{3u,4u,5u,6u,7u,8u}) {
+      if ((*column)[n] && !wide_storage_component(peak,(*column)[n]->size()+1,2)) return redshift_routine_limit();
+    }
+    if (!budget.name(*key[3]) || !wide_storage_component(peak,key[3]->size(),1,true)) return redshift_routine_limit();
+  }
+  if (!eligible) return redshift_special_columns_headers(budget,deadline);
+  peak.rows=keys->rows.size();
+  if (peak.rows>std::numeric_limits<std::size_t>::max()/8) return redshift_routine_limit();
+  peak.cells=peak.rows*8;
+  if (!budget.retain(peak)) return redshift_routine_limit();
+  auto output=redshift_special_columns_headers(budget,deadline);
+  if (!output) return output.backend_error();
+  output->columns[1].normalized_type=columns->columns[3].normalized_type;
+  output->columns[3].normalized_type=columns->columns[5].normalized_type;
+  output->rows.reserve(keys->rows.size());
+  for (const auto& key:keys->rows) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    const auto* column=find_column(key);
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    // Both borrowed inputs remain immutable throughout validation/projection.
+    if (!column) return malformed();
+    ResultRow row;
+    row.reserve(8);
+    row.emplace_back("0"); // SQL_SCOPE_CURROW, not a stronger lifetime.
+    for (const auto n:{3u,4u,5u,6u,7u,8u}) row.push_back((*column)[n]);
+    row.emplace_back("1"); // SQL_PC_NOT_PSEUDO: real declared-key columns.
+    output->rows.push_back(std::move(row));
+  }
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  return output;
+}
+
 // Borrowed database validation precedes every selection/allocation/budget classification.
 BackendResult<RedshiftColumnSchemas> redshift_table_databases(bool visible,
     const BackendResult<QueryResult>& input,RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {

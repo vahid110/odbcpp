@@ -145,6 +145,15 @@ BackendResult<QueryResult> redshift_columns_part(std::string_view database, std:
     std::string_view table, const ColumnsCatalogRequest& request,
     BackendResult<QueryResult> input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
 RedshiftRoutineUsage redshift_columns_output_usage(const QueryResult& result);
+// Backend-private BEST_ROWID projection of already validated owning PK/column
+// results. A declared Redshift PK assumes application-maintained integrity; it
+// does not assert server enforcement or a transaction/session row-id lifetime.
+BackendResult<QueryResult> redshift_special_columns_headers(
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+BackendResult<QueryResult> redshift_special_columns_result(
+    const BackendResult<QueryResult>& keys, const BackendResult<QueryResult>& columns,
+    bool require_non_nullable, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+
 // Closed SQLTables SHOW framing/owning projection, using existing native budget primitives.
 BackendResult<RedshiftColumnSchemas> redshift_table_databases(bool visible,
     const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);

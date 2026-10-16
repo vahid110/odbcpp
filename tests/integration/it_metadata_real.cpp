@@ -4562,9 +4562,15 @@ TEST_F(MetadataIntegrationTest, ReportsBestRowIdentifier) {
                   "id integer PRIMARY KEY, value text)",
         SQL_NTS));
     SQLCHAR table_name[] = "odbcpp_special_column_test";
+    std::string session_schema;
+    if (redshift_profile()) {
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema(
+            "odbcpp_special_column_test", session_schema));
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
-        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
-        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+        hstmt, SQL_BEST_ROWID, nullptr, 0,
+        redshift_profile() ? reinterpret_cast<SQLCHAR*>(session_schema.data()) : nullptr,
+        redshift_profile() ? SQL_NTS : 0, table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
 
     SQLSMALLINT scope = -1;
     char column_name[64]{};
@@ -4593,13 +4599,22 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
                   "second_key bigint, first_key integer, value text, "
                   "PRIMARY KEY(first_key, second_key))",
         SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt,
-        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_special_shorter_unique "
-                  "ON \"odbcpp.special_'_table\" (value)",
-        SQL_NTS));
+    if (!redshift_profile()) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+            hstmt,
+            (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_special_shorter_unique "
+                      "ON \"odbcpp.special_'_table\" (value)",
+            SQL_NTS));
+    }
 
     SQLCHAR table_name[] = "odbcpp.special_'_table";
+    std::string session_schema;
+    if (redshift_profile()) {
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema(
+            "odbcpp.special_'_table", session_schema));
+    }
+    auto* special_schema = redshift_profile()
+        ? reinterpret_cast<SQLCHAR*>(session_schema.data()) : nullptr;
     SQLCHAR column_pattern[] = "first_key";
     ASSERT_EQ(SQL_SUCCESS, SQLColumns(
         hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
@@ -4612,10 +4627,12 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
-        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        hstmt, SQL_BEST_ROWID, nullptr, 0,
+        special_schema, special_schema ? SQL_NTS : 0,
         table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
     EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
-        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        hstmt, SQL_BEST_ROWID, nullptr, 0,
+        special_schema, special_schema ? SQL_NTS : 0,
         table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
     EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
@@ -4652,7 +4669,8 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
-        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        hstmt, SQL_BEST_ROWID, nullptr, 0,
+        special_schema, special_schema ? SQL_NTS : 0,
         table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
@@ -4662,10 +4680,11 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
     auto expect_no_special_columns = [&](SQLCHAR* requested_catalog,
                                          SQLCHAR* requested_schema,
                                          SQLCHAR* requested_table) {
+        auto* effective_schema = requested_schema ? requested_schema : special_schema;
         ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
             hstmt, SQL_BEST_ROWID,
             requested_catalog, requested_catalog ? SQL_NTS : 0,
-            requested_schema, requested_schema ? SQL_NTS : 0,
+            effective_schema, effective_schema ? SQL_NTS : 0,
             requested_table, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
         EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));

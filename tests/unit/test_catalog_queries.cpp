@@ -785,3 +785,37 @@ TEST(CatalogQueryTest, RedshiftSpatialClosedCodesKeepUnsizedFieldsAndPostgresPol
   EXPECT_EQ(std::string::npos, query->find("geography(4326)"));
   EXPECT_EQ(std::string::npos, query->find("1048447"));
 }
+
+
+TEST(CatalogQueryTest, RedshiftRowIdentityCannotEmitPostgresIndexesAndOtherProfilesKeepTheirContract) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  SpecialColumnsCatalogRequest request;
+  request.catalog = "db";
+  request.schema = "s'_%";
+  request.table = "t'_%";
+  auto pg = postgres.catalog_query(request);
+  ASSERT_TRUE(pg);
+  EXPECT_NE(std::string::npos, pg->find("indexes.indnkeyatts"));
+  EXPECT_NE(std::string::npos, pg->find("schemas.nspname = 's''_%'"));
+  EXPECT_FALSE(postgres.selects_catalog_request(request));
+  EXPECT_TRUE(redshift.selects_catalog_request(request));
+  auto rs = redshift.catalog_query(request);
+  ASSERT_FALSE(rs);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), rs.error());
+  for (const auto scope : {SpecialColumnsCatalogRequest::Scope::Transaction,
+                          SpecialColumnsCatalogRequest::Scope::Session}) {
+    request.scope = scope;
+    auto empty = redshift.catalog_query(request);
+    ASSERT_TRUE(empty);
+    EXPECT_TRUE(empty->ends_with("WHERE FALSE"));
+    EXPECT_FALSE(redshift.selects_catalog_request(request));
+  }
+  request.scope = SpecialColumnsCatalogRequest::Scope::CurrentRow;
+  request.identifier = SpecialColumnsCatalogRequest::Identifier::RowVersion;
+  auto rowversion = redshift.catalog_query(request);
+  ASSERT_TRUE(rowversion);
+  EXPECT_EQ(std::string::npos, rowversion->find("pg_index"));
+  EXPECT_FALSE(redshift.selects_catalog_request(request));
+}
