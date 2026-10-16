@@ -2008,8 +2008,8 @@ TEST(RedshiftMetadataDatabaseScope, InvariantEmptyApisAndLocalRowIdentityHaveExp
   auto partial = session.catalog_query(special); ASSERT_FALSE(partial);
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), partial.error());
   session.external = "off";
-  auto current = session.catalog_query(special); ASSERT_TRUE(current);
-  EXPECT_NE(std::string::npos, current->find("pg_catalog"));
+  auto current = session.catalog_query(special); ASSERT_FALSE(current);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), current.error());
 }
 
 namespace {
@@ -5798,4 +5798,229 @@ TEST(RedshiftMetadataDatabaseScope, NativeErrorsSessionAndBorrowedStorageBoundsR
   ASSERT_FALSE(limited);
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), limited.error());
   EXPECT_LE(fanout.commands.size(), 3u);
+}
+
+namespace {
+SpecialColumnsCatalogRequest special_request() {
+  SpecialColumnsCatalogRequest value;
+  value.schema = "scope";
+  value.table = "table";
+  value.require_non_nullable = true;
+  return value;
+}
+QueryResult special_columns() {
+  auto value = columns_response("db", "scope", "table");
+  value.rows[0][3] = "second";
+  value.rows[0][6] = "NO";
+  value.rows[1][3] = "first";
+  return value;
+}
+void special_ready(CurrentPrimaryKeySession& session) {
+  session.ready();
+  session.replies.emplace_back(special_columns(), session.snapshot);
+}
+}
+
+TEST(RedshiftSpecialColumns, DeclaredCompositeKeyUsesOwningColumnsInKeySequenceAndOneDeadline) {
+  CurrentPrimaryKeySession session;
+  special_ready(session);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  EXPECT_TRUE(session.selects_catalog_request(special_request()));
+  auto result = session.execute_catalog(special_request(), deadline);
+  ASSERT_TRUE(result) << result.error_message();
+  ASSERT_EQ(8u, result->columns.size());
+  EXPECT_EQ((ResultRows{{"0", "first", "4", "integer", "10", "4", "0", "1"},
+      {"0", "second", "12", "character varying", "32", "32", std::nullopt, "1"}}), result->rows);
+  EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;",
+      "SHOW COLUMNS FROM TABLE \"db\".\"scope\".\"table\";"}), session.commands);
+  EXPECT_EQ(std::vector<rs::util::Deadline>(3, deadline), session.deadlines);
+  session.replies.clear();
+  session.connected = false;
+  EXPECT_EQ(ResultCell{"second"}, result->rows[1][1]);
+}
+
+TEST(RedshiftSpecialColumns, EmptyKeysAndWholeNullableCandidateNeverPublishPartialIdentity) {
+  for (unsigned variant = 0; variant != 4; ++variant) {
+    CurrentPrimaryKeySession session;
+    special_ready(session);
+    if (variant == 0) {
+      session.replies[1]->rows.clear();
+    } else {
+      session.replies[2]->rows[0][6] = variant == 1 ? ResultCell{"YES"} : ResultCell{};
+    }
+    auto request = special_request();
+    request.require_non_nullable = variant != 3;
+    auto result = session.execute_catalog(request, rs::util::Deadline::max());
+    ASSERT_TRUE(result) << result.error_message();
+    EXPECT_EQ(8u, result->columns.size());
+    EXPECT_EQ(variant == 3 ? 2u : 0u, result->rows.size());
+    EXPECT_EQ(variant == 0 ? 2u : 3u, session.commands.size());
+  }
+}
+
+TEST(RedshiftSpecialColumns, UnavailableAndMalformedInputsNeverChoosePostgresOrPartialKey) {
+  for (unsigned variant = 0; variant != 10; ++variant) {
+    CurrentPrimaryKeySession session;
+    special_ready(session);
+    auto request = special_request();
+    if (variant == 0) { request.schema.reset(); }
+    if (variant == 1) { session.mode = RedshiftCatalogMode::Legacy; }
+    if (variant == 2) { session.capability = "3"; }
+    if (variant == 3) { session.external = "on"; }
+    if (variant == 4) { session.snapshot.state = SessionState::Transaction; }
+    if (variant == 5) { session.replies[2]->rows[0][3] = "missing"; }
+    if (variant == 6) { session.replies[1]->rows[0][4] = "3"; }
+    if (variant == 7) { session.replies[2]->rows[0][0] = "foreign"; }
+    if (variant == 8) { session.replies[2]->cell_errors.push_back({0, 3}); }
+    if (variant == 9) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "permission denied"};
+      error.native_state = "42501";
+      session.replies[1] = error;
+    }
+    auto result = session.execute_catalog(request, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_LE(session.commands.size(), 3u);
+    if (variant < 5) {
+      EXPECT_TRUE(session.commands.empty());
+    }
+    if (variant == 9) {
+      EXPECT_EQ(std::optional<std::string>{"42501"}, result.backend_error().native_state);
+    }
+  }
+}
+
+TEST(RedshiftSpecialColumns, ExpiredAndFiniteBudgetsRefuseBeforeFurtherDispatch) {
+  CurrentPrimaryKeySession expired;
+  special_ready(expired);
+  auto result = expired.execute_catalog(special_request(), rs::util::Clock::now());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), result.error());
+  EXPECT_TRUE(expired.commands.empty());
+  for (unsigned variant = 0; variant != 5; ++variant) {
+    CurrentPrimaryKeySession session;
+    ResultLimits limits;
+    ResponseLimits response;
+    if (variant == 0) { limits.max_results = 2; }
+    if (variant == 1) { limits.max_rows = 1; }
+    if (variant == 2) { limits.max_cells = 8; }
+    if (variant == 3) { limits.max_metadata_entries = 1; }
+    if (variant == 4) { response.max_wire_bytes = 128; }
+    ASSERT_TRUE(session.budgets(limits, response));
+    special_ready(session);
+    auto bounded = session.execute_catalog(special_request(), rs::util::Deadline::max());
+    ASSERT_FALSE(bounded);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), bounded.error());
+    EXPECT_LE(session.commands.size(), 2u);
+  }
+}
+
+TEST(RedshiftSpecialColumns, LiteralQuotedUnicodeNamesAreNotPatternsOrDefaultIdentifiers) {
+  CurrentPrimaryKeySession session;
+  const std::string schema = "s\"'_雪%";
+  const std::string table = "t\"'_%";
+  auto input = special_request();
+  input.schema = schema;
+  input.table = table;
+  auto keys = current_pk_rows();
+  for (auto& row : keys.rows) {
+    row[1] = schema;
+    row[2] = table;
+  }
+  auto columns = special_columns();
+  for (auto& row : columns.rows) {
+    row[1] = schema;
+    row[2] = table;
+  }
+  session.replies.emplace_back(routine_identity(), session.snapshot);
+  session.replies.emplace_back(std::move(keys), session.snapshot);
+  session.replies.emplace_back(std::move(columns), session.snapshot);
+  auto result = session.execute_catalog(input, rs::util::Deadline::max());
+  ASSERT_TRUE(result) << result.error_message();
+  ASSERT_EQ(2u, result->rows.size());
+  ASSERT_EQ(3u, session.bound.size());
+  EXPECT_EQ(schema, session.bound[1].value);
+  EXPECT_EQ(table, session.bound[2].value);
+  EXPECT_EQ("SHOW COLUMNS FROM TABLE \"db\".\"s\"\"'_雪%\".\"t\"\"'_%\";", session.commands.back());
+  for (unsigned field = 0; field != 3; ++field) {
+    CurrentPrimaryKeySession empty;
+    auto request = special_request();
+    if (field == 0) { request.catalog = ""; }
+    if (field == 1) { request.schema = ""; }
+    if (field == 2) { request.table = ""; }
+    auto absent = empty.execute_catalog(request, rs::util::Deadline::max());
+    ASSERT_TRUE(absent);
+    EXPECT_EQ(8u, absent->columns.size());
+    EXPECT_TRUE(absent->rows.empty());
+    EXPECT_TRUE(empty.commands.empty());
+  }
+}
+
+TEST(RedshiftSpecialColumns, ExplicitOtherCatalogIsEmptyAndMalformedScopeOrTerminalSnapshotIsNotHealed) {
+  CurrentPrimaryKeySession other;
+  other.ready();
+  auto request = special_request();
+  request.catalog = "other";
+  auto empty = other.execute_catalog(request, rs::util::Deadline::max());
+  ASSERT_TRUE(empty);
+  EXPECT_TRUE(empty->rows.empty());
+  EXPECT_EQ(1u, other.commands.size());
+  for (unsigned variant = 0; variant != 4; ++variant) {
+    CurrentPrimaryKeySession session;
+    special_ready(session);
+    if (variant == 0) { session.external = "invalid"; }
+    if (variant == 1) { session.lost_scope = true; }
+    if (variant == 2) {
+      auto raw = *session.replies[1];
+      session.replies[1] = BackendResult<QueryResult>{std::move(raw),
+          {SessionState::Idle, SessionDisposition::Retire}};
+    }
+    if (variant == 3) {
+      auto raw = *session.replies[2];
+      session.replies[2] = BackendResult<QueryResult>{std::move(raw),
+          {SessionState::Transaction, SessionDisposition::ResetRequired}};
+    }
+    auto result = session.execute_catalog(special_request(), rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    if (variant < 2) {
+      EXPECT_TRUE(session.commands.empty());
+    }
+  }
+}
+
+TEST(RedshiftSpecialColumns, EveryNativeCompletionKeepsTheOriginalDeadlineAndRequiresExplicitRecovery) {
+  for (const auto late_command : {1u, 2u, 3u}) {
+    CurrentPrimaryKeySession session;
+    special_ready(session);
+    const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{5});
+    session.callback = [&] {
+      if (session.commands.size() == late_command) {
+        std::this_thread::sleep_until(deadline + std::chrono::milliseconds{1});
+      }
+    };
+    auto result = session.execute_catalog(special_request(), deadline);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), result.error());
+    EXPECT_EQ(late_command, session.commands.size());
+    session.callback = {};
+    session.commands.clear();
+    session.replies.clear();
+    special_ready(session);
+    auto recovered = session.execute_catalog(special_request(), rs::util::Deadline::max());
+    ASSERT_TRUE(recovered) << recovered.error_message();
+    EXPECT_EQ(2u, recovered->rows.size());
+  }
+  CurrentPrimaryKeySession identifiers;
+  special_ready(identifiers);
+  auto request = special_request();
+  request.schema = "SCOPE";
+  request.table = "TABLE";
+  request.name_matches.schema = CatalogNameMatch::IdentifierUnquoted;
+  request.name_matches.object = CatalogNameMatch::IdentifierUnquoted;
+  auto normalized = identifiers.execute_catalog(request, rs::util::Deadline::max());
+  ASSERT_TRUE(normalized) << normalized.error_message();
+  ASSERT_EQ(3u, identifiers.bound.size());
+  EXPECT_EQ(ResultCell{"scope"}, identifiers.bound[1].value);
+  EXPECT_EQ(ResultCell{"table"}, identifiers.bound[2].value);
 }

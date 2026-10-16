@@ -189,6 +189,9 @@ BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadli
 
 bool PgDatabaseConnection::selects_catalog_request(const CatalogRequest& request) const noexcept {
   if (catalog_profile_ != PgCatalogProfile::Redshift) return false;
+  if (const auto* special=std::get_if<SpecialColumnsCatalogRequest>(&request);
+      special && special->identifier==SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
+      special->scope==SpecialColumnsCatalogRequest::Scope::CurrentRow) return true;
   if (std::holds_alternative<PrimaryKeysCatalogRequest>(request) ||
       std::holds_alternative<ForeignKeysCatalogRequest>(request) ||
       std::holds_alternative<ProceduresCatalogRequest>(request) ||
@@ -984,6 +987,106 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
   auto native = native_catalog_request(request);
   if (!native) return local_backend_error(LocalFailure::InvalidInput,
       "Invalid catalog name semantics", BackendOperation::ExecuteCatalog, session_state());
+  if (const auto* special=std::get_if<SpecialColumnsCatalogRequest>(&*native);
+      catalog_profile_==PgCatalogProfile::Redshift && special &&
+      special->identifier==SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
+      special->scope==SpecialColumnsCatalogRequest::Scope::CurrentRow) {
+    const auto unavailable=[this] {
+      return local_backend_error(LocalFailure::Unsupported,"Modern exact-schema Redshift row identity is unavailable",
+          BackendOperation::ExecuteCatalog,session_state());
+    };
+    const auto invalid=[this] {
+      return local_backend_error(LocalFailure::InvalidInput,"Exact nonempty schema and table identifiers are required",
+          BackendOperation::ExecuteCatalog,session_state());
+    };
+    const auto valid=[](std::string_view name) {
+      return name.find('\0')==std::string_view::npos && rs::util::utf8_code_point_count(name).has_value();
+    };
+    if (!special->schema) return unavailable();
+    if (!valid(*special->schema) || !valid(special->table) ||
+        (special->catalog && !valid(*special->catalog))) return invalid();
+    if (catalog_mode()!=RedshiftCatalogMode::Show || session_state()!=SessionState::Idle) return unavailable();
+    const auto capability=get_parameter("show_discovery");
+    std::uint32_t version=0;
+    const auto parsed=std::from_chars(capability.data(),capability.data()+capability.size(),version);
+    if (capability.empty() || capability.size()>10 || capability.find_first_not_of("0123456789")!=std::string::npos ||
+        parsed.ec!=std::errc{} || parsed.ptr!=capability.data()+capability.size() || version<4) return unavailable();
+    auto scope=[&]() -> rs::util::Result<CatalogDatabaseScope> {
+      try {
+        return redshift_catalog_database_scope(catalog_database_scope(),
+            get_parameter_status("datashare_enabled"),get_parameter_status("external_database"));
+      } catch (...) {
+        return {rs::util::DbErrorCode::ProtocolError,"Metadata scope observation failed"};
+      }
+    }();
+    if (!scope) {
+      BackendError error{scope.error(),scope.error_message()};
+      error.operation=BackendOperation::ExecuteCatalog;error.error_class=BackendErrorClass::InvalidMetadata;
+      error.session_state=session_state();error.disposition=SessionDisposition::Retire;return error;
+    }
+    if (*scope!=CatalogDatabaseScope::CurrentDatabase) return unavailable();
+    const auto expired=[deadline] {return rs::util::Clock::now()>=deadline;};
+    const auto timeout=[] {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),"Row-identity catalog deadline expired"};
+      error.operation=BackendOperation::ExecuteCatalog;return error;
+    };
+    if (expired()) return timeout();
+    RedshiftRoutineBudget budget{catalog_response_limits(),catalog_result_limits()};
+    // Empty ordinary identifiers denote no matching identity, never defaults.
+    if (special->schema->empty() || special->table.empty() ||
+        (special->catalog && special->catalog->empty())) return redshift_special_columns_headers(budget,deadline);
+    // Reserve identity + both SHOW exchanges before the first dispatch. The
+    // same budget retains caller names, exact plan/parameters and quoted command.
+    if (!budget.exchanges_available(3)) return redshift_routine_limit();
+    const auto admit_name=[&](std::string_view name,std::size_t copies) {
+      const auto max=std::numeric_limits<std::size_t>::max();
+      if (name.size()>(max-512)/copies || !budget.name(name)) return false;
+      return budget.retain({0,0,name.size()*copies+512,copies,name.size()*copies});
+    };
+    if (!admit_name(*special->schema,4) || !admit_name(special->table,4) ||
+        (special->catalog && !admit_name(*special->catalog,1))) return redshift_routine_limit();
+    if (!budget.exchange()) return redshift_routine_limit();
+    auto database=redshift_primary_key_database(
+        execute_query("SELECT current_database() AS database_name",deadline),budget,deadline);
+    if (!database) return database.backend_error();
+    if (expired()) return timeout();
+    if (special->catalog && *special->catalog!=*database) return redshift_special_columns_headers(budget,deadline);
+    if (!admit_name(*database,4)) return redshift_routine_limit();
+    auto plan=redshift_primary_key_plan(*database,special->schema,special->table);
+    if (!plan) return plan.backend_error();
+    BackendResult<QueryResult> keys=unavailable();
+    {
+      const std::vector<QueryParameter> parameters{{plan->database,QueryParameterType::Unspecified},
+          {plan->schema,QueryParameterType::Unspecified},{plan->table,QueryParameterType::Unspecified}};
+      if (!budget.exchange()) return redshift_routine_limit();
+      keys=redshift_primary_key_part(*plan,execute_prepared(
+          "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;",parameters,deadline),budget,deadline);
+    }
+    if (!keys) return keys.backend_error();
+    if (expired()) return timeout();
+    if (keys->rows.empty()) return redshift_special_columns_headers(budget,deadline);
+    RedshiftRoutineUsage command_charge{0,0,128,0,0};
+    const auto max=std::numeric_limits<std::size_t>::max();
+    for (const auto name:{std::string_view(plan->database),std::string_view(plan->schema),std::string_view(plan->table)}) {
+      if (name.size()>(max-command_charge.bytes)/2) return redshift_routine_limit();
+      command_charge.bytes+=name.size()*2;
+    }
+    if (!budget.retain(command_charge)) return redshift_routine_limit();
+    BackendResult<QueryResult> columns=unavailable();
+    {
+      const auto command=redshift_show_columns_command(plan->database,plan->schema,plan->table);
+      if (expired()) return timeout();
+      if (!budget.exchange()) return redshift_routine_limit();
+      columns=redshift_columns_part(plan->database,plan->schema,plan->table,ColumnsCatalogRequest{},
+          execute_query(command,deadline),budget,deadline);
+    }
+    budget.release(command_charge);
+    if (!columns) return columns.backend_error();
+    // Application-maintained declared PK integrity is metadata, not server
+    // enforcement. Join every key component; never invent a physical row id.
+    return redshift_special_columns_result(keys,columns,special->require_non_nullable,budget,deadline);
+  }
+
   const auto semantic_request = *native;
   const bool identifier_show = catalog_profile_ == PgCatalogProfile::Redshift &&
       (std::holds_alternative<TablesCatalogRequest>(*native) ||

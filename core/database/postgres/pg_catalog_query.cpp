@@ -831,6 +831,10 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
     if (const auto* special = std::get_if<SpecialColumnsCatalogRequest>(&request);
         special && special->identifier == SpecialColumnsCatalogRequest::Identifier::RowVersion)
       return redshift_row_version_query();
+    if (const auto* special = std::get_if<SpecialColumnsCatalogRequest>(&request);
+        special && special->scope == SpecialColumnsCatalogRequest::Scope::CurrentRow)
+      return {rs::util::DbErrorCode::UnsupportedFeature,
+          "Redshift row identity requires exact-schema native execution"};
   }
   return std::visit([](const auto& catalog) { return build_query(catalog); }, request);
 }
