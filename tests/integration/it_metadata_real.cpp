@@ -1,4 +1,7 @@
 #include <gtest/gtest.h>
+#include <string_view>
+#include <cstdlib>
+#include "odbcpp/database/backend_provider.h"
 #include <algorithm>
 #include <chrono>
 #include "odbc/odbc_api.h"
@@ -94,6 +97,238 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
   }
   return true;
 }
+
+// Dedicated ROOT-preowned relation only; this fixture never creates/drops it.
+constexpr bool timeout_table_name(std::string_view name) {
+    if (!name.starts_with("odbcpp_timeout_gate_") || name.size() <= 20 || name.size() > 63) return false;
+    for (char ch : name) {
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+    }
+    return true;
+}
+constexpr std::optional<std::uint32_t> timeout_positive_id(std::string_view text) {
+    std::uint32_t value = 0;
+    if (text.empty()) return std::nullopt;
+    for (char ch : text) {
+        if (ch < '0' || ch > '9' || value > (UINT32_MAX - static_cast<unsigned>(ch - '0')) / 10) return std::nullopt;
+        value = value * 10 + static_cast<unsigned>(ch - '0');
+    }
+    return value == 0 ? std::nullopt : std::optional<std::uint32_t>(value);
+}
+constexpr std::optional<std::uint64_t> timeout_server_milliseconds(std::string_view text) {
+    std::uint64_t value = 0;
+    std::size_t digits = 0;
+    while (digits < text.size() && text[digits] >= '0' && text[digits] <= '9') {
+        const auto digit = static_cast<unsigned>(text[digits++] - '0');
+        if (value > (UINT64_MAX - digit) / 10) return std::nullopt;
+        value = value * 10 + digit;
+    }
+    if (digits == 0) return std::nullopt;
+    const auto unit = text.substr(digits);
+    const std::uint64_t factor = unit.empty() || unit == "ms" ? 1 : unit == "s" ? 1000 : unit == "min" ? 60000 : 0;
+    if (factor == 0 || value > UINT64_MAX / factor) return std::nullopt;
+    return value * factor;
+}
+constexpr bool timeout_server_allows_client(std::string_view text) {
+    const auto ms = timeout_server_milliseconds(text);
+    return ms && (*ms == 0 || *ms >= 3000);
+}
+static_assert(timeout_table_name("odbcpp_timeout_gate_0123456789abcdef"));
+static_assert(!timeout_table_name("odbcpp_timeout_gate_%"));
+static_assert(!timeout_table_name("public_table"));
+static_assert(timeout_positive_id("4294967295") == UINT32_MAX);
+static_assert(!timeout_positive_id("4294967296") && !timeout_positive_id("0"));
+static_assert(timeout_server_milliseconds("3s") == 3000);
+static_assert(timeout_server_milliseconds("1000ms") == 1000);
+static_assert(!timeout_server_milliseconds("3seconds"));
+static_assert(timeout_server_allows_client("0"));
+static_assert(timeout_server_allows_client("3000ms"));
+static_assert(!timeout_server_allows_client("2999ms"));
+static_assert(!timeout_server_allows_client("18446744073709551616"));
+
+class SharedTimeoutBlocker {
+public:
+    explicit SharedTimeoutBlocker(std::chrono::steady_clock::time_point end) : end_(end) {
+        property("timeout_blocker_cleanup_known", "false");
+        property("timeout_blocker_lock_ack", "false");
+        property("timeout_blocker_rollback_ack", "false");
+    }
+    ~SharedTimeoutBlocker() {
+        try {
+            if (!closed_ && known_) (void)finish();
+            if (!closed_) property("timeout_fixture_unknown", "true");
+        } catch (...) {
+            // Initial false cleanup receipt survives diagnostic/allocation failure.
+        }
+    }
+    bool open(SQLHENV env, SQLHSTMT waiter) {
+        const auto* schema = std::getenv("ODBCPP_REDSHIFT_TIMEOUT_SCHEMA");
+        const auto* table = std::getenv("ODBCPP_REDSHIFT_TIMEOUT_TABLE");
+        const auto* oid = std::getenv("ODBCPP_REDSHIFT_TIMEOUT_OID");
+        if (!schema || std::string_view(schema) != "odbcpp_fixture" || !table ||
+            !timeout_table_name(table) || !oid || !timeout_positive_id(oid)) return fail("required public schema/table/OID");
+        table_ = table;
+        oid_ = std::to_string(*timeout_positive_id(oid));
+        relation_ = "\"odbcpp_fixture\".\"" + table_ + "\"";
+        property("timeout_fixture_schema", schema);
+        property("timeout_fixture_table", table_);
+        property("timeout_fixture_oid", oid_);
+        try {
+            const auto resolved = rs::odbc::ConnectionString::resolve(
+                odbcpp::test::configured_connection_string(),
+                std::string(rs::core::database::configured_backend_provider().identity().driver_name));
+            const auto& fields = resolved.effective_parameters;
+            if (!fields.contains("SSL") || !fields.contains("SSLCAFILE") || fields.at("SSLCAFILE").empty() ||
+                fields.at("SSLCAFILE").find('\0') != std::string::npos) return fail("verified TLS profile required");
+            const auto ssl = rs::odbc::ConnectionString::to_upper(rs::odbc::ConnectionString::trim(fields.at("SSL")));
+            if (ssl != "1" && ssl != "TRUE" && ssl != "YES" && ssl != "ON") return fail("TLS must be enabled");
+        } catch (...) { return fail("private DSN resolution"); }
+        if (!identity(waiter, "timeout_waiter_before") || !server_timeout(waiter, "timeout_waiter_before")) return false;
+        if (!accept(::SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc_), "allocate blocker")) return false;
+        if (!fixture_connection_budget(end_, dbc_, true)) return fail("blocker login budget");
+        known_ = false;
+        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_connection_string_data(), SQL_NTS,
+                nullptr, 0, nullptr, 0), "blocker login")) return false;
+        connected_ = true;
+        if (!accept(::SQLAllocHandle(SQL_HANDLE_STMT, dbc_, &stmt_), "allocate blocker statement") ||
+            !identity(stmt_, "timeout_blocker") || !server_timeout(stmt_, "timeout_blocker")) return false;
+        std::array<std::string, 2> object;
+        if (!query(stmt_, "SELECT c.oid, u.usename FROM pg_catalog.pg_class c "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "JOIN pg_catalog.pg_user u ON u.usesysid=c.relowner WHERE c.oid=" + oid_ +
+            " AND n.nspname='odbcpp_fixture' AND c.relname='" + table_ + "' AND c.relkind='r'") ||
+            !row(stmt_, object) || !end_row(stmt_)) return false;
+        if (object[0] != oid_ || object[1] != owner_) return fail("ROOT relation identity/ordinary owner mismatch");
+        return true;
+    }
+    bool lock() {
+        if (!known_ || !fixture_connection_budget(end_, dbc_, false)) return fail("before lock budget/state");
+        if (!accept(::SQLSetConnectAttr(dbc_, SQL_ATTR_AUTOCOMMIT,
+                reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0), "disable blocker autocommit")) return false;
+        // Arm BEFORE the call that can cause the adapter's implicit bare BEGIN.
+        rollback_needed_ = true;
+        if (!query(stmt_, "LOCK TABLE " + relation_)) return false;
+        property("timeout_blocker_lock_ack", "true");
+        std::array<std::string, 1> count;
+        if (!query(stmt_, lock_query() + " AND lock_mode='AccessExclusiveLock' AND granted=true") ||
+            !row(stmt_, count) || !end_row(stmt_)) return false;
+        if (count[0] != "1") return fail("exclusive granted lock witness");
+        return true;
+    }
+    std::string waiter_sql() const { return "SELECT value FROM " + relation_; }
+    void waiter_result(bool expected_timeout) {
+        property("timeout_waiter_expected_transport_timeout", expected_timeout ? "true" : "false");
+        if (!expected_timeout) property("timeout_waiter_completion_unknown", "true");
+    }
+    bool reconnected(SQLHSTMT waiter) { return identity(waiter, "timeout_waiter_after"); }
+    bool finish() {
+        if (closed_) return true;
+        if (!known_) return false; // No speculative SQL after unknown completion.
+        if (rollback_needed_) {
+            if (!fixture_connection_budget(end_, dbc_, false)) return fail("rollback remaining budget");
+            known_ = false;
+            if (!accept(::SQLEndTran(SQL_HANDLE_DBC, dbc_, SQL_ROLLBACK), "blocker rollback")) return false;
+            rollback_needed_ = false;
+            property("timeout_blocker_rollback_ack", "true");
+            if (!accept(::SQLSetConnectAttr(dbc_, SQL_ATTR_AUTOCOMMIT,
+                    reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0), "restore blocker autocommit")) return false;
+            std::array<std::string, 1> count;
+            if (!query(stmt_, lock_query()) || !row(stmt_, count) || !end_row(stmt_)) return false;
+            if (count[0] != "0") return fail("blocker lock still present");
+        }
+        if (stmt_) {
+            if (!accept(::SQLFreeHandle(SQL_HANDLE_STMT, stmt_), "free blocker statement")) return false;
+            stmt_ = SQL_NULL_HSTMT;
+        }
+        if (connected_) {
+            if (!fixture_connection_budget(end_, dbc_, false)) return fail("disconnect remaining budget");
+            known_ = false;
+            if (!accept(::SQLDisconnect(dbc_), "disconnect blocker")) return false;
+            connected_ = false;
+        }
+        if (dbc_) {
+            if (!accept(::SQLFreeHandle(SQL_HANDLE_DBC, dbc_), "free blocker connection")) return false;
+            dbc_ = SQL_NULL_HDBC;
+        }
+        closed_ = true;
+        property("timeout_blocker_cleanup_known", "true");
+        return true;
+    }
+private:
+    static void property(const std::string& key, const std::string& value) {
+        ::testing::Test::RecordProperty(key, value);
+    }
+    bool fail(const char* stage) {
+        known_ = false;
+        property("timeout_fixture_unknown", "true");
+        property("timeout_failure_stage", stage);
+        ADD_FAILURE() << "Shared timeout fixture stopped at " << stage;
+        return false;
+    }
+    bool accept(SQLRETURN result, const char* stage) {
+        if (result != SQL_SUCCESS) return fail(stage);
+        known_ = true;
+        return true;
+    }
+    bool query(SQLHSTMT statement, const std::string& sql) {
+        if (!known_ || !fixture_statement_budget(end_, statement)) return fail("statement remaining budget/state");
+        known_ = false;
+        return accept(::SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS), "statement completion");
+    }
+    template<std::size_t N> bool row(SQLHSTMT statement, std::array<std::string, N>& fields) {
+        if (!known_ || !fixture_statement_budget(end_, statement)) return fail("row remaining budget/state");
+        if (!accept(::SQLFetch(statement), "required row")) return false;
+        for (std::size_t i = 0; i < N; ++i) {
+            std::array<char, 160> value{};
+            SQLLEN length = -1;
+            if (!accept(::SQLGetData(statement, static_cast<SQLUSMALLINT>(i + 1), SQL_C_CHAR,
+                    value.data(), static_cast<SQLLEN>(value.size()), &length), "identity cell")) return false;
+            if (length < 0 || static_cast<std::size_t>(length) >= value.size()) return fail("identity cell width/null");
+            fields[i].assign(value.data(), static_cast<std::size_t>(length));
+        }
+        return true;
+    }
+    bool end_row(SQLHSTMT statement) {
+        if (!known_ || !fixture_statement_budget(end_, statement)) return fail("row end remaining budget/state");
+        if (::SQLFetch(statement) != SQL_NO_DATA) return fail("extra row/error");
+        return accept(::SQLCloseCursor(statement), "close identity cursor");
+    }
+    bool identity(SQLHSTMT statement, const std::string& prefix) {
+        std::array<std::string, 4> fields;
+        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), starttime FROM stv_sessions "
+            "WHERE process=pg_backend_pid() AND user_name=current_user AND db_name=current_database()") ||
+            !row(statement, fields) || !end_row(statement)) return false;
+        if (!timeout_positive_id(fields[2]) || fields[3].empty()) return fail("session birth identity");
+        if (owner_.empty()) {
+            owner_ = fields[0];
+            database_ = fields[1];
+        }
+        if (fields[0] != owner_ || fields[1] != database_) return fail("session principal/database mismatch");
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            constexpr std::array<const char*, 4> suffix{"_owner", "_database", "_pid", "_start"};
+            property(prefix + suffix[i], fields[i]);
+        }
+        if (prefix == "timeout_blocker") pid_ = std::to_string(*timeout_positive_id(fields[2]));
+        return true;
+    }
+    bool server_timeout(SQLHSTMT statement, const std::string& prefix) {
+        std::array<std::string, 1> value;
+        if (!query(statement, "SHOW statement_timeout") || !row(statement, value) || !end_row(statement)) return false;
+        if (!timeout_server_allows_client(value[0])) return fail("server timeout competes with client oracle");
+        property(prefix + "_statement_timeout_ms", std::to_string(*timeout_server_milliseconds(value[0])));
+        return true;
+    }
+    std::string lock_query() const {
+        return "SELECT COUNT(*) FROM svv_transactions WHERE txn_owner=current_user AND txn_db=current_database() "
+            "AND pid=" + pid_ + " AND relation=" + oid_ + " AND lockable_object_type='relation'";
+    }
+    std::chrono::steady_clock::time_point end_;
+    SQLHDBC dbc_{SQL_NULL_HDBC};
+    SQLHSTMT stmt_{SQL_NULL_HSTMT};
+    bool known_{true}, connected_{false}, rollback_needed_{false}, closed_{false};
+    std::string table_, oid_, relation_, owner_, database_, pid_;
+};
+
 }  // namespace
 
 
@@ -5279,6 +5514,50 @@ TEST_F(MetadataIntegrationTest, CompletionKindsDriveEachBatchResultDiagnostic) {
 }
 
 TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) {
+    if (redshift_profile()) {
+        SQLHSTMT other{};
+        ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
+        struct Cleanup { SQLHSTMT value; ~Cleanup() { SQLFreeHandle(SQL_HANDLE_STMT, value); } } cleanup{other};
+        SharedTimeoutBlocker blocker(fixture_end_);
+        ASSERT_TRUE(blocker.open(henv, other));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+            (SQLCHAR*)"CREATE TEMP TABLE metadata_session_scope (value integer)", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            (SQLCHAR*)"SELECT * FROM metadata_session_scope", SQL_NTS));
+        SQLSMALLINT columns{};
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(1, columns);
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(1, columns);
+        ASSERT_TRUE(blocker.lock());
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)1, 0));
+        const auto sql = blocker.waiter_sql();
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = SQLExecDirect(other,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        const auto state = diagnostic_state(SQL_HANDLE_STMT, other);
+        const bool expected = result == SQL_ERROR && state == "HYT00" &&
+            elapsed < std::chrono::seconds(3);
+        blocker.waiter_result(expected);
+        EXPECT_EQ(SQL_ERROR, result);
+        EXPECT_EQ("HYT00", state);
+        EXPECT_LT(elapsed, std::chrono::seconds(3));
+        ASSERT_TRUE(blocker.finish());
+        ASSERT_TRUE(expected);
+        // Internal timeout close must preserve BOTH existing child handles.
+        ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
+            odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, nullptr, 0));
+        ASSERT_TRUE(blocker.reconnected(other));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+            (SQLCHAR*)"CREATE TEMP TABLE metadata_session_scope (value text, extra boolean)", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(2, columns);
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+        EXPECT_EQ(2, columns);
+        return;
+    }
     SQLHSTMT other{};
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
     struct Cleanup { SQLHSTMT value; ~Cleanup() { SQLFreeHandle(SQL_HANDLE_STMT, value); } } cleanup{other};
