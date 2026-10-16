@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include "odbc/odbc_api.h"
+#include "odbc/connection_string.h"
 #include "core/database/database_factory.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
@@ -1563,6 +1564,119 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedWideColumnNames) {
 }
 
 TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
+    if (redshift_profile()) {
+        // The IPD supplies a text-family OID, not a VARCHAR result typmod.
+        // Keep this cache-invalidation oracle about native type changes; the
+        // separate sizing-policy tests still cover LONGVARCHAR presentation.
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt));
+        hstmt = nullptr;
+        ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc));
+        const std::string configured = odbcpp::test::configured_connection_string();
+        auto options = rs::odbc::ConnectionString::parse(configured);
+        if (configured.find('=') == std::string::npos) {
+            options["DSN"] = configured;
+        }
+        options["MAXVARCHARSIZE"] = "0";
+        std::string connection;
+        for (const auto& [key, value] : options) {
+            connection += key + "={";
+            for (char ch : value) {
+                connection += ch;
+                if (ch == '}') {
+                    connection += '}';
+                }
+            }
+            connection += "};";
+        }
+        ASSERT_TRUE(options == rs::odbc::ConnectionString::parse(connection))
+            << "Sizing override must preserve all other connection fields";
+        ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
+            reinterpret_cast<SQLCHAR*>(connection.data()), SQL_NTS,
+            nullptr, 0, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            (SQLCHAR*)"SELECT ? AS typed_value", SQL_NTS));
+        SQLHDESC implementation = SQL_NULL_HDESC;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt,
+            SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+        const auto number = [](SQLULEN value) {
+            return reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(value));
+        };
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+            SQL_DESC_CONCISE_TYPE, number(SQL_INTEGER), 0));
+        SQLSMALLINT count = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &count));
+        EXPECT_EQ(1, count);
+        SQLSMALLINT type = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1,
+            nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+        EXPECT_EQ(SQL_INTEGER, type);
+        std::array<char, 16> type_name{};
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt, 1, SQL_DESC_TYPE_NAME,
+            type_name.data(), static_cast<SQLSMALLINT>(type_name.size()), nullptr, nullptr));
+        EXPECT_STREQ("integer", type_name.data());
+
+        // Change only the IPD, not the prepared SQL: a stale description would
+        // incorrectly retain INTEGER. The bound length is an independent IPD
+        // contract and must not be guessed to constrain a native result field.
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+            SQL_DESC_CONCISE_TYPE, number(SQL_VARCHAR), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+            SQL_DESC_LENGTH, number(17), 0));
+        SQLULEN parameter_length = 99;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+            SQL_DESC_LENGTH, &parameter_length, 0, nullptr));
+        EXPECT_EQ(17u, parameter_length);
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &count));
+        EXPECT_EQ(1, count);
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1,
+            nullptr, 0, nullptr, &type, nullptr, nullptr, nullptr));
+        EXPECT_EQ(SQL_VARCHAR, type);
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt, 1, SQL_DESC_TYPE_NAME,
+            type_name.data(), static_cast<SQLSMALLINT>(type_name.size()), nullptr, nullptr));
+        EXPECT_STREQ("varchar", type_name.data());
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+            SQL_DESC_LENGTH, &parameter_length, 0, nullptr));
+        EXPECT_EQ(17u, parameter_length);
+
+        // A literal SQL cast supplies the result typmod the IPD cannot carry.
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            (SQLCHAR*)"SELECT CAST(? AS VARCHAR(17)) AS typed_value", SQL_NTS));
+        char parameter[18] = "12345678901234567";
+        SQLLEN indicator = SQL_NULL_DATA;
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, SQL_VARCHAR, 17, 0, parameter, sizeof(parameter), &indicator));
+        SQLULEN result_length = 99;
+        SQLSMALLINT scale = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1,
+            nullptr, 0, nullptr, &type, &result_length, &scale, nullptr));
+        EXPECT_EQ(SQL_VARCHAR, type);
+        EXPECT_EQ(17u, result_length);
+        EXPECT_EQ(0, scale);
+        std::array<char, 20> output;
+        output.fill('z');
+        SQLLEN output_length = 99;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            output.data() + 1, 18, &output_length));
+        EXPECT_EQ(SQL_NULL_DATA, output_length);
+        EXPECT_EQ(std::string(20, 'z'), std::string(output.data(), output.size()));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        indicator = 17;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            output.data() + 1, 18, &output_length));
+        EXPECT_EQ(17, output_length);
+        EXPECT_STREQ(parameter, output.data() + 1);
+        EXPECT_EQ('z', output.front());
+        EXPECT_EQ('z', output.back());
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ? AS typed_value", SQL_NTS));
     SQLHDESC implementation = SQL_NULL_HDESC;
@@ -3281,6 +3395,82 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
 }
 
 TEST_F(MetadataIntegrationTest, PrimaryKeyArgumentsAreLiteralAndKeepEmpty) {
+    if (redshift_profile()) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+            (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp.primary_'_keys\"("
+                      "second_key integer, first_key integer, "
+                      "CONSTRAINT odbcpp_literal_pk PRIMARY KEY(first_key, second_key))", SQL_NTS));
+        std::string session_schema;
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp.primary_'_keys", session_schema));
+        SQLCHAR table_name[] = "odbcpp.primary_'_keys";
+        auto* schema_name = reinterpret_cast<SQLCHAR*>(session_schema.data());
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, table_name, SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        const auto catalog = text_cell(hstmt, 1);
+        ASSERT_TRUE(catalog.has_value());
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+        EXPECT_EQ(std::optional<std::string>("odbcpp.primary_'_keys"), text_cell(hstmt, 3));
+        EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<std::string>("odbcpp_literal_pk"), text_cell(hstmt, 6));
+        EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(hstmt,
+            nullptr, 0, schema_name, SQL_NTS, table_name, SQL_NTS));
+        EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>("second_key"), text_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(2), integer_cell(hstmt, 5));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+        SQLCHAR empty[] = "";
+        SQLCHAR wildcard[] = "%";
+        const auto expect_local_refusal = [&](SQLCHAR* requested_catalog,
+                                              SQLCHAR* requested_schema,
+                                              SQLCHAR* requested_table) {
+            EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(hstmt,
+                requested_catalog, requested_catalog ? SQL_NTS : 0,
+                requested_schema, requested_schema ? SQL_NTS : 0,
+                requested_table, SQL_NTS));
+            EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        };
+        // All five original shapes fail exact-name validation before native I/O.
+        expect_local_refusal(empty, nullptr, table_name);
+        expect_local_refusal(nullptr, empty, table_name);
+        expect_local_refusal(nullptr, nullptr, empty);
+        expect_local_refusal(wildcard, nullptr, table_name);
+        expect_local_refusal(nullptr, nullptr, wildcard);
+
+        // A literal schema named '%' passes the local guard and reaches SHOW.
+        // Preserve the original successful-empty oracle; its native outcome is
+        // still an open predicate, not a manufactured HY000 or a waived case.
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(hstmt,
+            nullptr, 0, wildcard, SQL_NTS, table_name, SQL_NTS));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+        std::string catalog_name = *catalog;
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(hstmt,
+            reinterpret_cast<SQLCHAR*>(catalog_name.data()), SQL_NTS,
+            schema_name, SQL_NTS, table_name, SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        auto wide_catalog = rs::odbc::utf8_to_wide(catalog_name);
+        auto wide_schema = rs::odbc::utf8_to_wide(session_schema);
+        auto wide_table = rs::odbc::utf8_to_wide("odbcpp.primary_'_keys");
+        ASSERT_TRUE(wide_catalog.has_value());
+        ASSERT_TRUE(wide_schema.has_value());
+        ASSERT_TRUE(wide_table.has_value());
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeysW(hstmt,
+            wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+            wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+            wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size())));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp.primary_'_keys\"("
