@@ -6091,7 +6091,8 @@ TEST(RedshiftSessionTemporarySchemas, NativeProjectionUsesExactDatabaseAndExisti
   const auto command = redshift_temporary_schemas_command("db'\\雪");
   EXPECT_NE(std::string::npos, command.find("FROM pg_table_def"));
   EXPECT_NE(std::string::npos, command.find("LEFT(TRIM(schemaname),8)='pg_temp_'"));
-  EXPECT_NE(std::string::npos, command.find("current_database()=E'db''\\\\雪'"));
+  EXPECT_NE(std::string::npos, command.find("current_database()='db''\\\\雪'"));
+  EXPECT_EQ(std::string::npos, command.find("=E'"));
   EXPECT_NE(std::string::npos, command.find("LIMIT 10001"));
   auto native = routine_schema_rows({{"db", "pg_temp_123", std::nullopt,
       std::nullopt, std::nullopt, std::nullopt, std::nullopt}});
@@ -6106,6 +6107,28 @@ TEST(RedshiftSessionTemporarySchemas, NativeProjectionUsesExactDatabaseAndExisti
       {native, {SessionState::Idle, SessionDisposition::Reusable}}, foreign_budget, rs::util::Deadline::max());
   ASSERT_FALSE(foreign);
   EXPECT_EQ(BackendErrorClass::InvalidMetadata, foreign.backend_error().error_class);
+}
+
+TEST(RedshiftSessionTemporarySchemas, UsesRedshiftPlainLiteralsForEachEscapedDatabaseCharacter) {
+  // Redshift QUOTE_LITERAL uses plain single quotes and doubles apostrophes
+  // and backslashes. PostgreSQL's E prefix is parsed as an undefined type.
+  const std::pair<std::string_view, std::string_view> examples[]{
+      {"db", "'db'"},
+      {"db'quote", "'db''quote'"},
+      {"db\\slash", "'db\\\\slash'"},
+      {"db'\\雪", "'db''\\\\雪'"},
+  };
+  const std::string prefix = "SELECT DISTINCT current_database() AS database_name,"
+      "TRIM(schemaname)::varchar AS schema_name,NULL::varchar AS schema_owner,"
+      "NULL::varchar AS schema_type,NULL::varchar AS schema_acl,"
+      "NULL::varchar AS source_database,NULL::varchar AS schema_option "
+      "FROM pg_table_def WHERE LEFT(TRIM(schemaname),8)='pg_temp_' "
+      "AND current_database()=";
+  for (const auto& [database, quoted] : examples) {
+    const auto command = redshift_temporary_schemas_command(database);
+    EXPECT_EQ(prefix + std::string(quoted) + " ORDER BY schema_name LIMIT 10001;", command);
+    EXPECT_EQ(std::string::npos, command.find("=E'"));
+  }
 }
 
 TEST(RedshiftSessionTemporarySchemas, TablesAndColumnsDiscoverSessionSchemaWithoutDuplicateVisits) {

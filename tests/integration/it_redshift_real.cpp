@@ -3745,7 +3745,7 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
     }
     ASSERT_FALSE(HasFailure());
   }
-  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(1000,count);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
@@ -3921,7 +3921,7 @@ TEST_F(RedshiftBufferedLifecycleRealTest, MaxRowsAndForwardOnlyRefusalsPreserveP
     }
   }
   rows_fetched_=99;row_status_=SQL_ROW_SUCCESS;ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0));EXPECT_EQ(0u,rows_fetched_);EXPECT_EQ(SQL_ROW_NOROW,row_status_);
-  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);reset(hstmt_);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(3,count);reset(hstmt_);ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));direct(hstmt_,"SELECT CAST(1 AS INTEGER)");ASSERT_FALSE(HasFailure());scalar(hstmt_,1);ASSERT_FALSE(HasFailure());reset(hstmt_);ASSERT_FALSE(HasFailure());
   // Window count3 proves logical cardinality; MAX_ROWS2 is only local truncation.

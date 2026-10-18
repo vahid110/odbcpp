@@ -244,7 +244,11 @@ protected:
     EXPECT_EQ(SQL_SUCCESS,result)<<state(SQL_HANDLE_STMT,stmt_);guards(opaque_);
     if(result!=SQL_SUCCESS) { return std::nullopt; }
     if(length_==SQL_NULL_DATA) {
+#if !ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+      // ODBC ignores the payload buffer for SQL_NULL_DATA. The owned driver
+      // additionally promises to preserve it; vendor NULLness uses the indicator.
       EXPECT_TRUE(std::all_of(opaque_.value.begin(),opaque_.value.end(),[](SQLCHAR byte){return byte==0x5a;}));
+#endif
       return std::nullopt;
     }
     if(length_<0||length_>65535) { ADD_FAILURE()<<"SHOW opaque text bounds refused";return std::nullopt; }
@@ -316,7 +320,11 @@ protected:
     EXPECT_EQ(SQL_SUCCESS,result)<<state(SQL_HANDLE_STMT,stmt_);guards(text_);
     if(result!=SQL_SUCCESS) { return std::nullopt; }
     if(length_==SQL_NULL_DATA) {
-      for(const auto byte:text_.value) { EXPECT_EQ(0x5a,byte); }
+#if !ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+      for(const auto byte:text_.value) {
+        EXPECT_EQ(0x5a,byte);
+      }
+#endif
       return std::nullopt;
     }
     if(length_<0||static_cast<std::size_t>(length_)>=text_.value.size()) { ADD_FAILURE()<<"Import text bounds refused";return std::nullopt; }
@@ -328,7 +336,12 @@ protected:
     const auto result=SQLGetData(stmt_,column,SQL_C_SLONG,&integer_.value,sizeof(integer_.value),&length_);
     EXPECT_EQ(SQL_SUCCESS,result)<<state(SQL_HANDLE_STMT,stmt_);guards(integer_);
     if(result!=SQL_SUCCESS) { return std::nullopt; }
-    if(length_==SQL_NULL_DATA) { EXPECT_EQ(static_cast<SQLINTEGER>(0x5a5a5a5a),integer_.value);return std::nullopt; }
+    if(length_==SQL_NULL_DATA) {
+#if !ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+      EXPECT_EQ(static_cast<SQLINTEGER>(0x5a5a5a5a),integer_.value);
+#endif
+      return std::nullopt;
+    }
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer_.value)),length_);
     return std::to_string(integer_.value);
   }
@@ -553,10 +566,22 @@ TEST_F(RedshiftPackageImportLiveTest, TypedImportedRowsPreserveDecimalTemporalNu
     guards(numeric_);EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric_.value)),length_);EXPECT_EQ(5,numeric_.value.precision);EXPECT_EQ(2,numeric_.value.scale);EXPECT_EQ(row==0?1:0,numeric_.value.sign);EXPECT_TRUE(std::equal(magnitude.begin(),magnitude.end(),numeric_.value.val));amounts[row]=numeric_.value;
     poison(day_);length_=73;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt_,3,SQL_C_TYPE_DATE,&day_.value,sizeof(day_.value),&length_));guards(day_);
     if(row==0) { EXPECT_EQ(2000,day_.value.year);EXPECT_EQ(2,day_.value.month);EXPECT_EQ(29,day_.value.day);EXPECT_EQ(static_cast<SQLLEN>(sizeof(day_.value)),length_);owned_day=day_.value; }
-    else { EXPECT_EQ(SQL_NULL_DATA,length_);const auto* bytes=reinterpret_cast<const unsigned char*>(&day_.value);EXPECT_TRUE(std::all_of(bytes,bytes+sizeof(day_.value),[](auto byte){return byte==0x5a;})); }
+    else {
+      EXPECT_EQ(SQL_NULL_DATA,length_);
+#if !ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+      const auto* bytes=reinterpret_cast<const unsigned char*>(&day_.value);
+      EXPECT_TRUE(std::all_of(bytes,bytes+sizeof(day_.value),[](auto byte){return byte==0x5a;}));
+#endif
+    }
     poison(stamp_);length_=73;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt_,4,SQL_C_TYPE_TIMESTAMP,&stamp_.value,sizeof(stamp_.value),&length_));guards(stamp_);
     if(row==0) { EXPECT_EQ(2000,stamp_.value.year);EXPECT_EQ(2,stamp_.value.month);EXPECT_EQ(29,stamp_.value.day);EXPECT_EQ(12,stamp_.value.hour);EXPECT_EQ(34,stamp_.value.minute);EXPECT_EQ(56,stamp_.value.second);EXPECT_EQ(static_cast<SQLUINTEGER>(123456000),stamp_.value.fraction);EXPECT_EQ(static_cast<SQLLEN>(sizeof(stamp_.value)),length_);owned_stamp=stamp_.value; }
-    else { EXPECT_EQ(SQL_NULL_DATA,length_);const auto* bytes=reinterpret_cast<const unsigned char*>(&stamp_.value);EXPECT_TRUE(std::all_of(bytes,bytes+sizeof(stamp_.value),[](auto byte){return byte==0x5a;})); }
+    else {
+      EXPECT_EQ(SQL_NULL_DATA,length_);
+#if !ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+      const auto* bytes=reinterpret_cast<const unsigned char*>(&stamp_.value);
+      EXPECT_TRUE(std::all_of(bytes,bytes+sizeof(stamp_.value),[](auto byte){return byte==0x5a;}));
+#endif
+    }
     strings[row]=nullable_text(5);if(row==0) { EXPECT_TRUE(strings[row]==std::optional<std::string>{"one"}); } else { EXPECT_FALSE(strings[row].has_value()); }ASSERT_FALSE(HasFailure());
   }
   fetch_end();reset();recovery();disconnect();ASSERT_FALSE(HasFailure());poison(numeric_);poison(day_);poison(stamp_);poison(text_);descriptors_.clear();

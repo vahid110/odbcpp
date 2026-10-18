@@ -30,7 +30,7 @@ rs::util::Result<CatalogDatabaseScope> redshift_catalog_database_scope(
 }
 
 namespace {
-std::string literal(const std::string& value) {
+std::string literal(std::string_view value) {
   std::string result{"'"};
   for (const char ch : value) {
     if (ch == '\'' || ch == '\\') result.push_back(ch);
@@ -174,12 +174,6 @@ std::string redshift_show_schemas_command(std::string_view validated_database) {
 }
 
 std::string redshift_temporary_schemas_command(std::string_view validated_database) {
-  std::string literal{"E'"};
-  for (const char ch : validated_database) {
-    if (ch == '\'' || ch == '\\') literal.push_back(ch);
-    literal.push_back(ch);
-  }
-  literal.push_back('\'');
   // PG_TABLE_DEF is current-database/search-path scoped and exposes this
   // session's TEMP tables. Keep SHOW's persistent/external discovery intact.
   return "SELECT DISTINCT current_database() AS database_name,"
@@ -187,7 +181,7 @@ std::string redshift_temporary_schemas_command(std::string_view validated_databa
       "NULL::varchar AS schema_type,NULL::varchar AS schema_acl,"
       "NULL::varchar AS source_database,NULL::varchar AS schema_option "
       "FROM pg_table_def WHERE LEFT(TRIM(schemaname),8)='pg_temp_' "
-      "AND current_database()=" + literal + " ORDER BY schema_name LIMIT 10001;";
+      "AND current_database()=" + literal(validated_database) + " ORDER BY schema_name LIMIT 10001;";
 }
 
 BackendResult<QueryResult> normalize_redshift_schemas(
