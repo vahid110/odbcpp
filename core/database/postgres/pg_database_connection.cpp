@@ -394,13 +394,13 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
               }
               old_headers.columns=std::move(part->columns);
             }
-            const auto count=output.rows.size()+part->rows.size();
-            if (count<output.rows.size() || count>std::numeric_limits<std::size_t>::max()/sizeof(ResultRow)) return redshift_routine_limit();
-            if (count>output.rows.capacity()) {
+            const auto combined_row_count=output.rows.size()+part->rows.size();
+            if (combined_row_count<output.rows.size() || combined_row_count>std::numeric_limits<std::size_t>::max()/sizeof(ResultRow)) return redshift_routine_limit();
+            if (combined_row_count>output.rows.capacity()) {
               const auto old_capacity=output.rows.capacity();
-              if (!budget.retain({0,0,count*sizeof(ResultRow),0,0})) return redshift_routine_limit();
+              if (!budget.retain({0,0,combined_row_count*sizeof(ResultRow),0,0})) return redshift_routine_limit();
               if (expired()) return timeout();
-              output.rows.reserve(count);budget.release({0,0,old_capacity*sizeof(ResultRow),0,0});
+              output.rows.reserve(combined_row_count);budget.release({0,0,old_capacity*sizeof(ResultRow),0,0});
             }
             destroyed=redshift_routine_schema_usage(old_headers);
             destroyed.bytes+=part->rows.capacity()*sizeof(ResultRow);
