@@ -1,5 +1,6 @@
 """Offline adapter tests: mocked provider/SQL/processes and synthetic inputs."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -52,6 +53,21 @@ def adapter(directory):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_system_python_uses_shared_absolute_clock_domain(self):
+        script = '''import json,sys,time
+sys.path.insert(0,sys.argv[1])
+from tools.development.redshift_ctest_ops import Operations
+before=time.clock_gettime(time.CLOCK_MONOTONIC)
+observed=Operations.now(None)
+after=time.clock_gettime(time.CLOCK_MONOTONIC)
+print(json.dumps([before,observed,after]))
+'''
+        raw = subprocess.check_output(['/usr/bin/python3', '-B', '-c', script,
+            str(Path(__file__).parents[2])], stdin=subprocess.DEVNULL, timeout=5)
+        before, observed, after = json.loads(raw)
+        self.assertLessEqual(before, observed)
+        self.assertLessEqual(observed, after)
+
     def test_approved_combined_plan_passes_before_adapter_construction(self):
         plan = ops_module.combined_fixture_plan()
         self.assertEqual((plan['total_helpers'], plan['total_SQL'], plan['total_logins'],

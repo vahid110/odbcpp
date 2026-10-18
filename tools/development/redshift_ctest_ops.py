@@ -138,7 +138,7 @@ class Operations:
         return combined_fixture_plan()
 
     def now(self):
-        return time.monotonic()
+        return time.clock_gettime(time.CLOCK_MONOTONIC)
 
     def lock(self, directory):
         return pilot_lock(directory)
