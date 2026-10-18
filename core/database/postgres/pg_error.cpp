@@ -1,8 +1,42 @@
 #include "pg_backend_provider.h"
+#include "odbcpp/util/utf8.h"
 
 #include <algorithm>
 
 namespace rs::core::database::postgres {
+namespace {
+bool redshift_null_violation_column(std::string_view column) {
+  if (column.empty() || column.size() > 127) return false;
+  bool nonblank = false;
+  for (std::size_t offset = 0; offset < column.size();) {
+    const auto point = rs::util::next_utf8_code_point(column, offset);
+    if (!point || *point < 0x20 || (*point >= 0x7f && *point <= 0x9f) ||
+        *point == 0x2028 || *point == 0x2029) return false;
+    nonblank = nonblank || *point != ' ';
+  }
+  return nonblank;
+}
+}  // namespace
+
+std::optional<std::string> PgBackendProvider::normalize_error_sqlstate(
+    const BackendError& error, ErrorContext context) const {
+  // Redshift emits XX000 for this enforced NOT NULL violation. XX000 alone
+  // is ambiguous: require the observed server wording, including the parser's
+  // owning diagnostic prefix, and one bounded printable UTF-8 column name.
+  constexpr std::string_view prefix{
+      "Query error: Cannot insert a NULL value into column "};
+  if (catalog_profile_ == PgCatalogProfile::Redshift &&
+      context == ErrorContext::Unknown &&
+      error.code == rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed) &&
+      error.error_class == BackendErrorClass::Server &&
+      error.native_state == "XX000" && error.message.starts_with(prefix)) {
+    const std::string_view column = std::string_view{error.message}.substr(prefix.size());
+    if (redshift_null_violation_column(column)) {
+      return std::string{"23000"};
+    }
+  }
+  return normalize_error_sqlstate(error.native_state.value_or(""), context);
+}
 
 std::optional<std::string> PgBackendProvider::normalize_error_sqlstate(
     std::string_view server_state, ErrorContext context) const {

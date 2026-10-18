@@ -389,6 +389,91 @@ TEST(BackendErrorsTest, NormalizedStateOwnsItsStorage) {
   EXPECT_EQ(std::optional<std::string>("22012"), normalized);
 }
 
+TEST(BackendErrorsTest, RedshiftNullViolationUsesOwningDetailAndPreservesNativeFacts) {
+  postgres::PgBackendProvider redshift{
+      BackendIdentity{"redshift", "Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost", 5439, "dev", true}, std::nullopt,
+      postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider postgres{
+      BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"localhost", 5432, "postgres", true}};
+  const IBackendProvider& provider = redshift;
+  for (const auto* column : {"id", "\"quoted column\"", "列_雪"}) {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+        std::string{"Query error: Cannot insert a NULL value into column "} + column};
+    error.native_state = "XX000";
+    error.session_state = SessionState::Idle;
+    error.disposition = SessionDisposition::Reusable;
+    const auto original = error;
+    EXPECT_EQ(std::optional<std::string>{"23000"},
+              provider.normalize_error_sqlstate(error, ErrorContext::Unknown));
+    EXPECT_FALSE(postgres.normalize_error_sqlstate(error, ErrorContext::Unknown));
+    EXPECT_EQ(original.native_state, error.native_state);
+    EXPECT_EQ(original.message, error.message);
+    EXPECT_EQ(original.code, error.code);
+    EXPECT_EQ(original.error_class, error.error_class);
+    EXPECT_EQ(original.session_state, error.session_state);
+    EXPECT_EQ(original.disposition, error.disposition);
+  }
+}
+
+TEST(BackendErrorsTest, RedshiftNullViolationRejectsAmbiguousMalformedAndUnobservedDetails) {
+  postgres::PgBackendProvider redshift{
+      BackendIdentity{"redshift", "Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost", 5439, "dev", true}, std::nullopt,
+      postgres::PgCatalogProfile::Redshift};
+  const std::string prefix{"Query error: Cannot insert a NULL value into column "};
+  for (const auto& message : std::vector<std::string>{
+      "Query error: unrelated internal failure", prefix, prefix + " ",
+      prefix + "id\nDETAIL", prefix + "id\t", prefix + std::string("id\0x", 4),
+      prefix + "id\u0085", prefix + "id\u2028",
+      prefix + std::string(1, static_cast<char>(0xff)), prefix + std::string(128, 'x'),
+      "Cannot insert a NULL value into column id",
+      "Query error: Cannot insert a null value into column id"}) {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), message};
+    error.native_state = "XX000";
+    EXPECT_FALSE(redshift.normalize_error_sqlstate(error, ErrorContext::Unknown));
+  }
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), prefix + "id"};
+  for (const auto* state : {"XX001", "XX000x", "xx000", "XXXXX"}) {
+    error.native_state = state;
+    EXPECT_FALSE(redshift.normalize_error_sqlstate(error, ErrorContext::Unknown));
+  }
+  error.native_state = "XX000";
+  for (const auto context : {ErrorContext::CreateTable, ErrorContext::CreateView,
+      ErrorContext::CreateIndex, ErrorContext::DropIndex}) {
+    EXPECT_FALSE(redshift.normalize_error_sqlstate(error, context));
+  }
+  error.error_class = BackendErrorClass::InvalidInput;
+  EXPECT_FALSE(redshift.normalize_error_sqlstate(error, ErrorContext::Unknown));
+  error.error_class = BackendErrorClass::Server;
+  error.code = rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError);
+  EXPECT_FALSE(redshift.normalize_error_sqlstate(error, ErrorContext::Unknown));
+}
+
+TEST(BackendErrorsTest, OwningDiagnosticDefaultDelegatesExistingNativeStatePolicy) {
+  postgres::PgBackendProvider redshift{
+      BackendIdentity{"redshift", "Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost", 5439, "dev", true}, std::nullopt,
+      postgres::PgCatalogProfile::Redshift};
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+      "Query error: Cannot insert a NULL value into column id"};
+  error.native_state = "XX000";
+  EXPECT_FALSE(redshift.normalize_error_sqlstate("XX000", ErrorContext::Unknown));
+  EXPECT_FALSE(redshift.IBackendProvider::normalize_error_sqlstate(error, ErrorContext::Unknown));
+  for (const auto* state : {"23502", "23505"}) {
+    error.native_state = state;
+    EXPECT_EQ(std::optional<std::string>{"23000"},
+              redshift.normalize_error_sqlstate(error, ErrorContext::Unknown));
+    EXPECT_EQ(std::optional<std::string>{"23000"},
+              redshift.IBackendProvider::normalize_error_sqlstate(error, ErrorContext::Unknown));
+  }
+  error.native_state = "42P07";
+  EXPECT_EQ(std::optional<std::string>{"42S11"},
+            redshift.IBackendProvider::normalize_error_sqlstate(error, ErrorContext::CreateIndex));
+  EXPECT_FALSE(redshift.normalize_error_sqlstate(error, ErrorContext::Unknown));
+}
+
 TEST(BinaryParameterContractTest, PlainHexRoundTripsAllOctetsAndRejectsNativeEscapes) {
   std::string raw;
   for (int i = 0; i < 256; ++i) raw.push_back(static_cast<char>(i));

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
+#include "odbc/unicode.h"
 #include "odbcpp/database/backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
@@ -2003,10 +2004,14 @@ protected:
     ASSERT_GE(column,1);ASSERT_LE(column,catalog_descriptors_.size());
     const auto& descriptor=catalog_descriptors_[column-1];
     EXPECT_EQ(SQL_VARCHAR,descriptor.type);
-    // Selected identity/fixture metadata strings are ASCII, so byte length
-    // also measures characters. Opaque non-ASCII remarks keep their own bound.
-    EXPECT_TRUE(std::all_of(value.begin(),value.end(),[](unsigned char c){return c<128;}));
-    if(descriptor.size!=0) { EXPECT_LE(value.size(),descriptor.size); }
+    // Catalog enumeration includes the deliberately Unicode-named fixtures.
+    // SQL_VARCHAR column size counts characters; SQLGetData's byte indicator
+    // and canaries remain checked separately by text().
+    const auto characters=rs::odbc::utf8_code_point_count(value);
+    ASSERT_TRUE(characters.has_value());
+    if(descriptor.size!=0) {
+      EXPECT_LE(*characters,descriptor.size);
+    }
   }
   std::string text(SQLUSMALLINT column) {
     std::array<unsigned char,1026> buffer{};buffer.fill(0x5a);SQLLEN length=-1;
@@ -3693,10 +3698,10 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
     "FROM numbered ORDER BY n";
   ASSERT_TRUE(cap(window_end_,true));ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,query,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
   std::fill(std::begin(query),std::end(query),'!');
-  // This driver's SQLRowCount was observed as zero for this SELECT; it does
-  // not measure result cardinality. The window count proves all 1,000 rows
-  // without another SQL statement or relying on a raw server completion tag.
-  SQLLEN count=-1;ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);
+  // The Redshift parser publishes the buffered SELECT's complete cardinality
+  // even when its completion tag omits a count. The window column independently
+  // proves the same 1,000 rows before the cursor is deliberately closed early.
+  SQLLEN count=-1;ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(1000,count);
   SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(3,columns);
   const char* names[]{"row_no","payload","total_rows"};const SQLSMALLINT types[]{SQL_INTEGER,SQL_VARCHAR,SQL_BIGINT};const SQLULEN sizes[]{10,32,19};
   std::array<std::string,3> owned_names;
@@ -3740,7 +3745,7 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
     }
     ASSERT_FALSE(HasFailure());
   }
-  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(1000,count);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
@@ -3899,7 +3904,8 @@ TEST_F(RedshiftBufferedLifecycleRealTest, MaxRowsAndForwardOnlyRefusalsPreserveP
   SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(3,columns);
   metadata(hstmt_,1,"id",SQL_INTEGER,10);metadata(hstmt_,2,"text_value",SQL_VARCHAR,32);metadata(hstmt_,3,"total_rows",SQL_BIGINT,19);ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,&rows_fetched_,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,&row_status_,0));
-  SQLLEN count=-1;ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);
+  // MAX_ROWS limits fetches, not the owning result's three-row completion count.
+  SQLLEN count=-1;ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(3,count);
   for(SQLINTEGER row=1;row<=2;++row) {
     rows_fetched_=99;row_status_=SQL_ROW_NOROW;ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0));
     EXPECT_EQ(1u,rows_fetched_);EXPECT_EQ(SQL_ROW_SUCCESS,row_status_);integer(hstmt_,1,row);text(hstmt_,2,"one",row==2);integer(hstmt_,3,3);ASSERT_FALSE(HasFailure());
@@ -3915,7 +3921,7 @@ TEST_F(RedshiftBufferedLifecycleRealTest, MaxRowsAndForwardOnlyRefusalsPreserveP
     }
   }
   rows_fetched_=99;row_status_=SQL_ROW_SUCCESS;ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0));EXPECT_EQ(0u,rows_fetched_);EXPECT_EQ(SQL_ROW_NOROW,row_status_);
-  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);reset(hstmt_);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(3,count);reset(hstmt_);ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));direct(hstmt_,"SELECT CAST(1 AS INTEGER)");ASSERT_FALSE(HasFailure());scalar(hstmt_,1);ASSERT_FALSE(HasFailure());reset(hstmt_);ASSERT_FALSE(HasFailure());
   // Window count3 proves logical cardinality; MAX_ROWS2 is only local truncation.
@@ -4302,10 +4308,15 @@ protected:
     if(rs::util::Clock::now()>=window_end_) { ADD_FAILURE() << "Materialized envelope original finite window expired";return false; }
     return true;
   }
-  bool cap(rs::util::Deadline cutoff,bool statement,bool /*prepared_payload*/=false) {
+  bool cap(rs::util::Deadline cutoff,bool statement,bool prepared_payload=false) {
     const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
     if(left<=0) { ADD_FAILURE() << "Materialized envelope finite operation window expired";return false; }
-    const auto seconds=checkpoint_timeout_seconds(std::chrono::seconds{left});
+    // Materializing 8 MiB may exceed five seconds on the real connection.
+    // This ordinary correctness exchange uses a bounded 15s budget,
+    // still bounded by this case's original 40s deadline. Timeout tests retain
+    // their separately authored short deadlines.
+    const auto seconds=static_cast<std::uintptr_t>(
+        std::min<std::int64_t>(left,prepared_payload?15:5));
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
       ADD_FAILURE() << get_error(SQL_HANDLE_DBC,hdbc_);return false;
     }
@@ -7416,7 +7427,6 @@ TEST_F(RedshiftConnectedMetadataTimeoutRealTest, EagerLazyTypedMetadataNullOwnin
   ASSERT_NO_FATAL_FAILURE(cap_sibling());ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
 }
 
-#include "odbc/unicode.h"
 
 // Source-only no-fixture native proposal. Keyword plumbing and readback are
 // observed on successful login; no delay, bad credential or expiry is induced.
@@ -7698,8 +7708,8 @@ TEST_F(RedshiftApplicationNameRealTest, AnsiWideNamesAndEmptyReconnectKeepTypedN
 class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTest {
  protected:
   SQLHDBC writer_{}; SQLHSTMT writer_stmt_{};
-  bool writer_connected_{}, table_owned_{}, drop_attempted_{};
-  std::string table_;
+  bool writer_connected_{}, schema_owned_{}, table_owned_{}, drop_attempted_{}, schema_drop_attempted_{};
+  std::string schema_, table_;
   bool observed(SQLRETURN result, SQLRETURN expected = SQL_SUCCESS) {
     if (result != expected) { unknown_completion_ = true; return false; }
     return true;
@@ -7722,7 +7732,11 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
     ASSERT_TRUE(selected.starts_with(prefix));
     ASSERT_TRUE(std::all_of(selected.begin() + static_cast<std::ptrdiff_t>(prefix.size()), selected.end(),
         [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); }));
-    table_ = "public.\"" + std::string(selected) + "\"";
+    // The admitted database CREATE capability permits this exact isolated
+    // schema. Public-schema CREATE is a separate privilege and is not assumed.
+    // Collision is an error: no IF NOT EXISTS, adoption or foreign cleanup.
+    schema_ = "\"" + std::string(selected) + "\"";
+    table_ = schema_ + ".\"payload\"";
     const auto options = rs::odbc::ConnectionString::parse(connection_string_);
     if (const auto limit = options.find("MAXSQLBYTES"); limit != options.end()) {
       std::size_t bytes{};
@@ -7742,7 +7756,11 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
   bool writer_sql(std::string text) {
     if (!writer_cap()) return false;
     const auto rc = SQLExecDirect(writer_stmt_, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS);
-    if (rc != SQL_SUCCESS) { unknown_completion_ = true; ADD_FAILURE() << "ReadOnly fixture writer failed"; return false; }
+    if (rc != SQL_SUCCESS) {
+      unknown_completion_ = true;
+      ADD_FAILURE() << "ReadOnly fixture writer failed: " << get_error(SQL_HANDLE_STMT,writer_stmt_);
+      return false;
+    }
     return true;
   }
   void writer_count(SQLINTEGER expected) {
@@ -7796,9 +7814,18 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
     }
     if (table_owned_ && !unknown_completion_ && writer_connected_ && !drop_attempted_) {
       drop_attempted_ = true;
-      if (writer_sql("DROP TABLE " + table_)) table_owned_ = false;
+      if (writer_sql("DROP TABLE " + table_ + " RESTRICT")) table_owned_ = false;
     }
     if (table_owned_) ADD_FAILURE() << "ReadOnly exact fixture cleanup remains pending";
+    if (schema_owned_ && !table_owned_ && !unknown_completion_ && writer_connected_ && !schema_drop_attempted_) {
+      schema_drop_attempted_ = true;
+      if (writer_sql("DROP SCHEMA " + schema_ + " RESTRICT")) {
+        schema_owned_ = false;
+      }
+    }
+    if (schema_owned_) {
+      ADD_FAILURE() << "ReadOnly exact schema cleanup remains pending";
+    }
     if (writer_stmt_) { EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, writer_stmt_))); writer_stmt_ = nullptr; }
     if (writer_) {
       if (writer_connected_) { EXPECT_TRUE(observed(SQLDisconnect(writer_))); }
@@ -7819,7 +7846,10 @@ TEST_F(RedshiftReadOnlySettingRealTest, OwnedWriterAndReadOnlyTargetRefuseWrites
   writer_connected_ = opened == SQL_SUCCESS || opened == SQL_SUCCESS_WITH_INFO;
   if (opened != SQL_SUCCESS) { unknown_completion_ = true; FAIL() << "ReadOnly fixture writer login failed"; }
   ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, writer_, &writer_stmt_)));
+  ASSERT_TRUE(writer_sql("CREATE SCHEMA " + schema_)); schema_owned_ = true;
+  RecordProperty("readonly_owned_schema",schema_);
   ASSERT_TRUE(writer_sql("CREATE TABLE " + table_ + " (id INTEGER)")); table_owned_ = true;
+  RecordProperty("readonly_owned_table",table_);
   ASSERT_TRUE(writer_sql("INSERT INTO " + table_ + " VALUES (1)"));
   ASSERT_NO_FATAL_FAILURE(writer_count(1));
   connection_string_ = base; connection_string_ = keyword_input("READONLY", "true");
@@ -9339,8 +9369,8 @@ TEST_F(RedshiftFixedNumericCompletionRealTest, FractionWholeNullAndVariableSourc
 }
 
 // Authoring only: one TLS login, one Prepare and at most seven Execute
-// attempts (four fits/NULL, one observed Redshift range refusal and two local
-// 22003 refusals). Charge all eight operations; no DDL/DML/resources.
+// attempts (five fits/NULL including a REAL subnormal and two local 22003
+// refusals). Charge all eight operations; no DDL/DML/resources.
 // Existing 40s/per-operation 5s caps.
 class RedshiftCnumericApproximateRangeRealTest : public RedshiftNegativeNumericScaleRealTest {
  protected:
@@ -9397,7 +9427,7 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
   };
   ASSERT_NO_FATAL_FAILURE(bind(1, SQL_FLOAT, 1, -100, 1, 1));
   ASSERT_NO_FATAL_FAILURE(bind(2, SQL_DOUBLE, 1, -100, 1, 0));
-  const auto echo = [&](SQLDOUBLE expected, bool absent) {
+  const auto echo = [&](SQLDOUBLE expected, bool absent, SQLDOUBLE tolerance=0) {
     const auto before = storage;
     const auto before_indicators = indicators;
     status = SQL_PARAM_UNUSED; processed = 99;
@@ -9414,7 +9444,11 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
       EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(97, real);
     } else {
       EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), length);
-      EXPECT_DOUBLE_EQ(expected, real);
+      if (tolerance>0) {
+        EXPECT_NEAR(expected,real,tolerance);
+      } else {
+        EXPECT_DOUBLE_EQ(expected, real);
+      }
     }
     for (SQLUSMALLINT col = 2; col <= 3; ++col) {
       SQLDOUBLE large = 0; length = 73;
@@ -9434,19 +9468,13 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
   ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, 0, 1, 1));
   ASSERT_NO_FATAL_FAILURE(echo(1, false));
   ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 38, 38, 1, 1));
-  // The owning adapter conversion accepts this IEEE float32 subnormal. The
-  // Redshift text-parameter path rejects the exact decimal 1e-38 with 22003;
-  // preserve that provider boundary and require ordinary recovery below.
-  // AWS documents REAL's approximate range around 1E-37..1E+37:
-  // https://docs.aws.amazon.com/redshift/latest/dg/r_Numeric_types201.html
-  {
-    const auto before = storage; const auto before_indicators = indicators;
-    status = SQL_PARAM_UNUSED; processed = 99;
-    ASSERT_TRUE(cap(window_end_, true));
-    ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "22003"));
-    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
-    EXPECT_EQ(before, storage); EXPECT_EQ(before_indicators, indicators);
-  }
+  // The adapter's approximate-range contract admits representable REAL
+  // subnormals (CnumericApproximateRangeApiTest's fitting/subnormal regression).
+  // Verify the value to one float32 subnormal quantum, independently of the
+  // server's decimal rendering. A published normal-value range is not a
+  // rejection oracle for representable subnormals. Overflow refusals below
+  // still prove 22003, unchanged inputs/statuses and same-statement recovery.
+  ASSERT_NO_FATAL_FAILURE(echo(1e-38,false,std::numeric_limits<SQLREAL>::denorm_min()));
   for (const SQLCHAR sign : {SQLCHAR{1}, SQLCHAR{0}}) {
     ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, -100, 1, sign));
     const auto before = storage; const auto before_indicators = indicators;

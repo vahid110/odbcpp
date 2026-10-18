@@ -75,6 +75,13 @@ class IBackendProvider {
   // Mapping must never imply connectivity, retry or reuse safety.
   virtual std::optional<std::string> normalize_error_sqlstate(
       std::string_view, ErrorContext) const { return std::nullopt; }
+  // Owning backend detail can disambiguate vendor states. Providers that only
+  // map native states keep their existing virtual policy through this default.
+  // Borrowed error data is never retained, logged, or changed by this policy.
+  virtual std::optional<std::string> normalize_error_sqlstate(
+      const BackendError& error, ErrorContext context) const {
+    return normalize_error_sqlstate(error.native_state.value_or(""), context);
+  }
   // Pure advertised-type policy. Empty version selects the conservative profile.
   // Input is borrowed only until return; definitions and strings are immutable
   // and remain valid for the provider lifetime across all subsequent selections.

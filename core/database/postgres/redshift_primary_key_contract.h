@@ -37,6 +37,10 @@ BackendResult<QueryResult> normalize_redshift_primary_keys(
     BackendResult<QueryResult> input);
 
 class RedshiftRoutineBudget;
+struct RedshiftRoutineUsage;
+// Exact retained charge of the owning PK projection. Release this charge only
+// after destroying that projection; referenced-key filtering reuses its budget.
+RedshiftRoutineUsage redshift_primary_key_output_usage(const QueryResult& result);
 // New ordinary omitted-catalog route only. Native borrowed validation precedes
 // admission; the strict plan and existing pure normalizer above retain their API.
 BackendResult<std::string> redshift_primary_key_database(

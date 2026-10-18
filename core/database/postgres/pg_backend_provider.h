@@ -34,6 +34,8 @@ class PgBackendProvider final : public IBackendProvider {
   BackendCapabilities capabilities() const noexcept override { return capabilities_; }
   std::optional<std::string> normalize_error_sqlstate(
       std::string_view native_state, ErrorContext context) const override;
+  std::optional<std::string> normalize_error_sqlstate(
+      const BackendError& error, ErrorContext context) const override;
   std::span<const TypeDefinition> type_catalog(
       std::string_view server_version = {}) const noexcept override;
   std::span<const TypeDefinition> result_type_catalog(

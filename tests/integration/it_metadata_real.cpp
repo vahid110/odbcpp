@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -1308,15 +1309,18 @@ TEST_F(MetadataIntegrationTest, CountOutputsHandleUnalignedBuffers) {
 }
 
 TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
+    const bool redshift = redshift_profile();
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE prepared_metadata_state(value integer)",
         SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
-        hstmt,
-        (SQLCHAR*)"INSERT INTO prepared_metadata_state VALUES (?) "
-                  "RETURNING value AS inserted_value",
-        SQL_NTS));
+    // Redshift INSERT has no RETURNING clause. Keep command preparation and
+    // rowset description as separate proofs on that profile.
+    const char* insert_sql = redshift
+        ? "INSERT INTO prepared_metadata_state VALUES (?)"
+        : "INSERT INTO prepared_metadata_state VALUES (?) "
+          "RETURNING value AS inserted_value";
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)insert_sql, SQL_NTS));
 
     SQLINTEGER input = 42;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
@@ -1332,15 +1336,18 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
     EXPECT_STREQ("HY010", reinterpret_cast<char*>(state));
 
     SQLSMALLINT column_count = -1;
-    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
-    EXPECT_EQ(1, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count))
+        << diagnostic_state(SQL_HANDLE_STMT, hstmt);
+    EXPECT_EQ(redshift ? 0 : 1, column_count);
     char name[32]{};
     SQLSMALLINT data_type = 0;
-    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
-        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), nullptr,
-        &data_type, nullptr, nullptr, nullptr));
-    EXPECT_STREQ("inserted_value", name);
-    EXPECT_EQ(SQL_INTEGER, data_type);
+    if (!redshift) {
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+            hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), nullptr,
+            &data_type, nullptr, nullptr, nullptr));
+        EXPECT_STREQ("inserted_value", name);
+        EXPECT_EQ(SQL_INTEGER, data_type);
+    }
 
     SQLHSTMT verification = SQL_NULL_HSTMT;
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
@@ -1357,9 +1364,37 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
-    EXPECT_EQ(1, column_count);
+    EXPECT_EQ(redshift ? 0 : 1, column_count);
     ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
     EXPECT_EQ(1, row_count);
+
+    if (redshift) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+            hstmt,
+            (SQLCHAR*)"SELECT value AS inserted_value FROM prepared_metadata_state "
+                      "WHERE value = ?",
+            SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+            hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+            0, 0, &input, 0, nullptr));
+        row_count = 93;
+        EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+        EXPECT_EQ(93, row_count);
+        EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        column_count = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count))
+            << diagnostic_state(SQL_HANDLE_STMT, hstmt);
+        EXPECT_EQ(1, column_count);
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+            hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), nullptr,
+            &data_type, nullptr, nullptr, nullptr));
+        EXPECT_STREQ("inserted_value", name);
+        EXPECT_EQ(SQL_INTEGER, data_type);
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+        EXPECT_EQ(1, column_count);
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     SQLINTEGER returned = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
@@ -2184,12 +2219,13 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     // actual result dimensions; no PostgreSQL server_version_num query is used.
     constexpr std::array<ExpectedType, 17> redshift_types{{
         {"boolean", SQL_BIT, 1}, {"bigint", SQL_BIGINT, 19},
+        {"varbyte", SQL_LONGVARBINARY, 16777216},
         {"char", SQL_CHAR, 4096}, {"numeric", SQL_NUMERIC, 38},
         {"decimal", SQL_DECIMAL, 38}, {"integer", SQL_INTEGER, 10},
         {"smallint", SQL_SMALLINT, 5}, {"real", SQL_REAL, 7},
         {"double precision", SQL_DOUBLE, 15}, {"date", SQL_DATE, 10},
         {"time", SQL_TIME, 15}, {"timestamp", SQL_TIMESTAMP, 26},
-        {"varchar", SQL_VARCHAR, 65535}, {"varbyte", SQL_LONGVARBINARY, 16777216},
+        {"varchar", SQL_VARCHAR, 65535},
         {"date", SQL_TYPE_DATE, 10}, {"time", SQL_TYPE_TIME, 15},
         {"timestamp", SQL_TYPE_TIMESTAMP, 26},
     }};
@@ -2433,18 +2469,41 @@ TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
 
     SQLWCHAR parent[] = {'o','d','b','c','p','p','\'','p','a','r','e','n','t','_','%',0xE9,0};
     SQLWCHAR child[] = {'o','d','b','c','p','p','\'','c','h','i','l','d','_','%',0xE9,0};
+    std::string session_schema;
+    std::vector<SQLWCHAR> wide_schema;
+    SQLWCHAR* schema_name = nullptr;
+    SQLSMALLINT schema_length = 0;
+    if (redshift_profile()) {
+        // Modern Redshift key discovery takes an exact schema. Both TEMP
+        // tables share this session's namespace; preserve PostgreSQL's NULL.
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp'parent_%é", session_schema));
+        auto converted = rs::odbc::utf8_to_wide(session_schema);
+        ASSERT_TRUE(converted.has_value());
+        ASSERT_FALSE(converted->empty());
+        ASSERT_LE(converted->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()));
+        wide_schema = std::move(*converted);
+        schema_name = wide_schema.data();
+        schema_length = static_cast<SQLSMALLINT>(wide_schema.size());
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeysW(
-        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS));
+        hstmt, nullptr, 0, schema_name, schema_length, parent, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    if (redshift_profile()) {
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+    }
     EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
     EXPECT_EQ(std::optional<std::string>("id"), text_cell(hstmt, 4));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLForeignKeysW(
-        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS,
-        nullptr, 0, nullptr, 0, child, SQL_NTS));
+        hstmt, nullptr, 0, schema_name, schema_length, parent, SQL_NTS,
+        nullptr, 0, schema_name, schema_length, child, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    if (redshift_profile()) {
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 6));
+    }
     EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
     EXPECT_EQ(std::optional<std::string>("odbcpp'child_%é"), text_cell(hstmt, 7));
     EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 9));
@@ -2519,8 +2578,9 @@ TEST_F(MetadataIntegrationTest, TablePatternsTypesAndEnumerationsFollowOdbc) {
 
     SQLCHAR empty[] = "";
     SQLCHAR all[]{'%', 0};
-    constexpr std::array<const char*, 5> expected_types{
-        "FOREIGN TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "TABLE", "VIEW"};
+    const std::vector<const char*> expected_types = redshift_profile()
+        ? std::vector<const char*>{"EXTERNAL TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "SYSTEM VIEW", "TABLE", "VIEW"}
+        : std::vector<const char*>{"FOREIGN TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "TABLE", "VIEW"};
     ASSERT_EQ(SQL_SUCCESS, SQLTables(
         hstmt, empty, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS,
         nullptr, 0));
@@ -2546,7 +2606,11 @@ TEST_F(MetadataIntegrationTest, TablePatternsTypesAndEnumerationsFollowOdbc) {
         wide_empty, SQL_NTS, wide_all, SQL_NTS));
     for (const auto* expected : expected_types) {
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 1));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 2));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 3));
         EXPECT_EQ(std::optional<std::string>(expected), text_cell(hstmt, 4));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 5));
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
@@ -5385,15 +5449,24 @@ TEST_F(MetadataIntegrationTest, MissingSchemaUsesOdbcSqlstate) {
     EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
     EXPECT_EQ("3F000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+    const auto batch_result = SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 7; "
                          "CREATE TABLE "
                          "odbcpp_missing_schema_diag_6b31.example(id integer)",
-        SQL_NTS));
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    EXPECT_EQ(7, integer_cell(hstmt, 1));
-    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
-    EXPECT_EQ("3F000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        SQL_NTS);
+    if (redshift_profile()) {
+        // Redshift reports this absent-schema batch error before publishing
+        // its first rowset. Preserve its diagnostic and the common recovery
+        // proof instead of requiring a row the server did not return.
+        ASSERT_EQ(SQL_ERROR, batch_result);
+        EXPECT_EQ("3F000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    } else {
+        ASSERT_EQ(SQL_SUCCESS, batch_result);
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(7, integer_cell(hstmt, 1));
+        EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+        EXPECT_EQ("3F000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    }
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 1 AS recovered", SQL_NTS));

@@ -54,6 +54,37 @@ QueryResult primary_keys() {
                  {"db'._%", "schema'._%", "table'._%", "pk", "key_a", "2"}};
   return result;
 }
+// Legacy execution fixtures declare PRIMARY relationships; auxiliary native
+// PRIMARY replies have their own six-field descriptors. Independent UNIQUE
+// and composite exclusion tests below use separately supplied primary metadata.
+QueryResult declared_primary_fixture(const QueryResult& foreign,
+    std::span<const QueryParameter> parameters) {
+  QueryResult keys;
+  keys.statement_kind = StatementKind::Unknown; // Actual SHOW completion family.
+  for (const auto* field : {"database_name", "schema_name", "table_name", "column_name", "key_seq", "pk_name"}) {
+    keys.columns.push_back({field, NativeTypeInfo{std::string_view(field) == "key_seq" ?
+        ScalarType::SmallInt : ScalarType::VarChar, 0, 0, true}});
+  }
+  const auto index = [&](std::string_view name) {
+    const auto found = std::find_if(foreign.columns.begin(), foreign.columns.end(),
+        [&](const auto& column) { return column.name == name; });
+    return static_cast<std::size_t>(found - foreign.columns.begin());
+  };
+  const std::array<std::size_t, 6> fields{index("pk_database_name"), index("pk_schema_name"),
+      index("pk_table_name"), index("pk_column_name"), index("key_seq"), index("pk_name")};
+  for (const auto& row : foreign.rows) {
+    if (parameters.size() != 3 || row.size() != 14 ||
+        std::any_of(fields.begin(), fields.end(), [&](auto field) { return field >= row.size(); }) ||
+        row[fields[0]] != parameters[0].value || row[fields[1]] != parameters[1].value ||
+        row[fields[2]] != parameters[2].value) continue;
+    ResultRow key;
+    for (const auto field : fields) key.push_back(row[field]);
+    key[5] = std::nullopt; // Fixture-declared primary name is unknown, consistently.
+    if (std::none_of(keys.rows.begin(), keys.rows.end(), [&](const auto& prior) {
+          return prior[3] == key[3] && prior[4] == key[4]; })) keys.rows.push_back(std::move(key));
+  }
+  return keys;
+}
 class SpySession : public PgDatabaseConnection {
  public:
   explicit SpySession(PgCatalogProfile profile = PgCatalogProfile::Redshift)
@@ -71,6 +102,7 @@ class SpySession : public PgDatabaseConnection {
   unsigned prepared_calls{0}, direct_calls{0};
   std::string sql;
   std::vector<QueryParameter> parameters;
+  std::vector<std::pair<std::string, std::vector<QueryParameter>>> prepared_commands;
   rs::util::Deadline received_deadline;
   bool is_connected() const override { return connected; }
   SessionState session_state() const noexcept override { return connected ? snapshot.state : SessionState::Disconnected; }
@@ -82,7 +114,11 @@ class SpySession : public PgDatabaseConnection {
   BackendResult<QueryResult> execute_prepared(std::string_view query,
       std::span<const QueryParameter> values, rs::util::Deadline deadline) override {
     ++prepared_calls; sql = query; parameters.assign(values.begin(), values.end());
+    prepared_commands.emplace_back(sql, parameters);
     received_deadline = deadline;
+    if (query == "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;" && response.columns.size() == 14) {
+      return BackendResult<QueryResult>{declared_primary_fixture(response, values), snapshot};
+    }
     if (prepared_before_return) prepared_before_return();
     if (failure) return *failure;
     return BackendResult<QueryResult>{response, snapshot};
@@ -1454,6 +1490,69 @@ TEST(RedshiftRoutineExecution, ExactSchemaTypedUnknownDimensionsRefcursorAndRetu
   EXPECT_EQ(ResultCell{"10"},result->rows[7][10]);
 }
 
+TEST(RedshiftRoutineExecution, NamedSelectionDoesNotInterpretUnrelatedNativeTypeGrammar) {
+  for (const bool columns : {false, true}) {
+    RoutineExecutionSession session;
+    session.discovery({
+        {"db", "s", "unrelated", "1", "anyarray", std::nullopt, "native system signature"},
+        {"db", "s", "target", "1", "integer", std::nullopt, "owning"}},
+        {{"db", "s", "other_function", "1", "record", "integer", std::nullopt}});
+    if (columns) {
+      session.replies.emplace_back(routine_parameters(false, {
+          {"db", "s", "target", "id", "1", "IN", "integer", std::nullopt, "32", "0"}}), session.snapshot);
+    }
+    const CatalogRequest request = columns
+        ? CatalogRequest{ProcedureColumnsCatalogRequest{std::nullopt, "s", "target", std::nullopt}}
+        : CatalogRequest{ProceduresCatalogRequest{std::nullopt, "s", "target"}};
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = session.execute_catalog(request, deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(1u, result->rows.size());
+    EXPECT_EQ(ResultCell{"target"}, result->rows[0][2]);
+    std::vector<std::string> expected{"SELECT current_database() AS database_name",
+        "SHOW PROCEDURES FROM SCHEMA \"db\".\"s\";", "SHOW FUNCTIONS FROM SCHEMA \"db\".\"s\";"};
+    if (columns) {
+      expected.push_back("SHOW PARAMETERS OF PROCEDURE \"db\".\"s\".\"target\"(integer);");
+    }
+    EXPECT_EQ(expected, session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(expected.size(), deadline), session.deadlines);
+    EXPECT_TRUE(session.replies.empty());
+  }
+}
+
+TEST(RedshiftRoutineExecution, SelectedUnsupportedOrInjectedSignaturesStillFailClosed) {
+  for (const auto* signature : {"anyarray", "integer); SELECT secret"}) {
+    RoutineExecutionSession session;
+    session.discovery({{"db", "s", "target", "1", signature, std::nullopt, std::nullopt}});
+    const auto result = session.execute_catalog(
+        ProcedureColumnsCatalogRequest{std::nullopt, "s", "target", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(2u, session.commands.size());
+    EXPECT_NE(std::string::npos, result.error_message().find("signature"));
+  }
+}
+
+TEST(RedshiftRoutineExecution, UnselectedRawIdentityUtf8CountAndShapeRemainValidated) {
+  for (unsigned malformed = 0; malformed < 7; ++malformed) {
+    RoutineExecutionSession session;
+    ResultRow unrelated{"db", "s", "unrelated", "1", "anyarray", std::nullopt, "native"};
+    if (malformed == 0) unrelated[0] = "foreign";
+    if (malformed == 1) unrelated[2].reset();
+    if (malformed == 2) unrelated[4] = std::string(1, static_cast<char>(0xff));
+    if (malformed == 3) unrelated[6] = std::string("bad\0text", 8);
+    if (malformed == 4) unrelated[3] = "-1";
+    if (malformed == 5) unrelated[3] = "2";
+    if (malformed == 6) unrelated.pop_back();
+    session.discovery({unrelated, {"db", "s", "target", "1", "integer", std::nullopt, "valid"}});
+    const auto result = session.execute_catalog(
+        ProceduresCatalogRequest{std::nullopt, "s", "target"}, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(2u, session.commands.size());
+  }
+}
+
 TEST(RedshiftRoutineExecution, IdentifierPatternsOverloadsEmptyAndUnsupportedPaths) {
   for(const auto& input:std::vector<CatalogRequest>{ProceduresCatalogRequest{std::nullopt,std::nullopt,std::nullopt},
       ProceduresCatalogRequest{std::nullopt,"s%",std::nullopt}}) {
@@ -1586,17 +1685,22 @@ TEST(RedshiftForeignKeyExecution, ImportedExportedBothUseOneOwningPreparedShowAn
       // Exported response is restricted to the selected primary, but spans foreign groups.
       spy.response.rows[0][7]="z_child";spy.response.rows[2][7]="z_child";
       spy.response.rows[1][7]="a_child";spy.response.rows[1][11]="z_parent";
+      auto second = spy.response.rows[1];
+      second[10] = "b"; second[6] = "rb"; second[5] = "2";
+      spy.response.rows.push_back(std::move(second));
     }
     ASSERT_TRUE(spy.selects_catalog_request(input));
     auto result=spy.execute_catalog(input,deadline);ASSERT_TRUE(result);
-    ASSERT_EQ(1u,spy.prepared_calls);EXPECT_EQ(0u,spy.direct_calls);EXPECT_EQ(0u,spy.catalog_builds);
+    ASSERT_EQ(direction == 0 ? 3u : 2u,spy.prepared_calls);EXPECT_EQ(0u,spy.direct_calls);EXPECT_EQ(0u,spy.catalog_builds);
     EXPECT_EQ(direction==1?"SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;":
-        "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;",spy.sql);
-    ASSERT_EQ(3u,spy.parameters.size());EXPECT_EQ("db",spy.parameters[0].value);EXPECT_EQ("s",spy.parameters[1].value);
-    EXPECT_EQ(direction==1?"z_parent":"child",spy.parameters[2].value);
-    for (const auto& value:spy.parameters) {EXPECT_EQ(QueryParameterType::Unspecified,value.type);}
+        "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;",spy.prepared_commands.front().first);
+    ASSERT_EQ(3u,spy.prepared_commands.front().second.size());EXPECT_EQ("db",spy.prepared_commands.front().second[0].value);EXPECT_EQ("s",spy.prepared_commands.front().second[1].value);
+    EXPECT_EQ(direction==1?"z_parent":"child",spy.prepared_commands.front().second[2].value);
+    for (const auto& value:spy.prepared_commands.front().second) {
+      EXPECT_EQ(QueryParameterType::Unspecified,value.type);
+    }
     EXPECT_EQ(deadline,spy.received_deadline);ASSERT_EQ(14u,result->columns.size());
-    ASSERT_EQ(direction==2?2u:3u,result->rows.size());
+    ASSERT_EQ(direction==2?2u:(direction==1?4u:3u),result->rows.size());
     EXPECT_EQ(direction==0?"a_parent":"z_parent",result->rows[0][2]);
     EXPECT_EQ(direction==1?"a_child":"child",result->rows[0][6]);
     EXPECT_EQ("1",result->rows[0][8]);EXPECT_EQ("3",result->rows[0][9]);EXPECT_EQ("7",result->rows[0][13]);
@@ -1626,7 +1730,7 @@ TEST(RedshiftForeignKeyExecution, PassiveSelectionRefusesUnavailableExactInputsB
     EXPECT_EQ(rs::util::make_error_code(variant>=9?rs::util::DbErrorCode::InvalidParameter:
         rs::util::DbErrorCode::UnsupportedFeature),refused.error());
     spy.mode=RedshiftCatalogMode::Show;spy.capability="4";spy.snapshot={SessionState::Idle,SessionDisposition::Reusable};
-    auto repaired=spy.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_TRUE(repaired);EXPECT_EQ(1u,spy.prepared_calls);
+    auto repaired=spy.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_TRUE(repaired);EXPECT_EQ(3u,spy.prepared_calls);
   }
   SpySession pg(PgCatalogProfile::PostgreSQL);EXPECT_FALSE(pg.selects_catalog_request(imported_request()));
   auto refused=pg.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_FALSE(refused);no_execution(pg);
@@ -1733,7 +1837,7 @@ TEST(RedshiftForeignKeyExecution, QuotedUnicodeLiteralNamesAndUnquotedAsciiFoldA
     const std::string database=quoted?"DB":"db",schema=quoted?"S_%\\表":"s_%\\表",table=quoted?"Child_%\\表":"child_%\\表";
     for(auto& row:spy.response.rows){row[9]=database;row[8]=schema;row[7]=table;}
     auto result=spy.execute_catalog(input,rs::util::Deadline::max());ASSERT_TRUE(result);
-    ASSERT_EQ(3u,spy.parameters.size());EXPECT_EQ(database,spy.parameters[0].value);EXPECT_EQ(schema,spy.parameters[1].value);EXPECT_EQ(table,spy.parameters[2].value);
+    ASSERT_EQ(3u,spy.prepared_commands.front().second.size());EXPECT_EQ(database,spy.prepared_commands.front().second[0].value);EXPECT_EQ(schema,spy.prepared_commands.front().second[1].value);EXPECT_EQ(table,spy.prepared_commands.front().second[2].value);
     EXPECT_EQ("DB",input.foreign_catalog);EXPECT_EQ("S_%\\表",input.foreign_schema);
     ASSERT_EQ(3u,result->rows.size());EXPECT_EQ(table,result->rows[0][6]);
   }
@@ -2723,6 +2827,17 @@ namespace {
 class WideColumnsSession final : public RoutineExecutionSession {
  public:
   std::optional<std::string> external;
+  bool scripted_temporary_schemas{false};
+  BackendResult<QueryResult> execute_query(std::string_view query, rs::util::Deadline deadline) override {
+    const std::array<std::string_view, 3> fixture_databases{"db", "a_雪", "z_db"};
+    if (!scripted_temporary_schemas && std::any_of(fixture_databases.begin(), fixture_databases.end(),
+        [&](std::string_view database) { return query == redshift_temporary_schemas_command(database); })) {
+      commands.emplace_back(query); deadlines.push_back(deadline);
+      if (callback) callback();
+      return BackendResult<QueryResult>{routine_schema_rows({}), snapshot};
+    }
+    return RoutineExecutionSession::execute_query(query, deadline);
+  }
   std::optional<std::string> get_parameter_status(std::string_view key) const override {
     return key=="external_database"?external:std::nullopt;
   }
@@ -3239,10 +3354,10 @@ TEST(RedshiftColumnsSchemaPatterns, NullAndUniversalDiscoverOrderedOwningCollisi
     EXPECT_EQ("id",result->rows[0][3]);EXPECT_EQ("1",result->rows[0][16]);
     EXPECT_EQ("value",result->rows[1][3]);EXPECT_EQ("2",result->rows[1][16]);
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
-        "SHOW SCHEMAS FROM DATABASE \"db\";","SHOW TABLES FROM SCHEMA \"db\".\"a\";",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", redshift_temporary_schemas_command("db"),"SHOW TABLES FROM SCHEMA \"db\".\"a\";",
         "SHOW COLUMNS FROM TABLE \"db\".\"a\".\"same\";","SHOW TABLES FROM SCHEMA \"db\".\"z\";",
         "SHOW COLUMNS FROM TABLE \"db\".\"z\".\"same\";"}),session.commands);
-    EXPECT_EQ(std::vector<rs::util::Deadline>(6,deadline),session.deadlines);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(7,deadline),session.deadlines);
     session.connected=false;session.replies.clear();
     EXPECT_EQ("owning remark",result->rows[3][11]);
   }
@@ -3261,13 +3376,13 @@ TEST(RedshiftColumnsSchemaPatterns, Utf8PrefixSingleCharacterEscapedSpecialsAndE
       EXPECT_EQ(test.selected[i],result->rows[i*2][1]);
       EXPECT_EQ("same",result->rows[i*2][2]);
     }
-    EXPECT_EQ(2+test.selected.size()*2,session.commands.size());
+    EXPECT_EQ(3+test.selected.size()*2,session.commands.size());
   }
   WideColumnsSession quoted;schema_pattern_current(quoted,{"s_%\\quoted\"雪"},{"s_%\\quoted\"雪"});
   auto result=quoted.execute_catalog(schema_pattern_columns("s\\_\\%\\\\quoted\"_"),rs::util::Deadline::max());
   ASSERT_TRUE(result)<<result.error_message();
-  EXPECT_EQ("SHOW TABLES FROM SCHEMA \"db\".\"s_%\\quoted\"\"雪\";",quoted.commands[2]);
-  EXPECT_EQ("SHOW COLUMNS FROM TABLE \"db\".\"s_%\\quoted\"\"雪\".\"same\";",quoted.commands[3]);
+  EXPECT_EQ("SHOW TABLES FROM SCHEMA \"db\".\"s_%\\quoted\"\"雪\";",quoted.commands[3]);
+  EXPECT_EQ("SHOW COLUMNS FROM TABLE \"db\".\"s_%\\quoted\"\"雪\".\"same\";",quoted.commands[4]);
 }
 TEST(RedshiftColumnsSchemaPatterns, LiteralPatternAndOmittedTablesRetainColumnFilteringWithoutGuessedObjects) {
   for (const auto& table:std::vector<std::optional<std::string>>{std::nullopt,"same","s_me","%"}) {
@@ -3300,7 +3415,7 @@ TEST(RedshiftColumnsSchemaPatterns, EmptyAndNoMatchKeepHeadersAfterValidationWit
     ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());
     EXPECT_EQ(18u,result->columns.size());
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
-        "SHOW SCHEMAS FROM DATABASE \"db\";"}),session.commands);
+        "SHOW SCHEMAS FROM DATABASE \"db\";", redshift_temporary_schemas_command("db")}),session.commands);
   }
 }
 TEST(RedshiftColumnsSchemaPatterns, MalformedArgumentsRejectBeforeIoAndQueuedFreshRequestRecovers) {
@@ -3380,14 +3495,14 @@ TEST(RedshiftColumnsSchemaPatterns, InvalidSchemaSnapshotWinsOverRawOverflowAndP
   }
 }
 TEST(RedshiftColumnsSchemaPatterns, SelectedFanoutAndRemainingSchemaExchangesArePreflightedButHiddenRawRowsCharge) {
-  WideColumnsSession selected;ResultLimits limits;limits.max_results=4;ASSERT_TRUE(selected.budgets(limits));
+  WideColumnsSession selected;ResultLimits limits;limits.max_results=5;ASSERT_TRUE(selected.budgets(limits));
   schema_pattern_current(selected,{"a","hidden1","hidden2"},{"a"});
   auto result=selected.execute_catalog(schema_pattern_columns("a%"),rs::util::Deadline::max());
-  ASSERT_TRUE(result)<<result.error_message();EXPECT_EQ(4u,selected.commands.size());
+  ASSERT_TRUE(result)<<result.error_message();EXPECT_EQ(5u,selected.commands.size());
   WideColumnsSession fanout;limits.max_results=3;ASSERT_TRUE(fanout.budgets(limits));
   schema_pattern_current(fanout,{"a","z"},{"a","z"});
   wide_resource(fanout.execute_catalog(schema_pattern_columns("%"),rs::util::Deadline::max()));
-  EXPECT_EQ(2u,fanout.commands.size());
+  EXPECT_EQ(3u,fanout.commands.size());
   WideColumnsSession raw;limits=ResultLimits{};limits.max_rows=3;ASSERT_TRUE(raw.budgets(limits));
   schema_pattern_current(raw,{"a","hidden1","hidden2"},{"a"});
   wide_resource(raw.execute_catalog(schema_pattern_columns("a%"),rs::util::Deadline::max()));
@@ -3404,7 +3519,7 @@ TEST(RedshiftColumnsSchemaPatterns, DestroyedPerSchemaStorageReleasesPeakWhileOw
       ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(4u,result->rows.size());
       session.connected=false;session.replies.clear();EXPECT_EQ("owning remark",result->rows[3][11]);
     }
-    EXPECT_EQ(6u,session.commands.size());
+    EXPECT_EQ(7u,session.commands.size());
   }
 }
 TEST(RedshiftColumnsSchemaPatterns, LateSchemaTableColumnFailureAndDeadlineNeverPublishPrefixAndFreshRequestsRecover) {
@@ -3420,13 +3535,13 @@ TEST(RedshiftColumnsSchemaPatterns, LateSchemaTableColumnFailureAndDeadlineNever
     if (variant==2) session.replies[5]->rows[0][2]="foreign";
     if (variant==3) {
       session.callback=[&] {
-        if (session.commands.size()==5) {
+        if (session.commands.size()==6) {
           while (rs::util::Clock::now()<deadline) std::this_thread::yield();
         }
       };
     }
     auto result=session.execute_catalog(schema_pattern_columns("%"),deadline);
-    ASSERT_FALSE(result);EXPECT_EQ(variant==2?6u:5u,session.commands.size());
+    ASSERT_FALSE(result);EXPECT_EQ(variant==2?7u:6u,session.commands.size());
     EXPECT_EQ(std::vector<rs::util::Deadline>(session.commands.size(),deadline),session.deadlines);
     if (variant==0) {
       EXPECT_EQ("42501",result.backend_error().native_state);
@@ -3437,7 +3552,7 @@ TEST(RedshiftColumnsSchemaPatterns, LateSchemaTableColumnFailureAndDeadlineNever
     session.callback={};session.replies.clear();session.commands.clear();session.deadlines.clear();
     schema_pattern_current(session,{"fresh"},{"fresh"});
     auto restored=session.execute_catalog(schema_pattern_columns("%"),rs::util::Deadline::max());
-    ASSERT_TRUE(restored)<<restored.error_message();EXPECT_EQ(4u,session.commands.size());
+    ASSERT_TRUE(restored)<<restored.error_message();EXPECT_EQ(5u,session.commands.size());
   }
 }
 TEST(RedshiftColumnsSchemaPatterns, VisibleDatabaseCollisionsLiteralCatalogAndUnknownScopeNeverDowngrade) {
@@ -3493,7 +3608,7 @@ TEST(RedshiftColumnsSchemaPatterns, LaterDatabaseSchemaErrorDiscardsEarlierOwnin
   auto result=session.execute_catalog(schema_pattern_columns("%"),rs::util::Deadline::max());
   ASSERT_FALSE(result);EXPECT_EQ("42501",result.backend_error().native_state);
   EXPECT_EQ(SessionDisposition::Reusable,result.backend_error().disposition);
-  EXPECT_EQ((std::vector<std::string>{"SHOW DATABASES;","SHOW SCHEMAS FROM DATABASE \"a_雪\";",
+  EXPECT_EQ((std::vector<std::string>{"SHOW DATABASES;","SHOW SCHEMAS FROM DATABASE \"a_雪\";", redshift_temporary_schemas_command("a_雪"),
       "SHOW TABLES FROM SCHEMA \"a_雪\".\"a\";","SHOW COLUMNS FROM TABLE \"a_雪\".\"a\".\"same\";",
       "SHOW SCHEMAS FROM DATABASE \"z_db\";"}),session.commands);
   session.commands.clear();session.deadlines.clear();session.replies.clear();
@@ -3504,7 +3619,7 @@ TEST(RedshiftColumnsSchemaPatterns, LaterDatabaseSchemaErrorDiscardsEarlierOwnin
   auto restored=session.execute_catalog(request,rs::util::Deadline::max());
   ASSERT_TRUE(restored)<<restored.error_message();ASSERT_EQ(2u,restored->rows.size());
   EXPECT_EQ("z_db",restored->rows[0][0]);EXPECT_EQ("fresh",restored->rows[0][1]);
-  EXPECT_EQ(4u,session.commands.size());
+  EXPECT_EQ(5u,session.commands.size());
 }
 
 
@@ -3537,9 +3652,9 @@ TEST(RedshiftTablesSchemaPatterns, NullAndUniversalOwnCollisionsSortAndOneAbsolu
     EXPECT_EQ((ResultRows{{"db","a","a","TABLE","owning remark"},{"db","z","a","TABLE","owning remark"},
         {"db","a","z","VIEW",std::nullopt},{"db","z","z","VIEW",std::nullopt}}),result->rows);
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
-        "SHOW SCHEMAS FROM DATABASE \"db\";","SHOW TABLES FROM SCHEMA \"db\".\"a\";",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", redshift_temporary_schemas_command("db"),"SHOW TABLES FROM SCHEMA \"db\".\"a\";",
         "SHOW TABLES FROM SCHEMA \"db\".\"z\";"}),session.commands);
-    EXPECT_EQ(std::vector<rs::util::Deadline>(4,deadline),session.deadlines);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(5,deadline),session.deadlines);
     session.replies.clear();session.connected=false;request.schema="changed";
     EXPECT_EQ(ResultCell{"owning remark"},result->rows[1][4]);
     EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
@@ -3573,18 +3688,18 @@ TEST(RedshiftTablesSchemaPatterns, EmptySchemaNoMatchAndEmptyTypeVectorRetainTyp
     WideColumnsSession session;tables_schema_current(session,{"a"},{});
     auto result=session.execute_catalog(schema_pattern_tables(schema),rs::util::Deadline::max());
     ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(5u,result->columns.size());
-    EXPECT_EQ(2u,session.commands.size());
+    EXPECT_EQ(3u,session.commands.size());
   }
   for (const auto& table:std::array<std::string,2>{"","no_match%"}) {
     WideColumnsSession empty;tables_schema_current(empty,{"a"},{"a"});
     auto request=schema_pattern_tables("%");request.table=table;
     auto result=empty.execute_catalog(request,rs::util::Deadline::max());
-    ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(3u,empty.commands.size());
+    ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(4u,empty.commands.size());
   }
   WideColumnsSession session;tables_schema_current(session,{"a"},{"a"});
   auto request=schema_pattern_tables("%");request.types=std::vector<std::string>{};
   auto result=session.execute_catalog(request,rs::util::Deadline::max());
-  ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(3u,session.commands.size());
+  ASSERT_TRUE(result)<<result.error_message();EXPECT_TRUE(result->rows.empty());EXPECT_EQ(4u,session.commands.size());
 }
 TEST(RedshiftTablesSchemaPatterns, VisibleDatabaseCatalogPatternsNeverUseColumnsLiteralPolicy) {
   for (const auto& catalog:std::array<std::string,2>{"a_%","z%"}) {
@@ -3597,7 +3712,7 @@ TEST(RedshiftTablesSchemaPatterns, VisibleDatabaseCatalogPatternsNeverUseColumns
     auto result=session.execute_catalog(request,rs::util::Deadline::max());
     ASSERT_TRUE(result)<<result.error_message();ASSERT_EQ(1u,result->rows.size());
     EXPECT_EQ(ResultCell{database},result->rows[0][0]);EXPECT_EQ("SHOW DATABASES;",session.commands[0]);
-    EXPECT_EQ(3u,session.commands.size());
+    EXPECT_EQ(4u,session.commands.size());
   }
 }
 // Group3: selection is an intent guard; exact/enumeration/legacy paths remain separate.
@@ -3652,7 +3767,7 @@ TEST(RedshiftTablesSchemaPatterns, HiddenMalformedTableAndSchemaRowsAreNotFilter
     auto request=schema_pattern_tables("%");request.table="no_match%";
     auto result=session.execute_catalog(request,rs::util::Deadline::max());ASSERT_FALSE(result);
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),result.error());
-    EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);EXPECT_EQ(3u,session.commands.size());
+    EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);EXPECT_EQ(4u,session.commands.size());
   }
   WideColumnsSession schema;tables_schema_current(schema,{"a","hidden"},{});
   schema.replies[1]->rows[1][0]="foreign";
@@ -3688,7 +3803,7 @@ TEST(RedshiftTablesSchemaPatterns, DestroyedPerSchemaStorageReleasesButOwningOut
     } else {
       wide_resource(result);
     }
-    EXPECT_EQ(4u,session.commands.size());
+    EXPECT_EQ(5u,session.commands.size());
   }
 }
 // Group5: known exchange admission, owning errors/no prefix, original deadline, recovery.
@@ -3696,14 +3811,14 @@ TEST(RedshiftTablesSchemaPatterns, FanoutPreflightAndLateNativeErrorsLeaveNoFall
   WideColumnsSession cap;ResultLimits limits;limits.max_results=3;ASSERT_TRUE(cap.budgets(limits));
   tables_schema_current(cap);
   wide_resource(cap.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max()));
-  EXPECT_EQ(2u,cap.commands.size());EXPECT_EQ(2u,cap.replies.size());
+  EXPECT_EQ(3u,cap.commands.size());EXPECT_EQ(2u,cap.replies.size());
   WideColumnsSession failed;tables_schema_current(failed);
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"last native table denied"};
   error.native_state="42501";error.session_state=SessionState::Idle;error.disposition=SessionDisposition::Reusable;
   failed.replies.back()=BackendResult<QueryResult>{error};
   auto result=failed.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());ASSERT_FALSE(result);
   EXPECT_EQ("42501",result.backend_error().native_state);EXPECT_EQ("last native table denied",result.error_message());
-  EXPECT_EQ(4u,failed.commands.size());EXPECT_TRUE(failed.replies.empty());
+  EXPECT_EQ(5u,failed.commands.size());EXPECT_TRUE(failed.replies.empty());
   tables_schema_current(failed,{"a"},{"a"});
   auto fresh=failed.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());
   ASSERT_TRUE(fresh)<<fresh.error_message();EXPECT_EQ(2u,fresh->rows.size());
@@ -3712,13 +3827,13 @@ TEST(RedshiftTablesSchemaPatterns, LateCompletedTableResponseTimesOutWithoutSucc
   WideColumnsSession session;tables_schema_current(session);
   const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{10});
   session.callback=[&] {
-    if (session.commands.size()==4) {
+    if (session.commands.size()==5) {
       while (rs::util::Clock::now()<deadline) { std::this_thread::yield(); }
     }
   };
   auto result=session.execute_catalog(schema_pattern_tables("%"),deadline);ASSERT_FALSE(result);
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());
-  EXPECT_EQ(std::vector<rs::util::Deadline>(4,deadline),session.deadlines);
+  EXPECT_EQ(std::vector<rs::util::Deadline>(5,deadline),session.deadlines);
   session.callback={};tables_schema_current(session,{"a"},{"a"});
   auto fresh=session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max());
   ASSERT_TRUE(fresh)<<fresh.error_message();EXPECT_EQ(2u,fresh->rows.size());
@@ -3732,11 +3847,11 @@ TEST(RedshiftTablesSchemaPatterns, RawHiddenRowsNameAndByteAdmissionKeepGenericT
   WideColumnsSession name;limits=ResultLimits{};limits.max_column_name_bytes=24;ASSERT_TRUE(name.budgets(limits));
   tables_schema_current(name,{"a"},{"a"});name.replies.back()->rows[0][2]=std::string(25,'z');
   auto request=schema_pattern_tables("%");request.table="no_match%";
-  wide_resource(name.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(3u,name.commands.size());
+  wide_resource(name.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(4u,name.commands.size());
   WideColumnsSession bytes;ResponseLimits response;response.max_wire_bytes=8192;
   ASSERT_TRUE(bytes.budgets(ResultLimits{},response));tables_schema_current(bytes,{"a"},{"a"});
   bytes.replies.back()->rows[0][4]=std::string(9000,'r');
-  wide_resource(bytes.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(3u,bytes.commands.size());
+  wide_resource(bytes.execute_catalog(request,rs::util::Deadline::max()));EXPECT_EQ(4u,bytes.commands.size());
   auto raw=tables_response("db","a");raw.rows[1][3]="EXTERNAL TABLE";
   request.types=std::vector<std::string>{"TABLE"};request.table="%";
   RedshiftRoutineBudget budget{ResponseLimits{},ResultLimits{}};
@@ -3756,7 +3871,7 @@ TEST(RedshiftTablesSchemaPatterns, OptionalNativeFieldsCannotBypassRawDescriptio
   }
   ASSERT_EQ(11u,raw.columns.size());
   wide_resource(session.execute_catalog(schema_pattern_tables("%"),rs::util::Deadline::max()));
-  EXPECT_EQ(3u,session.commands.size());EXPECT_TRUE(session.replies.empty());
+  EXPECT_EQ(4u,session.commands.size());EXPECT_TRUE(session.replies.empty());
 }
 
 
@@ -4079,7 +4194,8 @@ class CurrentForeignKeySession final : public RoutineExecutionSession {
  public:
   std::optional<std::string> share, external;
   bool lost_scope{false};
-  std::vector<QueryParameter> bound;
+  std::vector<QueryParameter> bound, foreign_bound;
+  QueryResult declared_foreign;
   std::optional<std::string> get_parameter_status(std::string_view key) const override {
     if (lost_scope) {
       throw std::runtime_error("Fixture scope observation loss");
@@ -4091,7 +4207,15 @@ class CurrentForeignKeySession final : public RoutineExecutionSession {
   BackendResult<QueryResult> execute_prepared(std::string_view query,
       std::span<const QueryParameter> values, rs::util::Deadline deadline) override {
     bound.assign(values.begin(), values.end());
-    return execute_query(query, deadline);
+    if (query == "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;") {
+      commands.emplace_back(query); deadlines.push_back(deadline);
+      if (callback) callback();
+      return BackendResult<QueryResult>{declared_primary_fixture(declared_foreign, values), snapshot};
+    }
+    foreign_bound = bound;
+    auto result = execute_query(query, deadline);
+    if (result) declared_foreign = *result;
+    return result;
   }
   void ready(QueryResult raw = current_fk_rows()) {
     replies.emplace_back(routine_identity(), snapshot);
@@ -4125,17 +4249,18 @@ TEST(RedshiftCurrentForeignKeys, ThreeDirectionsResolveOnceKeepFourteenOwningFie
     EXPECT_FALSE(result->rows[0][12]);
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
         direction == 1 ? "SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;" :
-                         "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;"}), session.commands);
-    EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline}), session.deadlines);
-    ASSERT_EQ(3u, session.bound.size());
-    EXPECT_EQ(ResultCell{"db"}, session.bound[0].value);
-    EXPECT_EQ(ResultCell{"s"}, session.bound[1].value);
-    EXPECT_EQ(ResultCell{direction == 1 ? "parent" : "child"}, session.bound[2].value);
-    for (const auto& parameter : session.bound) {
+                         "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;",
+        "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;"}), session.commands);
+    EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline, deadline}), session.deadlines);
+    ASSERT_EQ(3u, session.foreign_bound.size());
+    EXPECT_EQ(ResultCell{"db"}, session.foreign_bound[0].value);
+    EXPECT_EQ(ResultCell{"s"}, session.foreign_bound[1].value);
+    EXPECT_EQ(ResultCell{direction == 1 ? "parent" : "child"}, session.foreign_bound[2].value);
+    for (const auto& parameter : session.foreign_bound) {
       EXPECT_EQ(QueryParameterType::Unspecified, parameter.type);
     }
     session.replies.clear();
-    session.bound.clear();
+    session.foreign_bound.clear();
     session.connected = false;
     EXPECT_EQ(ResultCell{"ref_first"}, result->rows[0][7]);
   }
@@ -4155,8 +4280,8 @@ TEST(RedshiftCurrentForeignKeys, LiteralNamesEmptyAndBothHiddenGroupsRemainExact
   literal.ready(std::move(raw));
   auto result = literal.execute_catalog(input, rs::util::Deadline::max());
   ASSERT_TRUE(result) << result.error_message();
-  EXPECT_EQ(ResultCell{schema}, literal.bound[1].value);
-  EXPECT_EQ(ResultCell{child}, literal.bound[2].value);
+  EXPECT_EQ(ResultCell{schema}, literal.foreign_bound[1].value);
+  EXPECT_EQ(ResultCell{child}, literal.foreign_bound[2].value);
   EXPECT_EQ(ResultCell{child}, result->rows[0][6]);
 
   CurrentForeignKeySession empty;
@@ -4230,7 +4355,7 @@ TEST(RedshiftCurrentForeignKeys, RefusalGuardsNeverDispatchAndExplicitCatalogCon
   explicit_catalog.replies.emplace_back(current_fk_rows(), explicit_catalog.snapshot);
   auto result = explicit_catalog.execute_catalog(input, rs::util::Deadline::max());
   ASSERT_TRUE(result) << result.error_message();
-  EXPECT_EQ(1u, explicit_catalog.commands.size());
+  EXPECT_EQ(2u, explicit_catalog.commands.size());
 }
 
 TEST(RedshiftCurrentForeignKeys, LiteralPeakAndDestroyedScratchKeepOwningFourteenDescriptorsCharged) {
@@ -4310,7 +4435,7 @@ TEST(RedshiftCurrentForeignKeys, NativeErrorsTwoExchangePreflightAndFreshRecover
   session.ready();
   result = session.execute_catalog(current_fk_request(), rs::util::Deadline::max());
   ASSERT_TRUE(result) << result.error_message();
-  EXPECT_EQ(4u, session.commands.size());
+  EXPECT_EQ(5u, session.commands.size());
 
   CurrentForeignKeySession mismatch;
   auto both = current_fk_request(2);
@@ -4336,7 +4461,7 @@ TEST(RedshiftCurrentForeignKeys, BothMixedCatalogsAndImportedGroupOrderingNeverR
     }
     auto result = session.execute_catalog(input, rs::util::Deadline::max());
     ASSERT_TRUE(result) << result.error_message();
-    EXPECT_EQ(catalogs == 3 ? 1u : 2u, session.commands.size());
+    EXPECT_EQ(catalogs == 3 ? 2u : 3u, session.commands.size());
     ASSERT_EQ(2u, result->rows.size());
     EXPECT_EQ(ResultCell{"1"}, result->rows[0][8]);
     EXPECT_EQ(ResultCell{"db"}, result->rows[0][0]);
@@ -4776,9 +4901,9 @@ TEST(RedshiftVarbyteCatalogTypes, SchemaPatternFanoutKeepsClosedClassification) 
     ASSERT_EQ(1u, result->rows.size());
     expect_varbyte_catalog_row(result->rows[0], "varbyte");
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
-        "SHOW SCHEMAS FROM DATABASE \"db\";", "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", redshift_temporary_schemas_command("db"), "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
         "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
-    EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(5, deadline), session.deadlines);
   }
 }
 
@@ -4906,9 +5031,9 @@ TEST(RedshiftSuperCatalogTypes, ExactIdentifiersAndSchemaPatternFanoutKeepOrigin
     ASSERT_EQ(1u, result->rows.size());
     expect_super_catalog_row(result->rows[0], "SuPeR");
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
-        "SHOW SCHEMAS FROM DATABASE \"db\";", "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", redshift_temporary_schemas_command("db"), "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
         "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
-    EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(5, deadline), session.deadlines);
   }
 }
 
@@ -5129,9 +5254,9 @@ TEST(RedshiftSpatialCatalogTypes, ExactIdentifiersAndSchemaPatternsKeepTheSameDe
     ASSERT_EQ(1u, result->rows.size());
     expect_varbyte_catalog_row(result->rows[0], "GeOgRaPhY");
     EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
-        "SHOW SCHEMAS FROM DATABASE \"db\";", "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+        "SHOW SCHEMAS FROM DATABASE \"db\";", redshift_temporary_schemas_command("db"), "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
         "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"a\";"}), session.commands);
-    EXPECT_EQ(std::vector<rs::util::Deadline>(4, deadline), session.deadlines);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(5, deadline), session.deadlines);
   }
 }
 
@@ -6023,4 +6148,117 @@ TEST(RedshiftSpecialColumns, EveryNativeCompletionKeepsTheOriginalDeadlineAndReq
   ASSERT_EQ(3u, identifiers.bound.size());
   EXPECT_EQ(ResultCell{"scope"}, identifiers.bound[1].value);
   EXPECT_EQ(ResultCell{"table"}, identifiers.bound[2].value);
+}
+
+TEST(RedshiftSessionTemporarySchemas, NativeProjectionUsesExactDatabaseAndExistingPatternDecoder) {
+  const auto command = redshift_temporary_schemas_command("db'\\雪");
+  EXPECT_NE(std::string::npos, command.find("FROM pg_table_def"));
+  EXPECT_NE(std::string::npos, command.find("LEFT(TRIM(schemaname),8)='pg_temp_'"));
+  EXPECT_NE(std::string::npos, command.find("current_database()='db''\\\\雪'"));
+  EXPECT_EQ(std::string::npos, command.find("=E'"));
+  EXPECT_NE(std::string::npos, command.find("LIMIT 10001"));
+  auto native = routine_schema_rows({{"db", "pg_temp_123", std::nullopt,
+      std::nullopt, std::nullopt, std::nullopt, std::nullopt}});
+  RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+  auto selected = redshift_column_schemas("db", std::string{"pg\\_temp\\_%"},
+      {native, {SessionState::Idle, SessionDisposition::Reusable}}, budget, rs::util::Deadline::max());
+  ASSERT_TRUE(selected) << selected.error_message();
+  EXPECT_EQ((std::vector<std::string>{"pg_temp_123"}), selected->names);
+  RedshiftRoutineBudget foreign_budget{ResponseLimits{}, ResultLimits{}};
+  native.rows[0][0] = "other";
+  auto foreign = redshift_column_schemas("db", std::nullopt,
+      {native, {SessionState::Idle, SessionDisposition::Reusable}}, foreign_budget, rs::util::Deadline::max());
+  ASSERT_FALSE(foreign);
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, foreign.backend_error().error_class);
+}
+
+TEST(RedshiftSessionTemporarySchemas, UsesRedshiftPlainLiteralsForEachEscapedDatabaseCharacter) {
+  // Redshift QUOTE_LITERAL uses plain single quotes and doubles apostrophes
+  // and backslashes. PostgreSQL's E prefix is parsed as an undefined type.
+  const std::pair<std::string_view, std::string_view> examples[]{
+      {"db", "'db'"},
+      {"db'quote", "'db''quote'"},
+      {"db\\slash", "'db\\\\slash'"},
+      {"db'\\雪", "'db''\\\\雪'"},
+  };
+  const std::string prefix = "SELECT DISTINCT current_database() AS database_name,"
+      "TRIM(schemaname)::varchar AS schema_name,NULL::varchar AS schema_owner,"
+      "NULL::varchar AS schema_type,NULL::varchar AS schema_acl,"
+      "NULL::varchar AS source_database,NULL::varchar AS schema_option "
+      "FROM pg_table_def WHERE LEFT(TRIM(schemaname),8)='pg_temp_' "
+      "AND current_database()=";
+  for (const auto& [database, quoted] : examples) {
+    const auto command = redshift_temporary_schemas_command(database);
+    EXPECT_EQ(prefix + std::string(quoted) + " ORDER BY schema_name LIMIT 10001;", command);
+    EXPECT_EQ(std::string::npos, command.find("=E'"));
+  }
+}
+
+TEST(RedshiftSessionTemporarySchemas, TablesAndColumnsDiscoverSessionSchemaWithoutDuplicateVisits) {
+  for (const bool columns : {false, true}) {
+    for (const bool already_in_show : {false, true}) {
+      WideColumnsSession session;
+      session.scripted_temporary_schemas = true;
+      session.replies.emplace_back(routine_identity(), session.snapshot);
+      auto show = routine_schema_rows({});
+      if (already_in_show) {
+        show.rows.push_back({"db", "pg_temp_123", "1", "local", std::nullopt,
+                             std::nullopt, std::nullopt});
+      }
+      session.replies.emplace_back(std::move(show), session.snapshot);
+      session.replies.emplace_back(routine_schema_rows({{"db", "pg_temp_123", std::nullopt,
+          std::nullopt, std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+      schema_table_fanout(session, "pg_temp_123", {"same"}, columns ?
+          std::vector<std::string>{"same"} : std::vector<std::string>{});
+      auto result = session.execute_catalog(columns ? CatalogRequest{schema_pattern_columns()} :
+          CatalogRequest{schema_pattern_tables()}, rs::util::Deadline::max());
+      ASSERT_TRUE(result) << result.error_message();
+      ASSERT_FALSE(result->rows.empty());
+      EXPECT_EQ(ResultCell{"pg_temp_123"}, result->rows[0][1]);
+      EXPECT_EQ(1, std::count(session.commands.begin(), session.commands.end(),
+          "SHOW TABLES FROM SCHEMA \"db\".\"pg_temp_123\";"));
+      EXPECT_TRUE(session.replies.empty());
+    }
+  }
+}
+
+TEST(RedshiftForeignKeysPrimaryTargets, UniqueAndIncompleteCompositeGroupsAreExcludedAsWholeGroups) {
+  for (const bool partial : {false, true}) {
+    auto raw = current_fk_rows();
+    auto unique = raw.rows.back();
+    unique[3] = "alternate"; unique[7] = "ref_unique"; unique[11] = "fk_unique";
+    raw.rows.push_back(unique);
+    auto normalized = normalize_redshift_foreign_keys(current_fk_plan(),
+        {std::move(raw), {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(normalized);
+    auto primary = primary_keys();
+    primary.rows = {{"db", "s", "parent", "pk", "first", "1"},
+                    {"db", "s", "parent", "pk", "second", "2"}};
+    auto keys = normalize_redshift_primary_keys({"db", "s", "parent"},
+        {std::move(primary), {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_TRUE(keys);
+    if (partial) {
+      normalized->rows.erase(normalized->rows.begin());
+    }
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    auto filtered = redshift_filter_primary_references(*normalized, {"db", "s", "parent"},
+        *keys, budget, rs::util::Deadline::max());
+    ASSERT_TRUE(filtered) << filtered.error_message();
+    EXPECT_EQ(partial ? 0u : 2u, normalized->rows.size());
+    for (const auto& row : normalized->rows) {
+      EXPECT_EQ(ResultCell{"fk"}, row[11]);
+      EXPECT_NE(ResultCell{"alternate"}, row[3]);
+    }
+  }
+}
+
+TEST(RedshiftSessionTemporarySchemas, MockRejectsNonliteralDatabaseAndAppendedCommands) {
+  for (const auto& invalid : {redshift_temporary_schemas_command("foreign"),
+      redshift_temporary_schemas_command("db") + "SELECT 1;"}) {
+    WideColumnsSession session;
+    auto result = session.execute_query(invalid, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(1u, session.commands.size());
+    EXPECT_EQ(invalid, session.commands.front());
+  }
 }

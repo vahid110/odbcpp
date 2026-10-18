@@ -1,4 +1,6 @@
 #include "core/database/postgres/redshift_primary_key_contract.h"
+#include "core/database/postgres/redshift_catalog_query.h"
+#include <chrono>
 #include <gtest/gtest.h>
 
 using namespace rs::core::database;
@@ -81,6 +83,47 @@ TEST(RedshiftPrimaryKeyContract, PreparedIdentifierMetadataIsValidatedWithoutBec
   }
 }
 
+TEST(RedshiftPrimaryKeyContract, LegacySelectCardinalityAndShowCompletionStayDistinct) {
+  // The Redshift parser publishes a buffered SELECT's exact row count; SHOW
+  // has no affected-row count. Both describe the same owning catalog rows.
+  for (const auto affected : {std::size_t{0}, std::size_t{2}}) {
+    auto input = show_keys();
+    input.affected_rows = affected;
+    input.statement_kind = affected ? StatementKind::SelectCursor : StatementKind::Unknown;
+    auto result = normalize_redshift_primary_keys(plan(), std::move(input));
+    ASSERT_TRUE(result);
+    ASSERT_EQ(2u, result->rows.size());
+    EXPECT_EQ("key_b", result->rows[0][3]);
+    EXPECT_EQ("key_a", result->rows[1][3]);
+    auto bounded = show_keys();
+    bounded.affected_rows = affected;
+    bounded.statement_kind = StatementKind::SelectCursor;
+    RedshiftRoutineBudget budget{ResponseLimits{},ResultLimits{}};
+    const SessionSnapshot snapshot{SessionState::Idle,SessionDisposition::Reusable};
+    auto part = redshift_primary_key_part(plan(),
+        BackendResult<QueryResult>{std::move(bounded),snapshot},budget,
+        rs::util::Clock::now()+std::chrono::seconds{5});
+    ASSERT_TRUE(part);
+    ASSERT_EQ(2u,part->rows.size());
+    EXPECT_EQ(snapshot,part.session_snapshot());
+  }
+  for (const auto affected : {std::size_t{1}, std::size_t{3}}) {
+    auto input = show_keys();
+    input.affected_rows = affected;
+    blocked(std::move(input));
+    auto bounded = show_keys();
+    bounded.affected_rows = affected;
+    bounded.statement_kind = StatementKind::SelectCursor;
+    RedshiftRoutineBudget budget{ResponseLimits{},ResultLimits{}};
+    const SessionSnapshot snapshot{SessionState::Idle,SessionDisposition::Reusable};
+    auto part = redshift_primary_key_part(plan(),
+        BackendResult<QueryResult>{std::move(bounded),snapshot},budget,
+        rs::util::Clock::now()+std::chrono::seconds{5});
+    ASSERT_FALSE(part);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata,part.backend_error().error_class);
+  }
+}
+
 TEST(RedshiftPrimaryKeyContract, EmptyAndNullableConstraintNameAndSourceOrder) {
   auto input = show_keys(); input.rows.clear();
   auto empty = normalize_redshift_primary_keys(plan(), input);
@@ -94,6 +137,30 @@ TEST(RedshiftPrimaryKeyContract, EmptyAndNullableConstraintNameAndSourceOrder) {
   EXPECT_FALSE(nullable->rows[0][5]);
   input.rows[1][3] = "other";
   blocked(input);
+}
+
+TEST(RedshiftPrimaryKeyContract, ReferencedKeyBudgetReleasedAfterOwningProjectionDies) {
+  ResultLimits limits;
+  limits.max_rows=6;
+  RedshiftRoutineBudget budget{ResponseLimits{},limits};
+  RedshiftRoutineUsage retained;
+  {
+    auto input=show_keys();
+    input.statement_kind=StatementKind::SelectCursor;
+    input.affected_rows=input.rows.size();
+    const SessionSnapshot snapshot{SessionState::Idle,SessionDisposition::Reusable};
+    auto output=redshift_primary_key_part(plan(),
+        BackendResult<QueryResult>{std::move(input),snapshot},budget,
+        rs::util::Clock::now()+std::chrono::seconds{5});
+    ASSERT_TRUE(output);
+    retained=redshift_primary_key_output_usage(*output);
+    EXPECT_EQ(2u,retained.rows);
+    // Another five-row projection cannot coexist with this owning result.
+    EXPECT_FALSE(budget.retain({5,0,0,0,0}));
+  }
+  budget.release(retained);
+  // All six row slots become reusable only after the former owner is gone.
+  EXPECT_TRUE(budget.retain({6,0,0,0,0}));
 }
 
 TEST(RedshiftPrimaryKeyContract, AcceptedTextFamiliesPreserveExactNames) {

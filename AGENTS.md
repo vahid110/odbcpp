@@ -7,6 +7,34 @@ The human-approved 2026-10-13 parallel execution model is defined in
 [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md). It supersedes root-only implementation
 and blanket shared-file author restrictions; architecture and acceptance remain.
 
+## Temporary local live-test workflow — human directed 2026-10-18
+
+The local ODBCPP acceptance gate is satisfied: all 520 own-driver cases passed
+on `108f704e4d96a8ce27c34d5b54999b3e1c872707`. The human explicitly resumed PRs,
+pushes and cross-platform qualification for these fixes. The separately recorded
+[vendor reference discrepancy](tests/development/live_suite/vendor-reference-issues.md)
+is non-blocking for ODBCPP; retain its failing result without changing assertions
+or claiming vendor conformance. Required platform builds and final CI still apply.
+
+For the current checkpoint, use CTest on the local iMac to run the complete
+applicable existing live suite and collect all failures before starting product
+or test repairs. Ordinary assertion failures and isolated test-process crashes
+must not stop unrelated tests. Preserve raw GoogleTest and CTest results; report
+skips, setup failures and unrun cases truthfully. Python owns resource resume/pause
+and fixture/input/resource cleanup, not per-case scheduling or feature-result
+parsing. Use available driver logs and ODBC diagnostics alongside test results,
+keeping private credentials out of reports.
+
+Hold GitHub pushes, PR creation and hosted/multiplatform builds during local
+collection and repair. Keep fixes in local commits. After the complete applicable
+local live suite passes, raise reviewed PR(s) and resume required platform builds
+and final CI qualification. This supersedes the CI-first and per-PR sequencing
+below for this phase; local green does not establish cross-platform acceptance.
+Existing identity, TLS, resource, finite runtime, cleanup and standing fixture
+authority remain. Billing probes and timers remain disabled; general feature,
+Auth and roadmap work stays held. Codex /root is the sole coordinator following
+the recorded AO handover.
+
 ## Current human guidance — 2026-10-15
 
 This guidance supersedes conflicting earlier billing, timer and selected-live-batch

@@ -877,7 +877,7 @@ const char* request_sqlstate(const std::error_code& error,
 
 std::string mapped_backend_sqlstate(
     const rs::core::database::IBackendProvider& provider,
-    std::string_view server_state, const char* fallback,
+    const rs::core::database::BackendError& error, const char* fallback,
     SQLINTEGER statement_code = SQL_DIAG_UNKNOWN_STATEMENT) {
   using rs::core::database::ErrorContext;
   auto context = ErrorContext::Unknown;
@@ -888,13 +888,73 @@ std::string mapped_backend_sqlstate(
     case SQL_DIAG_DROP_INDEX: context = ErrorContext::DropIndex; break;
     default: break;
   }
-  const auto state = provider.normalize_error_sqlstate(server_state, context);
+  const auto state = provider.normalize_error_sqlstate(error, context);
   // Validate the backend contract before exposing a diagnostic to applications.
   if (!state || state->size() != 5 ||
       !std::all_of(state->begin(), state->end(), [](char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
       })) return fallback;
   return *state;
+}
+
+// An adapter diagnostic field, not native error classification. Other backend
+// contracts may supply arbitrary text, so expose only a validated SQLSTATE.
+std::string native_error_sqlstate_for_log(const rs::core::database::BackendError& error) {
+  if (!error.native_state || error.native_state->size() != 5 ||
+      !std::all_of(error.native_state->begin(), error.native_state->end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
+      })) return {};
+  return *error.native_state;
+}
+
+// Logging adaptation only: publish labels drawn from closed local-validator
+// vocabularies. A server/backend message may contain SQL or private identifiers;
+// neither a recognized prefix alone nor an arbitrary suffix permits its release.
+std::string catalog_error_reason_for_log(const rs::core::database::BackendError& error) {
+  struct Family { std::string_view prefix; std::string_view label; };
+  static constexpr Family families[]{
+      {"Invalid Redshift schema metadata: ", "schema"},
+      {"Invalid Redshift table metadata: ", "table"},
+      {"Invalid Redshift column metadata: ", "column"},
+      {"Invalid Redshift routine metadata: ", "routine"},
+      {"Invalid current-database primary-key metadata: ", "primary-key"},
+      {"Invalid current-database foreign-key metadata: ", "foreign-key"},
+  };
+  static constexpr std::string_view reasons[]{
+      "allocation-model", "columns", "completion", "constraint",
+      "databases-duplicate", "databases-identifier", "databases-layout", "databases-snapshot",
+      "databases-structure", "databases-type", "dimensions", "discovery-columns",
+      "discovery-count", "discovery-duplicate", "discovery-foreign", "discovery-identity",
+      "discovery-layout", "discovery-structure", "discovery-text", "discovery-type",
+      "duplicate", "foreign", "foreign-identity", "identity",
+      "layout", "lookup-columns", "lookup-completion", "lookup-identifier",
+      "lookup-name", "lookup-rows", "lookup-snapshot", "lookup-structure",
+      "lookup-type", "nullable", "parameter-columns", "parameter-dimensions",
+      "parameter-foreign", "parameter-identity", "parameter-layout", "parameter-name",
+      "parameter-signature-count", "parameter-structure", "parameter-text", "parameter-type",
+      "pattern", "reference", "remarks", "row-identity",
+      "row-text", "rows", "schema-completion", "schema-duplicate",
+      "schema-identity", "schema-layout", "schema-type", "schemas-duplicate",
+      "schemas-identity", "schemas-identity-type", "schemas-layout", "schemas-request",
+      "schemas-structure", "sequence", "sequence-gap", "show-columns",
+      "show-completion", "show-database", "show-duplicate", "show-foreign-database",
+      "show-identifier", "show-layout", "show-null-identity", "show-rows",
+      "show-structure", "show-type", "signature", "signature-count",
+      "snapshot", "structure", "table-completion", "table-database-completion",
+      "table-database-duplicate", "table-database-identity", "table-database-layout", "table-database-lookup",
+      "table-database-type", "table-duplicate", "table-foreign", "table-identity",
+      "table-kind", "table-layout", "table-projection", "table-remarks",
+      "table-text", "table-type", "target", "type",
+  };
+  const std::string_view message{error.message};
+  for (const auto& family : families) {
+    if (!message.starts_with(family.prefix)) continue;
+    const auto suffix = message.substr(family.prefix.size());
+    for (const auto reason : reasons) {
+      if (suffix == reason) return std::string(family.label) + "." + std::string(reason);
+    }
+  }
+  return "unclassified";
 }
 
 std::string query_failure_sqlstate(
@@ -912,7 +972,7 @@ std::string query_failure_sqlstate(
     return default_state;
   }
   return mapped_backend_sqlstate(
-      provider, error.native_state.value_or(""), default_state, statement_code);
+      provider, error, default_state, statement_code);
 }
 
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
@@ -3827,7 +3887,9 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(transaction.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return SQL_ERROR;
     }
@@ -3853,7 +3915,9 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->close_connection();
       return SQL_ERROR;
@@ -7544,7 +7608,9 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(transaction.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return complete_parameter_set(SQL_ERROR,input);
     }
@@ -7568,7 +7634,9 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->close_connection();
       return complete_parameter_set(SQL_ERROR,input);
@@ -8405,6 +8473,11 @@ SQLRETURN ODBCStatement::execute_catalog(
       if (result.has_error()) {
         set_error(query_failure_sqlstate(conn_->backend_provider(),
             result.backend_error(), SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), result.error_message());
+        conn_->log(rs::core::logging::LogLevel::Error, "catalog_failed",
+                   result.backend_error().safe_summary(),
+                   {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                    {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                    {"catalog_reason", catalog_error_reason_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public}});
         if (is_timeout_error(result.error()) ||
             result.session_snapshot().disposition == rs::core::database::SessionDisposition::Retire)
           conn_->close_connection();
@@ -8419,6 +8492,10 @@ SQLRETURN ODBCStatement::execute_catalog(
     } catch (...) {
       clear_current_result();
       pending_results_.clear();
+      conn_->log(rs::core::logging::LogLevel::Error, "catalog_failed",
+                 "Catalog execution result could not be published",
+                 {{"sqlstate", SQLSTATE_GENERAL_ERROR, rs::core::logging::FieldSensitivity::Public},
+                  {"catalog_reason", "execution_exception", rs::core::logging::FieldSensitivity::Public}});
       conn_->close_connection();
       set_error(SQLSTATE_GENERAL_ERROR, "Invalid catalog execution result");
       return SQL_ERROR;

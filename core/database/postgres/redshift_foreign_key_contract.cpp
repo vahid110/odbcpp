@@ -1,5 +1,6 @@
 #include "redshift_foreign_key_contract.h"
 #include "redshift_catalog_query.h"
+#include "redshift_primary_key_contract.h"
 #include <limits>
 #include "core/database/result_validation.h"
 #include <array>
@@ -387,3 +388,68 @@ BackendResult<QueryResult> redshift_foreign_key_part(const RedshiftForeignKeyCom
   return normalized;
 }
 }  // namespace rs::core::database::postgres
+
+namespace rs::core::database::postgres {
+std::optional<RedshiftRoutineUsage> redshift_foreign_key_output_usage(const QueryResult& source) {
+  return current_fk_storage(source);
+}
+
+BackendResult<void> redshift_filter_primary_references(QueryResult& foreign_keys,
+    const RedshiftPrimaryKeyCommandPlan& table, const QueryResult& primary_keys,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
+  if (!valid_result_structure(foreign_keys) || !valid_result_structure(primary_keys) ||
+      foreign_keys.columns.size() != 14 || primary_keys.columns.size() != 6)
+    return malformed();
+  constexpr std::array<std::string_view, 6> fields{
+      "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "KEY_SEQ", "PK_NAME"};
+  for (std::size_t field = 0; field < fields.size(); ++field) {
+    if (primary_keys.columns[field].name != fields[field]) return malformed();
+  }
+  for (const auto& row : primary_keys.rows) {
+    for (std::size_t field = 0; field < 5; ++field) {
+      if (!row[field]) return malformed();
+    }
+    if (*row[0] != table.database || *row[1] != table.schema || *row[2] != table.table)
+      return malformed();
+  }
+  for (const auto& row : foreign_keys.rows) {
+    for (std::size_t field : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 8u, 11u}) {
+      if (!row[field]) return malformed();
+    }
+  }
+  const RedshiftRoutineUsage scratch{0, 0,
+      foreign_keys.rows.size() + sizeof(std::vector<unsigned char>), 0, 0};
+  if (!budget.retain(scratch)) return redshift_routine_limit();
+  {
+    std::vector<unsigned char> keep(foreign_keys.rows.size(), 1);
+    for (std::size_t index = 0; index < foreign_keys.rows.size(); ++index) {
+      if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+      const auto& row = foreign_keys.rows[index];
+      if (*row[0] != table.database || *row[1] != table.schema || *row[2] != table.table) continue;
+      std::size_t count = 0;
+      bool matches_primary = !primary_keys.rows.empty();
+      for (const auto& member : foreign_keys.rows) {
+        if (rs::util::Clock::now() >= deadline) return current_fk_timeout();
+        if (member[4] != row[4] || member[5] != row[5] || member[6] != row[6] ||
+            member[11] != row[11]) continue;
+        ++count;
+        const auto matching = std::find_if(primary_keys.rows.begin(), primary_keys.rows.end(),
+            [&](const ResultRow& key) { return key[3] == member[3] && key[4] == member[8]; });
+        matches_primary = matches_primary && matching != primary_keys.rows.end();
+      }
+      keep[index] = matches_primary && count == primary_keys.rows.size();
+    }
+    // Decide every composite group before moving/erasing any member.
+    std::size_t output = 0;
+    for (std::size_t index = 0; index < foreign_keys.rows.size(); ++index) {
+      if (keep[index]) {
+        if (output != index) foreign_keys.rows[output] = std::move(foreign_keys.rows[index]);
+        ++output;
+      }
+    }
+    foreign_keys.rows.resize(output);
+  }
+  budget.release(scratch);
+  return {};
+}
+} // namespace rs::core::database::postgres

@@ -336,12 +336,35 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
     EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(value)), length) << type;
   }
 
-  const std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 36>
+  // Redshift's database isolation mode is not an observed standard session
+  // default. Keep its truthful refusal separate from capabilities that succeed.
+  for (const bool wide : {false, true}) {
+    SCOPED_TRACE(wide);
+    SQLUINTEGER value = 0xaabbccdd;
+    SQLSMALLINT length = 79;
+    const auto result = wide
+        ? SQLGetInfoW(connection_, SQL_DEFAULT_TXN_ISOLATION,
+                      &value, sizeof(value), &length)
+        : SQLGetInfo(connection_, SQL_DEFAULT_TXN_ISOLATION,
+                     &value, sizeof(value), &length);
+    if (redshift_profile_) {
+      ASSERT_EQ(SQL_ERROR, result);
+      EXPECT_EQ("HY000", diagnostic_state(connection_));
+      EXPECT_EQ(0xaabbccddu, value);
+      EXPECT_EQ(79, length);
+    } else {
+      ASSERT_EQ(SQL_SUCCESS, result);
+      EXPECT_EQ(SQL_TXN_READ_COMMITTED, value);
+      EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(value)), length);
+    }
+  }
+
+  const std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 35>
       integer_values{{
-          {SQL_DEFAULT_TXN_ISOLATION, SQL_TXN_READ_COMMITTED},
           {SQL_TXN_ISOLATION_OPTION,
-           SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
-               SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE},
+           redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(
+               SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
+               SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE)},
           {SQL_SCROLL_OPTIONS, SQL_SO_FORWARD_ONLY | SQL_SO_STATIC},
           {SQL_GETDATA_EXTENSIONS, SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER | SQL_GD_BLOCK},
           {SQL_ASYNC_MODE, SQL_AM_NONE},
@@ -510,12 +533,24 @@ TEST_F(GetInfoIntegrationTest, NumericOutputNeedNotBeAligned) {
 
   length = -1;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(
-      connection_, SQL_DEFAULT_TXN_ISOLATION, output,
+      connection_, SQL_GETDATA_EXTENSIONS, output,
       sizeof(SQLUINTEGER), &length));
   EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(SQLUINTEGER)), length);
   SQLUINTEGER integer = 0;
   std::memcpy(&integer, output, sizeof(integer));
-  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer);
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+                SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER | SQL_GD_BLOCK), integer);
+
+  if (redshift_profile_) {
+    const auto previous_default_output = storage;
+    length = 73;
+    ASSERT_EQ(SQL_ERROR, SQLGetInfoW(
+        connection_, SQL_DEFAULT_TXN_ISOLATION, output,
+        sizeof(SQLUINTEGER), &length));
+    EXPECT_EQ("HY000", diagnostic_state(connection_));
+    EXPECT_EQ(previous_default_output, storage);
+    EXPECT_EQ(73, length);
+  }
 
   const auto previous_output = storage;
   length = 17;
@@ -542,12 +577,24 @@ TEST_F(GetInfoIntegrationTest, NumericOutputLengthNeedNotBeAligned) {
 
   SQLUINTEGER integer = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(
-      connection_, SQL_DEFAULT_TXN_ISOLATION, &integer,
+      connection_, SQL_GETDATA_EXTENSIONS, &integer,
       static_cast<SQLSMALLINT>(sizeof(integer)), length));
   std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
               sizeof(required));
-  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer);
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+                SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER | SQL_GD_BLOCK), integer);
   EXPECT_EQ(sizeof(integer), required);
+
+  if (redshift_profile_) {
+    const auto previous_default_length = length_storage;
+    integer = 0xaabbccdd;
+    ASSERT_EQ(SQL_ERROR, SQLGetInfoW(
+        connection_, SQL_DEFAULT_TXN_ISOLATION, &integer,
+        static_cast<SQLSMALLINT>(sizeof(integer)), length));
+    EXPECT_EQ("HY000", diagnostic_state(connection_));
+    EXPECT_EQ(0xaabbccddu, integer);
+    EXPECT_EQ(previous_default_length, length_storage);
+  }
 
   const auto previous_length = length_storage;
   EXPECT_EQ(SQL_ERROR, SQLGetInfo(
