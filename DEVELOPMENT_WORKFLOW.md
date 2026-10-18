@@ -1,5 +1,21 @@
 # Redshift development and qualification cadence
 
+## Temporary local CTest checkpoint — 2026-10-18
+
+The human temporarily replaces CI-first live-test sequencing with local full-suite
+collection and repair. Run every applicable live case/profile through CTest on
+the iMac, retaining all failures before beginning repairs. CTest continues after
+ordinary failures and isolated crashes; Python supplies resource and cleanup
+lifecycle. Preserve raw GoogleTest XML, CTest JUnit and logs; capture driver/ODBC
+diagnostics where available. Existing proposed failure fixes stay aside until
+the first complete collection.
+
+GitHub pushes, PRs and hosted platform builds are held until the full applicable
+local live suite passes. Then submit reviewed changes and resume required
+platform builds and final CI. Independent review, standing fixture authority,
+finite runtime and exact cleanup/pause controls remain. This local milestone
+does not claim unexecuted platform coverage.
+
 Human approved trial on 2026-10-11. This supersedes the 2026-10-09 24-hour
 cadence, the earlier 48-hour trial, per-feature live execution, routine extra-profile
 checks and mandatory separate API worker.
