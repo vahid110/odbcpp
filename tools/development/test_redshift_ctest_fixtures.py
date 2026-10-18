@@ -3,7 +3,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import redshift_ctest_fixtures as fixtures
 import redshift_ctest_lifecycle as lifecycle
@@ -21,6 +21,80 @@ def load_factory():
 
 
 class Fixtures(unittest.TestCase):
+    def resume_case(self):
+        identity = {'table': 'held_timeout', 'oid': '123', 'owner_oid': '101',
+                    'schema_oid': '107830', 'schema_owner_oid': '100', 'shape': 't'}
+        record = dict(identity)
+        state = {'records': {key: {'state': 'OWNED', 'identity': key} for key in fixtures.KEYS},
+                 'plan': {'closed': True}, 'events': [], 'helpers': 0, 'SQL': 0,
+                 'prepared': True, 'database_create': {'initial': 'f', 'state': 'OWNED'},
+                 'timeout': {'table': 'held_timeout', 'record': record, 'object': 'OWNED',
+                             'grant': 'RESTORED', 'facts': {'identity': identity,
+                                 'pre': {}, 'permission': {'create': 'f'}}},
+                 'timeout_record': record,
+                 'substitutions': {'timeout': record, 'second_database': 'dev'}}
+        factory = SimpleNamespace(validate_timeout_preowned=lambda value: value,
+            whole_validate_ready=Mock(), two_db_select=lambda raw: raw,
+            two_db_stage=lambda kind, other=None: {'stage': kind, 'other': other},
+            two_db_public=Mock())
+        timeout_factory = SimpleNamespace(identity=lambda value, pre, table: value,
+                                         permission=Mock())
+        ops = SimpleNamespace(factory=factory, timeout_factory=timeout_factory,
+            readers_known=True, sql_unknown=False, sql_fenced=False,
+            now=lambda: 0.0, record=Mock())
+        values = {'identity_after': {key: value for key, value in identity.items() if key != 'shape'},
+                  'shape': {'ordinal_position': '1', 'column_name': 'value',
+                            'data_type': 'integer', 'is_nullable': 'NO', 'column_default': ''},
+                  'rows': {'count': '1', 'min': '1', 'max': '1'}, 'locks': {'locks': '0'},
+                  'permission_final': {'create': 'f', 'absent': 'f'}}
+        return ops, state, values
+
+    def test_resume_prepared_checks_all_custody_without_mutation_and_keeps_cleanup_owner(self):
+        ops, state, values = self.resume_case()
+        with patch.object(fixtures, '_batch', return_value={}) as batch, \
+             patch.object(fixtures, '_timeout_get', side_effect=lambda o, s, key, end: values[key]) as timed, \
+             patch.object(fixtures, '_db_sql', return_value='t') as database, \
+             patch.object(fixtures, '_sql', side_effect=['dev', 'public']) as sql:
+            self.assertIs(fixtures.resume_prepared(ops, state, 100), state)
+        self.assertIs(ops.fixture_state, state)
+        self.assertTrue(state['prepared'])
+        self.assertEqual([key for call in batch.call_args_list for key in call.args[2]],
+                         list(fixtures.KEYS))
+        self.assertTrue(all(call.args[3] == 'ordinary' for call in batch.call_args_list))
+        self.assertEqual([call.args[2] for call in timed.call_args_list],
+                         ['identity_after', 'shape', 'rows', 'locks', 'permission_final'])
+        database.assert_called_once_with(ops, state, 'probe', 100)
+        self.assertEqual([call.args[2]['stage'] for call in sql.call_args_list],
+                         ['databases', 'schemas'])
+        self.assertEqual(state['database_create'], {'initial': 'f', 'state': 'OWNED'})
+        self.assertEqual(state['timeout']['object'], 'OWNED')
+        self.assertTrue(all(row['state'] == 'OWNED' for row in state['records'].values()))
+        ops.timeout_factory.permission.assert_called_once_with(
+            values['permission_final'], {'create': 'f'}, create='f', absent='f')
+
+    def test_resume_changed_identity_rows_locks_grant_or_database_refuses_with_custody(self):
+        for failure in ('identity', 'shape', 'rows', 'locks', 'grant', 'second_database', 'readers'):
+            with self.subTest(failure=failure):
+                ops, state, values = self.resume_case()
+                if failure == 'identity':
+                    values['identity_after']['oid'] = '999'
+                elif failure in ('shape', 'rows', 'locks'):
+                    values[failure] = {}
+                elif failure == 'readers':
+                    ops.readers_known = False
+                with patch.object(fixtures, '_batch', return_value={}), \
+                     patch.object(fixtures, '_timeout_get', side_effect=lambda o, s, key, end: values[key]), \
+                     patch.object(fixtures, '_db_sql', return_value='f' if failure == 'grant' else 't'), \
+                     patch.object(fixtures, '_sql', side_effect=[
+                         'changed' if failure == 'second_database' else 'dev', 'public']):
+                    with self.assertRaises(fixtures.FixtureError) as caught:
+                        fixtures.resume_prepared(ops, state, 100)
+                self.assertIs(caught.exception.state, state)
+                self.assertIs(ops.fixture_state, state)
+                self.assertFalse(state['prepared'])
+                self.assertEqual(state['database_create']['state'], 'OWNED')
+                self.assertEqual(state['timeout']['object'], 'OWNED')
+
     def test_overcap_plan_refuses_before_operational_method(self):
         class NoEffects:
             def now(self):

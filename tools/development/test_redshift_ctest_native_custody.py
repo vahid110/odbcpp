@@ -45,6 +45,25 @@ class Census(unittest.TestCase):
         self.assertTrue(result['complete'])
         self.assertEqual(result['residual'], [])
 
+    def test_catalog_snapshot_avoids_boolean_and_oidvector_text_casts(self):
+        query = census.stage()['query']
+        self.assertNotIn('attnotnull::', query)
+        self.assertNotIn('atthasdef::', query)
+        self.assertNotIn('proargtypes::', query)
+        self.assertIn("CASE WHEN a.attnotnull THEN 't' ELSE 'f' END", query)
+        self.assertIn("CASE WHEN a.atthasdef THEN 't' ELSE 'f' END", query)
+        self.assertIn("p.pronargs::varchar||'|'||p.prokind::varchar", query)
+        self.assertIn('p.prooid::bigint', query)
+        self.assertIn('p.proowner::bigint', query)
+        before = ('rs5_routine_123_a_雪', 'owned_proc', 'p', '1201', '101',
+                  '1200', '101', '1|p')
+        replaced = (*before[:3], '1202', *before[4:])
+        ops = self.ops([payload([before]), payload([replaced])])
+        result = census.after(ops, census.before(ops, 50.0), 50.0)
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['residual'], [replaced])
+        self.assertEqual(result['baseline_removed_or_changed'], [before])
+
     def test_crash_residual_retains_actual_OID_owner_and_shape_without_DROP(self):
         table = ('rs5_cols_123_雪', 'z_table', 'r', '1201', '101', '1200', '101', '')
         column = ('rs5_cols_123_雪', 'z_table', 'a', '1201', '101', '1200', '101',

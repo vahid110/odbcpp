@@ -34,6 +34,9 @@ def plan():
 def stage():
     # All branches stay in the PG-catalog domain. No user-table COUNT, SVV
     # lock relation or compute-only operation is mixed into this statement.
+    # Serialize booleans with CASE, not a boolean-to-varchar cast. Routine
+    # custody compares its OID/owner/name and numeric argument count; GoogleTest
+    # owns argument-type assertions, so no oidvector-to-varchar cast is needed.
     domain = ("(n.nspname ~ '^rs5_cols_[0-9]{1,20}_雪$' OR "
               "n.nspname ~ '^rs5_routine_[0-9]{1,20}_(a_雪|literal_%)$')")
     relation = ('(' + domain + " OR (n.nspname='public' AND c.relname='" +
@@ -53,15 +56,15 @@ def stage():
         "SELECT n.nspname::varchar,c.relname::varchar,'a'::varchar,c.oid::bigint,"
         'c.relowner::bigint,n.oid::bigint,n.nspowner::bigint,'
         "(a.attnum::varchar||'|'||a.attname::varchar||'|'||a.atttypid::varchar||"
-        "'|'||a.atttypmod::varchar||'|'||a.attnotnull::varchar||'|'||"
-        'a.atthasdef::varchar)::varchar FROM pg_catalog.pg_attribute a '
+        "'|'||a.atttypmod::varchar||'|'||CASE WHEN a.attnotnull THEN 't' ELSE 'f' END||'|'||"
+        "CASE WHEN a.atthasdef THEN 't' ELSE 'f' END)::varchar FROM pg_catalog.pg_attribute a "
         'JOIN pg_catalog.pg_class c ON c.oid=a.attrelid '
         'JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace '
         'WHERE a.attnum>0 AND NOT a.attisdropped AND ' + relation +
         '\nUNION ALL\n'
         "SELECT n.nspname::varchar,p.proname::varchar,'p'::varchar,p.prooid::bigint,"
         'p.proowner::bigint,n.oid::bigint,n.nspowner::bigint,'
-        "(p.proargtypes::varchar||'|'||p.prokind::varchar)::varchar "
+        "(p.pronargs::varchar||'|'||p.prokind::varchar)::varchar "
         'FROM pg_proc_info p JOIN pg_catalog.pg_namespace n '
         'ON n.oid=p.pronamespace WHERE ' + domain +
         ') AS native_census ORDER BY schema_name,object_name,kind,oid,detail '

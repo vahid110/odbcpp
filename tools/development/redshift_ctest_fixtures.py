@@ -251,6 +251,69 @@ def prepare(ops, deadline):
         raise FixtureError('fixture_prepare_' + type(error).__name__, state) from error
 
 
+
+def resume_prepared(ops, state, deadline):
+    """Revalidate ROOT-supplied exact prepared custody without creating anything.
+
+    The caller owns the immutable predecessor receipts and has freshly verified
+    principal zero under the new lifecycle. Existing custody/grant ownership is
+    retained so ordinary cleanup closes the predecessor's exact created objects.
+    """
+    ops.fixture_state = state
+    try:
+        _need(type(state) is dict and state.get('prepared') is True and
+              set(state.get('records', {})) == set(KEYS), 'resume_prepared_state', state)
+        state['prepared'] = False
+        _sql_allowed(ops, state, deadline)
+        for keys in _groups(KEYS):
+            before = {key: state['records'][key].get('readiness_sha256') for key in keys}
+            frames = _batch(ops, state, keys, 'ordinary', deadline)
+            ops.factory.whole_validate_ready(state['plan'], keys, frames, state['records'])
+            _need(all(before[key] is None or before[key] ==
+                      state['records'][key].get('readiness_sha256') for key in keys),
+                  'resume_shared_fixture_changed', state)
+        t = state['timeout']
+        record = ops.factory.validate_timeout_preowned(t['record'])
+        _need(t['object'] == 'OWNED' and t['grant'] in ('UNTOUCHED', 'RESTORED') and
+              state['timeout_record'] == record and
+              state['substitutions']['timeout'] == record, 'resume_timeout_custody', state)
+        bare = _timeout_get(ops, state, 'identity_after', deadline)
+        actual = ops.timeout_factory.identity(dict(bare, shape='t'),
+                                              t['facts']['pre'], t['table'])
+        _need(actual == t['facts']['identity'] and all(
+            str(actual[key]) == str(record[key]) for key in
+            ('table', 'oid', 'owner_oid', 'schema_oid', 'schema_owner_oid')),
+            'resume_timeout_identity', state)
+        _need(_timeout_get(ops, state, 'shape', deadline) ==
+              {'ordinal_position': '1', 'column_name': 'value', 'data_type': 'integer',
+               'is_nullable': 'NO', 'column_default': ''}, 'resume_timeout_shape', state)
+        _need(_timeout_get(ops, state, 'rows', deadline) ==
+              {'count': '1', 'min': '1', 'max': '1'}, 'resume_timeout_rows', state)
+        _need(_timeout_get(ops, state, 'locks', deadline) == {'locks': '0'},
+              'resume_timeout_locks', state)
+        initial = t['facts']['permission']
+        ops.timeout_factory.permission(_timeout_get(ops, state, 'permission_final', deadline),
+                                       initial, create=initial['create'], absent='f')
+        db = state['database_create']
+        _need((db['initial'], db['state']) in (('f', 'OWNED'), ('t', 'PREEXISTING_TRUE')),
+              'resume_database_CREATE_custody', state)
+        _need(_db_sql(ops, state, 'probe', deadline) == 't',
+              'resume_database_CREATE_effective_true', state)
+        other = ops.factory.two_db_select(_sql(
+            ops, state, ops.factory.two_db_stage('databases'), deadline))
+        _need(other == state['substitutions']['second_database'],
+              'resume_second_database_changed', state)
+        ops.factory.two_db_public(_sql(
+            ops, state, ops.factory.two_db_stage('schemas', other), deadline), other)
+        state['prepared'] = True
+        _event(ops, state, 'fixtures_resumed', substitutions=state['substitutions'])
+        return state
+    except Exception as error:
+        if isinstance(error, FixtureError):
+            raise
+        raise FixtureError('fixture_resume_' + type(error).__name__, state) from error
+
+
 def cleanup(ops, state, deadline):
     """Drop only positively owned exact objects after actual principal zero.
 
