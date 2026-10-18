@@ -501,9 +501,26 @@ TEST_F(RedshiftPackageImportLiveTest, CatalogDescriptorsDrivePreparedImport) {
     const auto& values=columns_[row];const bool second=row==1;
     EXPECT_TRUE(values[0]==std::optional<std::string>{"odbcpp_pilot"});EXPECT_TRUE(values[1]==owned_table[1]);EXPECT_TRUE(values[2]==owned_table[2]);
     EXPECT_TRUE(values[3]==std::optional<std::string>{second?"value":"id"});EXPECT_TRUE(values[4]==std::optional<std::string>{second?"12":"4"});
-    EXPECT_TRUE(values[5]==std::optional<std::string>{second?"character varying":"integer"});EXPECT_TRUE(values[6]==std::optional<std::string>{second?"32":"10"});EXPECT_TRUE(values[7]==std::optional<std::string>{second?"32":"4"});
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+    // SQLColumns TYPE_NAME is data-source-dependent. Capture only metadata of
+    // the fixed pilot_rows fixture; SQL type codes and dimensions stay exact.
+    RecordProperty(second?"official_value_type_name":"official_id_type_name",
+                   values[5].value_or("<NULL>"));
+    RecordProperty(second?"official_value_decimal_digits":"official_id_decimal_digits",
+                   values[8].value_or("<NULL>"));
+    ASSERT_TRUE(values[5].has_value());
+    EXPECT_FALSE(values[5]->empty());
+#else
+    EXPECT_EQ((std::optional<std::string>{second?"character varying":"integer"}),values[5]);
+#endif
+    EXPECT_TRUE(values[6]==std::optional<std::string>{second?"32":"10"});EXPECT_TRUE(values[7]==std::optional<std::string>{second?"32":"4"});
     if(second) { EXPECT_FALSE(values[8].has_value());EXPECT_FALSE(values[9].has_value()); }
-    else { EXPECT_TRUE(values[8]==std::optional<std::string>{"0"});EXPECT_TRUE(values[9]==std::optional<std::string>{"10"}); }
+    else {
+      // Exact numeric INTEGER has zero decimal digits. Keep this conformance
+      // assertion until actual evidence establishes a specific vendor deviation.
+      EXPECT_EQ((std::optional<std::string>{"0"}),values[8]);
+      EXPECT_TRUE(values[9]==std::optional<std::string>{"10"});
+    }
     EXPECT_TRUE(values[10]==std::optional<std::string>{"1"});
     // SHOW remarks/defaults retain their actual owning NULLness/text, not guessed NULL.
     EXPECT_TRUE(values[13]==values[4]);EXPECT_FALSE(values[14].has_value());
@@ -526,8 +543,17 @@ TEST_F(RedshiftPackageImportLiveTest, CatalogDescriptorsDrivePreparedImport) {
   EXPECT_EQ(static_cast<SQLINTEGER>(1),ids[0]);EXPECT_EQ(static_cast<SQLINTEGER>(2),ids[1]);EXPECT_TRUE(values[0]=="one"&&values[1]=="two");
   EXPECT_TRUE(owned_table[1]==std::optional<std::string>{"odbcpp_fixture"}&&owned_table[2]==std::optional<std::string>{"pilot_rows"});
   EXPECT_TRUE(owned_columns[0][3]==std::optional<std::string>{"id"}&&owned_columns[1][3]==std::optional<std::string>{"value"});
-  const std::array<std::optional<std::string>,18> expected_id{"odbcpp_pilot","odbcpp_fixture","pilot_rows","id","4","integer","10","4","0","10","1",saved_columns[0][11],saved_columns[0][12],"4",std::nullopt,std::nullopt,"1","YES"};
-  const std::array<std::optional<std::string>,18> expected_value{"odbcpp_pilot","odbcpp_fixture","pilot_rows","value","12","character varying","32","32",std::nullopt,std::nullopt,"1",saved_columns[1][11],saved_columns[1][12],"12",std::nullopt,"32","2","YES"};
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+  // The nonempty provider type names, like opaque remarks/defaults, must retain
+  // their captured bytes after refill/disconnect. Our SDK spellings stay exact.
+  const auto expected_id_type_name=saved_columns[0][5];
+  const auto expected_value_type_name=saved_columns[1][5];
+#else
+  const std::optional<std::string> expected_id_type_name{"integer"};
+  const std::optional<std::string> expected_value_type_name{"character varying"};
+#endif
+  const std::array<std::optional<std::string>,18> expected_id{"odbcpp_pilot","odbcpp_fixture","pilot_rows","id","4",expected_id_type_name,"10","4","0","10","1",saved_columns[0][11],saved_columns[0][12],"4",std::nullopt,std::nullopt,"1","YES"};
+  const std::array<std::optional<std::string>,18> expected_value{"odbcpp_pilot","odbcpp_fixture","pilot_rows","value","12",expected_value_type_name,"32","32",std::nullopt,std::nullopt,"1",saved_columns[1][11],saved_columns[1][12],"12",std::nullopt,"32","2","YES"};
   for(std::size_t field=0;field<18;++field) {
     EXPECT_TRUE(owned_columns[0][field]==expected_id[field]);EXPECT_TRUE(owned_columns[1][field]==expected_value[field]);
   }

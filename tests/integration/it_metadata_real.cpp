@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -2468,18 +2469,41 @@ TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
 
     SQLWCHAR parent[] = {'o','d','b','c','p','p','\'','p','a','r','e','n','t','_','%',0xE9,0};
     SQLWCHAR child[] = {'o','d','b','c','p','p','\'','c','h','i','l','d','_','%',0xE9,0};
+    std::string session_schema;
+    std::vector<SQLWCHAR> wide_schema;
+    SQLWCHAR* schema_name = nullptr;
+    SQLSMALLINT schema_length = 0;
+    if (redshift_profile()) {
+        // Modern Redshift key discovery takes an exact schema. Both TEMP
+        // tables share this session's namespace; preserve PostgreSQL's NULL.
+        ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp'parent_%é", session_schema));
+        auto converted = rs::odbc::utf8_to_wide(session_schema);
+        ASSERT_TRUE(converted.has_value());
+        ASSERT_FALSE(converted->empty());
+        ASSERT_LE(converted->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()));
+        wide_schema = std::move(*converted);
+        schema_name = wide_schema.data();
+        schema_length = static_cast<SQLSMALLINT>(wide_schema.size());
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeysW(
-        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS));
+        hstmt, nullptr, 0, schema_name, schema_length, parent, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    if (redshift_profile()) {
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+    }
     EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
     EXPECT_EQ(std::optional<std::string>("id"), text_cell(hstmt, 4));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLForeignKeysW(
-        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS,
-        nullptr, 0, nullptr, 0, child, SQL_NTS));
+        hstmt, nullptr, 0, schema_name, schema_length, parent, SQL_NTS,
+        nullptr, 0, schema_name, schema_length, child, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    if (redshift_profile()) {
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 2));
+        EXPECT_EQ(std::optional<std::string>(session_schema), text_cell(hstmt, 6));
+    }
     EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
     EXPECT_EQ(std::optional<std::string>("odbcpp'child_%é"), text_cell(hstmt, 7));
     EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 9));
@@ -2554,8 +2578,9 @@ TEST_F(MetadataIntegrationTest, TablePatternsTypesAndEnumerationsFollowOdbc) {
 
     SQLCHAR empty[] = "";
     SQLCHAR all[]{'%', 0};
-    constexpr std::array<const char*, 5> expected_types{
-        "FOREIGN TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "TABLE", "VIEW"};
+    const std::vector<const char*> expected_types = redshift_profile()
+        ? std::vector<const char*>{"EXTERNAL TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "SYSTEM VIEW", "TABLE", "VIEW"}
+        : std::vector<const char*>{"FOREIGN TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "TABLE", "VIEW"};
     ASSERT_EQ(SQL_SUCCESS, SQLTables(
         hstmt, empty, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS,
         nullptr, 0));
@@ -2581,7 +2606,11 @@ TEST_F(MetadataIntegrationTest, TablePatternsTypesAndEnumerationsFollowOdbc) {
         wide_empty, SQL_NTS, wide_all, SQL_NTS));
     for (const auto* expected : expected_types) {
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 1));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 2));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 3));
         EXPECT_EQ(std::optional<std::string>(expected), text_cell(hstmt, 4));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 5));
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));

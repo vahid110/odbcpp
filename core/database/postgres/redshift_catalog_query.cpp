@@ -1723,6 +1723,17 @@ BackendResult<std::vector<RedshiftRoutine>> normalize_redshift_routines(std::str
     const auto separators=static_cast<std::size_t>(std::count(row[index[4]]->begin(),row[index[4]]->end(),','));
     const auto elements=signature_bytes==0?0u:separators+1;
     if(elements!=static_cast<std::size_t>(*count))return invalid_routine_metadata("signature-count");
+    // Every raw row has passed shape, identity, UTF-8 and declared-count
+    // validation. Only selected routines can feed SHOW PARAMETERS, so an
+    // unrelated system signature need not fit that command's closed grammar.
+    const bool selected=std::visit([&](const auto& names) {
+      using T=std::decay_t<decltype(names)>;
+      if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
+        return routine_match(*row[index[2]],names.procedure,names.name_matches.object);
+      }
+      return false;
+    },request);
+    if(!selected)continue;
     // Charge an upper bound before creating owning type tokens and signature.
     // Canonical spelling removes space except at most one after each comma.
     if(signature_bytes>(std::numeric_limits<std::size_t>::max()-elements)/2)return redshift_routine_limit();
@@ -1747,22 +1758,6 @@ BackendResult<std::vector<RedshiftRoutine>> normalize_redshift_routines(std::str
     if(!budget.retain({1,7+arguments->size(),bytes,0,row[index[2]]->size()}))return redshift_routine_limit();
     output.push_back({*row[index[2]],function,std::move(*arguments),std::move(signature),row[index[5]],row[index[6]]});
   }
-  std::erase_if(output,[&](const auto& r) {
-    const bool selected=std::visit([&](const auto& n) {
-      using T=std::decay_t<decltype(n)>;
-      if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>)
-        return routine_match(r.name,n.procedure,n.name_matches.object);
-      return false;
-    },request);
-    if(!selected) {
-      std::size_t bytes=r.name.size()+r.signature.size();
-      for(const auto& arg:r.arguments)bytes+=arg.size();
-      if(r.return_type)bytes+=r.return_type->size();
-      if(r.remarks)bytes+=r.remarks->size();
-      budget.release({1,7+r.arguments.size(),bytes,0,r.name.size()+r.signature.size()+[&] {std::size_t n=0;for(const auto& arg:r.arguments)n+=arg.size();return n;}()});
-    }
-    return !selected;
-  });
   if(rs::util::Clock::now()>=deadline)return routine_timeout();
   return BackendResult<std::vector<RedshiftRoutine>>{std::move(output),input.session_snapshot()};
 }

@@ -1490,6 +1490,69 @@ TEST(RedshiftRoutineExecution, ExactSchemaTypedUnknownDimensionsRefcursorAndRetu
   EXPECT_EQ(ResultCell{"10"},result->rows[7][10]);
 }
 
+TEST(RedshiftRoutineExecution, NamedSelectionDoesNotInterpretUnrelatedNativeTypeGrammar) {
+  for (const bool columns : {false, true}) {
+    RoutineExecutionSession session;
+    session.discovery({
+        {"db", "s", "unrelated", "1", "anyarray", std::nullopt, "native system signature"},
+        {"db", "s", "target", "1", "integer", std::nullopt, "owning"}},
+        {{"db", "s", "other_function", "1", "record", "integer", std::nullopt}});
+    if (columns) {
+      session.replies.emplace_back(routine_parameters(false, {
+          {"db", "s", "target", "id", "1", "IN", "integer", std::nullopt, "32", "0"}}), session.snapshot);
+    }
+    const CatalogRequest request = columns
+        ? CatalogRequest{ProcedureColumnsCatalogRequest{std::nullopt, "s", "target", std::nullopt}}
+        : CatalogRequest{ProceduresCatalogRequest{std::nullopt, "s", "target"}};
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = session.execute_catalog(request, deadline);
+    ASSERT_TRUE(result) << result.error_message();
+    ASSERT_EQ(1u, result->rows.size());
+    EXPECT_EQ(ResultCell{"target"}, result->rows[0][2]);
+    std::vector<std::string> expected{"SELECT current_database() AS database_name",
+        "SHOW PROCEDURES FROM SCHEMA \"db\".\"s\";", "SHOW FUNCTIONS FROM SCHEMA \"db\".\"s\";"};
+    if (columns) {
+      expected.push_back("SHOW PARAMETERS OF PROCEDURE \"db\".\"s\".\"target\"(integer);");
+    }
+    EXPECT_EQ(expected, session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(expected.size(), deadline), session.deadlines);
+    EXPECT_TRUE(session.replies.empty());
+  }
+}
+
+TEST(RedshiftRoutineExecution, SelectedUnsupportedOrInjectedSignaturesStillFailClosed) {
+  for (const auto* signature : {"anyarray", "integer); SELECT secret"}) {
+    RoutineExecutionSession session;
+    session.discovery({{"db", "s", "target", "1", signature, std::nullopt, std::nullopt}});
+    const auto result = session.execute_catalog(
+        ProcedureColumnsCatalogRequest{std::nullopt, "s", "target", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(2u, session.commands.size());
+    EXPECT_NE(std::string::npos, result.error_message().find("signature"));
+  }
+}
+
+TEST(RedshiftRoutineExecution, UnselectedRawIdentityUtf8CountAndShapeRemainValidated) {
+  for (unsigned malformed = 0; malformed < 7; ++malformed) {
+    RoutineExecutionSession session;
+    ResultRow unrelated{"db", "s", "unrelated", "1", "anyarray", std::nullopt, "native"};
+    if (malformed == 0) unrelated[0] = "foreign";
+    if (malformed == 1) unrelated[2].reset();
+    if (malformed == 2) unrelated[4] = std::string(1, static_cast<char>(0xff));
+    if (malformed == 3) unrelated[6] = std::string("bad\0text", 8);
+    if (malformed == 4) unrelated[3] = "-1";
+    if (malformed == 5) unrelated[3] = "2";
+    if (malformed == 6) unrelated.pop_back();
+    session.discovery({unrelated, {"db", "s", "target", "1", "integer", std::nullopt, "valid"}});
+    const auto result = session.execute_catalog(
+        ProceduresCatalogRequest{std::nullopt, "s", "target"}, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(2u, session.commands.size());
+  }
+}
+
 TEST(RedshiftRoutineExecution, IdentifierPatternsOverloadsEmptyAndUnsupportedPaths) {
   for(const auto& input:std::vector<CatalogRequest>{ProceduresCatalogRequest{std::nullopt,std::nullopt,std::nullopt},
       ProceduresCatalogRequest{std::nullopt,"s%",std::nullopt}}) {
