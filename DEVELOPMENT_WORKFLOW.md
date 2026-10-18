@@ -2,6 +2,13 @@
 
 ## Temporary local CTest checkpoint — 2026-10-18
 
+The human resumed PRs and cross-platform builds after all 520 ODBCPP cases
+passed on `108f704e4d96a8ce27c34d5b54999b3e1c872707`. The four vendor reference
+checks are reported separately: three passed, one has a documented external
+[decimal-digits discrepancy](tests/development/live_suite/vendor-reference-issues.md).
+That discrepancy does not block our fixes. Preserve the raw combined result
+(523 PASS / 1 FAIL) and the vendor assertion; do not relabel it as a pass.
+
 The human temporarily replaces CI-first live-test sequencing with local full-suite
 collection and repair. Run every applicable live case/profile through CTest on
 the iMac, retaining all failures before beginning repairs. CTest continues after

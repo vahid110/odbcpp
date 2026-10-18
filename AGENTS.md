@@ -9,6 +9,13 @@ and blanket shared-file author restrictions; architecture and acceptance remain.
 
 ## Temporary local live-test workflow — human directed 2026-10-18
 
+The local ODBCPP acceptance gate is satisfied: all 520 own-driver cases passed
+on `108f704e4d96a8ce27c34d5b54999b3e1c872707`. The human explicitly resumed PRs,
+pushes and cross-platform qualification for these fixes. The separately recorded
+[vendor reference discrepancy](tests/development/live_suite/vendor-reference-issues.md)
+is non-blocking for ODBCPP; retain its failing result without changing assertions
+or claiming vendor conformance. Required platform builds and final CI still apply.
+
 For the current checkpoint, use CTest on the local iMac to run the complete
 applicable existing live suite and collect all failures before starting product
 or test repairs. Ordinary assertion failures and isolated test-process crashes
