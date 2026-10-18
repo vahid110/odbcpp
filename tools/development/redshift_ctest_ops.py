@@ -131,6 +131,7 @@ class Operations:
         self.selected_other_database = None
         self.native_custody_state = None
         self.native_custody_result = None
+        self.keep_cluster_running = approval.get('keep_cluster_running') is True
         self.available_cluster_verified = False
         self.security_status = None
         self.available_cluster_identity = None
@@ -212,6 +213,9 @@ class Operations:
     def _available_cluster(self, end):
         need(self.now() < end, 'security_deadline')
         cluster = self.native.cluster(end)  # Native owns exact resource/endpoint identity.
+        while cluster['ClusterStatus'] == 'resuming' and self.now() < end - 10:
+            time.sleep(5)
+            cluster = self.native.cluster(end)
         need(cluster['ClusterStatus'] == 'available' and
              cluster.get('ClusterAvailabilityStatus') == 'Available', 'not_available')
         return cluster
@@ -476,6 +480,11 @@ class Operations:
                             'stage': 'principal_zero'}, deadline)
         need(raw.strip() == 'f|f', 'exact_principal_session_query_zero')
         return {'complete': True}
+
+    def verify_running(self, deadline):
+        self.native.identity(deadline)
+        self._available_cluster(deadline)
+        return True
 
     def pause_until(self, deadline):
         return self.native is not None and self.native.pause_until(deadline)

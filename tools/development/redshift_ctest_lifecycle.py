@@ -284,8 +284,11 @@ def run_once(config, ops, fixtures):
                 # Recovery retains its own bounded time after SQL cleanup; it
                 # never extends SQL, CTest or successful aggregate acceptance.
                 recovery_end = min(owner_end, ops.now() + bounds.recovery)
-                paused = ops.pause_until(recovery_end) is True
-                need(paused, 'paused_unverified')
+                if getattr(ops, 'keep_cluster_running', False):
+                    ops.verify_running(recovery_end)
+                else:
+                    paused = ops.pause_until(recovery_end) is True
+                    need(paused, 'paused_unverified')
             except BaseException as error:
                 capture_error('pause', error)
             try:
@@ -300,11 +303,12 @@ def run_once(config, ops, fixtures):
                       'errors': errors, 'fixture_cleanup': fixture_cleanup,
                       'principal_cleanup': principal_cleanup, 'final_zero': final_zero,
                       'readers_known': readers_known,
-                      'paused_verified': paused, 'private_inputs_closed': inputs_closed,
+                      'paused_verified': paused, 'cluster_left_running_by_human_request': getattr(ops, 'keep_cluster_running', False),
+                      'private_inputs_closed': inputs_closed,
                       'owner_deadline': owner_end, 'child_deadline': child_end,
                       'aggregate_end': aggregate_end, 'execution_end': execution_end,
                       'within_original_aggregate': within_original_aggregate,
-                      'lifecycle_cleanup_complete': not errors and readers_known and paused and
+                      'lifecycle_cleanup_complete': not errors and readers_known and (paused or getattr(ops, 'keep_cluster_running', False)) and
                           inputs_closed and within_original_aggregate,
                       'feature_results_parsed': False, 'feature_PASS_claimed': False}
             record(config.run_directory / 'lifecycle-result.json', result)
