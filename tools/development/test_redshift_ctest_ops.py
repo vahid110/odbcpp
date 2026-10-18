@@ -1,5 +1,6 @@
 """Offline adapter tests: mocked provider/SQL/processes and synthetic inputs."""
 import os
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -49,10 +50,101 @@ def adapter(directory):
     ops.generated = []
     ops.env_directory = ops.profile_inputs = ops.input_residue = None
     ops.native_custody_state = None
+    ops.approval = {}
+    ops.available_cluster_verified = False
+    ops.security_status = None
+    ops.available_cluster_identity = None
     return ops
 
 
 class AdapterTests(unittest.TestCase):
+    def available_adapter(self, directory):
+        ops = adapter(directory)
+        terminal = Path(directory) / 'terminal.json'
+        terminal.write_text(json.dumps({'cleanup_complete': True, 'readers_known': True,
+            'private_inputs_closed': True, 'SQL_unknown': False, 'paused': False}))
+        ops.approval['continue_available_cluster_from'] = {
+            'path': str(terminal), 'sha256': hashlib.sha256(terminal.read_bytes()).hexdigest()}
+        cluster = {'ClusterIdentifier': 'mock-exact-cluster', 'ClusterCreateTime': 'mock-birth',
+                   'Endpoint': {'Address': 'mock.invalid', 'Port': 5439},
+                   'ClusterStatus': 'available', 'ClusterAvailabilityStatus': 'Available',
+                   'VpcSecurityGroups': [{'VpcSecurityGroupId': 'sg-mock'}],
+                   'ClusterParameterGroups': [{'ParameterGroupName': 'tls-mock'}]}
+        groups = [{'GroupId': 'sg-mock', 'IpPermissions': []}]
+        ops.preparation_manifest['security_groups'] = groups
+        ops.native.identity = mock.Mock()
+        ops.native.cluster = mock.Mock(return_value=cluster)
+        ops.native.network_guard = mock.Mock()
+        ops.native.security_paused = mock.Mock()
+        ops.native.resume_available = mock.Mock()
+        ops.native.aws = mock.Mock(side_effect=[{'SecurityGroups': groups},
+            {'Parameters': [{'ParameterName': 'require_ssl', 'ParameterValue': 'true'}]}])
+        ops.final_zero = mock.Mock(return_value={'complete': True})
+        return ops
+
+    def test_normal_paused_security_and_resume_path_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops = adapter(directory)
+            ops.native.security_paused = mock.Mock()
+            ops.native.resume_available = mock.Mock()
+            ops.final_zero = mock.Mock()
+            ops.security_paused(300)
+            ops.final_zero.assert_not_called()
+            ops.resume_available(300)
+            ops.native.security_paused.assert_called_once_with()
+            ops.native.resume_available.assert_called_once_with(300)
+            ops.final_zero.assert_called_once_with(300)
+            self.assertEqual(ops.security_status, 'paused')
+
+    def test_explicit_available_continuation_validates_security_then_rechecks_before_SQL(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops = self.available_adapter(directory)
+            ops.security_paused(300)
+            ops.native.identity.assert_called_once_with(300)
+            ops.native.network_guard.assert_called_once_with(
+                ops.preparation_manifest['security_groups'], 300)
+            ops.final_zero.assert_not_called()
+            self.assertEqual(ops.security_status, 'available')
+            ops.resume_available(300)
+            self.assertEqual(ops.native.cluster.call_count, 2)
+            ops.native.security_paused.assert_not_called()
+            ops.native.resume_available.assert_not_called()
+            ops.final_zero.assert_called_once_with(300)
+            receipt = json.loads((Path(directory) / 'available-cluster-security.json').read_text())
+            self.assertEqual(receipt['cluster_status'], 'available')
+            self.assertNotIn('paused', receipt)
+
+    def test_available_continuation_refuses_unclosed_recovery_or_changed_security(self):
+        for failure in ('pin', 'cleanup', 'network', 'TLS', 'changed_cluster', 'unverified'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                ops = self.available_adapter(directory)
+                if failure == 'pin':
+                    ops.approval['continue_available_cluster_from']['sha256'] = '0' * 64
+                elif failure == 'cleanup':
+                    terminal = Path(directory) / 'terminal.json'
+                    terminal.write_text('{}')
+                    ops.approval['continue_available_cluster_from']['sha256'] = hashlib.sha256(
+                        terminal.read_bytes()).hexdigest()
+                elif failure == 'network':
+                    ops.native.network_guard.side_effect = Refused('network_changed')
+                elif failure == 'TLS':
+                    ops.native.aws.side_effect = [
+                        {'SecurityGroups': ops.preparation_manifest['security_groups']},
+                        {'Parameters': [{'ParameterName': 'require_ssl', 'ParameterValue': 'false'}]}]
+                with self.assertRaises(Refused):
+                    if failure == 'unverified':
+                        ops.resume_available(300)
+                    else:
+                        ops.security_paused(300)
+                        if failure == 'changed_cluster':
+                            ops.native.cluster.return_value = {
+                                **ops.native.cluster.return_value, 'ClusterStatus': 'pausing'}
+                        ops.resume_available(300)
+                ops.final_zero.assert_not_called()
+                ops.native.resume_available.assert_not_called()
+                if failure in ('pin', 'cleanup'):
+                    ops.native.identity.assert_not_called()
+
     def test_system_python_uses_shared_absolute_clock_domain(self):
         script = '''import json,sys,time
 sys.path.insert(0,sys.argv[1])
@@ -93,14 +185,66 @@ print(json.dumps([before,observed,after]))
         with tempfile.TemporaryDirectory() as directory:
             ops = adapter(directory)
             raw, pid = ops._sql({'query': 'SELECT 1;', 'statements': 1,
-                'role': 'test', 'stage': 'synthetic'}, 120)
+                'role': 'test', 'stage': 'synthetic'}, 300)
             self.assertEqual((raw, pid), ('1\n', 123))
             self.assertEqual((ops.helpers, ops.statements, ops.logins), (1, 4, 1))
             argv, kwargs = ops.native.calls[0]
-            self.assertEqual(kwargs['seconds'], 4)
+            self.assertEqual(kwargs['seconds'], 120)
+            self.assertEqual(kwargs['env']['PGCONNECT_TIMEOUT'], '10')
+            self.assertIn(b'SET statement_timeout=15000;', kwargs['input_bytes'])
             self.assertEqual(kwargs['env']['PGSSLMODE'], 'verify-full')
             self.assertNotIn('PGPASSWORD', kwargs['env'])
             self.assertNotIn('mock-password', str(argv))
+
+    def test_SQL_helper_uses_remaining_deadline_and_accepts_timely_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops = adapter(directory)
+            clock = [100.25]
+            ops.now = lambda: clock[0]
+            owned = ops.native.owned_process
+
+            def complete(argv, **kwargs):
+                result = owned(argv, **kwargs)
+                clock[0] += 20
+                return result
+
+            ops.native.owned_process = complete
+            self.assertEqual(ops._sql({'query': 'SELECT 1;', 'statements': 1,
+                'role': 'test', 'stage': 'synthetic'}, 150), ('1\n', 123))
+            self.assertEqual(ops.native.calls[0][1]['seconds'], 47)
+            self.assertIs(type(ops.native.calls[0][1]['seconds']), int)
+            self.assertFalse(ops.sql_fenced)
+
+    def test_collection_process_longer_than_old_ceiling_succeeds_or_times_out_reaped(self):
+        for timeout in (False, True):
+            with self.subTest(timeout=timeout), tempfile.TemporaryDirectory() as directory:
+                ops = adapter(directory)
+                process = mock.Mock(pid=12345, returncode=None)
+
+                def wait(timeout):
+                    if should_timeout:
+                        raise subprocess.TimeoutExpired('/mock/cmake', timeout)
+                    process.returncode = 0
+                    return 0
+
+                should_timeout = timeout
+                process.wait.side_effect = wait
+                process.poll.side_effect = lambda: process.returncode
+
+                def stop(child):
+                    if child.returncode is None:
+                        child.returncode = -15
+
+                with mock.patch.object(ops_module.subprocess, 'Popen', return_value=process), \
+                     mock.patch.object(ops_module, '_stop_group', side_effect=stop) as stopper:
+                    ops._group_absent = lambda pid: True
+                    result = ops.run_process(['/mock/cmake'], env=dict(ops_module.BASE_ENV),
+                        deadline=3700, output=Path(directory) / 'process.log', umask=0o077)
+                process.wait.assert_called_once_with(timeout=3598)
+                stopper.assert_called_once_with(process)
+                self.assertEqual(result.timed_out, timeout)
+                self.assertTrue(result.reaped and result.group_absent)
+                self.assertEqual(len(ops.processes), 1)
 
     def test_wrong_identity_timeout_and_overcap_never_retry(self):
         for failure in ('identity', 'timeout', 'cap'):

@@ -131,6 +131,9 @@ class Operations:
         self.selected_other_database = None
         self.native_custody_state = None
         self.native_custody_result = None
+        self.available_cluster_verified = False
+        self.security_status = None
+        self.available_cluster_identity = None
         self.executables = {str(Path('/opt/homebrew/bin/' + tool).resolve(strict=True))
                             for tool in ('cmake', 'ctest')}
 
@@ -167,11 +170,60 @@ class Operations:
 
     def security_paused(self, end):
         need(self.now() < end, 'security_deadline')
-        self.native.security_paused()
+        continuation = self.approval.get('continue_available_cluster_from')
+        if continuation is None:
+            self.native.security_paused()
+            self.security_status = 'paused'
+        else:
+            need(type(continuation) is dict and set(continuation) == {'path', 'sha256'},
+                 'available_continuation_pin')
+            verify_public_pin(continuation['path'], continuation['sha256'])
+            terminal = json.loads(Path(continuation['path']).read_text())
+            need(terminal.get('cleanup_complete') is True and
+                 terminal.get('readers_known') is True and
+                 terminal.get('private_inputs_closed') is True and
+                 terminal.get('SQL_unknown') is False, 'available_recovery_not_closed')
+            self.native.identity(end)
+            cluster = self._available_cluster(end)
+            ids = [row['VpcSecurityGroupId'] for row in cluster['VpcSecurityGroups']]
+            actual = self.native.aws(['ec2', 'describe-security-groups', '--group-ids', *ids],
+                                     end)['SecurityGroups']
+            need(actual == self.preparation_manifest['security_groups'], 'SG_changed')
+            self.native.network_guard(actual, end)
+            params = cluster['ClusterParameterGroups']
+            need(len(params) == 1, 'TLS_groups')
+            settings = self.native.aws(['redshift', 'describe-cluster-parameters',
+                '--parameter-group-name', params[0]['ParameterGroupName']], end)
+            need(not settings.get('Marker') and any(
+                row.get('ParameterName') == 'require_ssl' and row.get('ParameterValue') == 'true'
+                for row in settings['Parameters']), 'TLS_required')
+            need(self.now() < end, 'security_deadline')
+            self.security_status = cluster['ClusterStatus']
+            self.available_cluster_identity = {
+                key: copy.deepcopy(cluster[key]) for key in
+                ('ClusterIdentifier', 'ClusterCreateTime', 'Endpoint',
+                 'VpcSecurityGroups', 'ClusterParameterGroups')}
+            self.available_cluster_verified = True
+            record(self.directory / 'available-cluster-security.json',
+                   {'cluster_status': self.security_status, 'recovery_terminal': continuation,
+                    'identity_TLS_network_verified': True, 'resume_skipped': True})
         need(self.now() < end, 'security_deadline')
 
+    def _available_cluster(self, end):
+        need(self.now() < end, 'security_deadline')
+        cluster = self.native.cluster(end)  # Native owns exact resource/endpoint identity.
+        need(cluster['ClusterStatus'] == 'available' and
+             cluster.get('ClusterAvailabilityStatus') == 'Available', 'not_available')
+        return cluster
+
     def resume_available(self, end):
-        self.native.resume_available(end)
+        if self.approval.get('continue_available_cluster_from') is not None:
+            need(self.available_cluster_verified, 'available_security_not_verified')
+            cluster = self._available_cluster(end)
+            need(all(cluster[key] == value for key, value in
+                     self.available_cluster_identity.items()), 'available_cluster_changed')
+        else:
+            self.native.resume_available(end)
         self.final_zero(end)
 
     def record(self, event):
@@ -238,22 +290,23 @@ class Operations:
         config = self.native.config
         env = {**BASE_ENV, 'PGHOST': config['host'], 'PGPORT': '5439',
                'PGDATABASE': DATABASE, 'PGUSER': role, 'PGSSLMODE': 'verify-full',
-               'PGSSLROOTCERT': config['ca'], 'PGCONNECT_TIMEOUT': '4',
+               'PGSSLROOTCERT': config['ca'], 'PGCONNECT_TIMEOUT': '10',
                'PGGSSENCMODE': 'disable', 'PGSSLCERTMODE': 'disable',
                'PGPASSFILE': self.native.snapshot.passfile_path if role == ADMIN
                    else str(self.native.test_passfile)}
         guard = "current_database()='odbcpp_pilot' AND TRIM(current_user)='" + role + "'"
         if role == ADMIN:
             guard += ' AND EXISTS(SELECT 1 FROM pg_catalog.pg_user WHERE usename=current_user AND usesuper)'
-        script = ('SET statement_timeout=4000;\nSELECT ' + guard + ' AS held\n\\gset\n\\if :held\n'
+        script = ('SET statement_timeout=15000;\nSELECT ' + guard + ' AS held\n\\gset\n\\if :held\n'
                   "SELECT 'RSD1|'||current_database()||'|'||TRIM(current_user)||'|'||pg_backend_pid();\n")
         if 'headers' in stage:
             script += '\\pset format csv\n\\pset tuples_only off\n\\pset footer off\n'
         script += stage['query'] + '\n\\else\n\\quit 4\n\\endif\n'
         need(len(script.encode()) <= 131072, 'SQL_script_bound')
         armed = self.now()
-        need(deadline - armed >= 5, 'whole_SQL_helper_reserve')
-        cutoff = armed + 5
+        seconds = min(120, math.floor(deadline - armed - 2))
+        need(math.isfinite(seconds) and seconds > 0, 'whole_SQL_helper_reserve')
+        cutoff = armed + seconds + 2
         stem = self.directory / ('sql-' + str(self.helpers))
         log = Path(str(stem) + '.log')
         intent = Path(str(stem) + '-intent.json')
@@ -264,7 +317,7 @@ class Operations:
         try:
             result = self.native.owned_process(
                 [self.preparation_manifest['psql'], '-X', '-w', '-qAt', '-v',
-                 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=sqlstate'], env=env, seconds=4,
+                 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=sqlstate'], env=env, seconds=seconds,
                 output=log, input_bytes=script.encode('utf-8'))
             returned = type(result.returncode) is int and type(result.timed_out) is bool
             record(status, {'returned_reaped': returned, 'returncode': result.returncode,
@@ -338,7 +391,7 @@ class Operations:
             need(self.native_custody_state is None, 'oneuse_CTest_census')
             native_custody.before(self, deadline)
         seconds = deadline - self.now() - 2
-        need(0 < seconds <= 540, 'process_absolute_reserve')
+        need(0 < seconds <= 3600, 'process_absolute_reserve')
         process = None
         timed_out = False
         fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

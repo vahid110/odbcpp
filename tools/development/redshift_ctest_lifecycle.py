@@ -30,23 +30,23 @@ def need(value, code):
 
 @dataclass(frozen=True)
 class Bounds:
-    owner: int = 1800
-    child: int = 1200
-    aggregate: int = 600
-    execution: int = 540
-    availability: int = 300
-    cleanup_reserve: int = 60
-    recovery: int = 180
+    owner: int = 7200
+    child: int = 6300
+    aggregate: int = 4500
+    execution: int = 3600
+    availability: int = 900
+    cleanup_reserve: int = 900
+    recovery: int = 900
     case: int = 40
 
     def validate(self):
-        for name, maximum in (('owner', 1800), ('child', 1200),
-                              ('aggregate', 600), ('execution', 540),
-                              ('availability', 300), ('recovery', 180),
+        for name, maximum in (('owner', 7200), ('child', 6300),
+                              ('aggregate', 4500), ('execution', 3600),
+                              ('availability', 900), ('recovery', 900),
                               ('case', 40)):
             value = getattr(self, name)
             need(type(value) is int and 0 < value <= maximum, 'finite_' + name)
-        need(type(self.cleanup_reserve) is int and self.cleanup_reserve >= 60 and
+        need(type(self.cleanup_reserve) is int and self.cleanup_reserve >= 900 and
              self.execution + self.cleanup_reserve <= self.aggregate and
              self.child + self.recovery <= self.owner and
              self.availability + self.aggregate + self.recovery <= self.child,
@@ -256,7 +256,6 @@ def run_once(config, ops, fixtures):
         finally:
             getattr(ops, 'begin_cleanup', lambda: None)()
             cleanup_end = aggregate_end if aggregate_end is not None else child_end - bounds.recovery
-            recovery_end = min(owner_end, ops.now() + bounds.recovery)
             try:
                 readers_known = ops.reap(cleanup_end) is True
                 need(readers_known, 'reader_reaps_unknown')
@@ -280,9 +279,11 @@ def run_once(config, ops, fixtures):
                 need(final_zero.get('complete') is True, 'final_zero_unverified')
             except BaseException as error:
                 capture_error('final_zero', error)
+            recovery_end = owner_end
             try:
-                # Pause/recovery has its existing independent <=180s bound; it
+                # Recovery retains its own bounded time after SQL cleanup; it
                 # never extends SQL, CTest or successful aggregate acceptance.
+                recovery_end = min(owner_end, ops.now() + bounds.recovery)
                 paused = ops.pause_until(recovery_end) is True
                 need(paused, 'paused_unverified')
             except BaseException as error:

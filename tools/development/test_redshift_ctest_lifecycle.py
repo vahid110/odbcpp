@@ -132,6 +132,39 @@ class Lifecycle(unittest.TestCase):
                 self.assertIn('--output-junit', ops.command)
                 self.assertNotIn('--stop-on-failure', ops.command)
 
+    def test_full_collection_has_execution_cleanup_and_independent_recovery_reserves(self):
+        class TimelyOps(Ops):
+            def run_process(self, command, **kwargs):
+                result = super().run_process(command, **kwargs)
+                if command[0] == '/mock/ctest':
+                    self.clock = kwargs['deadline'] - 1
+                return result
+
+            def final_zero(self, end):
+                self.clock = end - 800
+                return super().final_zero(end)
+
+            def pause_until(self, end):
+                self.recovery_deadline = end
+                self.clock += 850
+                assert self.clock < end
+                return super().pause_until(end)
+
+        bounds = lifecycle.Bounds()
+        self.assertEqual((bounds.execution, bounds.cleanup_reserve, bounds.aggregate,
+                          bounds.availability, bounds.recovery, bounds.child, bounds.owner,
+                          bounds.case), (3600, 900, 4500, 900, 900, 6300, 7200, 40))
+        with tempfile.TemporaryDirectory() as directory:
+            ops = TimelyOps(directory, outcome=0)
+            result = self.run_mock(directory, ops)
+            self.assertEqual(result['execution_end'], 3700)
+            self.assertEqual(result['aggregate_end'], 4600)
+            self.assertEqual(ops.recovery_deadline, 4700)
+            self.assertEqual(result['ctest_invocations'], 1)
+            self.assertTrue(result['paused_verified'] and result['private_inputs_closed'])
+            self.assertFalse(result['lifecycle_cleanup_complete'])
+            self.assertTrue((Path(directory) / 'run' / 'publication-expired.json').exists())
+
     def test_supervisor_exception_still_runs_all_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             ops = Ops(directory, crash=True)
@@ -170,8 +203,9 @@ class Lifecycle(unittest.TestCase):
 
     def test_oneuse_directory_and_unchanged_caps(self):
         lifecycle.Bounds().validate()
-        for changed in ({'owner': 1801}, {'child': 1201}, {'aggregate': 601},
-                        {'execution': 541}, {'case': 41}, {'cleanup_reserve': 59}):
+        for changed in ({'owner': 7201}, {'child': 6301}, {'aggregate': 4501},
+                        {'execution': 3601}, {'availability': 901}, {'recovery': 901},
+                        {'case': 41}, {'cleanup_reserve': 899}):
             with self.subTest(changed=changed), self.assertRaises(lifecycle.Refused):
                 lifecycle.Bounds(**changed).validate()
         with tempfile.TemporaryDirectory() as directory:
