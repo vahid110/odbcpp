@@ -36,6 +36,14 @@ BackendResult<QueryResult> normalize_redshift_foreign_keys(
 
 namespace rs::core::database::postgres {
 class RedshiftRoutineBudget;
+struct RedshiftRoutineUsage;
+std::optional<RedshiftRoutineUsage> redshift_foreign_key_output_usage(const QueryResult& source);
+struct RedshiftPrimaryKeyCommandPlan;
+// SHOW FOREIGN KEYS includes UNIQUE references. ODBC publishes PRIMARY-only
+// groups; compare the complete normalized group to actual SHOW PRIMARY KEYS.
+BackendResult<void> redshift_filter_primary_references(QueryResult& foreign_keys,
+    const RedshiftPrimaryKeyCommandPlan& table, const QueryResult& primary_keys,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
 // Bounded native current-database identity/foreign-key publication. The strict
 // value plan and pure normalizer above retain their original contracts.
 BackendResult<std::string> redshift_foreign_key_database(BackendResult<QueryResult> input,

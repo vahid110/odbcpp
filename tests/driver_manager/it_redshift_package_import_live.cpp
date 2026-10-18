@@ -32,6 +32,12 @@ namespace {
 static_assert(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == 2 || ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == 4);
 static_assert(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE);
 static_assert(sizeof(SQLWCHAR) == ODBCPP_EXPECT_DM_SQLWCHAR_SIZE);
+// ODBC permits driver-specific catalog columns after the standard prefix and
+// distinguishes SQL_NULLABLE from SQL_NULLABLE_UNKNOWN. The pinned official
+// profile reported SQL_NULLABLE in the first full checkpoint; SDK assertions
+// remain SQL_NULLABLE_UNKNOWN. See SQLTables/SQLDescribeCol in the ODBC reference.
+constexpr SQLSMALLINT result_nullable = ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+    ? SQL_NULLABLE : SQL_NULLABLE_UNKNOWN;
 // This executable dispatches exclusively through the linked driver manager.
 class RedshiftPackageImportLiveTest : public ::testing::Test {
 protected:
@@ -212,7 +218,7 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLDescribeColA(stmt_,column,name_.value.data(),static_cast<SQLSMALLINT>(name_.value.size()),&length,&actual,&size,&scale,&nullable))<<state(SQL_HANDLE_STMT,stmt_);
     guards(name_);ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length),name_.value.size());
     const std::string owned(reinterpret_cast<const char*>(name_.value.data()),static_cast<std::size_t>(length));
-    EXPECT_TRUE(owned==expected);EXPECT_EQ(type,actual);EXPECT_EQ(width,size);EXPECT_EQ(expected_scale,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    EXPECT_TRUE(owned==expected);EXPECT_EQ(type,actual);EXPECT_EQ(width,size);EXPECT_EQ(expected_scale,scale);EXPECT_EQ(result_nullable,nullable);
     EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);
     descriptors_.push_back({owned,actual,scale,nullable,size});
   }
@@ -222,7 +228,7 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLDescribeColA(stmt_,column,name_.value.data(),static_cast<SQLSMALLINT>(name_.value.size()),&length,&type,&capacity,&scale,&nullable))<<state(SQL_HANDLE_STMT,stmt_);
     guards(name_);ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length),name_.value.size());
     const std::string owned(reinterpret_cast<const char*>(name_.value.data()),static_cast<std::size_t>(length));
-    EXPECT_TRUE(owned==expected);EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    EXPECT_TRUE(owned==expected);EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(0,scale);EXPECT_EQ(result_nullable,nullable);
     // SHOW carries source capacities, including unknown0, rather than legacy casts.
     EXPECT_LE(capacity,static_cast<SQLULEN>(65535));EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);
     descriptors_.push_back({owned,type,scale,nullable,capacity});
@@ -251,7 +257,7 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt_,column,wide_name_.value.data(),static_cast<SQLSMALLINT>(wide_name_.value.size()),&length,&actual,&size,&scale,&nullable))<<state(SQL_HANDLE_STMT,stmt_);
     guards(wide_name_);ASSERT_EQ(static_cast<SQLSMALLINT>(N-1),length);ASSERT_LT(N,wide_name_.value.size());
     EXPECT_TRUE(std::equal(expected.begin(),expected.end(),wide_name_.value.begin()));
-    EXPECT_EQ(type,actual);EXPECT_EQ(width,size);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    EXPECT_EQ(type,actual);EXPECT_EQ(width,size);EXPECT_EQ(0,scale);EXPECT_EQ(result_nullable,nullable);
     for(std::size_t i=N;i<wide_name_.value.size();++i) { EXPECT_EQ(static_cast<SQLWCHAR>(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE==2?0x5a5aU:0x5a5a5a5aU),wide_name_.value[i]); }
   }
   std::string text(SQLUSMALLINT column) {
@@ -419,7 +425,17 @@ TEST_F(RedshiftPackageImportLiveTest, CatalogDescriptorsDrivePreparedImport) {
   SQLCHAR database[]="odbcpp_pilot",schema_pattern[]="odbcpp\\_fixture",table_pattern[]="pilot\\_rows",kind[]="TABLE";
   ASSERT_TRUE(cap(end_));
   ASSERT_EQ(SQL_SUCCESS,SQLTablesA(stmt_,database,SQL_NTS,schema_pattern,SQL_NTS,table_pattern,SQL_NTS,kind,SQL_NTS))<<state(SQL_HANDLE_STMT,stmt_);
-  result_count(5);ASSERT_FALSE(HasFailure());
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+  // ODBC SQLTables permits driver-specific fields after the standard five.
+  // Record this installed profile's count; do not assume an upstream version.
+  SQLSMALLINT table_columns=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt_,&table_columns));
+  ASSERT_GE(table_columns,5);
+  RecordProperty("official_sqltables_result_columns",std::to_string(table_columns));
+#else
+  result_count(5);
+#endif
+  ASSERT_FALSE(HasFailure());
   constexpr std::array<const char*,5> table_names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
   descriptors_.clear();
   for(SQLUSMALLINT column=1;column<=5;++column) { show_text_descriptor(column,table_names[column-1]);ASSERT_FALSE(HasFailure()); }
@@ -434,7 +450,16 @@ TEST_F(RedshiftPackageImportLiveTest, CatalogDescriptorsDrivePreparedImport) {
   std::array<SQLWCHAR,12> table_w{'p','i','l','o','t','\\','_','r','o','w','s',0};
   ASSERT_TRUE(cap(end_));
   ASSERT_EQ(SQL_SUCCESS,SQLColumnsW(stmt_,database_w.data(),SQL_NTS,schema_w.data(),SQL_NTS,table_w.data(),SQL_NTS,nullptr,0))<<state(SQL_HANDLE_STMT,stmt_);
-  result_count(18);ASSERT_FALSE(HasFailure());
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+  // ODBC SQLColumns likewise permits extensions after the standard eighteen.
+  SQLSMALLINT column_columns=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt_,&column_columns));
+  ASSERT_GE(column_columns,18);
+  RecordProperty("official_sqlcolumns_result_columns",std::to_string(column_columns));
+#else
+  result_count(18);
+#endif
+  ASSERT_FALSE(HasFailure());
   constexpr std::array<const char*,18> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME","DATA_TYPE","TYPE_NAME","COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","NUM_PREC_RADIX","NULLABLE","REMARKS","COLUMN_DEF","SQL_DATA_TYPE","SQL_DATETIME_SUB","CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
   constexpr std::array<SQLSMALLINT,18> types{SQL_VARCHAR,SQL_VARCHAR,SQL_VARCHAR,SQL_VARCHAR,SQL_SMALLINT,SQL_VARCHAR,SQL_INTEGER,SQL_INTEGER,SQL_SMALLINT,SQL_SMALLINT,SQL_SMALLINT,SQL_VARCHAR,SQL_VARCHAR,SQL_SMALLINT,SQL_SMALLINT,SQL_INTEGER,SQL_INTEGER,SQL_VARCHAR};
   descriptors_.clear();
@@ -443,7 +468,7 @@ TEST_F(RedshiftPackageImportLiveTest, CatalogDescriptorsDrivePreparedImport) {
     ASSERT_EQ(SQL_SUCCESS,SQLDescribeColA(stmt_,column,name_.value.data(),static_cast<SQLSMALLINT>(name_.value.size()),&length,&type,&width,&scale,&nullable));
     guards(name_);ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length),name_.value.size());
     const std::string name(reinterpret_cast<const char*>(name_.value.data()),static_cast<std::size_t>(length));
-    EXPECT_TRUE(name==names[column-1]);EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);EXPECT_EQ(types[column-1],type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    EXPECT_TRUE(name==names[column-1]);EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);EXPECT_EQ(types[column-1],type);EXPECT_EQ(0,scale);EXPECT_EQ(result_nullable,nullable);
     if(type==SQL_SMALLINT) { EXPECT_EQ(static_cast<SQLULEN>(5),width); }
     else if(type==SQL_INTEGER) { EXPECT_EQ(static_cast<SQLULEN>(10),width); }
     else { EXPECT_LE(width,static_cast<SQLULEN>(65535)); }
@@ -498,7 +523,12 @@ TEST_F(RedshiftPackageImportLiveTest, CatalogDescriptorsDrivePreparedImport) {
     for(const auto field:{std::size_t{11},std::size_t{12}}) { if(row[field]) { EXPECT_LE(row[field]->size(),std::size_t{65535}); } }
   }
   ASSERT_EQ(std::size_t{5},table_descriptors.size());ASSERT_EQ(std::size_t{18},column_descriptors.size());
-  for(std::size_t field=0;field<18;++field) { EXPECT_TRUE(column_descriptors[field].name==names[field]);EXPECT_EQ(types[field],column_descriptors[field].type);EXPECT_EQ(0,column_descriptors[field].scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,column_descriptors[field].nullable); }
+  for(std::size_t field=0;field<18;++field) {
+    EXPECT_TRUE(column_descriptors[field].name==names[field]);
+    EXPECT_EQ(types[field],column_descriptors[field].type);
+    EXPECT_EQ(0,column_descriptors[field].scale);
+    EXPECT_EQ(result_nullable,column_descriptors[field].nullable);
+  }
   EXPECT_TRUE(owned_table==saved_table);EXPECT_TRUE(owned_columns==saved_columns);
   EXPECT_TRUE(table_descriptors[2].name=="TABLE_NAME");publish();
 }

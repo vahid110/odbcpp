@@ -897,6 +897,16 @@ std::string mapped_backend_sqlstate(
   return *state;
 }
 
+// An adapter diagnostic field, not native error classification. Other backend
+// contracts may supply arbitrary text, so expose only a validated SQLSTATE.
+std::string native_error_sqlstate_for_log(const rs::core::database::BackendError& error) {
+  if (!error.native_state || error.native_state->size() != 5 ||
+      !std::all_of(error.native_state->begin(), error.native_state->end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
+      })) return {};
+  return *error.native_state;
+}
+
 std::string query_failure_sqlstate(
     const rs::core::database::IBackendProvider& provider,
     const rs::core::database::BackendError& error, const char* fallback,
@@ -3827,7 +3837,9 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(transaction.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return SQL_ERROR;
     }
@@ -3853,7 +3865,9 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->close_connection();
       return SQL_ERROR;
@@ -7544,7 +7558,9 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(transaction.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return complete_parameter_set(SQL_ERROR,input);
     }
@@ -7568,7 +7584,9 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.backend_error().safe_summary(),
-                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
+                 {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
+                  {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
+                  {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->close_connection();
       return complete_parameter_set(SQL_ERROR,input);

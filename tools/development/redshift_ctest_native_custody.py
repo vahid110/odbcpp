@@ -11,9 +11,11 @@ import re
 
 
 READONLY_TABLE = 'odbcpp_readonly_2026101500000001'
+READONLY_SCHEMA = READONLY_TABLE
 HEADERS = ('schema_name', 'object_name', 'kind', 'oid', 'owner_oid',
            'schema_oid', 'schema_owner_oid', 'detail')
 MAX_ROWS = 512
+MAX_NEW_SCHEMAS = 13  # Existing column/routine namespaces plus the read-only fixture.
 OWNER = 101
 SCHEMA_RE = re.compile(r'(?:rs5_cols_[0-9]{1,20}_雪|'
                        r'rs5_routine_[0-9]{1,20}_(?:a_雪|literal_%))\Z')
@@ -28,7 +30,7 @@ class CensusError(RuntimeError):
 def plan():
     return {'helpers': 2, 'SQL': 8, 'logins': 2, 'inclusive': 10,
             'body_SQL_per_helper': 1, 'max_rows': MAX_ROWS,
-            'max_new_schemas': 12, 'automatic_DROP': False}
+            'max_new_schemas': MAX_NEW_SCHEMAS, 'automatic_DROP': False}
 
 
 def stage():
@@ -38,7 +40,8 @@ def stage():
     # custody compares its OID/owner/name and numeric argument count; GoogleTest
     # owns argument-type assertions, so no oidvector-to-varchar cast is needed.
     domain = ("(n.nspname ~ '^rs5_cols_[0-9]{1,20}_雪$' OR "
-              "n.nspname ~ '^rs5_routine_[0-9]{1,20}_(a_雪|literal_%)$')")
+              "n.nspname ~ '^rs5_routine_[0-9]{1,20}_(a_雪|literal_%)$' OR "
+              "n.nspname='" + READONLY_SCHEMA + "')")
     relation = ('(' + domain + " OR (n.nspname='public' AND c.relname='" +
                 READONLY_TABLE + "'))")
     query = (
@@ -95,7 +98,7 @@ def parse(raw):
         _need(len(row) == len(HEADERS), 'census_row_width')
         item = dict(zip(HEADERS, row))
         schema, name = item['schema_name'], item['object_name']
-        _need(SCHEMA_RE.fullmatch(schema) is not None or
+        _need(SCHEMA_RE.fullmatch(schema) is not None or schema == READONLY_SCHEMA or
               (schema == 'public' and name == READONLY_TABLE),
               'census_exact_source_namespace')
         _need(item['kind'] in ('n', 'r', 'v', 'p', 'a') and
@@ -145,7 +148,7 @@ def after(ops, state, deadline):
                 (r[0] == 'public' or int(r[6]) == OWNER) for r in residual)
     receipt = {'complete': not residual and not removed,
                'residual': residual, 'baseline_removed_or_changed': removed,
-               'within_source_schema_count': len(schemas) <= 12,
+               'within_source_schema_count': len(schemas) <= MAX_NEW_SCHEMAS,
                'all_new_objects_ordinary_owned': owned,
                'automatic_DROP': False}
     state['complete'] = receipt['complete']

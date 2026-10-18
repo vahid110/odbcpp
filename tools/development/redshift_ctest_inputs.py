@@ -34,8 +34,10 @@ class LoggingFactory:
 
     def build_profile_connection(self, config, profile, **kwargs):
         value = self.factory.build_profile_connection(config, profile, **kwargs)
-        # The vendor driver has a different logging contract; retain its profile.
-        return value if profile["private_input"]["kind"] == "VENDOR_DM_FILE" else logged_connection(value)
+        # Package tests consume a closed connection-file format. Both owned and
+        # vendor DM files must retain the builder's exact fields for preflight.
+        kind = profile["private_input"]["kind"]
+        return value if kind in ("OWN_DM_FILE", "VENDOR_DM_FILE") else logged_connection(value)
 
     def dsn_documents(self, *args, **kwargs):
         dsn, registration = self.factory.dsn_documents(*args, **kwargs)
@@ -80,10 +82,6 @@ def stage_case_environments(directory, blueprint, specs, profiles, connections,
             if spec["case"] == "RedshiftMetadataWorkflowRealTest.MetadataToPreparedQueryShowConfigured":
                 env.update(ODBCPP_REDSHIFT_TEST_SCHEMA="odbcpp_fixture",
                            ODBCPP_REDSHIFT_TEST_TABLE="pilot_rows")
-            if spec["catalog"]:
-                prefix = "ODBCPP_REDSHIFT_" + spec["catalog"].upper() + "_CATALOG_"
-                env[prefix + "SCHEMA"] = "odbcpp_fixture"
-                env[prefix + "TABLE"] = "odbcpp_catalog_types_20261015_c01"
             env.update((two_database_values or {}).get(spec["key"], {}))
             if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or
                    not isinstance(value, str) or any(c in value for c in "\0\r\n")

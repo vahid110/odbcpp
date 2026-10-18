@@ -83,6 +83,20 @@ class Census(unittest.TestCase):
         self.assertEqual(result['baseline_removed_or_changed'], [namespace()])
         self.assertFalse(result['all_new_objects_ordinary_owned'])
 
+    def test_readonly_fixture_schema_and_children_are_observed_exactly(self):
+        name = census.READONLY_SCHEMA
+        schema = (name, name, 'n', '1200', '101', '1200', '101', '')
+        table = (name, census.READONLY_TABLE, 'r', '1201', '101', '1200', '101', '')
+        ops = self.ops([payload([]), payload([schema, table])])
+        result = census.after(ops, census.before(ops, 50.0), 50.0)
+        self.assertFalse(result['complete'])
+        self.assertEqual(set(result['residual']), {schema, table})
+        self.assertTrue(result['all_new_objects_ordinary_owned'])
+        self.assertIn("n.nspname='" + name + "'", census.stage()['query'])
+        bad = (name + '_foreign', *schema[1:])
+        with self.assertRaisesRegex(census.CensusError, 'exact_source'):
+            census.parse(payload([bad]))
+
     def test_unknown_readers_or_missing_principal_zero_prevents_post_SQL(self):
         ops = self.ops([payload([])])
         state = census.before(ops, 50.0)

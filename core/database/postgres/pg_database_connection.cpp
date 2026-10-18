@@ -268,6 +268,26 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
     }
     return result;
   };
+  const auto temporary_schemas = [&](std::string_view database,
+      const std::optional<std::string>& pattern) -> BackendResult<RedshiftColumnSchemas> {
+    const auto maximum = std::numeric_limits<std::size_t>::max();
+    if (database.size() > (maximum - 1024) / 2) return redshift_routine_limit();
+    const RedshiftRoutineUsage command{0, 0, database.size() * 2 + 1024, 0, 0};
+    if (!budget.retain(command)) return redshift_routine_limit();
+    RedshiftColumnSchemas selected;
+    {
+      auto response = exchange(redshift_temporary_schemas_command(database));
+      if (!response) return response.backend_error();
+      auto decoded = redshift_column_schemas(database, pattern, response, budget, deadline);
+      if (!decoded) return decoded.backend_error();
+      selected = std::move(*decoded);
+    }
+    budget.release(command);
+    budget.release(selected.raw_retained);
+    selected.raw_retained = {};
+    return BackendResult<RedshiftColumnSchemas>{std::move(selected),
+        {SessionState::Idle, SessionDisposition::Reusable}};
+  };
   const auto* tables = std::get_if<TablesCatalogRequest>(&request);
   const auto* columns = std::get_if<ColumnsCatalogRequest>(&request);
   if (!tables && !columns) return unavailable();
@@ -340,9 +360,18 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
           schemas=std::move(*selected);
         } // Raw schemas destroyed before releasing their charge.
         budget.release(schemas.raw_retained);schemas_usage=schemas.retained;
-        if (schemas.names.size()>std::numeric_limits<std::size_t>::max()-remaining ||
-            !budget.exchanges_available(schemas.names.size()+remaining)) return redshift_routine_limit();
-        for (const auto& schema:schemas.names) {
+        auto observed_temporary = temporary_schemas(database, tables->schema);
+        if (!observed_temporary) return observed_temporary.backend_error();
+        auto temporary = std::move(*observed_temporary);
+        const auto temporary_usage = temporary.retained;
+        const auto count = schemas.names.size() + temporary.names.size();
+        if (count < schemas.names.size() || count > std::numeric_limits<std::size_t>::max()-remaining ||
+            !budget.exchanges_available(count+remaining)) return redshift_routine_limit();
+        for (std::size_t index = 0; index < count; ++index) {
+          const auto& schema = index < schemas.names.size() ? schemas.names[index] :
+              temporary.names[index - schemas.names.size()];
+          if (index >= schemas.names.size() &&
+              std::find(schemas.names.begin(), schemas.names.end(), schema) != schemas.names.end()) continue;
           if (expired()) return timeout();
           RedshiftRoutineUsage destroyed;
           {
@@ -379,6 +408,13 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
           } // Per-schema raw, scratch, replaced headers and moved row index destroyed.
           budget.release(destroyed);
         }
+        // Both selected owning vectors die together; their payloads stay charged
+        // throughout publication, including duplicate names not revisited.
+        schemas_usage.rows += temporary_usage.rows;
+        schemas_usage.cells += temporary_usage.cells;
+        schemas_usage.bytes += temporary_usage.bytes;
+        schemas_usage.metadata += temporary_usage.metadata;
+        schemas_usage.name_bytes += temporary_usage.name_bytes;
       } // Selected schema names destroyed; accumulated owning output remains charged.
       budget.release(schemas_usage);
     }
@@ -509,14 +545,24 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
           budget.release(discovered.raw_retained);
           schemas_usage=discovered.retained;
         }
+        RedshiftColumnSchemas temporary;
+        if (!schema_name) {
+          auto observed_temporary = temporary_schemas(database, columns->schema);
+          if (!observed_temporary) return observed_temporary.backend_error();
+          temporary = std::move(*observed_temporary);
+        }
         const auto schemas=schema_name?std::span<const std::string>{&*schema_name,1}:
             std::span<const std::string>{discovered.names};
-        if (schemas.size()>std::numeric_limits<std::size_t>::max()-remaining ||
-            !budget.exchanges_available(schemas.size()+remaining)) return redshift_routine_limit();
-        for (std::size_t schema_index=0;schema_index<schemas.size();++schema_index) {
+        const auto schema_count = schemas.size() + temporary.names.size();
+        if (schema_count < schemas.size() || schema_count>std::numeric_limits<std::size_t>::max()-remaining ||
+            !budget.exchanges_available(schema_count+remaining)) return redshift_routine_limit();
+        for (std::size_t schema_index=0;schema_index<schema_count;++schema_index) {
           if (expired()) return timeout();
-          const auto& selected_schema=schemas[schema_index];
-          const auto pending=remaining+(schemas.size()-schema_index-1);
+          const auto& selected_schema=schema_index < schemas.size() ? schemas[schema_index] :
+              temporary.names[schema_index-schemas.size()];
+          if (schema_index >= schemas.size() &&
+              std::find(schemas.begin(), schemas.end(), selected_schema) != schemas.end()) continue;
+          const auto pending=remaining+(schema_count-schema_index-1);
           RedshiftColumnTables selected;
           {
             auto response=native_exchange(database,selected_schema);
@@ -576,6 +622,11 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
           }
           budget.release(selected_usage);
         }
+        schemas_usage.rows += temporary.retained.rows;
+        schemas_usage.cells += temporary.retained.cells;
+        schemas_usage.bytes += temporary.retained.bytes;
+        schemas_usage.metadata += temporary.retained.metadata;
+        schemas_usage.name_bytes += temporary.retained.name_bytes;
       } // Selected owning schemas destroyed; accumulated owning output stays live.
       budget.release(schemas_usage);
     }
@@ -987,6 +1038,54 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
   auto native = native_catalog_request(request);
   if (!native) return local_backend_error(LocalFailure::InvalidInput,
       "Invalid catalog name semantics", BackendOperation::ExecuteCatalog, session_state());
+  const auto primary_only_foreign_keys = [&](BackendResult<QueryResult> result,
+      RedshiftRoutineBudget& budget) -> BackendResult<QueryResult> {
+    if (!result) return result.backend_error();
+    const auto maximum = std::numeric_limits<std::size_t>::max();
+    if (result->rows.size() > (maximum - sizeof(std::vector<RedshiftPrimaryKeyCommandPlan>)) /
+        sizeof(RedshiftPrimaryKeyCommandPlan)) return redshift_routine_limit();
+    RedshiftRoutineUsage reference_storage{0, 0,
+        sizeof(std::vector<RedshiftPrimaryKeyCommandPlan>) + 3 * sizeof(QueryParameter) +
+          sizeof(std::vector<QueryParameter>) + result->rows.size() * sizeof(RedshiftPrimaryKeyCommandPlan), 0, 0};
+    if (!budget.retain(reference_storage)) return redshift_routine_limit();
+    std::vector<RedshiftPrimaryKeyCommandPlan> references;
+    references.reserve(result->rows.size());
+    for (const auto& row : result->rows) {
+      if (rs::util::Clock::now() >= deadline) return BackendError{
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout), "Primary reference filtering deadline expired"};
+      const auto known = std::find_if(references.begin(), references.end(), [&](const auto& table) {
+        return table.database == *row[0] && table.schema == *row[1] && table.table == *row[2];
+      });
+      if (known != references.end()) continue;
+      for (std::size_t field = 0; field < 3; ++field) {
+        if (!budget.name(*row[field]) || row[field]->size() > (maximum - 1) / 6 ||
+            !budget.retain({0, 0, row[field]->size() * 6 + 1, 0, row[field]->size() * 6}))
+          return redshift_routine_limit();
+      }
+      references.push_back({*row[0], *row[1], *row[2]});
+    }
+    if (!budget.exchanges_available(references.size())) return redshift_routine_limit();
+    for (const auto& table : references) {
+      if (rs::util::Clock::now() >= deadline) return BackendError{
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout), "Primary reference filtering deadline expired"};
+      if (!budget.exchange()) return redshift_routine_limit();
+      const std::vector<QueryParameter> parameters{
+          {table.database, QueryParameterType::Unspecified},
+          {table.schema, QueryParameterType::Unspecified},
+          {table.table, QueryParameterType::Unspecified}};
+      RedshiftRoutineUsage primary_usage;
+      {
+        auto keys = redshift_primary_key_part(table, execute_prepared(
+            "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", parameters, deadline), budget, deadline);
+        if (!keys) return keys.backend_error();
+        primary_usage = redshift_primary_key_output_usage(*keys);
+        auto filtered = redshift_filter_primary_references(*result, table, *keys, budget, deadline);
+        if (!filtered) return filtered.backend_error();
+      } // Owning primary projection destroyed before its exact charge is released.
+      budget.release(primary_usage);
+    }
+    return result;
+  };
   if (const auto* special=std::get_if<SpecialColumnsCatalogRequest>(&*native);
       catalog_profile_==PgCatalogProfile::Redshift && special &&
       special->identifier==SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
@@ -1396,10 +1495,10 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
             {target.schema, QueryParameterType::Unspecified},
             {target.table, QueryParameterType::Unspecified}};
         if (!budget.exchange()) return redshift_routine_limit();
-        return redshift_foreign_key_part(*current, execute_prepared(imported ?
+        return primary_only_foreign_keys(redshift_foreign_key_part(*current, execute_prepared(imported ?
             "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;" :
             "SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;", parameters, deadline),
-            budget, deadline);
+            budget, deadline), budget);
       }
       const auto table = [](const auto& database, const auto& schema, const auto& name)
           -> std::optional<RedshiftForeignKeyTable> {
@@ -1432,12 +1531,18 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
           {target.database, QueryParameterType::Unspecified},
           {target.schema, QueryParameterType::Unspecified},
           {target.table, QueryParameterType::Unspecified}};
+      RedshiftRoutineBudget filter_budget{catalog_response_limits(), catalog_result_limits()};
+      if (!filter_budget.exchange()) return redshift_routine_limit();
       auto response = execute_prepared(imported ?
           "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;" :
           "SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;", parameters, deadline);
       if (!response) return response.backend_error();
       if (expired()) return timeout();
       auto normalized = normalize_redshift_foreign_keys(*plan, std::move(response));
+      if (!normalized) return normalized.backend_error();
+      const auto foreign_usage = redshift_foreign_key_output_usage(*normalized);
+      if (!foreign_usage || !filter_budget.retain(*foreign_usage)) return redshift_routine_limit();
+      normalized = primary_only_foreign_keys(std::move(normalized), filter_budget);
       if (!normalized) return normalized.backend_error();
       // Sorting is execution-route policy only; the pure normalizer keeps native order.
       const std::size_t start = imported ? 0 : 4;

@@ -32,6 +32,10 @@ BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> i
 // Borrowed validated lookup, for admission before allocating its owning copy.
 BackendResult<std::string_view> redshift_schema_database_view(const BackendResult<QueryResult>& input);
 std::string redshift_show_schemas_command(std::string_view validated_database);
+// SHOW SCHEMAS can omit current-session TEMP namespaces. The native
+// projection has the same seven identity/opaque fields; it never visits another
+// database's temporary namespace.
+std::string redshift_temporary_schemas_command(std::string_view validated_database);
 BackendResult<QueryResult> normalize_redshift_schemas(
     std::string_view database, BackendResult<QueryResult> input);
 // Narrow SHOW TABLES eligibility: schema LIKE pattern denotes one literal.

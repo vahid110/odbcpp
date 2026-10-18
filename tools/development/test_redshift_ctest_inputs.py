@@ -36,6 +36,50 @@ class InputTests(unittest.TestCase):
             inputs.close_case_environments(custody, directory)
             self.assertFalse(directory.exists())
 
+    def test_explicit_TLS_alias_and_catalog_fixture_inputs_follow_profiles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "private"
+            case = {"id": "C1", "image": "image", "profile": "p_C1",
+                    "gtest_filter": "Suite.TLSAndCatalog"}
+            spec = dict(ctest_id="C1", ctest_profile="p_C1", image="image",
+                        case=case["gtest_filter"], key=case["gtest_filter"], profile="p",
+                        env=None, marker=None, catalog="varbyte")
+            table = "fullsuite_catalog_types_20261015_c01"
+            profiles = {"p": {"private_input": {"kind": "CORE_ENV"},
+                "connection_environment": ["ODBCPP_REDSHIFT_TEST_CONNECTION", "ODBCPP_TEST_DSN"],
+                "variables": {"ODBCPP_REDSHIFT_VARBYTE_CATALOG_SCHEMA": "odbcpp_fixture",
+                              "ODBCPP_REDSHIFT_VARBYTE_CATALOG_TABLE": table}}}
+            connection = "SERVER=mock.invalid;UID=odbcpp_pilot_test;SSL=1;SSLCAFILE=/mock/ca;"
+            index, custody = inputs.stage_case_environments(directory, {"cases": [case]},
+                [spec], profiles, {"p": connection}, {"p": {}})
+            path = Path(index["profiles"]["p_C1"]["environment_file"])
+            env = dict(value.split("=", 1) for value in
+                       json.loads(path.read_text())["environment"])
+            self.assertEqual(env["ODBCPP_TEST_DSN"], connection)
+            self.assertEqual(env["ODBCPP_REDSHIFT_TEST_CONNECTION"], connection)
+            self.assertEqual(env["ODBCPP_REDSHIFT_VARBYTE_CATALOG_TABLE"], table)
+            self.assertEqual(env["ODBCPP_REDSHIFT_VARBYTE_CATALOG_SCHEMA"], "odbcpp_fixture")
+            inputs.close_case_environments(custody, directory)
+
+    def test_owned_DSN_keeps_DSN_name_without_emitting_direct_connection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "private"
+            case = {"id": "C1", "image": "image", "profile": "p_C1", "gtest_filter": "Suite.DSN"}
+            spec = dict(ctest_id="C1", ctest_profile="p_C1", image="image", case="Suite.DSN",
+                        key="Suite.DSN", profile="p", env=None, marker=None, catalog=None)
+            profiles = {"p": {"private_input": {"kind": "OWN_DSN"},
+                "connection_environment": ["ODBCPP_REDSHIFT_TEST_CONNECTION"],
+                "variables": {"ODBCPP_TEST_DSN": "DSN=RedshiftProd"}}}
+            index, custody = inputs.stage_case_environments(directory, {"cases": [case]},
+                [spec], profiles, {"p": "SSL=1;PWD=synthetic;"},
+                {"p": {"ODBCINI": "/mock/private/odbc.ini"}})
+            path = Path(index["profiles"]["p_C1"]["environment_file"])
+            env = dict(value.split("=", 1) for value in json.loads(path.read_text())["environment"])
+            self.assertEqual(env["ODBCPP_TEST_DSN"], "DSN=RedshiftProd")
+            self.assertNotIn("ODBCPP_REDSHIFT_TEST_CONNECTION", env)
+            self.assertEqual(env["ODBCINI"], "/mock/private/odbc.ini")
+            inputs.close_case_environments(custody, directory)
+
     def test_partial_staging_failure_cleans_created_files(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "private"
@@ -71,8 +115,10 @@ class InputTests(unittest.TestCase):
         self.assertIn("LogLevel=Debug;", owned)
         self.assertIn("LogQueries=false;", owned)
         self.assertIn("LogSink=Stderr;", owned)
-        vendor = factory.build_profile_connection({}, {"private_input": {"kind": "VENDOR_DM_FILE"}})
-        self.assertEqual("UID=test;PWD={dummy};SSL=1;", vendor)
+        for kind in ("OWN_DM_FILE", "VENDOR_DM_FILE"):
+            with self.subTest(kind=kind):
+                connection_file = factory.build_profile_connection({}, {"private_input": {"kind": kind}})
+                self.assertEqual("UID=test;PWD={dummy};SSL=1;", connection_file)
         dsn, registration = factory.dsn_documents()
         self.assertIn("LogQueries=false\n", dsn)
         self.assertEqual("[driver]\nDriver=example\n", registration)

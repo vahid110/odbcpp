@@ -48,7 +48,7 @@ BackendResult<QueryResult> normalize_redshift_primary_keys(
     if (extra.error) return *extra.error;
   if (!valid_plan(plan) || !valid_result_structure(source) ||
       !source.additional_results.empty() || !source.cell_errors.empty() ||
-      source.affected_rows != 0 ||
+      (source.affected_rows != 0 && source.affected_rows != source.rows.size()) ||
       source.columns.size() != 6 || source.rows.size() > 32767)
     return invalid_metadata();
   // The real prepared exchange may retain descriptions for the three bound
@@ -175,6 +175,9 @@ BackendResult<std::string> redshift_primary_key_database(BackendResult<QueryResu
   budget.release(raw);
   return database;
 }
+RedshiftRoutineUsage redshift_primary_key_output_usage(const QueryResult& result) {
+  return current_pk_raw(result);
+}
 BackendResult<QueryResult> redshift_primary_key_part(const RedshiftPrimaryKeyCommandPlan& plan,
     BackendResult<QueryResult> input,RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
   if (!input) return input.backend_error();
@@ -185,7 +188,8 @@ BackendResult<QueryResult> redshift_primary_key_part(const RedshiftPrimaryKeyCom
   const auto bad=[&](const char* reason) {return current_pk_invalid(reason,snapshot);};
   if (!current_pk_ready(input) || !valid_plan(plan) || !valid_result_structure(source) ||
       !source.additional_results.empty() || !source.cell_errors.empty() || source.columns.size()!=6 ||
-      source.rows.size()>10000 || source.affected_rows!=0 || !source.statement_kind ||
+      source.rows.size()>10000 ||
+      (source.affected_rows!=0 && source.affected_rows!=source.rows.size()) || !source.statement_kind ||
       (*source.statement_kind!=StatementKind::Unknown && *source.statement_kind!=StatementKind::SelectCursor) ||
       (!source.normalized_parameter_types.empty() && (source.normalized_parameter_types.size()!=3 ||
        std::any_of(source.normalized_parameter_types.begin(),source.normalized_parameter_types.end(),

@@ -5338,7 +5338,8 @@ TEST_F(PreparedStatementIntegrationTest, AdvertisedTransactionalDdlRollsBackAndC
         SQLCHAR state[6]{};
         ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
             state, nullptr, nullptr, 0, nullptr));
-        EXPECT_STREQ("42P01", reinterpret_cast<char*>(state));
+        // The ODBC boundary normalizes PostgreSQL's undefined-table state.
+        EXPECT_STREQ("42S02", reinterpret_cast<char*>(state));
     } else {
         ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
             (SQLCHAR*)"SELECT to_regclass('pg_temp.odbcpp_backend_ddl')::text", SQL_NTS));
