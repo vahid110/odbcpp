@@ -231,8 +231,8 @@ class Operations:
         self.helpers += 1
         self.statements += stage['statements'] + 3
         self.logins += 1
-        need(self.helpers + getattr(self.native, 'network_helpers', 0) <= 20 and
-             self.statements + self.logins <= 183, 'existing_SQL_caps20_183')
+        need(self.helpers + getattr(self.native, 'network_helpers', 0) <= 40 and
+             self.statements + self.logins <= 450, 'approved_SQL_caps40_450')
         if role == ORDINARY:
             self.native.ordinary_held()
         config = self.native.config

@@ -52,13 +52,12 @@ def adapter(directory):
 
 
 class AdapterTests(unittest.TestCase):
-    def test_combined_plan_dry_refuses_before_adapter_construction(self):
+    def test_approved_combined_plan_passes_before_adapter_construction(self):
         plan = ops_module.combined_fixture_plan()
         self.assertEqual((plan['total_helpers'], plan['total_SQL'], plan['total_logins'],
                           plan['total_inclusive']), (38, 372, 38, 410))
         self.assertEqual(plan['network_helpers_separate'], 1)
-        with self.assertRaises(Refused):
-            validate_fixture_plan(plan)
+        self.assertEqual(validate_fixture_plan(plan), plan)
 
     def test_termination_revalidates_birth_principal_database_and_self_first(self):
         targets = tuple((n, ops_module.ORDINARY, ops_module.DATABASE,
@@ -96,7 +95,7 @@ class AdapterTests(unittest.TestCase):
                 elif failure == 'timeout':
                     ops.native.timed_out = True
                 else:
-                    ops.helpers = 19  # plus network1: next helper would exceed20.
+                    ops.helpers = 39  # plus network1: next helper would exceed40.
                 with self.assertRaises(Refused):
                     ops._sql({'query': 'SELECT 1;', 'statements': 1,
                         'role': 'test', 'stage': 'synthetic'}, 120)

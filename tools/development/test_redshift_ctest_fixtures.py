@@ -21,7 +21,7 @@ def load_factory():
 
 
 class Fixtures(unittest.TestCase):
-    def test_complete_plan_refuses_old_caps_before_operational_method(self):
+    def test_overcap_plan_refuses_before_operational_method(self):
         class NoEffects:
             def now(self):
                 return 0.0
@@ -30,8 +30,9 @@ class Fixtures(unittest.TestCase):
                 raise AssertionError('operational method called: ' + name)
 
         config = SimpleNamespace(bounds=lifecycle.Bounds())
-        with self.assertRaisesRegex(lifecycle.Refused, 'helper_cap20'):
-            lifecycle.run_once(config, NoEffects(), fixtures)
+        overcap = SimpleNamespace(plan=lambda: {**fixtures.plan(), 'total_helpers': 41})
+        with self.assertRaisesRegex(lifecycle.Refused, 'helper_cap40'):
+            lifecycle.run_once(config, NoEffects(), overcap)
 
     def test_actual_factory_costs_and_full_branch_total(self):
         f = load_factory()

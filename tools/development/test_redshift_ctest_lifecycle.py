@@ -184,14 +184,23 @@ class Lifecycle(unittest.TestCase):
     def test_complete_overcap_plan_refuses_before_inputs_or_cloud(self):
         class OverCap(Fixtures):
             def plan(self):
-                return {'total_helpers': 36, 'total_SQL': 361,
-                        'total_logins': 36, 'total_inclusive': 397}
+                return {'total_helpers': 41, 'total_SQL': 369,
+                        'total_logins': 41, 'total_inclusive': 410}
         with tempfile.TemporaryDirectory() as directory:
             ops = Ops(directory)
             with self.assertRaises(lifecycle.Refused):
                 self.run_mock(directory, ops, OverCap())
             self.assertEqual(ops.calls, [])
             self.assertFalse((Path(directory) / 'run').exists())
+
+    def test_approved_complete_plan_and_both_boundaries(self):
+        plan = {'total_helpers': 38, 'network_helpers_separate': 1,
+                'total_SQL': 372, 'total_logins': 38, 'total_inclusive': 410}
+        self.assertEqual(lifecycle.validate_fixture_plan(plan), plan)
+        for changed in ({'network_helpers_separate': 3},
+                        {'total_SQL': 413, 'total_inclusive': 451}):
+            with self.subTest(changed=changed), self.assertRaises(lifecycle.Refused):
+                lifecycle.validate_fixture_plan({**plan, **changed})
 
     def test_unknown_reader_retains_inputs_but_still_pauses(self):
         with tempfile.TemporaryDirectory() as directory:

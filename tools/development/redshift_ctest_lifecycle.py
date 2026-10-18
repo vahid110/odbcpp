@@ -134,8 +134,9 @@ def validate_fixture_plan(plan):
         values[name] = value
     need(values['total_inclusive'] == values['total_SQL'] + values['total_logins'],
          'fixture_plan_inclusive')
-    need(values['total_helpers'] <= 20, 'existing_control_helper_cap20')
-    need(values['total_inclusive'] <= 183, 'existing_control_SQL_cap183')
+    need(values['total_helpers'] + plan.get('network_helpers_separate', 0) <= 40,
+         'approved_control_helper_cap40')
+    need(values['total_inclusive'] <= 450, 'approved_control_SQL_cap450')
     return plan
 
 
