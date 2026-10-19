@@ -163,7 +163,7 @@ BOOL configure(HWND parent, WORD request, const wchar_t* driver, const wchar_t* 
     bool active = true;
     ~Restore() { if (active) SQLSetConfigMode(mode); }
   } restore{original};
-  auto mode = original == ODBC_SYSTEM_DSN ? ODBC_SYSTEM_DSN : ODBC_USER_DSN;
+  auto mode = static_cast<UWORD>(original == ODBC_SYSTEM_DSN ? ODBC_SYSTEM_DSN : ODBC_USER_DSN);
   if (request >= ODBC_ADD_SYS_DSN && request <= ODBC_REMOVE_SYS_DSN) {
     mode = ODBC_SYSTEM_DSN;
     request -= ODBC_ADD_SYS_DSN - ODBC_ADD_DSN;
