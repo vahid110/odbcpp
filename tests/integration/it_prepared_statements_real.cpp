@@ -5836,11 +5836,6 @@ TEST_F(PreparedStatementIntegrationTest, NumericTemporalInputRefusalDefaultNullA
     }
     return result == expected;
   };
-  const auto descriptor = [&](SQLINTEGER attribute) {
-    SQLHDESC result = SQL_NULL_HDESC;
-    EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, attribute, &result, 0, nullptr));
-    return result;
-  };
 
 
   ASSERT_TRUE(known_sql(SQLPrepare(hstmt, (SQLCHAR*)echo_sql, SQL_NTS)));
@@ -5885,7 +5880,11 @@ TEST_F(PreparedStatementIntegrationTest, NumericTemporalInputRefusalDefaultNullA
 
   ASSERT_TRUE(observed(SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
       SQL_TYPE_DATE, 10, 0, &number, 0, &length), SQL_ERROR, "07006"));
-   const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  // Keep the output in the caller: MSVC can fold the descriptor-returning
+  // assertion lambda to null even though SQLGetStmtAttr writes a valid handle.
+  SQLHDESC apd = SQL_NULL_HDESC;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      hstmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
   SQLPOINTER pointer = nullptr;
 
   ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR, &pointer, 0, nullptr));

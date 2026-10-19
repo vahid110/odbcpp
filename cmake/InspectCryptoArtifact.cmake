@@ -57,6 +57,17 @@ if(PLATFORM STREQUAL "Windows" AND
   foreach(_line IN LISTS _dependency_lines)
     string(STRIP "${_line}" _candidate)
     string(TOLOWER "${_candidate}" _candidate_lower)
+    if(_candidate_lower MATCHES "^dump of file[ \t]+")
+      # dumpbin names the inspected DLL before listing its imports. Its build
+      # path can contain "openssl" without being a runtime dependency.
+      string(REPLACE "\\" "/" _header_path "${_candidate_lower}")
+      string(REPLACE "\\" "/" _artifact_path "${ARTIFACT}")
+      string(TOLOWER "dump of file ${_artifact_path}" _expected_header)
+      if(NOT _header_path STREQUAL _expected_header)
+        message(FATAL_ERROR "dumpbin header does not name the inspected artifact: ${_candidate}")
+      endif()
+      continue()
+    endif()
     if(_candidate_lower MATCHES "^(lib)?ssl-3(-x64)?\\.dll$")
       list(APPEND _ssl_runtime "${_candidate}")
     elseif(_candidate_lower MATCHES "^(lib)?crypto-3(-x64)?\\.dll$")

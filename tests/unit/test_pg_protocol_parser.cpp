@@ -792,8 +792,9 @@ TEST(PgProtocolParserTest, BackslashInQuotedIdentifierDoesNotHideMarker) {
   ASSERT_FALSE(frames.empty());
   std::size_t offset = 0;
   EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
-  EXPECT_EQ(R"(SELECT 1 AS "slash\", $1::integer AS value)",
-            read_cstring(frames[0].payload, offset));
+  constexpr const char* expected_sql =
+      R"(SELECT 1 AS "slash\", $1::integer AS value)";
+  EXPECT_EQ(expected_sql, read_cstring(frames[0].payload, offset));
 }
 
 TEST(PgProtocolParserTest, BackslashInOrdinaryStringDoesNotHideMarker) {
