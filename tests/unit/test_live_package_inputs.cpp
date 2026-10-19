@@ -154,7 +154,62 @@ TEST_F(LivePackageInputTest, InheritOnlyWriteDoesNotSupplyEffectiveOwnerWrite) {
   ASSERT_TRUE(set_security(false, true, false, true));
   EXPECT_FALSE(inputs::read_private_connection_file(file_).has_value());
 }
+
+TEST_F(LivePackageInputTest, RegistrySelectionRequiresExactRegularImageAndStringValue) {
+  const auto key_name = L"Software\\ODBCPP_Live_Input_" + directory_.filename().native();
+  struct Registration {
+    std::wstring name;
+    inputs::OwnedRegistryKey key;
+    bool created = false;
+    ~Registration() {
+      if (key.value) { RegCloseKey(key.value); key.value = nullptr; }
+      if (created) {
+        EXPECT_EQ(ERROR_SUCCESS, RegDeleteKeyExW(HKEY_CURRENT_USER, name.c_str(),
+            inputs::native_registry_view, 0));
+      }
+    }
+  } registration{key_name};
+  DWORD disposition = 0;
+  ASSERT_EQ(ERROR_SUCCESS, RegCreateKeyExW(HKEY_CURRENT_USER, key_name.c_str(), 0,
+      nullptr, REG_OPTION_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE | inputs::native_registry_view,
+      nullptr, &registration.key.value, &disposition));
+  registration.created = disposition == REG_CREATED_NEW_KEY;
+  ASSERT_TRUE(registration.created);
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  const auto set_value = [&](const std::wstring& value, DWORD type = REG_SZ) {
+    return RegSetValueExW(registration.key.value, L"Driver", 0, type,
+        reinterpret_cast<const BYTE*>(value.c_str()),
+        static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+  };
+  ASSERT_TRUE(set_value(file_.native()));
+  EXPECT_TRUE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_.filename()));
+  const auto relative = fs::relative(file_, fs::current_path());
+  ASSERT_TRUE(relative.is_relative());
+  ASSERT_EQ(file_, fs::canonical(relative));
+  ASSERT_TRUE(set_value(relative.native()));
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  ASSERT_TRUE(set_value((directory_ / "missing.dll").native()));
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  ASSERT_TRUE(set_value(file_.native(), REG_EXPAND_SZ));
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  ASSERT_TRUE(set_value(file_.native() + std::wstring(1, L'\0') + L"extra"));
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  ASSERT_TRUE(set_value(L""));
+  EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
+  for (const auto* selection : {"", "ODBCPP\\escape", "ODBCPP/escape", " name", "name "}) {
+    EXPECT_FALSE(inputs::connection_driver_matches(selection, file_));
+  }
+}
 #endif
+
+TEST(LivePackageLengthsTest, PreservesRepresentableLengthsAndRefusesNarrowing) {
+  EXPECT_EQ(0, inputs::fixture_smallint_length(0));
+  EXPECT_EQ(32767, inputs::fixture_smallint_length(32767));
+  EXPECT_THROW(inputs::fixture_smallint_length(32768), std::length_error);
+  EXPECT_THROW(inputs::fixture_smallint_length(std::numeric_limits<std::size_t>::max()),
+      std::length_error);
+}
 
 TEST(LivePackageImagesTest, ObservesActualExecutableExactlyOnce) {
   fs::path expected;

@@ -23,13 +23,23 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace odbcpp::test::live_package_inputs {
+
+// ODBC fixture inputs use a signed 16-bit length, even on 64-bit Windows.
+inline std::int16_t fixture_smallint_length(std::size_t size) {
+  if (size > static_cast<std::size_t>(std::numeric_limits<std::int16_t>::max())) {
+    throw std::length_error("Live fixture input exceeds the ODBC small length range");
+  }
+  return static_cast<std::int16_t>(size);
+}
 
 inline std::optional<std::string> fixture_environment(const char* name) {
 #ifdef _WIN32
@@ -80,6 +90,47 @@ struct OwnedHandle {
     if (value != INVALID_HANDLE_VALUE && value != nullptr) { CloseHandle(value); }
   }
 };
+
+inline constexpr REGSAM native_registry_view = sizeof(void*) == 8
+    ? KEY_WOW64_64KEY : KEY_WOW64_32KEY;
+
+struct OwnedRegistryKey {
+  HKEY value = nullptr;
+  OwnedRegistryKey() = default;
+  OwnedRegistryKey(const OwnedRegistryKey&) = delete;
+  OwnedRegistryKey& operator=(const OwnedRegistryKey&) = delete;
+  ~OwnedRegistryKey() { if (value) { RegCloseKey(value); } }
+};
+
+// The caller uses HKLM's native ODBC view. The hive/key arguments also permit
+// isolated HKCU fixtures to test the real registry reader without elevation.
+inline bool registered_driver_path_matches(HKEY hive, const std::wstring& key_name,
+                                           const std::filesystem::path& expected) {
+  if (!canonical_file(expected)) { return false; }
+  OwnedRegistryKey key;
+  if (RegOpenKeyExW(hive, key_name.c_str(), 0,
+      KEY_QUERY_VALUE | native_registry_view, &key.value) != ERROR_SUCCESS) {
+    return false;
+  }
+  DWORD type = 0, size = 0;
+  if (RegQueryValueExW(key.value, L"Driver", nullptr, &type, nullptr, &size) != ERROR_SUCCESS ||
+      type != REG_SZ || size < 2 * sizeof(wchar_t) || size > 32768 * sizeof(wchar_t) ||
+      size % sizeof(wchar_t) != 0) {
+    return false;
+  }
+  const DWORD expected_size = size;
+  std::vector<wchar_t> text(size / sizeof(wchar_t));
+  if (RegQueryValueExW(key.value, L"Driver", nullptr, &type,
+      reinterpret_cast<BYTE*>(text.data()), &size) != ERROR_SUCCESS ||
+      type != REG_SZ || size != expected_size || text.back() != L'\0' ||
+      std::wstring_view(text.data(), text.size() - 1).find(L'\0') != std::wstring_view::npos) {
+    return false;
+  }
+  const std::filesystem::path registered_path(text.data());
+  if (!registered_path.is_absolute()) { return false; }
+  std::error_code error;
+  return std::filesystem::canonical(registered_path, error) == expected && !error;
+}
 
 // Windows' equivalent of a current-owner-only private fixture permits the
 // account, SYSTEM and Administrators. Other allow ACEs fail closed.
@@ -158,6 +209,28 @@ inline bool same_metadata(const BY_HANDLE_FILE_INFORMATION& a,
       CompareFileTime(&a.ftLastWriteTime, &b.ftLastWriteTime) == 0;
 }
 #endif
+
+inline bool connection_driver_matches(const std::string& selection,
+                                      const std::filesystem::path& expected) {
+#ifdef _WIN32
+  // Windows DRIVER names a registered description, not a library path. Refuse
+  // key traversal/normalization before checking the exact native HKLM image.
+  if (selection.empty() || selection.size() > 128 || selection.front() == ' ' ||
+      selection.back() == ' ') {
+    return false;
+  }
+  for (const auto ch : selection) {
+    if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9') || ch == ' ' || ch == '_' || ch == '-' || ch == '.')) {
+      return false;
+    }
+  }
+  return registered_driver_path_matches(HKEY_LOCAL_MACHINE,
+      L"SOFTWARE\\ODBC\\ODBCINST.INI\\" + std::wstring(selection.begin(), selection.end()), expected);
+#else
+  return std::filesystem::path(selection) == expected;
+#endif
+}
 
 inline std::optional<std::string> read_private_connection_file(
     const std::filesystem::path& path) {

@@ -68,7 +68,7 @@ protected:
     if(fields.size()!=keys.size()) { return false; }
     for(const auto key:keys) { if(!fields.contains(std::string(key))||fields.at(std::string(key)).empty()) { return false; } }
     const auto host=setting("ODBCPP_REDSHIFT_PACKAGE_EXPECTED_HOST");const auto ca=setting("ODBCPP_REDSHIFT_PACKAGE_EXPECTED_CA_FILE");
-    if(fields.at("DRIVER")!=driver_||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
+    if(!odbcpp::test::live_package_inputs::connection_driver_matches(fields.at("DRIVER"),driver_)||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
         host.empty()||fields.at("SERVER")!=host||!canonical_file(ca)||fields.at("SSLCAFILE")!=ca||fields.at("SSL")!="1"||fields.at("PORT")!="5439") { return false; }
     connection_=std::move(bytes);return true;
   }

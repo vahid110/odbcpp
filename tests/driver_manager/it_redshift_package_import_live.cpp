@@ -113,7 +113,7 @@ protected:
     if(fields.at("DRIVER")!=driver_||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
         host.empty()||fields.at("SERVER")!=host||!canonical_file(ca)||fields.at("TRUSTSTORE")!=ca||fields.at("SSLMODE")!="verify-full"||fields.at("PORT")!="5439") { return false; }
 #else
-    if(fields.at("DRIVER")!=driver_||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
+    if(!odbcpp::test::live_package_inputs::connection_driver_matches(fields.at("DRIVER"),driver_)||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
         host.empty()||fields.at("SERVER")!=host||!canonical_file(ca)||fields.at("SSLCAFILE")!=ca||fields.at("SSL")!="1"||fields.at("PORT")!="5439") { return false; }
 #endif
     connection_=std::move(bytes);return true;
