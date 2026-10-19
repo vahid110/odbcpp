@@ -140,6 +140,8 @@ One immutable provider exists per backend product. It owns:
 - stable backend identifier and display/driver/setup identity;
 - default port, optional database/catalog default and secure TLS policy;
 - common and backend-specific connection-property schema and validation;
+- static acceptance of optional connection policies, through the small
+  `ConnectionOptionSupport` value returned by `supported_connection_options()`;
 - static capability and normalized type profiles available before connection;
 - pure SQL dialect and marker-processing service;
 - creation of one live `BackendSession` from validated owning settings, an
@@ -149,6 +151,12 @@ One immutable provider exists per backend product. It owns:
 The provider does not hold credentials or mutable server state. Explicit product
 selection is authoritative. Unknown URL schemes or ports must return an error,
 not silently select PostgreSQL.
+
+`ConnectionOptionSupport` describes accepted configuration, not live server
+capabilities. Its default is all false for existing/sample providers. A concrete
+provider advertises only policies accepted by its option resolver. The Windows
+setup adapter consumes this neutral information and existing identity/defaults;
+ODBC keywords, labels, Windows controls and DSN persistence remain adapter owned.
 
 ### `BackendSession`
 

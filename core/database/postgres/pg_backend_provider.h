@@ -30,6 +30,7 @@ class PgBackendProvider final : public IBackendProvider {
   const BackendConnectionDefaults& connection_defaults() const noexcept override {
     return connection_defaults_;
   }
+  ConnectionOptionSupport supported_connection_options() const noexcept override;
   const ISqlDialect& sql_dialect() const noexcept override;
   BackendCapabilities capabilities() const noexcept override { return capabilities_; }
   std::optional<std::string> normalize_error_sqlstate(

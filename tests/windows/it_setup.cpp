@@ -66,9 +66,16 @@ bool dialog(HWND parent,const std::wstring& input,bool cancel,bool add=false) {
     if(!w)return;
     const auto click=[&](int id){DWORD_PTR ignored=0;return SendMessageTimeoutW(w,WM_COMMAND,MAKEWPARAM(id,BN_CLICKED),reinterpret_cast<LPARAM>(GetDlgItem(w,id)),SMTO_ABORTIFHUNG,15000,&ignored)!=0;};
     const auto status=[&] {wchar_t value[256]{};GetDlgItemTextW(w,IDC_STATUS,value,256);return std::wstring(value);};
+    const auto wait_status=[&](const wchar_t* prefix) {
+      for(int attempt=0;attempt<160;++attempt) {
+        if(status().find(prefix)==0)return true;
+        Sleep(50);
+      }
+      return false;
+    };
     bool ok=check(!IsWindowEnabled(GetDlgItem(w,IDC_DSN)),"DSN must remain fixed") &&
       check((GetWindowLongPtrW(GetDlgItem(w,IDC_PASSWORD),GWL_STYLE)&ES_PASSWORD)!=0,"masked password") &&
-      check(SendDlgItemMessageW(w,IDC_TABS,TCM_GETITEMCOUNT,0,0)==2,"extensible connection/auth tabs");
+      check(SendDlgItemMessageW(w,IDC_TABS,TCM_GETITEMCOUNT,0,0)==4,"connection/security/advanced/diagnostics sections");
     ok=check(capture(w,L"odbcpp-setup-connection.bmp"),"connection screenshot")&&ok;
     SetDlgItemTextW(w,IDC_PORT,L"5432");
     if(cancel) {passed=ok;click(IDCANCEL);return;}
@@ -79,9 +86,9 @@ bool dialog(HWND parent,const std::wstring& input,bool cancel,bool add=false) {
     NMHDR notify{GetDlgItem(w,IDC_TABS),IDC_TABS,TCN_SELCHANGE};SendMessageW(w,WM_NOTIFY,IDC_TABS,reinterpret_cast<LPARAM>(&notify));
     ok=check(IsWindowVisible(GetDlgItem(w,IDC_PASSWORD))&&!IsWindowVisible(GetDlgItem(w,IDC_SERVER)),"authentication tab selection")&&ok;
     SetDlgItemTextW(w,IDC_PASSWORD,L"wrong-password");
-    ok=click(IDC_TEST)&&check(status().find(L"Connection failed")!=std::wstring::npos,"failed login feedback")&&ok;
+    ok=click(IDC_TEST)&&check(wait_status(L"Connection failed"),"failed login feedback")&&ok;
     SetDlgItemTextW(w,IDC_PASSWORD,L"postgres");
-    ok=click(IDC_TEST)&&check(status()==L"Connection succeeded.","successful connection test")&&ok;
+    ok=click(IDC_TEST)&&check(wait_status(L"Connection succeeded."),"successful connection test")&&ok;
     ok=check(capture(w,L"odbcpp-setup-authentication.bmp"),"authentication screenshot")&&ok;
     passed=ok;click(ok?IDOK:IDCANCEL);
   });
@@ -102,6 +109,8 @@ int main() {
   ok=check(!SQLConfigDataSourceW(nullptr,ODBC_ADD_DSN,driver,initial.c_str()),"duplicate add rejected")&&ok;
   SQLSetConfigMode(ODBC_USER_DSN);
   SQLWritePrivateProfileStringW(name,L"FutureSetting",L"retain",L"ODBC.INI");
+  SQLWritePrivateProfileStringW(name,L"ApplicationName",L"setup-acceptance",L"ODBC.INI");
+  SQLWritePrivateProfileStringW(name,L"QT",L"17",L"ODBC.INI");
   SQLWritePrivateProfileStringW(name,L"PWD",L"legacy-password",L"ODBC.INI");
   SQLWritePrivateProfileStringW(name,L"PASSWORD",L"legacy-alias",L"ODBC.INI");
   const auto edit=attrs({dsn,L"PORT=5444"});
@@ -110,6 +119,9 @@ int main() {
   ok=check(read(name,L"Port")==L"5444" && read(name,L"Server")==L"127.0.0.1","edit preserves omitted fields")&&ok;
   ok=check(read(name,L"FutureSetting")==L"retain" && read(name,L"PWD")==L"<absent>" &&
            read(name,L"PASSWORD")==L"<absent>","retain advanced settings and remove legacy passwords")&&ok;
+  ok=check(read(name,L"ApplicationName")==L"setup-acceptance" &&
+           read(name,L"QueryTimeout")==L"17" && read(name,L"QT")==L"<absent>",
+           "retain supported advanced settings and normalize timeout alias")&&ok;
   const auto bad=attrs({dsn,L"PORT=65536"});
   ok=check(!SQLConfigDataSourceW(nullptr,ODBC_CONFIG_DSN,driver,bad.c_str()),"invalid silent edit")&&ok;
   SQLSetConfigMode(ODBC_USER_DSN);

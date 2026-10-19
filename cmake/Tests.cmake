@@ -622,6 +622,20 @@ if(UNIX OR WIN32)
 endif()
 
 if(WIN32)
+  add_executable(test_setup_dialog tests/windows/test_setup_dialog.cpp
+    odbc/setup/setup_dialog.cpp odbc/setup/setup.rc)
+  target_include_directories(test_setup_dialog PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/odbc/setup")
+  target_compile_definitions(test_setup_dialog PRIVATE UNICODE _UNICODE)
+  target_link_libraries(test_setup_dialog PRIVATE odbccp32 odbc32 user32 comctl32
+    gdi32 ole32 shell32 ${PROJECT_NAME}::core GTest::gtest_main)
+  if(MSVC)
+    target_link_libraries(test_setup_dialog PRIVATE legacy_stdio_definitions)
+  endif()
+  apply_compiler_settings(test_setup_dialog)
+  set_target_properties(test_setup_dialog PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  add_test(NAME test_setup_dialog COMMAND test_setup_dialog)
+  set_tests_properties(test_setup_dialog PROPERTIES LABELS "unit;windows;gui" TIMEOUT 30)
+
   add_executable(it_setup tests/windows/it_setup.cpp)
   target_link_libraries(it_setup PRIVATE odbccp32 user32 comctl32 gdi32)
   if(MSVC)

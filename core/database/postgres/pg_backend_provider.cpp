@@ -41,6 +41,11 @@ PgBackendProvider::PgBackendProvider(
           : pg_backend_capabilities(identity_.display_name)),
       reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
+ConnectionOptionSupport PgBackendProvider::supported_connection_options() const noexcept {
+  if (catalog_profile_ != PgCatalogProfile::Redshift) return {};
+  return {true, true, true, true, true, true};
+}
+
 std::span<const TypeDefinition> PgBackendProvider::type_catalog(std::string_view server_version) const noexcept {
   return catalog_profile_ == PgCatalogProfile::Redshift
       ? redshift_type_catalog() : pg_type_catalog(server_version);
