@@ -209,6 +209,12 @@ TEST(SetupDialog, NativePagesDraftTestingAndSaveRemainResponsiveWithoutNetwork) 
       [&](HWND window, Observations& checks) {
     DWORD_PTR tab_count = 0;
     checks.check(send(GetDlgItem(window, IDC_TABS), TCM_GETITEMCOUNT, 0, 0, &tab_count) && tab_count == 4, "Four native pages must be present");
+    RECT navigation_bounds{}, last_section{};
+    GetClientRect(GetDlgItem(window, IDC_TABS), &navigation_bounds);
+    checks.check(send(GetDlgItem(window, IDC_TABS), TCM_GETITEMRECT, 3,
+                       reinterpret_cast<LPARAM>(&last_section)) &&
+                   last_section.right <= navigation_bounds.right,
+                 "All four native sections must fit without navigation overflow");
     checks.check(text(window, IDC_SCOPE).find(L"System data source") != std::wstring::npos, "System scope must be visible");
     checks.check(text(window, IDC_HEADING) == from_utf8(rs::core::database::configured_backend_provider().identity().display_name), "Heading must use configured provider identity");
     DWORD_PTR heading_font = 0;

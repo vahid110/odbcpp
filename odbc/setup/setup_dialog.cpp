@@ -284,6 +284,22 @@ void paint_navigation(HWND window, HDC dc) {
   }
   SelectObject(dc, previous);
 }
+void size_navigation(HWND window) {
+  RECT client{};
+  GetClientRect(window, &client);
+  const auto count = static_cast<int>(SendMessageW(window, TCM_GETITEMCOUNT, 0, 0));
+  if (count <= 0) return;
+  int width = client.right / count;
+  // The native button tab layout adds spacing outside the requested item width.
+  // Measure it so all sections fit without an unexpected scroll-arrow control.
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    SendMessageW(window, TCM_SETITEMSIZE, 0, MAKELPARAM(width, client.bottom - 2));
+    RECT last{};
+    SendMessageW(window, TCM_GETITEMRECT, count - 1, reinterpret_cast<LPARAM>(&last));
+    if (last.right <= client.right - 2) break;
+    width -= (last.right - client.right + count + 1) / count + 1;
+  }
+}
 LRESULT CALLBACK navigation_proc(HWND window, UINT message, WPARAM wp, LPARAM lp,
                                   UINT_PTR id, DWORD_PTR) {
   if (message == WM_PAINT) {
@@ -297,6 +313,7 @@ LRESULT CALLBACK navigation_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
   if (message == WM_ERASEBKGND) return 1;
   if (message == WM_NCDESTROY) RemoveWindowSubclass(window, navigation_proc, id);
   const auto result = DefSubclassProc(window, message, wp, lp);
+  if (message == WM_SIZE) size_navigation(window);
   if (message == WM_SETFOCUS || message == WM_KILLFOCUS || message == WM_LBUTTONUP ||
       message == WM_KEYUP || message == TCM_SETCURSEL || message == WM_THEMECHANGED ||
       message == WM_SYSCOLORCHANGE) InvalidateRect(window, nullptr, FALSE);
@@ -342,11 +359,9 @@ void initialize(HWND w, Dialog& state) {
   SendDlgItemMessageW(w, IDC_TABS, TCM_SETPADDING, 0, MAKELPARAM(10, 5));
   RECT rect{};
   const auto navigation = GetDlgItem(w, IDC_TABS);
-  GetClientRect(navigation, &rect);
-  SendMessageW(navigation, TCM_SETITEMSIZE, 0,
-               MAKELPARAM((rect.right - 8) / 4, rect.bottom - 2));
   if (!SetWindowSubclass(navigation, navigation_proc, 1, 0))
     throw std::runtime_error("Cannot initialize setup navigation.");
+  size_navigation(navigation);
   const auto list = GetDlgItem(w, IDC_PROPERTIES);
   ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
   GetClientRect(list, &rect);
