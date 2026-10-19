@@ -1,3 +1,4 @@
+#include "../test_live_package_inputs.h"
 #include <gtest/gtest.h>
 #include <sql.h>
 #include <sqlext.h>
@@ -14,12 +15,6 @@
 #include <string_view>
 #include <vector>
 #include <utility>
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 #ifndef ODBCPP_OFFICIAL_REDSHIFT_PROFILE
 #define ODBCPP_OFFICIAL_REDSHIFT_PROFILE 0
@@ -75,38 +70,16 @@ protected:
   std::array<std::array<std::optional<std::string>,18>,2> columns_{};
   std::array<std::optional<std::string>,5> table_{};
 
-  static std::string setting(const char* key) { const char* value=std::getenv(key);return value?std::string(value):std::string{}; }
+  static std::string setting(const char* key) { return odbcpp::test::live_package_inputs::fixture_environment(key).value_or(std::string{}); }
   static bool canonical_file(const std::string& value) {
     std::error_code error;const auto path=std::filesystem::path(value);
     return path.is_absolute()&&std::filesystem::canonical(path,error)==path&&!error&&std::filesystem::is_regular_file(path,error)&&!error;
   }
   bool private_connection(const std::string& path) {
-#if defined(__APPLE__)
-    if(!canonical_file(path)) { return false; }
-    const int fd=::open(path.c_str(),O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
-    if(fd<0) { return false; }
-    struct FileOwner { int value;~FileOwner() { if(value>=0) { ::close(value); } } } file{fd};
-    struct stat before{},after{};
-    bool valid=::fstat(fd,&before)==0&&S_ISREG(before.st_mode)&&before.st_uid==::geteuid()&&
-        (before.st_mode&07777)==0600&&before.st_nlink==1&&before.st_size>0&&before.st_size<=4096;
-    std::string bytes;
-    if(valid) {
-      bytes.resize(static_cast<std::size_t>(before.st_size));std::size_t offset=0;
-      while(offset<bytes.size()) {
-        const auto count=::read(fd,bytes.data()+offset,bytes.size()-offset);
-        if(count<=0) { valid=false;break; }
-        offset+=static_cast<std::size_t>(count);
-      }
-      char extra=0;if(valid&&::read(fd,&extra,1)!=0) { valid=false; }
-    }
-    valid=valid&&::fstat(fd,&after)==0&&before.st_dev==after.st_dev&&before.st_ino==after.st_ino&&
-        before.st_size==after.st_size&&before.st_uid==after.st_uid&&before.st_mode==after.st_mode&&after.st_nlink==1&&
-        before.st_mtimespec.tv_sec==after.st_mtimespec.tv_sec&&before.st_mtimespec.tv_nsec==after.st_mtimespec.tv_nsec&&
-        before.st_ctimespec.tv_sec==after.st_ctimespec.tv_sec&&before.st_ctimespec.tv_nsec==after.st_ctimespec.tv_nsec;
-    struct stat named{};valid=valid&&::lstat(path.c_str(),&named)==0&&S_ISREG(named.st_mode)&&named.st_dev==before.st_dev&&named.st_ino==before.st_ino;
-    if(::close(fd)!=0) { valid=false; }file.value=-1;
-    if(!valid||bytes.find('\0')!=std::string::npos||bytes.find('\n')!=std::string::npos||bytes.find('\r')!=std::string::npos) { return false; }
-    // Closed root-prepared format; braces permit semicolons in the password.
+    auto private_bytes = odbcpp::test::live_package_inputs::read_private_connection_file(path);
+    if (!private_bytes) { return false; }
+    auto bytes = std::move(*private_bytes);
+    // Retain the closed root-prepared field grammar and exact identity checks.
     std::map<std::string,std::string> fields;std::size_t cursor=0;
     while(cursor<bytes.size()) {
       const auto equals=bytes.find('=',cursor);if(equals==std::string::npos) { return false; }
@@ -144,9 +117,6 @@ protected:
         host.empty()||fields.at("SERVER")!=host||!canonical_file(ca)||fields.at("SSLCAFILE")!=ca||fields.at("SSL")!="1"||fields.at("PORT")!="5439") { return false; }
 #endif
     connection_=std::move(bytes);return true;
-#else
-    (void)path;return false;
-#endif
   }
   std::string state(SQLSMALLINT type,SQLHANDLE handle) {
     std::array<SQLCHAR,6> code{};const auto result=SQLGetDiagRecA(type,handle,1,code.data(),nullptr,nullptr,0,nullptr);
@@ -167,19 +137,20 @@ protected:
   }
   void SetUp() override {
 #if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_OFFICIAL_PACKAGE_IMPORT_ADMISSION");
-    if(marker==nullptr) { GTEST_SKIP()<<"Official package scope not admitted"; }
-    ASSERT_TRUE(std::string_view(marker)=="official-driver-import-v1")<<"Wrong official package marker";
+    const auto marker=odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_OFFICIAL_PACKAGE_IMPORT_ADMISSION");
+    if (!marker) {
+      GTEST_SKIP()<<"Official package scope not admitted";
+    }
+    ASSERT_TRUE(std::string_view(*marker)=="official-driver-import-v1")<<"Wrong official package marker";
 #else
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_PACKAGE_IMPORT_ADMISSION");
-    if(marker==nullptr) { GTEST_SKIP()<<"Package scope not admitted"; }
-    ASSERT_TRUE(std::string_view(marker)=="installed-driver-import-v1")<<"Wrong package marker";
+    const auto marker=odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_PACKAGE_IMPORT_ADMISSION");
+    if (!marker) {
+      GTEST_SKIP()<<"Package scope not admitted";
+    }
+    ASSERT_TRUE(std::string_view(*marker)=="installed-driver-import-v1")<<"Wrong package marker";
 #endif
     ASSERT_TRUE(sizeof(SQLWCHAR)==ODBCPP_EXPECT_DM_SQLWCHAR_SIZE &&
         sizeof(SQLWCHAR)==ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)<<"Package requires its explicit matched SQLWCHAR pair";
-#if !defined(__APPLE__)
-    FAIL()<<"Package platform not qualified";
-#else
     end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     principal_=setting("ODBCPP_REDSHIFT_PACKAGE_EXPECTED_PRINCIPAL");database_=setting("ODBCPP_REDSHIFT_PACKAGE_EXPECTED_DATABASE");
     driver_=setting("ODBCPP_REDSHIFT_PACKAGE_INSTALLED_DRIVER");
@@ -195,11 +166,10 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,connect_result)<<state(SQL_HANDLE_DBC,dbc_);
     // Observe the image after the manager's real connection, never dlopen it for dispatch.
     std::size_t matches=0;
-    for(std::uint32_t index=0;index<_dyld_image_count();++index) {
-      const char* image=_dyld_get_image_name(index);if(!image) { continue; }
-      const auto path=std::filesystem::path(image);
-      const auto filename=path.filename().string();
-      if(filename=="librsodbc64.dylib"||filename.starts_with("libodbcpp")||filename.find("redshiftodbc")!=std::string::npos||filename.find("psqlodbc")!=std::string::npos) {
+    const auto images = odbcpp::test::live_package_inputs::loaded_image_paths();
+    ASSERT_TRUE(images.has_value())<<"Could not observe loaded process images";
+    for (const auto& path : *images) {
+      if (odbcpp::test::live_package_inputs::is_database_driver_image(path)) {
         std::error_code error;const auto actual=std::filesystem::canonical(path,error);
         ASSERT_TRUE(!error&&actual==std::filesystem::path(driver_))<<"Mixed or unexpected driver image";
         ++matches;loaded_=actual.string();
@@ -207,7 +177,6 @@ protected:
     }
     ASSERT_EQ(std::size_t{1},matches)<<"Installed driver image not uniquely observed";
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc_,&stmt_));ASSERT_TRUE(cap(end_));
-#endif
   }
   void direct(const char* sql) {
     if(HasFailure()) { return; }
