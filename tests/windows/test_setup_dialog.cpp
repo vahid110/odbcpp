@@ -66,7 +66,13 @@ HWND find_dialog(DWORD thread_id) {
 bool select_page(HWND window, int page) {
   if (!send(GetDlgItem(window, IDC_TABS), TCM_SETCURSEL, page)) return false;
   NMHDR notification{GetDlgItem(window, IDC_TABS), IDC_TABS, TCN_SELCHANGE};
-  return send(window, WM_NOTIFY, IDC_TABS, reinterpret_cast<LPARAM>(&notification));
+  if (!send(window, WM_NOTIFY, IDC_TABS, reinterpret_cast<LPARAM>(&notification))) return false;
+  RECT bounds{}, first{}, last{};
+  const auto navigation = GetDlgItem(window, IDC_TABS);
+  GetClientRect(navigation, &bounds);
+  return send(navigation, TCM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&first)) &&
+      send(navigation, TCM_GETITEMRECT, 3, reinterpret_cast<LPARAM>(&last)) &&
+      first.left >= 0 && last.right <= bounds.right && last.bottom <= bounds.bottom;
 }
 bool checked(HWND window, int id) {
   DWORD_PTR state = 0;
@@ -215,6 +221,14 @@ TEST(SetupDialog, NativePagesDraftTestingAndSaveRemainResponsiveWithoutNetwork) 
                        reinterpret_cast<LPARAM>(&last_section)) &&
                    last_section.right <= navigation_bounds.right,
                  "All four native sections must fit without navigation overflow");
+    for (auto child = GetWindow(GetDlgItem(window, IDC_TABS), GW_CHILD); child;
+         child = GetWindow(child, GW_HWNDNEXT)) {
+      wchar_t name[64]{};
+      GetClassNameW(child, name, 64);
+      if (std::wstring(name) == UPDOWN_CLASSW) {
+        checks.check(!IsWindowVisible(child), "Native navigation scroll arrows must be hidden when all sections fit");
+      }
+    }
     checks.check(text(window, IDC_SCOPE).find(L"System data source") != std::wstring::npos, "System scope must be visible");
     checks.check(text(window, IDC_HEADING) == from_utf8(rs::core::database::configured_backend_provider().identity().display_name), "Heading must use configured provider identity");
     DWORD_PTR heading_font = 0;

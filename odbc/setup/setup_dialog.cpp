@@ -296,6 +296,10 @@ void size_navigation(HWND window) {
     SendMessageW(window, TCM_SETITEMSIZE, 0, MAKELPARAM(width, client.bottom - 2));
     RECT last{};
     SendMessageW(window, TCM_GETITEMRECT, count - 1, reinterpret_cast<LPARAM>(&last));
+    if (SendMessageW(window, TCM_GETROWCOUNT, 0, 0) > 1 || last.bottom > client.bottom) {
+      width -= std::max(4, static_cast<int>(client.right) / (count * 16));
+      continue;
+    }
     if (last.right <= client.right - 2) break;
     width -= (last.right - client.right + count + 1) / count + 1;
   }
