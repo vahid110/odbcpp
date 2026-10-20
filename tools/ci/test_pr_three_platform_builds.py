@@ -168,6 +168,14 @@ class ThreePlatformScheduling(unittest.TestCase):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
 
+    def test_primary_PR_and_explicit_checkpoint_without_duplicate_push(self):
+        unrestricted_pr_trigger(self.primary)
+        triggers = self.primary.split('\npermissions:', 1)[0]
+        self.assertIn('  workflow_dispatch:', triggers)
+        self.assertNotRegex(triggers, r'(?m)^  push:')
+        # Job names/builds and required PR checks remain unchanged. This does
+        # not grant cross-run artifact reuse or bypass a branch-required check.
+
     def test_mutated_PR_event_filters_are_refused(self):
         for filter_line in ['branches-ignore: [main]', 'paths: ["**.cpp"]',
                             'types: [ready_for_review]', 'branches: [main]']:

@@ -1,0 +1,162 @@
+"""Native offline custody/ACL/registry/job proof using invented inputs and owned probe paths."""
+import csv
+import json
+import os
+from pathlib import Path
+import subprocess
+import shutil
+import sys
+import tempfile
+import unittest
+import uuid
+import winreg
+import hashlib
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.development import windows_live_backend as backend
+from tools.development import windows_native_job as job
+
+
+class NativeBackendTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        backend.SID = list(csv.reader(subprocess.check_output(
+            ['whoami.exe','/user','/fo','csv','/nh'], text=True).splitlines()))[0][-1]
+        backend.DESCRIPTION = 'ODBCPP Synthetic Workflow Probe'
+        backend.current_identity()
+
+    def test_private_file_exact_bytes_acl_and_retirement(self):
+        parent = Path(tempfile.mkdtemp(prefix='odbcpp-native-workflow-'))
+        root = parent/'owned';tree = backend.PrivateTree()
+        try:
+            tree.mkdir(root)
+            path = root/'invented-input.txt'
+            tree.write(path, b'invented-only-no-real-credential')
+            held = tree.files[-1]
+            self.assertEqual(held.read(), b'invented-only-no-real-credential')
+            held.verify()
+            with self.assertRaises(OSError):
+                path.write_bytes(b'collision')
+            held.retire();tree.files.clear()
+            self.assertFalse(path.exists())
+            tree.rmdir(root)
+        finally:
+            tree.close_handles()
+        self.assertFalse(root.exists());parent.rmdir()
+
+    def test_exact_invented_HKCU_namespace_and_collision_preservation(self):
+        namespace = r'SOFTWARE\ODBCPP-Workflow-Probe-'+uuid.uuid4().hex
+        class Probe(backend.RegistryDsn):
+            ROOT_KEY = namespace
+            PARENT = namespace+r'\ODBC.INI'
+            SOURCES = PARENT+r'\ODBC Data Sources'
+            NAME = 'InventedDsn'
+        probe = Probe()
+        self.assertFalse(probe.exists(namespace))
+        values = {'Driver':'C:/invented/no-driver.dll','PWD':'invented-only','SSL':'1'}
+        try:
+            probe.prepare(values);probe.verify()
+            with self.assertRaises(RuntimeError):
+                Probe().prepare({'Driver':'C:/collision.dll'})
+            probe.verify()
+        finally:
+            probe.cleanup()
+        self.assertFalse(probe.exists(namespace))
+
+    def test_native_job_nonzero_and_timeout_reap_descendant(self):
+        root = Path(tempfile.mkdtemp(prefix='odbcpp-native-job-'))
+        results = []
+        for name, code, bound, expected in (
+            ('nonzero','raise SystemExit(17)',10,17),
+            ('timeout',"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time;time.sleep(600)']);time.sleep(600)",1,124)):
+            receipt = {'case':name}
+            with (root/(name+'.log')).open('w') as log:
+                actual = job.run([sys.executable,'-c',code],log,receipt,timeout=bound)
+            self.assertEqual(actual, expected)
+            self.assertTrue(receipt['treeEmpty'])
+            self.assertTrue(receipt['heldProcessHandlesStopped'])
+            self.assertEqual(receipt['jobActiveProcesses'], 0)
+            if name == 'timeout':
+                self.assertTrue(receipt['timedOut'])
+                self.assertGreaterEqual(receipt['jobTotalProcesses'], 2)
+            results.append(receipt)
+        (root/'receipts.json').write_text(json.dumps(results,indent=2)+'\n')
+        print('Native offline job evidence retained: '+str(root))
+
+    def test_complete_native_CTest_nonzero_still_closes_all_inputs_and_DSN(self):
+        image_value = os.environ.get('ODBCPP_NATIVE_OFFLINE_IMAGE')
+        if not image_value:
+            self.skipTest('Supply an existing offline test_live_package_inputs image for native collection smoke')
+        image = Path(image_value).resolve(strict=True)
+        parent = Path(tempfile.mkdtemp(prefix='odbcpp-native-collection-'))
+        work = parent/'private';owner = backend.PrivateTree();owner.mkdir(work)
+        try:
+            filters = ['LivePackageImagesTest.ClassifiesDatabaseDriversWithoutOtherLibraries',
+                       'LivePackageImagesTest.DoesNotExist',
+                       'LivePackageEnvironmentTest.OwnsValuesAcrossEnvironmentChangesAndPreservesAbsence']
+            head = subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
+            from tools.development import redshift_fixture_factory as factory
+            profile = dict(profile_name='synthetic-offline',limits=dict(factory.CANONICAL_LIMITS),
+                connection_environment=['ODBCPP_TEST_DSN'],uses_private_dsn=True,variables={},
+                review={'path':str(work/'synthetic-review.json'),'sha256':'0'*64},
+                private_input=dict(kind='OWN_DSN',driver={'path':sys.executable,
+                    'sha256':hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+                    'wchar_bytes':2,'kind':'OWN'},password_rejection=False))
+            cases=[dict(id='offline'+str(i),image='synthetic',profile='host'+str(i),
+                        gtest_filter=name,timeout_seconds=40) for i,name in enumerate(filters)]
+            index=dict(schema_version=1,images={'synthetic':dict(executable=str(image),
+                sha256=hashlib.sha256(image.read_bytes()).hexdigest())},profiles={},cases=cases)
+            expected=dict(schema_version=1,cases=[{k:v for k,v in case.items() if k!='timeout_seconds'} for case in cases])
+            specs=[dict(ctest_id=case['id'],case=case['gtest_filter'],profile='control',
+                        case_seconds=40,env=None,marker=None) for case in cases]
+            model=work/'model.json';model.write_text(json.dumps(dict(source_head=head,index=index,
+                expected=expected,specs=specs,profiles={'control':profile})))
+            native=dict(working_directory=str(work),source_directory=str(ROOT),source_head=head,
+                sid=backend.SID,driver=dict(path=sys.executable,sha256='0'*64),
+                driver_description=backend.DESCRIPTION,model=str(model),case_count=3,
+                tools=dict(cmake=shutil.which('cmake'),ctest=shutil.which('ctest'),
+                    ninja='C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe'),
+                runtime_directories=[str(image.parent),str(Path(sys.executable).parent),
+                                     'C:/Program Files/FireDaemon OpenSSL 3/bin'])
+            backend.configure_context(native)
+            namespace=r'SOFTWARE\ODBCPP-Workflow-Collection-Probe-'+uuid.uuid4().hex
+            class Probe(backend.RegistryDsn):
+                ROOT_KEY=namespace;PARENT=namespace+r'\ODBC.INI'
+                SOURCES=PARENT+r'\ODBC Data Sources';NAME='InventedDsn'
+            authority=dict(execution_timeout_seconds=90)
+            payload=dict(schema_version=1,source_head=head,run_id='windows-live-offline',
+                config=dict(host='synthetic.invalid',port=5439,database='odbcpp_pilot',
+                    test_user='odbcpp_pilot_test',test_password='invented-only',ca=str(work/'invented-ca.pem')),
+                case_variables=[dict(id=case['id'],variables={}) for case in cases])
+            # Explicit fake-provider boundary: no installed driver, real DSN,
+            # admission, credentials or resource is used. All native file/job/
+            # CMake/CTest/finally behavior below is real and assertions unchanged.
+            with patch.object(backend,'registration_matches'), \
+                 patch.object(backend,'verify_admission',return_value=[]), \
+                 patch.object(backend,'RegistryDsn',Probe):
+                result=backend.execute(authority,payload)
+            receipt=json.loads((work/'windows-live-offline/native-receipt.json').read_text())
+            self.assertEqual(result,8)
+            self.assertEqual(receipt['ctest_invocations'],1)
+            self.assertEqual([j['phase'] for j in receipt['jobs']],['configure','ctest'])
+            self.assertTrue(receipt['native_cleanup_complete'])
+            self.assertTrue(receipt['private_inputs_closed'])
+            self.assertTrue(receipt['dsn_closed'])
+            self.assertTrue(receipt['lease_released'])
+            self.assertFalse((work/'windows-live-active-lease.json').exists())
+            self.assertFalse(Probe().exists(namespace))
+            import xml.etree.ElementTree as ET
+            rows=list(ET.parse(work/'windows-live-offline/ctest-results.xml').getroot().iter('testcase'))
+            self.assertEqual(len(rows),3)
+            self.assertIsNone(rows[0].find('failure'))
+            self.assertIsNotNone(rows[1].find('failure'))
+            self.assertIsNone(rows[2].find('failure'))
+            print('Native collection evidence retained: '+str(work))
+        finally:
+            owner.close_handles()
+
+
+if __name__ == '__main__':
+    unittest.main()

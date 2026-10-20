@@ -4,6 +4,8 @@ ROOT supplies the reviewed real adapter. Its methods reuse pilot_lock,
 native_auth_inputs and the existing exact-resource/TLS/network/process controls.
 No provider, credential loading, admission or process starts occur on import.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 import hashlib
 import json
@@ -65,6 +67,7 @@ class Config:
     ctest: Path
     public_pins: dict
     bounds: Bounds = Bounds()
+    state_directory: Path | None = None
 
 
 def record(path, value):
@@ -105,7 +108,7 @@ def verify_public_pin(path, expected):
 
 def verify_config(config):
     config.bounds.validate()
-    need(config.run_directory.parent == STATE and
+    need(config.run_directory.parent == (config.state_directory or STATE) and
          re.fullmatch('[A-Za-z0-9_.-]+', config.run_directory.name) is not None,
          'canonical_run_directory')
     need(config.source_directory.is_absolute() and
@@ -183,7 +186,7 @@ def run_once(config, ops, fixtures):
         # Exception messages can contain private input. Retain public type only.
         errors.append({'phase': where, 'error_type': type(error).__name__})
 
-    with ops.lock(STATE):
+    with ops.lock(config.state_directory or STATE):
         verify_config(config)
         ops.verify_source(config.source_directory, config.source_head)
         # Exclusive directory creation is the one-use consumption. No resets.
@@ -215,41 +218,54 @@ def run_once(config, ops, fixtures):
                                                   state, dict(LOGGING), execution_end))
             need(staged_index.is_absolute() and staged_index.is_relative_to(config.run_directory),
                  'owned_staged_index')
-            build = config.run_directory / 'ctest'
-            output = config.run_directory / 'gtest'
-            for path in (build, output):
-                os.mkdir(path, 0o700)
-            configure = [str(config.cmake), '-S',
-                         str(config.source_directory / 'tests/development/live_suite'),
-                         '-B', str(build), '-DODBCPP_LIVE_INDEX=' + str(staged_index),
-                         '-DODBCPP_LIVE_EXPECTED=' + str(config.expected),
-                         '-DODBCPP_LIVE_OUTPUT=' + str(output)]
-            phase = 'cmake_configure'
-            remaining(execution_end)
-            configured = ops.run_process(configure, env=dict(BASE_ENV), deadline=execution_end,
-                                         output=config.run_directory / 'configure.log', umask=0o077)
-            need(configured.reaped is True and configured.group_absent is True and
-                 configured.timed_out is False and configured.returncode == 0,
-                 'configure_not_completed')
-            command = [str(config.ctest), '--test-dir', str(build), '-j1',
-                       '--output-on-failure', '--output-junit',
-                       str(config.run_directory / 'ctest-results.xml'),
-                       '--output-log', str(config.run_directory / 'ctest-full.log')]
-            phase = 'ctest'
-            remaining(execution_end)
-            record(config.run_directory / 'ctest-command.json',
-                   {'argv': command, 'execution_deadline': execution_end,
-                    'invocation': 1, 'stop_on_failure': False})
-            ctest_started = True
-            child = ops.run_process(command, env=dict(BASE_ENV), deadline=execution_end,
-                                    output=config.run_directory / 'ctest-console.log', umask=0o077)
-            need(type(child.returncode) is int and type(child.timed_out) is bool,
-                 'CTest_return_unknown')
-            ctest_result = {'returncode': child.returncode, 'timed_out': child.timed_out,
-                            'reaped': child.reaped, 'group_absent': child.group_absent}
-            record(config.run_directory / 'ctest-exit.json', ctest_result)
-            # A normal nonzero return is collected verbatim; it is not a Python
-            # feature-result gate. CTest already continued unrelated cases.
+            if hasattr(ops, 'run_native_suite'):
+                phase = 'native_windows_configure_ctest'
+                remaining(execution_end)
+                try:
+                    native = ops.run_native_suite(staged_index, execution_end)
+                finally:
+                    ctest_started = ops.native_ctest_invoked
+                need(native.configured is True and ctest_started is True,
+                     'native_configure_or_CTest_not_completed')
+                ctest_result = {'returncode': native.returncode, 'timed_out': native.timed_out,
+                                'reaped': native.reaped, 'group_absent': native.group_absent}
+                record(config.run_directory / 'ctest-exit.json', ctest_result)
+            else:
+                build = config.run_directory / 'ctest'
+                output = config.run_directory / 'gtest'
+                for path in (build, output):
+                    os.mkdir(path, 0o700)
+                configure = [str(config.cmake), '-S',
+                             str(config.source_directory / 'tests/development/live_suite'),
+                             '-B', str(build), '-DODBCPP_LIVE_INDEX=' + str(staged_index),
+                             '-DODBCPP_LIVE_EXPECTED=' + str(config.expected),
+                             '-DODBCPP_LIVE_OUTPUT=' + str(output)]
+                phase = 'cmake_configure'
+                remaining(execution_end)
+                configured = ops.run_process(configure, env=dict(BASE_ENV), deadline=execution_end,
+                                             output=config.run_directory / 'configure.log', umask=0o077)
+                need(configured.reaped is True and configured.group_absent is True and
+                     configured.timed_out is False and configured.returncode == 0,
+                     'configure_not_completed')
+                command = [str(config.ctest), '--test-dir', str(build), '-j1',
+                           '--output-on-failure', '--output-junit',
+                           str(config.run_directory / 'ctest-results.xml'),
+                           '--output-log', str(config.run_directory / 'ctest-full.log')]
+                phase = 'ctest'
+                remaining(execution_end)
+                record(config.run_directory / 'ctest-command.json',
+                       {'argv': command, 'execution_deadline': execution_end,
+                        'invocation': 1, 'stop_on_failure': False})
+                ctest_started = True
+                child = ops.run_process(command, env=dict(BASE_ENV), deadline=execution_end,
+                                        output=config.run_directory / 'ctest-console.log', umask=0o077)
+                need(type(child.returncode) is int and type(child.timed_out) is bool,
+                     'CTest_return_unknown')
+                ctest_result = {'returncode': child.returncode, 'timed_out': child.timed_out,
+                                'reaped': child.reaped, 'group_absent': child.group_absent}
+                record(config.run_directory / 'ctest-exit.json', ctest_result)
+                # A normal nonzero return is collected verbatim; it is not a Python
+                # feature-result gate. CTest already continued unrelated cases.
         except BaseException as error:
             state = getattr(error, 'state', None) or state or getattr(ops, 'fixture_state', None)
             capture_error(phase, error)
@@ -299,7 +315,7 @@ def run_once(config, ops, fixtures):
                 capture_error('input_close', error)
             within_original_aggregate = aggregate_end is not None and ops.now() < aggregate_end
             result = {'source_head': config.source_head, 'ctest_invoked': ctest_started,
-                      'ctest_invocations': int(ctest_started), 'ctest': ctest_result,
+                      'ctest_invocations': None if ctest_started is None else int(ctest_started), 'ctest': ctest_result,
                       'errors': errors, 'fixture_cleanup': fixture_cleanup,
                       'principal_cleanup': principal_cleanup, 'final_zero': final_zero,
                       'readers_known': readers_known,

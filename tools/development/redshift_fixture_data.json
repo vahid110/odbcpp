@@ -1,0 +1,1316 @@
+{
+  "objects": {
+    "SHARED_FIXTURE_SCHEMA": {
+      "id": "SHARED_FIXTURE_SCHEMA",
+      "name": "odbcpp_fixture",
+      "inspect_SQL": "SELECT oid,nspname,nspowner FROM pg_catalog.pg_namespace WHERE nspname='odbcpp_fixture';",
+      "required": "Exactly one alreadyexisting schema; admin/ordinary identities samecluster/DB as bound inputs. NO CREATE/DROP this shared schema.",
+      "ordinary_usage_SQL": "SELECT CASE WHEN has_schema_privilege('odbcpp_pilot_test','odbcpp_fixture','USAGE') THEN 'schema_usage_allowed' ELSE 'schema_usage_blocked' END;",
+      "conditional_minimum_grant_SQL": "GRANT USAGE ON SCHEMA odbcpp_fixture TO odbcpp_pilot_test;",
+      "grant_condition": "Only root-admitted minimum usage on existing fixture schema to existing ordinary role; prior privilege snapshot and ownerknown. No broad database/schemaCREATE/grants to PUBLIC/newrole. Revoke only if this run uniquely introduced it, originallyabsent and no shared consumer dependency; otherwise retain explicit privilege debt.",
+      "cleanup_SQL": null
+    },
+    "CONFIGURED_FRESH_ROWS": {
+      "id": "CONFIGURED_FRESH_ROWS",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_fixture",
+      "name": "fullsuite_rows_20261015_c01",
+      "depends_on": [
+        "SHARED_FIXTURE_SCHEMA"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='fullsuite_rows_20261015_c01';",
+      "collision_policy": "Absent -> CREATE; collision -> inspect exact held compatiblefixture only, otherwise STOP no cleanup/replace.",
+      "create_if_absent_SQL": "CREATE TABLE odbcpp_fixture.fullsuite_rows_20261015_c01 (id INTEGER NOT NULL, value VARCHAR(32));",
+      "INSERT_only_if_created_here_SQL": [
+        "INSERT INTO odbcpp_fixture.fullsuite_rows_20261015_c01 (id,value) VALUES (1,'one'),(2,'two');"
+      ],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='fullsuite_rows_20261015_c01' ORDER BY ordinal_position;",
+      "expected": {
+        "columns": [
+          [
+            "id",
+            "integer",
+            "NO",
+            1
+          ],
+          [
+            "value",
+            "character varying",
+            "YES",
+            2
+          ]
+        ],
+        "varchar_width": 32,
+        "column_defaults": null,
+        "rows": [
+          [
+            1,
+            "one"
+          ],
+          [
+            2,
+            "two"
+          ]
+        ],
+        "rows_exact_count": 2
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM \"odbcpp_fixture\".\"fullsuite_rows_20261015_c01\";",
+        "SELECT * FROM \"odbcpp_fixture\".\"fullsuite_rows_20261015_c01\" LIMIT 3;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_fixture\".\"fullsuite_rows_20261015_c01\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_fixture\".\"fullsuite_rows_20261015_c01\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='fullsuite_rows_20261015_c01';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    },
+    "CONFIGURED_PILOT_ROWS_REUSE": {
+      "id": "CONFIGURED_PILOT_ROWS_REUSE",
+      "schema": "odbcpp_fixture",
+      "name": "pilot_rows",
+      "inspect_SQL": [
+        "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='pilot_rows';",
+        "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='pilot_rows' ORDER BY ordinal_position;",
+        "SELECT COUNT(*) AS actual_rows FROM odbcpp_fixture.pilot_rows;",
+        "SELECT id,value FROM odbcpp_fixture.pilot_rows ORDER BY id LIMIT 3;"
+      ],
+      "expected_same_as": "CONFIGURED_FRESH_ROWS",
+      "decision": "Prefer READ_ONLY_REUSED only if existing compatible shape/identity/ordinarySELECT/exacttwo rows proven. If absent/incompatible DO NOT mutate it: bind CONFIGURED_FRESH_ROWS variant instead; incompatible pilot_rows is not a reason to drop sharedobject.",
+      "CREATE_INSERT_GRANT_DROP_SQL": []
+    },
+    "COMPOSITE_PARENT": {
+      "id": "COMPOSITE_PARENT",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_fixture",
+      "name": "m2_catalog_parent_20261003_c01",
+      "depends_on": [
+        "SHARED_FIXTURE_SCHEMA"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_catalog_parent_20261003_c01';",
+      "collision_policy": "Only exact compatible held testfixture; existingobjects never become newlyowned",
+      "create_if_absent_SQL": "CREATE TABLE odbcpp_fixture.m2_catalog_parent_20261003_c01 (\n    key_a INTEGER NOT NULL,\n    key_b INTEGER NOT NULL,\n    PRIMARY KEY (key_b, key_a)\n);",
+      "INSERT_only_if_created_here_SQL": [],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='m2_catalog_parent_20261003_c01' ORDER BY ordinal_position;",
+      "expected": {
+        "physical_columns": [
+          "key_a",
+          "key_b"
+        ],
+        "both": "INTEGER NOT NULL",
+        "PK_order": [
+          "key_b",
+          "key_a"
+        ],
+        "new_rows": 0,
+        "constraint_name": "server generated, capture exact notguess"
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM \"odbcpp_fixture\".\"m2_catalog_parent_20261003_c01\";",
+        "SELECT * FROM \"odbcpp_fixture\".\"m2_catalog_parent_20261003_c01\" LIMIT 3;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_fixture\".\"m2_catalog_parent_20261003_c01\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_fixture\".\"m2_catalog_parent_20261003_c01\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_catalog_parent_20261003_c01';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    },
+    "COMPOSITE_CHILD": {
+      "id": "COMPOSITE_CHILD",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_fixture",
+      "name": "m2_catalog_child_20261003_c01",
+      "depends_on": [
+        "COMPOSITE_PARENT"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_catalog_child_20261003_c01';",
+      "collision_policy": "Only exact compatible held testfixture; existingobjects never become newlyowned",
+      "create_if_absent_SQL": "CREATE TABLE odbcpp_fixture.m2_catalog_child_20261003_c01 (\n    ref_a INTEGER NOT NULL,\n    ref_b INTEGER NOT NULL,\n    FOREIGN KEY (ref_b, ref_a)\n        REFERENCES odbcpp_fixture.m2_catalog_parent_20261003_c01 (key_b, key_a)\n);",
+      "INSERT_only_if_created_here_SQL": [],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='m2_catalog_child_20261003_c01' ORDER BY ordinal_position;",
+      "expected": {
+        "physical_columns": [
+          "ref_a",
+          "ref_b"
+        ],
+        "both": "INTEGER NOT NULL",
+        "FK_order": [
+          [
+            "ref_b",
+            "key_b"
+          ],
+          [
+            "ref_a",
+            "key_a"
+          ]
+        ],
+        "new_rows": 0,
+        "referenced_table": "m2_catalog_parent_20261003_c01"
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM \"odbcpp_fixture\".\"m2_catalog_child_20261003_c01\";",
+        "SELECT * FROM \"odbcpp_fixture\".\"m2_catalog_child_20261003_c01\" LIMIT 3;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_fixture\".\"m2_catalog_child_20261003_c01\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_fixture\".\"m2_catalog_child_20261003_c01\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_catalog_child_20261003_c01';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    },
+    "NO_KEY": {
+      "id": "NO_KEY",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_fixture",
+      "name": "m2_pk_none_20261004_c01",
+      "depends_on": [
+        "SHARED_FIXTURE_SCHEMA"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_pk_none_20261004_c01';",
+      "collision_policy": "Only exact compatible held testfixture; existingobjects never become newlyowned",
+      "create_if_absent_SQL": "CREATE TABLE odbcpp_fixture.m2_pk_none_20261004_c01 (\n    payload INTEGER NOT NULL\n);",
+      "INSERT_only_if_created_here_SQL": [],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='m2_pk_none_20261004_c01' ORDER BY ordinal_position;",
+      "expected": {
+        "column": "payload INTEGER NOT NULL",
+        "PK": [],
+        "new_rows": 0
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM \"odbcpp_fixture\".\"m2_pk_none_20261004_c01\";",
+        "SELECT * FROM \"odbcpp_fixture\".\"m2_pk_none_20261004_c01\" LIMIT 3;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_fixture\".\"m2_pk_none_20261004_c01\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_fixture\".\"m2_pk_none_20261004_c01\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_pk_none_20261004_c01';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    },
+    "QUOTED_KEY": {
+      "id": "QUOTED_KEY",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_fixture",
+      "name": "m2_pk_quote_20261004_c01.a\"b%'_",
+      "depends_on": [
+        "SHARED_FIXTURE_SCHEMA"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_pk_quote_20261004_c01.a\"b%''_';",
+      "collision_policy": "Only exact compatible held testfixture; existingobjects never become newlyowned",
+      "create_if_absent_SQL": "CREATE TABLE odbcpp_fixture.\"m2_pk_quote_20261004_c01.a\"\"b%'_\" (\n    \"key.a\" INTEGER NOT NULL,\n    \"key\"\"b\" INTEGER NOT NULL,\n    CONSTRAINT \"m2_pk_quote_constraint_20261004_c01.a\"\"b%_\"\n        PRIMARY KEY (\"key\"\"b\", \"key.a\")\n);",
+      "INSERT_only_if_created_here_SQL": [],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='m2_pk_quote_20261004_c01.a\"b%''_' ORDER BY ordinal_position;",
+      "expected": {
+        "columns": [
+          "key.a",
+          "key\"b"
+        ],
+        "PK_order": [
+          "key\"b",
+          "key.a"
+        ],
+        "constraint": "m2_pk_quote_constraint_20261004_c01.a\"b%_",
+        "new_rows": 0
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM \"odbcpp_fixture\".\"m2_pk_quote_20261004_c01.a\"\"b%'_\";",
+        "SELECT * FROM \"odbcpp_fixture\".\"m2_pk_quote_20261004_c01.a\"\"b%'_\" LIMIT 3;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_fixture\".\"m2_pk_quote_20261004_c01.a\"\"b%'_\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_fixture\".\"m2_pk_quote_20261004_c01.a\"\"b%'_\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_pk_quote_20261004_c01.a\"b%''_';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    },
+    "POSITIVE_ROUTINE": {
+      "id": "POSITIVE_ROUTINE",
+      "depends_on": [
+        "SHARED_FIXTURE_SCHEMA"
+      ],
+      "identity": "odbcpp_fixture.sp_m2_catalog_modes_20261003_c01(INTEGER,INTEGER)",
+      "all_overloads_inspect_SQL": "SELECT n.nspname,p.proname,p.oid,p.proowner,p.proargtypes FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace WHERE n.nspname='odbcpp_fixture' AND p.proname IN ('sp_m2_catalog_modes_20261003_c01','odbcppabsentmetadataid20261010') ORDER BY p.proname,p.oid;",
+      "create_if_no_overload_SQL": "CREATE PROCEDURE odbcpp_fixture.sp_m2_catalog_modes_20261003_c01 (\n    p_input IN INTEGER,\n    p_result INOUT INTEGER\n)\nAS $$\nBEGIN\n    NULL;\nEND;\n$$ LANGUAGE plpgsql SECURITY INVOKER;",
+      "statement_framing": "Send entire dollar-quoted procedure definition as ONE SQLstatement, never split on its inner semicolons.",
+      "ordinary_visibility_SQL": [
+        "SHOW PROCEDURES FROM SCHEMA \"odbcpp_pilot\".\"odbcpp_fixture\";",
+        "SHOW FUNCTIONS FROM SCHEMA \"odbcpp_pilot\".\"odbcpp_fixture\";",
+        "SHOW PARAMETERS OF PROCEDURE \"odbcpp_pilot\".\"odbcpp_fixture\".\"sp_m2_catalog_modes_20261003_c01\"(integer,integer);"
+      ],
+      "expected": {
+        "routine_rows": 1,
+        "signature": "integer,integer",
+        "parameters": [
+          [
+            "p_input",
+            "IN",
+            "integer",
+            1
+          ],
+          [
+            "p_result",
+            "INOUT",
+            "integer",
+            2
+          ]
+        ],
+        "invoke": false
+      },
+      "conditional_minimum_existing_role_grant_SQL": "GRANT EXECUTE ON PROCEDURE odbcpp_fixture.sp_m2_catalog_modes_20261003_c01(INTEGER,INTEGER) TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP PROCEDURE odbcpp_fixture.sp_m2_catalog_modes_20261003_c01(INTEGER,INTEGER);",
+      "collision": "Checked-in proposal explicitly REFUSES ANY overload collision. Do not replace/recreate/drop colliding routine even if seeminglycompatible. Reuse only root explicit existing fixture custody disposition, never automaticreuse.",
+      "custody": "Known CREATE PROCEDURE ack+OID/owner/signature and ordinary visibility; never CALL. Unknown CREATE status -> uncertain ledger/reconcile only, no blindDROP."
+    },
+    "UNICODE_SCHEMA": {
+      "id": "UNICODE_SCHEMA",
+      "name": "odbcpp_u_\u00e9\u8868",
+      "inspect_SQL": "SELECT oid,nspname,nspowner FROM pg_catalog.pg_namespace WHERE nspname='odbcpp_u_\u00e9\u8868';",
+      "create_only_absent_exact_owned_SQL": "CREATE SCHEMA \"odbcpp_u_\u00e9\u8868\" AUTHORIZATION odbcpp_pilot_admin;",
+      "conditional_grant_SQL": "GRANT USAGE ON SCHEMA \"odbcpp_u_\u00e9\u8868\" TO odbcpp_pilot_test;",
+      "cleanup_only_if_created_here_exclusive_and_empty_SQL": "DROP SCHEMA \"odbcpp_u_\u00e9\u8868\" RESTRICT;",
+      "preserve": "If preexisting/shared, retain identity and NEVER DROP or revoke anotherowner privilege. If root scope treats this schema as existing-only, absence is exact fixture prerequisite, not fabricatedtestPASS. No shared odbcpp_fixture/public schema removal."
+    },
+    "UNICODE_TWO_ROWS": {
+      "id": "UNICODE_TWO_ROWS",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_u_\u00e9\u8868",
+      "name": "t\"\u00e9%_\u8868",
+      "depends_on": [
+        "UNICODE_SCHEMA"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_u_\u00e9\u8868' AND c.relname='t\"\u00e9%_\u8868';",
+      "collision_policy": "Only exact compatible held testfixture; existingobjects never become newlyowned",
+      "create_if_absent_SQL": "CREATE TABLE \"odbcpp_u_\u00e9\u8868\".\"t\"\"\u00e9%_\u8868\" (\"i\"\"\u00e9\u8868\" INTEGER, \"v%_\u00e9\u8868\" VARCHAR(32));",
+      "INSERT_only_if_created_here_SQL": [
+        "INSERT INTO \"odbcpp_u_\u00e9\u8868\".\"t\"\"\u00e9%_\u8868\" (\"i\"\"\u00e9\u8868\",\"v%_\u00e9\u8868\") VALUES (1,'Gr\u00fc\u00dfe \ud83d\ude00'),(2,NULL);"
+      ],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_u_\u00e9\u8868' AND table_name='t\"\u00e9%_\u8868' ORDER BY ordinal_position;",
+      "expected": {
+        "physical_columns": [
+          [
+            "i\"\u00e9\u8868",
+            "INTEGER",
+            "nullable"
+          ],
+          [
+            "v%_\u00e9\u8868",
+            "VARCHAR(32)",
+            "nullable"
+          ]
+        ],
+        "rows": [
+          [
+            1,
+            "Gr\u00fc\u00dfe \ud83d\ude00"
+          ],
+          [
+            2,
+            null
+          ]
+        ],
+        "row_order": "i\"\u00e9\u8868",
+        "row_count": 2,
+        "BMP_names_supplementary_value": true
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM \"odbcpp_u_\u00e9\u8868\".\"t\"\"\u00e9%_\u8868\";",
+        "SELECT \"i\"\"\u00e9\u8868\",\"v%_\u00e9\u8868\" FROM \"odbcpp_u_\u00e9\u8868\".\"t\"\"\u00e9%_\u8868\" ORDER BY \"i\"\"\u00e9\u8868\" LIMIT 3;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_u_\u00e9\u8868\".\"t\"\"\u00e9%_\u8868\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_u_\u00e9\u8868\".\"t\"\"\u00e9%_\u8868\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_u_\u00e9\u8868' AND c.relname='t\"\u00e9%_\u8868';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    },
+    "EMPTY_FOUR_TYPES": {
+      "id": "EMPTY_FOUR_TYPES",
+      "database": "odbcpp_pilot",
+      "schema": "odbcpp_fixture",
+      "name": "fullsuite_catalog_types_20261015_c01",
+      "depends_on": [
+        "SHARED_FIXTURE_SCHEMA"
+      ],
+      "initial_identity_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='fullsuite_catalog_types_20261015_c01';",
+      "collision_policy": "Only exact compatible held testfixture; existingobjects never become newlyowned",
+      "create_if_absent_SQL": "CREATE TABLE odbcpp_fixture.fullsuite_catalog_types_20261015_c01 (varbyte_value VARBYTE, super_value SUPER, geometry_value GEOMETRY, geography_value GEOGRAPHY);",
+      "INSERT_only_if_created_here_SQL": [],
+      "shape_inspection_SQL": "SELECT table_schema,table_name,column_name,ordinal_position,data_type,is_nullable,column_default,character_maximum_length,numeric_precision,numeric_scale FROM svv_columns WHERE table_catalog=current_database() AND table_schema='odbcpp_fixture' AND table_name='fullsuite_catalog_types_20261015_c01' ORDER BY ordinal_position;",
+      "expected": {
+        "columns": [
+          [
+            "varbyte_value",
+            "VARBYTE"
+          ],
+          [
+            "super_value",
+            "SUPER"
+          ],
+          [
+            "geometry_value",
+            "GEOMETRY"
+          ],
+          [
+            "geography_value",
+            "GEOGRAPHY"
+          ]
+        ],
+        "nullable": true,
+        "row_count": 0,
+        "no_derived_max_or_codec": true
+      },
+      "ordinary_read_inspections_SQL": [
+        "SELECT COUNT(*) AS actual_rows FROM odbcpp_fixture.fullsuite_catalog_types_20261015_c01;",
+        "SELECT 1 FROM odbcpp_fixture.fullsuite_catalog_types_20261015_c01 LIMIT 1;"
+      ],
+      "conditional_minimum_existing_role_grant_SQL": "GRANT SELECT ON TABLE \"odbcpp_fixture\".\"fullsuite_catalog_types_20261015_c01\" TO odbcpp_pilot_test;",
+      "cleanup_only_held_newly_created_SQL": "DROP TABLE \"odbcpp_fixture\".\"fullsuite_catalog_types_20261015_c01\" RESTRICT;",
+      "cleanup_verify_SQL": "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='fullsuite_catalog_types_20261015_c01';",
+      "custody": "CREATE completion acknowledgement + exact postidentity/owner/shape establish newlyowned; never infer ownership from intent, absence, prefix or successfulSELECT. For reused object retain originalowner/identity and READ_ONLY_REUSED flag, issue no INSERT/ALTER/DROP or automaticGRANT."
+    }
+  },
+  "cases": [
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.NullUniversalExactIdentifiersEmptyAndRecovery/0",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.NullUniversalExactIdentifiersEmptyAndRecovery/1",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.TableLikePrefixEscapesUnicodeNoMatchAndRecovery/0",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.TableLikePrefixEscapesUnicodeNoMatchAndRecovery/1",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.SchemaNullUniversalUtf8PrefixEmptyAndFreshRecovery/0",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.SchemaNullUniversalUtf8PrefixEmptyAndFreshRecovery/1",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.SqlTablesSchemaNullUniversalPatternEmptyAndRecovery/0",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_columns_omitted_table",
+      "selector": "AnsiAndWide/ColumnsOmittedTableNative.SqlTablesSchemaNullUniversalPatternEmptyAndRecovery/1",
+      "external_fixture_ids": [
+        "SELF_CREATED_COLUMNS_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ConnectionTest",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.VersionQuery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CurrentUserQuery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.MultipleRowQuery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.PreparedScalarAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.RowVersionEmptyDescriptorContract",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.StatisticsQuickEmptyDescriptorContract",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CompositePrimaryKeyCatalogContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyExplicitShowOptionContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyExplicitLegacyOptionContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyDefaultShowOptionContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyNoKeyShowContract",
+      "external_fixture_ids": [
+        "NO_KEY"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyNoKeyLegacyContract",
+      "external_fixture_ids": [
+        "NO_KEY"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyQuotedShowContract",
+      "external_fixture_ids": [
+        "QUOTED_KEY"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyQuotedLegacyContract",
+      "external_fixture_ids": [
+        "QUOTED_KEY"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.OdbcPrimaryKeyMissingLegacyContract",
+      "external_fixture_ids": [
+        "ABSENT_PK"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ModernPrimaryKeyShowUnspecifiedContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ModernPrimaryKeyExecutionContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ModernPrimaryKeyExecutionInvalidExactNamesPreserveSession",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.LegacyPrimaryKeyExecutionContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.LegacyPrimaryKeyExecutionInvalidExactNamesPreserveSession",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CompositeForeignKeyCatalogContract",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ProcedureCatalogContract",
+      "external_fixture_ids": [
+        "POSITIVE_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ProcedureParameterCatalogContract",
+      "external_fixture_ids": [
+        "POSITIVE_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ConfiguredFixtureMetadata",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.ErrorHandling",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.DataTypes",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.NegativeTests",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.IAMPrincipalScalar",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.IAMInvalidPassword",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.PasswordRejectedThenFreshValidConnection",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftNumericResultBoundaryRealTest.IntegerBoundariesAndNarrowing",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftNumericResultBoundaryRealTest.ExactDecimalAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.UnicodeRoundTrip",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.TemporalExactAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.TypedNullAndOutputPreservation",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCatalogVarbyteRealTest.ContemporaryDdlTypeInfoPolicyContract",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCatalogVarbyteRealTest.VarbyteConstantDirectPreparedResultContract",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftVarbyteTextParameterRealTest.PreparedHexTextToVarbyteBytes",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataWorkflowRealTest.MetadataToPreparedQueryShowConfigured",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataWorkflowRealTest.MetadataToPreparedQueryLegacyConfigured",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftDecimalParameterRealTest.PreparedExactDecimalAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftTemporalParameterRealTest.PreparedDateTimeTimestampAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftUnicodeChunkRealTest.PreparedWideChunksBoundTruncationAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBooleanFloatingRealTest.PreparedBooleanRealDoubleAndNull",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMultirowFetchRealTest.OrderedRowsStatusNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftUnicodeAliasMetadataRealTest.DirectAndPreparedUnicodeAliasNamesAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftUnicodeCatalogRealTest.FixedQuotedObjectsAndUnicodeNullRows",
+      "external_fixture_ids": [
+        "UNICODE_TWO_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftUnicodeCatalogRealTest.AnsiWideCatalogIdentitiesTypesAndOrdinals",
+      "external_fixture_ids": [
+        "UNICODE_TWO_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftUnicodeCatalogRealTest.EscapedWildcardsAndNoMatchKeepUnicodeIdentity",
+      "external_fixture_ids": [
+        "UNICODE_TWO_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftUnicodeCatalogRealTest.DiscoveredQuotedIdentifiersPrepareUnicodeNullAndRecover",
+      "external_fixture_ids": [
+        "UNICODE_TWO_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftOperationalRealTest.DirectPreparedScalarsAndExplicitFreshConnection",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftOperationalRealTest.AutocommitOffCommitAndOnTransitionRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftOperationalRealTest.FailedTransactionRollsBackResetsAndRecovers",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftOperationalRealTest.BufferedThousandRowsEarlyCloseAndSameStatementRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBufferedLifecycleRealTest.InterleavedStatementsKeepOwningBufferedResults",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBufferedLifecycleRealTest.MaxRowsAndForwardOnlyRefusalsPreservePosition",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBufferedLifecycleRealTest.ParameterResetRebindAndCrossShapeReprepare",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBufferedLifecycleRealTest.CompoundResultsAndDeferredErrorRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCommonTypeBoundariesRealTest.PreparedBigintExtremesNullOverflowAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCommonTypeBoundariesRealTest.PreparedDecimal38ExactNullOverflowAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCommonTypeBoundariesRealTest.TimestampDateTimeProjectionWarningsNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCommonTypeBoundariesRealTest.NumericRescaleOverflowTextRetryNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMaterializedEnvelopeRealTest.DirectThousandFourKiBExactCountsAndOwningRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMaterializedEnvelopeRealTest.PreparedEightKiBChunksEarlyCloseAndOwningReuse",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMaterializedEnvelopeRealTest.DecodedRowLimitRefusesWithoutPartialRowsThenFreshConnectRecovers",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMaterializedEnvelopeRealTest.WireByteCapRefusesLargerMaterializationThenFreshConnectRecovers",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowTablesRealTest.ExactTableMetadataOwnsValuesAndRecovers",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowTablesRealTest.TablePatternAndTypeFilterStayBounded",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowTablesRealTest.NoMatchEmptyTableFilterAndRecovery",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowTablesRealTest.WideExactMetadataOwnsValuesAndRecovers",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowColumnsRealTest.ExactColumnsOwnEighteenFieldsAndRecover",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowColumnsRealTest.ColumnLikeFilterPreservesTypeDimensions",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowColumnsRealTest.NoMatchEmptyColumnFilterAndRecovery",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftShowColumnsRealTest.AnsiWideExactColumnsRemainEquivalentAndRecover",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRecentFeaturesRealTest.ColumnCommandArraysIgnoreNullCountsAndImmediateRefill",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRecentFeaturesRealTest.RowWiseCommandArraysOffsetIgnoreRefusalAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRecentFeaturesRealTest.StaticRowsetsPositionNullOldSizeAndSiblingOwnership",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRecentFeaturesRealTest.VariableBookmarkMetadataLiteralOffsetsChunksStaleAndForeignRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftExpandedBindingRealTest.ActualForwardTwoRowsNarrowingNullPartialAndRebindRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftExpandedBindingRealTest.RowWiseOffsetIndicatorOnlySuppressionOnAndScalarGetDataRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftExpandedBindingRealTest.ScalarOffsetProceedIgnoreEagerIpdNullRefusalAndRebindRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.QuotedExactVersusEscapedPatternTablesColumnsAndNoMatch",
+      "external_fixture_ids": [
+        "UNICODE_TWO_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AllEightRequiredNullAndMalformedQuoteKeepFlagsAndSibling",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.ExactCompositeKeysAndDeclaredEmptyStatisticsRowVersion",
+      "external_fixture_ids": [
+        "CONFIGURED_FRESH_ROWS_OR_READ_ONLY_PILOT_ROWS"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AbsentProceduresAnsiIdentifierStandardEmptyMetadata",
+      "external_fixture_ids": [
+        "ABSENT_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AbsentProceduresWideIdentifierStandardEmptyMetadata",
+      "external_fixture_ids": [
+        "ABSENT_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AbsentProceduresAnsiPatternStandardEmptyMetadata",
+      "external_fixture_ids": [
+        "ABSENT_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AbsentProcedureColumnsAnsiIdentifierStandardEmptyMetadata",
+      "external_fixture_ids": [
+        "ABSENT_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AbsentProcedureColumnsWideIdentifierStandardEmptyMetadata",
+      "external_fixture_ids": [
+        "ABSENT_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataIdentifierNativeRealTest.AbsentProcedureColumnsAnsiPatternStandardEmptyMetadata",
+      "external_fixture_ids": [
+        "ABSENT_ROUTINE"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBitPrecisionNativeRealTest.FractionOnlyZeroNumericDecimalNullAndWholeDigitRebindRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftTemporalEscapeRealTest.DirectAnsiWideTableExpressionsMatchNativeTypedProjection",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftTemporalEscapeRealTest.PreparedTableExpressionsNullRebindAndEarlyCloseRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLocateEscapeRealTest.DirectAnsiWideTableSearchCharacterPositionsNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLocateEscapeRealTest.PreparedOriginalParameterOrderEmptyNullRebindAndEarlyCloseRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLengthEscapeRealTest.DirectAnsiWidePaddedCharacterLengthsAndNativeEdgesRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLengthEscapeRealTest.PreparedPaddedUnicodeNullEmptyRebindAndEarlyCloseRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCalendarEscapeRealTest.DirectAnsiWideDateTimestampCalendarFieldsAndNullRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCalendarEscapeRealTest.PreparedDateLeapBoundaryNullRebindAndEarlyCloseRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftClockEscapeRealTest.DirectAnsiWideTimeTimestampClockFieldsAndNullRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftClockEscapeRealTest.PreparedTimestampFractionBoundaryNullRebindAndEarlyCloseRecover",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftForeignKeyObservationNativeRealTest.PreparedShowOwnsRawMetadataBeforeNormalization",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftDayOrdinalEscapeRealTest.DirectDateTimestampOrdinalsAnsiWideNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftDayOrdinalEscapeRealTest.PreparedDateTimestampOrdinalsNullRebindEarlyCloseAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLogFloat8EscapeRealTest.DirectFloat8NaturalBaseTenAnsiWideNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLogFloat8EscapeRealTest.PreparedFloat8NaturalBaseTenNullSmallRebindEarlyCloseAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftConnectedMetadataTimeoutRealTest.EagerLazyTypedMetadataNullOwningRefillAndSiblingWithoutLatencyTrigger",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLoginTimeoutOptionsRealTest.KeywordsAAndWLocalRefusalAndSameDbcHappyRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftLoginTimeoutOptionsRealTest.ExplicitLifetimeTypedNullOwningRefillEarlyCloseAndSibling",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftAccessModeHintRealTest.AdvisoryModePersistsThroughTypedNullRefillAndSibling",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftApplicationNameRealTest.AnsiWideNamesAndEmptyReconnectKeepTypedNullRefillsOwning",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftReadOnlySettingRealTest.OwnedWriterAndReadOnlyTargetRefuseWritesAndReconnectRecovers",
+      "external_fixture_ids": [
+        "SELF_CREATED_READ_ONLY_WRITER"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftQueryTimeoutDefaultRealTest.AnsiWideDefaultsOverridesTypedNullRefillAndReconnectStayOwning",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftKeepaliveOptionsRealTest.ConfiguredTuningLocalRefusalTypedNullSiblingAndDisabledReconnectStayOwning",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftVarcharSizingRealTest.ReportedMetadataPreservesValuesParametersNullSiblingAndDisabledReconnect",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBooleanCharacterRealTest.CanonicalValuesNativeParametersNullRefillSiblingAndDisabledReconnect",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftTableTypesRealTest.GenericAndDetailedEnumerationNullsSiblingEmptyFilterAndReconnect",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCancelHandleRealTest.IdleNeedDataRefillNullAndSiblingRemainOwning",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataScopeRealTest.DefaultVisibleAndCurrentReconnectKeepCatalogNullSiblingAndEmptySemantics",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftMetadataScopeShowRealTest.TwoVisibleDatabasesKeepCommonSchemaIdentityThroughWideFanoutAndSibling",
+      "external_fixture_ids": [
+        "EXISTING_TWO_DB_PUBLIC_SCHEMA_METADATA_ONLY"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftNegativeNumericScaleRealTest.DescriptorLossNullOwnershipAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftNumericTargetRescaleRealTest.PreparedFractionWholeNullAndOwningRefill",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCharacterNumericLossRealTest.AnsiWideLossRefusalNullAndPreparedRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftFixedNumericCompletionRealTest.FractionWholeNullAndVariableSourceCompletion",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftCnumericApproximateRangeRealTest.PreparedFitSubnormalWholeNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftFixedTemporalCompletionRealTest.FractionWholeNullWideAndVariableRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftApdRestrictedPairRealTest.PreparedDescriptorRefusalNullAndOwningRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBinaryIntegerInputRealTest.HostIntegerLengthsNullAndOwningRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftNumericTemporalInputRealTest.PreparedRefusalDefaultNullAndRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBinaryBigintInputRealTest.HostBigintLengthsNullAndOwningRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftBitInputPairRealTest.SixForbiddenPairsNullAndOwningRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftSignedIntegerBinaryResultRealTest.FixedWidthsWholeBufferNullAndPreparedOwningRefill",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftFloatingBinaryResultRealTest.FixedWidthsSpecialsNullAndPreparedOwningRefill",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftNumericBinaryInputRealTest.NumericBinaryInputPairsNullApdAndOwningRecovery",
+      "external_fixture_ids": []
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CurrentDatabasePrimaryKeyNullCatalogAnsi",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CurrentDatabasePrimaryKeyNullCatalogWide",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CurrentDatabaseForeignKeyNullCatalogAnsi",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.CurrentDatabaseForeignKeyNullCatalogWide",
+      "external_fixture_ids": [
+        "COMPOSITE_CHILD",
+        "COMPOSITE_PARENT"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.VarbyteCatalogTypeClassificationAnsi",
+      "external_fixture_ids": [
+        "EMPTY_FOUR_TYPES"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.VarbyteCatalogTypeClassificationWide",
+      "external_fixture_ids": [
+        "EMPTY_FOUR_TYPES"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.SuperCatalogTypeClassificationAnsi",
+      "external_fixture_ids": [
+        "EMPTY_FOUR_TYPES"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.SuperCatalogTypeClassificationWide",
+      "external_fixture_ids": [
+        "EMPTY_FOUR_TYPES"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.SpatialCatalogTypeClassificationAnsi",
+      "external_fixture_ids": [
+        "EMPTY_FOUR_TYPES"
+      ]
+    },
+    {
+      "target": "it_redshift_real",
+      "selector": "RedshiftRealTest.SpatialCatalogTypeClassificationWide",
+      "external_fixture_ids": [
+        "EMPTY_FOUR_TYPES"
+      ]
+    },
+    {
+      "target": "it_redshift_routine_schema_patterns",
+      "selector": "AnsiAndWide/RoutineSchemaNative.OmittedWildcardUnicodeEscapedAndMetadataIdentifiers/0",
+      "external_fixture_ids": [
+        "SELF_CREATED_ROUTINE_OPTIN"
+      ]
+    },
+    {
+      "target": "it_redshift_routine_schema_patterns",
+      "selector": "AnsiAndWide/RoutineSchemaNative.OmittedWildcardUnicodeEscapedAndMetadataIdentifiers/1",
+      "external_fixture_ids": [
+        "SELF_CREATED_ROUTINE_OPTIN"
+      ]
+    }
+  ],
+  "negatives": [
+    {
+      "id": "ABSENT_ROUTINE",
+      "name": "odbcpp_fixture.odbcppabsentmetadataid20261010",
+      "inspection_SQL": [
+        "SELECT n.nspname,p.proname,p.oid,p.proowner,p.proargtypes FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace WHERE n.nspname='odbcpp_fixture' AND p.proname IN ('sp_m2_catalog_modes_20261003_c01','odbcppabsentmetadataid20261010') ORDER BY p.proname,p.oid;",
+        "SHOW PROCEDURES FROM SCHEMA \"odbcpp_pilot\".\"odbcpp_fixture\";",
+        "SHOW FUNCTIONS FROM SCHEMA \"odbcpp_pilot\".\"odbcpp_fixture\";"
+      ],
+      "required": "Zero exact name rows across every procedure/function overload before and after six negativecases, both adminidentity and ordinaryvisiblemetadata. Failure/denied notabsence.",
+      "CREATE_INSERT_GRANT_DROP_SQL": []
+    },
+    {
+      "id": "ABSENT_PK",
+      "name": "odbcpp_fixture.m2_pk_absent_20261004_c01",
+      "inspection_SQL": [
+        "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='odbcpp_fixture' AND c.relname='m2_pk_absent_20261004_c01';"
+      ],
+      "required": "No exact tableobject before/after missingLegacy case; neverremoveifappears",
+      "CREATE_INSERT_GRANT_DROP_SQL": []
+    }
+  ],
+  "cleanup_order": [
+    "POSITIVE_ROUTINE",
+    "QUOTED_KEY",
+    "NO_KEY",
+    "COMPOSITE_CHILD",
+    "COMPOSITE_PARENT",
+    "EMPTY_FOUR_TYPES",
+    "UNICODE_TWO_ROWS",
+    "CONFIGURED_FRESH_ROWS",
+    "UNICODE_SCHEMA_ONLY_IF_NEW_EXCLUSIVE_EMPTY"
+  ]
+}

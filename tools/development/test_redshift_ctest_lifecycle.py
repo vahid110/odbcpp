@@ -112,6 +112,41 @@ def config(directory):
 
 
 class Lifecycle(unittest.TestCase):
+    def test_native_collection_uses_one_backend_and_same_finally_cleanup(self):
+        for code in (0, 8):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                ops = Ops(directory)
+                ops.native_ctest_invoked = False
+                def native(staged, end):
+                    ops.calls.append('native_ctest')
+                    ops.native_ctest_invoked = True
+                    return types.SimpleNamespace(configured=True, returncode=code,
+                        timed_out=False, reaped=True, group_absent=True)
+                ops.run_native_suite = native
+                result = self.run_mock(directory, ops)
+                self.assertEqual(result['ctest']['returncode'], code)
+                self.assertEqual(result['ctest_invocations'], 1)
+                self.assertNotIn('configure', ops.calls)
+                self.assertNotIn('ctest', ops.calls)
+                self.assertEqual(ops.calls.count('native_ctest'), 1)
+                self.assertTrue(result['lifecycle_cleanup_complete'])
+                self.assertTrue(result['paused_verified'])
+                self.assertTrue(result['private_inputs_closed'])
+
+    def test_native_unknown_invocation_still_pauses_and_retains_unknown_readers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops = Ops(directory)
+            ops.native_ctest_invoked = None
+            def failed(staged, end):
+                ops.readers_known = False
+                raise RuntimeError('synthetic native receipt absent')
+            ops.run_native_suite = failed
+            ops.reap = lambda end: False
+            result = self.run_mock(directory, ops)
+            self.assertIsNone(result['ctest_invocations'])
+            self.assertFalse(result['lifecycle_cleanup_complete'])
+            self.assertIn('pause', ops.calls)
+
     def run_mock(self, directory, ops, fixtures=None):
         with mock.patch.object(lifecycle, 'verify_config'):
             return lifecycle.run_once(config(directory), ops, fixtures or Fixtures())

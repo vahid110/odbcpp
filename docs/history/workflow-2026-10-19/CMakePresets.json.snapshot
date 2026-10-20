@@ -1,0 +1,78 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default (All Databases)",
+      "description": "Build with all database support enabled",
+      "binaryDir": "build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_POSTGRESQL": "ON",
+        "ENABLE_REDSHIFT": "ON",
+        "ENABLE_MYSQL": "OFF",
+        "ENABLE_SQLSERVER": "OFF"
+      }
+    },
+    {
+      "name": "redshift",
+      "displayName": "Redshift ODBC Driver",
+      "description": "Build ODBC driver for Redshift",
+      "binaryDir": "build-redshift",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TARGET_DATABASE": "REDSHIFT"
+      }
+    },
+    {
+      "name": "postgresql",
+      "displayName": "PostgreSQL ODBC Driver",
+      "description": "Build ODBC driver for PostgreSQL",
+      "binaryDir": "build-postgresql",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TARGET_DATABASE": "POSTGRESQL"
+      }
+    },
+    {
+      "name": "mysql",
+      "displayName": "MySQL ODBC Driver",
+      "description": "Build ODBC driver for MySQL",
+      "binaryDir": "build-mysql",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TARGET_DATABASE": "MYSQL"
+      }
+    },
+    {
+      "name": "minimal",
+      "displayName": "Minimal Redshift Driver",
+      "description": "Minimal Redshift driver (no examples/tests)",
+      "binaryDir": "build-minimal",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
+        "TARGET_DATABASE": "REDSHIFT",
+        "BUILD_EXAMPLES": "OFF",
+        "BUILD_TESTING": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "redshift",
+      "configurePreset": "redshift"
+    },
+    {
+      "name": "postgresql", 
+      "configurePreset": "postgresql"
+    },
+    {
+      "name": "mysql",
+      "configurePreset": "mysql"
+    },
+    {
+      "name": "minimal",
+      "configurePreset": "minimal"
+    }
+  ]
+}

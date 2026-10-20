@@ -1,7 +1,8 @@
 name: primary
 
 on:
-  push:
+  # PR validation supplies the macOS build. Checkpoints use explicit dispatch;
+  # avoid a second automatic graph on the branch push and again after merge.
   pull_request:
   workflow_dispatch:
 

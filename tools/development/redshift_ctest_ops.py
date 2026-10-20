@@ -103,10 +103,16 @@ def termination_stage(targets):
 class Operations:
     def __init__(self, *, native_source, native_sha256, approval, preparation_manifest,
                  profile_manifest, factory_source, factory_sha256, launcher_source,
-                 launcher_sha256, profiles, specs, blueprint, authority_receipts):
-        self.timeout_factory = load_public(native_source, native_sha256, '_ctest_native092')
-        self.factory = load_public(factory_source, factory_sha256, '_ctest_factory074')
-        self.launcher = load_public(launcher_source, launcher_sha256, '_ctest_inputs089')
+                 launcher_sha256, profiles, specs, blueprint, authority_receipts,
+                 components=None, executables=None):
+        if components is None:
+            # Historical evidence/tests retain their original composition. New
+            # live_checkpoint.py uses only fixed checked-in component imports.
+            self.timeout_factory = load_public(native_source, native_sha256, '_ctest_native092')
+            self.factory = load_public(factory_source, factory_sha256, '_ctest_factory074')
+            self.launcher = load_public(launcher_source, launcher_sha256, '_ctest_inputs089')
+        else:
+            self.timeout_factory, self.factory, self.launcher = components
         self.approval = copy.deepcopy(approval)
         self.preparation_manifest = copy.deepcopy(preparation_manifest)
         self.profile_manifest = copy.deepcopy(profile_manifest)
@@ -135,8 +141,10 @@ class Operations:
         self.available_cluster_verified = False
         self.security_status = None
         self.available_cluster_identity = None
-        self.executables = {str(Path('/opt/homebrew/bin/' + tool).resolve(strict=True))
-                            for tool in ('cmake', 'ctest')}
+        self.executables = ({str(Path(path).resolve(strict=True)) for path in executables}
+                            if executables is not None else
+                            {str(Path('/opt/homebrew/bin/' + tool).resolve(strict=True))
+                             for tool in ('cmake', 'ctest')})
 
     def combined_fixture_plan(self):
         return combined_fixture_plan()
