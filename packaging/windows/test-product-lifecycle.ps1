@@ -20,8 +20,8 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $held = @(); $active = $null; $mutated = $false; $savedPath = $env:PATH
 $report = [ordered]@{ started_utc = [DateTime]::UtcNow.ToString('o'); operations = @(); cleanup = @(); result = 'RUNNING'; source_files = @(); cloud_operations = 0; database_operations = 0 }
 $products = @{
-    PostgreSQL = @{ upgrade = '{BC23230D-B189-4CF8-81D2-11ED5F55FC6F}'; directory = Join-Path $env:ProgramFiles 'ODBCPP/PostgreSQL' }
-    Redshift = @{ upgrade = '{7CF4F823-59A8-481B-B940-CD9AEF80A3EA}'; directory = Join-Path $env:ProgramFiles 'ODBCPP/Redshift' }
+    PostgreSQL = @{ upgrade = '{BC23230D-B189-4CF8-81D2-11ED5F55FC6F}'; directory = Join-Path $env:ProgramFiles 'ODBCPP/PostgreSQL'; files = @() }
+    Redshift = @{ upgrade = '{7CF4F823-59A8-481B-B940-CD9AEF80A3EA}'; directory = Join-Path $env:ProgramFiles 'ODBCPP/Redshift'; files = @() }
 }
 $processHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../../tools/development/windows_local_process.cs')).Path
 $helperHash = (Get-FileHash -LiteralPath $processHelper -Algorithm SHA256).Hash
@@ -40,6 +40,19 @@ function Property($Database, [string]$Name) {
         finally { if ($record) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) } }
     } finally { [void]$view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
 }
+function Package-Files($Database) {
+    $view = $Database.OpenView('SELECT `FileName` FROM `File`')
+    try {
+        [void]$view.Execute()
+        while ($null -ne ($record = $view.Fetch())) {
+            try {
+                $name = ($record.StringData(1) -split '\|')[-1]
+                Assert ($name -and $name -notmatch '[/\\]' -and $name -notin @('.','..')) 'Unexpected MSI payload filename'
+                $name
+            } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
+        }
+    } finally { [void]$view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+}
 function Pin-Package([string]$Path, [string]$Name, [string]$Version) {
     $path = (Resolve-Path -LiteralPath $Path).Path
     $item = Get-Item -LiteralPath $path
@@ -52,6 +65,7 @@ function Pin-Package([string]$Path, [string]$Name, [string]$Version) {
         Assert ((Property $database 'ProductVersion') -ceq $Version) 'Unexpected MSI version'
         Assert ((Property $database 'UpgradeCode') -ieq $products[$Name].upgrade) 'Unexpected upgrade family'
         $code = Property $database 'ProductCode'
+        $products[$Name].files = @(@($products[$Name].files) + @(Package-Files $database) | Sort-Object -Unique)
     } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database) }
     Assert ($installer.ProductState($code) -eq -1) 'Package already registered; refuse existing installation'
     $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
@@ -87,7 +101,9 @@ function Verify-Installed([string]$Name, [string]$Version) {
     Assert ($execution.CleanupVerified -and !$execution.TimedOut -and $execution.ExitCode -eq 0) 'Installed driver/setup or app-local runtimes did not load cleanly'
 }
 function Verify-Absent([string]$Name) {
-    Assert (!(Test-Path -LiteralPath (Join-Path $products[$Name].directory 'odbcpp.dll'))) 'Owned installed driver remains'
+    foreach ($file in $products[$Name].files) {
+        Assert (!(Test-Path -LiteralPath (Join-Path $products[$Name].directory $file))) 'Owned installed payload remains'
+    }
     foreach ($path in @("HKLM:/SOFTWARE/ODBC/ODBCINST.INI/ODBCPP $Name", "HKLM:/SOFTWARE/ODBCPP/$Name")) {
         $entry = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
         if ($entry) { Assert (@($entry.PSObject.Properties | Where-Object Name -in @('Driver','Setup','OwnedDriver','OwnedSetup','Version')).Count -eq 0) 'Owned registration remains' }
@@ -97,6 +113,11 @@ function Verify-Absent([string]$Name) {
 }
 try {
     foreach ($name in $products.Keys) {
+        $parent = [IO.DirectoryInfo]::new($products[$name].directory)
+        while ($null -ne $parent) {
+            if ($parent.Exists) { Assert (($parent.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'Refuse reparse install ancestry' }
+            $parent = $parent.Parent
+        }
         Assert (!(Test-Path -LiteralPath $products[$name].directory)) 'Refuse an existing product directory'
         Assert (!(Test-Path -LiteralPath ("HKLM:/SOFTWARE/ODBC/ODBCINST.INI/ODBCPP $name"))) 'Refuse an existing driver registration'
         Assert (!(Test-Path -LiteralPath ("HKLM:/SOFTWARE/ODBCPP/$name"))) 'Refuse an existing package owner'
@@ -111,6 +132,7 @@ try {
     $upgrade = Pin-Package $RedshiftUpgrade 'Redshift' '1.0.1'
     $rollback = Pin-Package $RedshiftRollbackFixture 'Redshift' '1.0.2'
     $LoaderExecutable = (Resolve-Path -LiteralPath $LoaderExecutable).Path
+    $held += [IO.File]::Open($LoaderExecutable, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     $report.source_files += @{path = $LoaderExecutable; sha256 = (Get-FileHash -LiteralPath $LoaderExecutable -Algorithm SHA256).Hash}
     # The native package loader is /MT and verifies dependencies beside each installed driver.
     $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
@@ -139,7 +161,7 @@ try {
             }
         }
         foreach ($name in $products.Keys) {
-            try { Verify-Absent $name; $report.cleanup += @{product=$name; owned_installation_absent=$true} }
+            try { Verify-Absent $name; $report.cleanup += @{product=$name; owned_installation_absent=$true; payload_files_checked=$products[$name].files.Count} }
             catch { $report.cleanup += @{product=$name; error=$_.ToString()} }
         }
     }
