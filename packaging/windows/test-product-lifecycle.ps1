@@ -140,12 +140,17 @@ function Run-Setup([string]$Build, [string]$Name) {
     ($execution.Stdout+$execution.Stderr) | Set-Content -LiteralPath (Join-Path $directory 'command.log') -Encoding UTF8
     Assert ($execution.CleanupVerified -and !$execution.TimedOut) 'Setup CTest reader cleanup is unknown'
     $passed = $false
+    $xmlError = $null
     $xml = Join-Path $directory 'gtest.xml'
     if (Test-Path -LiteralPath $xml) {
-        [xml]$result = Get-Content -LiteralPath $xml -Raw
-        $passed = $execution.ExitCode -eq 0 -and [int]$result.testsuites.tests -eq 3 -and [int]$result.testsuites.failures -eq 0 -and [int]$result.testsuites.disabled -eq 0 -and [int]$result.testsuites.skipped -eq 0
+        try {
+            [xml]$result = Get-Content -LiteralPath $xml -Raw -Encoding UTF8
+            $cases = $result.SelectNodes('//testcase')
+            $bad = $result.SelectNodes('//testcase[failure or error or skipped or @status="notrun" or @result="suppressed"]')
+            $passed = $execution.ExitCode -eq 0 -and $cases.Count -eq 3 -and $bad.Count -eq 0 -and [int]$result.testsuites.GetAttribute('tests') -eq 3
+        } catch { $xmlError = $_.Exception.Message }
     }
-    $report.setup_tests += @{ product=$Name; exit=$execution.ExitCode; all_three_passed=$passed; evidence=$directory }
+    $report.setup_tests += @{ product=$Name; exit=$execution.ExitCode; all_three_passed=$passed; xml_error=$xmlError; evidence=$directory }
 }
 try {
     foreach ($name in $products.Keys) {
