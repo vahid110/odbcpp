@@ -82,6 +82,17 @@ tables. This is package inspection, not installation, connection, Power BI or
 Access certification. Native coexistence/upgrade/uninstall and real Redshift
 application results must be recorded separately.
 
+On an approved elevated local x64 Windows session with both product registrations
+and install folders initially absent, `test-product-lifecycle.ps1` installs both
+packages, loads their installed runtimes through the existing `/MT` native loader,
+tests Redshift rollback/upgrade/downgrade rejection while preserving PostgreSQL,
+then removes both owned installations. Supply the 1.0.0 packages, Redshift 1.0.1
+upgrade and intentional 1.0.2 rollback fixture, `it_package_load.exe` and a new
+evidence directory. It refuses existing installations, holds the input MSIs,
+bounds MSI operations and loader children, retains verbose logs, and performs
+owned cleanup after failures. It creates no DSNs or database connections. A
+timed-out still-active installer requires reconciliation before another mutation.
+
 This proves exact-import staging and fresh-process app-local loader origin for
 the packaged OpenSSL profile. It does not prove coexistence when another module
 has already loaded a same-basename crypto provider, symbol isolation, FIPS, or a

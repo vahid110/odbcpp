@@ -9,7 +9,7 @@ function Assert([bool]$Condition, [string]$Message) { if (!$Condition) { throw $
 function Rows($Database, [string]$Query, [string[]]$Columns) {
     $view = $Database.OpenView($Query)
     try {
-        $view.Execute()
+        [void]$view.Execute()
         while ($null -ne ($record = $view.Fetch())) {
             try {
                 $row = [ordered]@{}
@@ -17,7 +17,7 @@ function Rows($Database, [string]$Query, [string[]]$Columns) {
                 [pscustomobject]$row
             } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
         }
-    } finally { $view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+    } finally { [void]$view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
 }
 function Read-Package($Installer, [string]$Path) {
     $path = (Resolve-Path -LiteralPath $Path).Path
