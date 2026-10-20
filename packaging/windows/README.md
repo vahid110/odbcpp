@@ -90,7 +90,8 @@ then removes both owned installations. Supply the 1.0.0 packages, Redshift 1.0.1
 upgrade and intentional 1.0.2 rollback fixture, `it_package_load.exe` and a new
 evidence directory. It refuses existing installations, holds the input MSIs,
 bounds MSI operations and loader children, retains verbose logs, and performs
-owned cleanup after failures. It creates no DSNs or database connections. A
+owned cleanup after failures. It creates only temporary owned User DSNs for the
+setup tests and makes no database connections. A
 timed-out still-active installer requires reconciliation before another mutation.
 
 Build the installed-setup test program for each product without rebuilding the
