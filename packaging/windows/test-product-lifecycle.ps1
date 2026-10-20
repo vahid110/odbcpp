@@ -5,6 +5,9 @@ param(
     [Parameter(Mandatory=$true)][string]$RedshiftUpgrade,
     [Parameter(Mandatory=$true)][string]$RedshiftRollbackFixture,
     [Parameter(Mandatory=$true)][string]$LoaderExecutable,
+    [Parameter(Mandatory=$true)][string]$PostgreSqlSetupBuild,
+    [Parameter(Mandatory=$true)][string]$RedshiftSetupBuild,
+    [string]$CTestExecutable = 'C:/Program Files/CMake/bin/ctest.exe',
     [Parameter(Mandatory=$true)][string]$EvidenceDirectory
 )
 $ErrorActionPreference = 'Stop'
@@ -18,7 +21,9 @@ New-Item -ItemType Directory -Path $EvidenceDirectory | Out-Null
 $evidence = (Resolve-Path -LiteralPath $EvidenceDirectory).Path
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $held = @(); $active = $null; $mutated = $false; $savedPath = $env:PATH
-$report = [ordered]@{ started_utc = [DateTime]::UtcNow.ToString('o'); operations = @(); cleanup = @(); result = 'RUNNING'; source_files = @(); cloud_operations = 0; database_operations = 0 }
+$report = [ordered]@{ started_utc = [DateTime]::UtcNow.ToString('o'); operations = @(); setup_tests = @(); cleanup = @(); result = 'RUNNING'; source_files = @(); cloud_operations = 0; database_operations = 0 }
+$savedGtest = @{}
+foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GTEST_*') { $savedGtest[$entry.Name] = $entry.Value }
 $products = @{
     PostgreSQL = @{ upgrade = '{BC23230D-B189-4CF8-81D2-11ED5F55FC6F}'; directory = Join-Path $env:ProgramFiles 'ODBCPP/PostgreSQL'; files = @() }
     Redshift = @{ upgrade = '{7CF4F823-59A8-481B-B940-CD9AEF80A3EA}'; directory = Join-Path $env:ProgramFiles 'ODBCPP/Redshift'; files = @() }
@@ -111,6 +116,37 @@ function Verify-Absent([string]$Name) {
     $mapping = Get-ItemProperty -LiteralPath 'HKLM:/SOFTWARE/ODBC/ODBCINST.INI/ODBC Drivers'
     Assert ($null -eq $mapping.PSObject.Properties["ODBCPP $Name"]) 'Installed driver mapping remains'
 }
+function Setup-Graph([string]$Build, [string]$Name) {
+    $build = (Resolve-Path -LiteralPath $Build).Path
+    $cache = Get-Content -LiteralPath (Join-Path $build 'CMakeCache.txt') -Raw
+    Assert ($cache -match ('(?m)^TARGET_DATABASE:STRING='+$Name.ToUpperInvariant()+'\r?$')) 'Installed-setup graph product differs'
+    Assert ($cache -match '(?m)^ODBCPP_INSTALLED_SETUP_TESTS:BOOL=ON\r?$') 'Installed-setup CTest registration must be explicit'
+    $arguments = '--test-dir "'+$build+'" -C Release -R "^it_setup_registration$" --show-only=json-v1'
+    $execution = $loaderRunner::Run($CTestExecutable, $arguments, $evidence, 30)
+    Assert ($execution.CleanupVerified -and !$execution.TimedOut -and $execution.ExitCode -eq 0) 'Setup inventory process did not finish'
+    $inventory = $execution.Stdout | ConvertFrom-Json
+    Assert (@($inventory.tests).Count -eq 1 -and $inventory.tests[0].name -ceq 'it_setup_registration') 'Unexpected setup inventory'
+    $image = $inventory.tests[0].command[0]
+    $report.source_files += @{ path=$image; sha256=(Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash }
+    $execution.Stdout | Set-Content -LiteralPath (Join-Path $evidence ("setup-$Name-inventory.json")) -Encoding UTF8
+    return $build
+}
+function Run-Setup([string]$Build, [string]$Name) {
+    $directory = Join-Path $evidence ("setup-$Name")
+    New-Item -ItemType Directory -Path $directory | Out-Null
+    $env:GTEST_OUTPUT = 'xml:'+(Join-Path $directory 'gtest.xml')
+    $arguments = '--test-dir "'+$Build+'" -C Release -R "^it_setup_registration$" -j1 --no-tests=error --timeout 30 --output-on-failure --output-junit "'+(Join-Path $directory 'ctest.xml')+'" --output-log "'+(Join-Path $directory 'ctest.log')+'"'
+    $execution = $loaderRunner::Run($CTestExecutable, $arguments, $evidence, 45)
+    ($execution.Stdout+$execution.Stderr) | Set-Content -LiteralPath (Join-Path $directory 'command.log') -Encoding UTF8
+    Assert ($execution.CleanupVerified -and !$execution.TimedOut) 'Setup CTest reader cleanup is unknown'
+    $passed = $false
+    $xml = Join-Path $directory 'gtest.xml'
+    if (Test-Path -LiteralPath $xml) {
+        [xml]$result = Get-Content -LiteralPath $xml -Raw
+        $passed = $execution.ExitCode -eq 0 -and [int]$result.testsuites.tests -eq 3 -and [int]$result.testsuites.failures -eq 0 -and [int]$result.testsuites.disabled -eq 0 -and [int]$result.testsuites.skipped -eq 0
+    }
+    $report.setup_tests += @{ product=$Name; exit=$execution.ExitCode; all_three_passed=$passed; evidence=$directory }
+}
 try {
     foreach ($name in $products.Keys) {
         $parent = [IO.DirectoryInfo]::new($products[$name].directory)
@@ -134,11 +170,18 @@ try {
     $LoaderExecutable = (Resolve-Path -LiteralPath $LoaderExecutable).Path
     $held += [IO.File]::Open($LoaderExecutable, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     $report.source_files += @{path = $LoaderExecutable; sha256 = (Get-FileHash -LiteralPath $LoaderExecutable -Algorithm SHA256).Hash}
+    $CTestExecutable = (Resolve-Path -LiteralPath $CTestExecutable).Path
+    $PostgreSqlSetupBuild = Setup-Graph $PostgreSqlSetupBuild 'PostgreSQL'
+    $RedshiftSetupBuild = Setup-Graph $RedshiftSetupBuild 'Redshift'
+    foreach ($name in $savedGtest.Keys) { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process') }
     # The native package loader is /MT and verifies dependencies beside each installed driver.
     $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
     $mutated = $true
     Msi $pg '/i' 'install-pg'; Verify-Installed 'PostgreSQL' '1.0.0'
     Msi $rs '/i' 'install-redshift'; Verify-Installed 'Redshift' '1.0.0'; Verify-Installed 'PostgreSQL' '1.0.0'
+    # Collect both independent full owning GoogleTest groups before assessing failures.
+    Run-Setup $PostgreSqlSetupBuild 'PostgreSQL'
+    Run-Setup $RedshiftSetupBuild 'Redshift'
     Msi $rollback '/i' 'redshift-rollback' 1603
     Assert (Select-String -LiteralPath (Join-Path $evidence 'redshift-rollback.log') -SimpleMatch 'Intentional rollback acceptance failure.' -Quiet) 'Rollback failed before the injection point'
     Verify-Installed 'Redshift' '1.0.0'; Verify-Installed 'PostgreSQL' '1.0.0'
@@ -147,6 +190,7 @@ try {
     Verify-Installed 'Redshift' '1.0.1'; Verify-Installed 'PostgreSQL' '1.0.0'
     Msi $upgrade '/x' 'remove-redshift'; Verify-Absent 'Redshift'; Verify-Installed 'PostgreSQL' '1.0.0'
     Msi $pg '/x' 'remove-pg'; Verify-Absent 'PostgreSQL'
+    Assert (@($report.setup_tests | Where-Object { !$_.all_three_passed }).Count -eq 0) 'Installed setup tests failed; both products were collected'
     $report.result = 'PASS'
 } catch {
     $report.result = 'FAIL'; $report.error = $_.ToString(); $report.stack = $_.ScriptStackTrace
@@ -166,6 +210,8 @@ try {
         }
     }
     $env:PATH = $savedPath
+    foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GTEST_*') { [Environment]::SetEnvironmentVariable($entry.Name, [NullString]::Value, 'Process') }
+    foreach ($name in $savedGtest.Keys) { [Environment]::SetEnvironmentVariable($name, $savedGtest[$name], 'Process') }
     foreach ($stream in $held) { $stream.Dispose() }
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
     if ($null -ne $active -and !$active.HasExited) { $report.cleanup += @{error='MSI operation still active';pid=$active.Id} }
