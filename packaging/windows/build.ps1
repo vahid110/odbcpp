@@ -1,8 +1,9 @@
 param(
     [string]$BuildDirectory = 'build-windows',
-    [string]$OutputDirectory = 'build-windows/package',
+    [string]$OutputDirectory = '',
     [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.0',
     [string]$OpenSslRoot = 'C:/Program Files/OpenSSL',
+    [ValidateSet('AUTO', 'POSTGRESQL', 'REDSHIFT')][string]$TargetDatabase = 'AUTO',
     [switch]$FailureFixture
 )
 $ErrorActionPreference = 'Stop'
@@ -17,9 +18,29 @@ function Assert-X64([string]$Path) {
         [BitConverter]::ToUInt16($bytes, $offset + 4) -ne 0x8664) { throw "Package requires x64 PE files: $Path" }
 }
 $build = (Resolve-Path $BuildDirectory).Path
-if (!(Select-String -Path "$build/CMakeCache.txt" -Pattern '^TARGET_DATABASE:STRING=POSTGRESQL$' -Quiet)) {
-    throw 'The beta package requires a PostgreSQL build'
+if (!$OutputDirectory) { $OutputDirectory = Join-Path $build 'package' }
+$databaseEntry = @(Select-String -Path "$build/CMakeCache.txt" -Pattern '^TARGET_DATABASE:STRING=(.*)$')
+Assert ($databaseEntry.Count -eq 1) 'The beta package requires one supported PostgreSQL or Redshift build target'
+$database = $databaseEntry[0].Matches[0].Groups[1].Value
+Assert ($database -cin @('POSTGRESQL', 'REDSHIFT')) 'The beta package requires one supported PostgreSQL or Redshift build target'
+Assert ($TargetDatabase -eq 'AUTO' -or $TargetDatabase -eq $database) 'Requested package product differs from the configured build target'
+# These are persistent Windows Installer identities. Never share them across products
+# or change the existing PostgreSQL identities when adding another package.
+$products = @{
+    POSTGRESQL = @{ name = 'PostgreSQL'; slug = 'postgresql'; upgradeCode = 'BC23230D-B189-4CF8-81D2-11ED5F55FC6F'; registrationGuid = 'A40E29D2-6905-498C-959B-2DA3138061CF' }
+    REDSHIFT = @{ name = 'Redshift'; slug = 'redshift'; upgradeCode = '7CF4F823-59A8-481B-B940-CD9AEF80A3EA'; registrationGuid = 'D0D5CB96-848E-4C0B-8422-1F64598EF0E2' }
 }
+$product = $products[$database]
+$sourceEntry = @(Select-String -Path "$build/CMakeCache.txt" -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$')
+Assert ($sourceEntry.Count -eq 1) 'The configured source directory is required for package provenance'
+$configuredSource = (Resolve-Path -LiteralPath $sourceEntry[0].Matches[0].Groups[1].Value).Path
+$sourceRevision = & git -C $configuredSource rev-parse HEAD
+Assert ($LASTEXITCODE -eq 0 -and $sourceRevision -cmatch '^[0-9a-f]{40}$') 'The configured source revision is unavailable'
+$sourceStatus = & git -C $configuredSource status --porcelain
+Assert ($LASTEXITCODE -eq 0 -and !$sourceStatus) 'Package the immutable configured source; local source changes must be recorded first'
+$packagingRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
+$packagingRevision = & git -C $packagingRoot rev-parse HEAD
+Assert ($LASTEXITCODE -eq 0 -and $packagingRevision -cmatch '^[0-9a-f]{40}$') 'The packaging source revision is unavailable'
 $manifestPath = Join-Path $build 'odbcpp-crypto-manifest.json'
 if (!(Test-Path $manifestPath)) { throw 'The generated crypto manifest is required for packaging' }
 try { $cryptoManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json }
@@ -79,7 +100,7 @@ foreach ($file in @('odbcpp.dll','odbcpp_setup.dll')) {
     Copy-Item $source $stage
 }
 # Only the runtime libraries imported by our OpenSSL 3 build; never copy tools,
-# private keys, configuration files or the PostgreSQL runner installation.
+# private keys, configuration files or a database runner installation.
 function Assert-InsideRoot([string]$Path, [string]$Root) {
     Assert-NoReparsePoints $Path
     $canonicalPath = [IO.Path]::GetFullPath((Resolve-Path $Path).Path)
@@ -133,7 +154,12 @@ $cryptoEvidence = Get-Item (Join-Path $stage 'odbcpp-crypto-manifest.json')
 $artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evidence.json')
 @{
     packageVersion = $Version; architecture = 'x64'; wixVersion = '6.0.2'
-    sourceRevision = (& git rev-parse HEAD); files = $inventory
+    sourceRevision = $sourceRevision; files = $inventory
+    targetDatabase = $database; driverName = 'ODBCPP ' + $product.name
+    packagingRevision = $packagingRevision
+    packagingRecipeSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
+    installerRecipeSha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'Product.wxs') -Algorithm SHA256).Hash
+    buildCacheSha256 = (Get-FileHash -LiteralPath (Join-Path $build 'CMakeCache.txt') -Algorithm SHA256).Hash
     headerOnlyDependencies = @{ spdlog = $spdlogVersion; fmt = $fmtVersion }
     runnerImageVersion = $env:ImageVersion
     cryptoManifest = @{
@@ -171,8 +197,10 @@ foreach ($file in (Get-ChildItem $stage -File | Sort-Object Name)) {
 [void]$components.AppendLine('</ComponentGroup></Fragment></Wix>')
 $payload = Join-Path $output "payload-$Version.wxs"
 [IO.File]::WriteAllText($payload, $components.ToString())
-$msi = Join-Path $output "odbcpp-postgresql-$Version-x64.msi"
+$msi = Join-Path $output "odbcpp-$($product.slug)-$Version-x64.msi"
 $failure = if ($FailureFixture) { '1' } else { '0' }
-& $wix build -arch x64 -d "Version=$Version" -d "FailureFixture=$failure" "$PSScriptRoot/Product.wxs" $payload -o $msi
+& $wix build -arch x64 -d "Version=$Version" -d "FailureFixture=$failure" `
+    -d "ProductName=$($product.name)" -d "UpgradeCode=$($product.upgradeCode)" `
+    -d "RegistrationGuid=$($product.registrationGuid)" "$PSScriptRoot/Product.wxs" $payload -o $msi
 (Get-FileHash $msi -Algorithm SHA256).Hash + '  ' + (Split-Path $msi -Leaf) | Set-Content "$msi.sha256"
-Write-Host "Built x64 MSI $Version with $($inventory.Count) runtime libraries."
+Write-Host "Built $($product.name) x64 MSI $Version with $($inventory.Count) runtime libraries."

@@ -1,9 +1,26 @@
-# ODBCPP PostgreSQL x64 beta package
+# ODBCPP PostgreSQL and Redshift x64 beta packages
 
 Build from the repository root on x64 Windows with Visual Studio C++ tools,
 CMake, .NET SDK and the OpenSSL 3 build dependency:
 
     pwsh packaging/windows/build.ps1
+
+The default command retains the PostgreSQL build directory and existing upgrade
+identity. The configured `TARGET_DATABASE` selects the product; an optional
+`-TargetDatabase` must agree with that graph. For a Redshift graph, use:
+
+    pwsh packaging/windows/build.ps1 -BuildDirectory build-windows-redshift -TargetDatabase REDSHIFT -OpenSslRoot 'C:/absolute/OpenSSL3'
+
+Output defaults to `<BuildDirectory>/package`. The packages are named
+`odbcpp-postgresql-<version>-x64.msi` and `odbcpp-redshift-<version>-x64.msi`.
+They have separate upgrade/component identities, driver registrations
+(`ODBCPP PostgreSQL` / `ODBCPP Redshift`) and install directories under
+`Program Files/ODBCPP`. Installing or upgrading one must preserve the other.
+The existing PostgreSQL identities are unchanged. MySQL and mismatched graphs
+are rejected before staging. Keep the configured source clean and immutable;
+the inventory records its Git revision, build-cache hash, separate packaging
+revision and actual recipe hashes. Payload hashes identify the runtime images;
+packaging an older artifact does not become a new compilation result.
 
 The build pins WiX 6.0.2, rejects non-x64 PE payloads, stages only runtime files
 and notices, and emits an MSI, SHA-256 checksum and per-file dependency inventory.
@@ -21,7 +38,8 @@ validation until release licensing/signing is resolved under G11.
 Install the MSI with Windows Installer (elevation required). Configure a User or
 System DSN through the 64-bit ODBC Data Source Administrator. Connection testing
 uses a transient password; DSNs do not save passwords. Supply credentials through
-your application. Only x64 Windows and PostgreSQL are claimed by this beta.
+your application. Packages target x64 Windows; PostgreSQL and Redshift retain
+their separate backend qualification and application acceptance requirements.
 No .NET runtime is needed on the destination machine.
 
 The MSI registers the driver and setup DLL under the 64-bit ODBC registry view
@@ -45,7 +63,7 @@ a workaround. Use verbose MSI logging to diagnose failures:
 
     msiexec /i odbcpp-postgresql-1.0.0-x64.msi /l*v install.log
 
-CI uses a separate fresh Windows runner for package acceptance, excluding build
+The PostgreSQL CI uses a separate fresh Windows runner for package acceptance, excluding build
 paths from PATH, adding hostile same-name PATH decoys, checking actual loaded
 runtime module paths and version, rejecting a decoy when an app-local runtime is
 missing, connecting through the
@@ -54,6 +72,15 @@ separate test-only MSI, rejecting downgrade and foreign registration, and
 uninstalling while checking DSN/unrelated-registration preservation. The failure
 custom action is absent from the beta MSI. SQL Server, Power BI and Excel remain
 G8 real-application checks.
+
+Run `test-inputs.ps1` against each configured product graph for input rejection.
+Run `test-products.ps1 -PostgreSqlPackage <pg.msi> -RedshiftPackage <rs.msi>`
+to inspect actual MSI identities, x64 components, registration searches and
+payload inventories without installation. `-PostgreSqlBaseline <old-pg.msi>`
+additionally compares the original PostgreSQL component/directory/registry
+tables. This is package inspection, not installation, connection, Power BI or
+Access certification. Native coexistence/upgrade/uninstall and real Redshift
+application results must be recorded separately.
 
 This proves exact-import staging and fresh-process app-local loader origin for
 the packaged OpenSSL profile. It does not prove coexistence when another module
