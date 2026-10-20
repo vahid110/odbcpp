@@ -93,6 +93,23 @@ bounds MSI operations and loader children, retains verbose logs, and performs
 owned cleanup after failures. It creates no DSNs or database connections. A
 timed-out still-active installer requires reconciliation before another mutation.
 
+Build the installed-setup test program for each product without rebuilding the
+runtime (example for Redshift; repeat with POSTGRESQL and another build directory):
+
+    cmake -S tests/windows/installed_setup -B build-installed-setup-redshift -G "Visual Studio 17 2022" -A x64 -DTARGET_DATABASE=REDSHIFT
+    cmake --build build-installed-setup-redshift --config Release --parallel 2
+
+Pass both configured directories as `-PostgreSqlSetupBuild` and
+`-RedshiftSetupBuild` to the lifecycle script. CTest runs all three GoogleTest
+cases per product through the actual installed setup DLL: ANSI/Unicode User DSN
+creation, configuration/removal, Unicode storage, password non-persistence and
+wrong-product/duplicate refusal. Both groups are collected before assessment;
+each uses absence-checked process-specific names and owner-checked cleanup.
+There is no database or GUI dialog call. The same source is available in a full
+product graph as `it_setup_registration`, default-off from registration until
+`ODBCPP_INSTALLED_SETUP_TESTS=ON`. The small entry point compiles the adapter test
+only; it does not establish a new product build or replace product regression.
+
 This proves exact-import staging and fresh-process app-local loader origin for
 the packaged OpenSSL profile. It does not prove coexistence when another module
 has already loaded a same-basename crypto provider, symbol isolation, FIPS, or a
