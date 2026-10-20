@@ -36,8 +36,10 @@ Assert ($sourceEntry.Count -eq 1) 'The configured source directory is required f
 $configuredSource = (Resolve-Path -LiteralPath $sourceEntry[0].Matches[0].Groups[1].Value).Path
 $sourceRevision = & git -C $configuredSource rev-parse HEAD
 Assert ($LASTEXITCODE -eq 0 -and $sourceRevision -cmatch '^[0-9a-f]{40}$') 'The configured source revision is unavailable'
-$sourceStatus = & git -C $configuredSource status --porcelain
-Assert ($LASTEXITCODE -eq 0 -and !$sourceStatus) 'Package the immutable configured source; local source changes must be recorded first'
+# Qualification writes untracked XML/log outputs in the checkout. This guard
+# identifies tracked source; image-to-build qualification remains separate evidence.
+$sourceStatus = & git -C $configuredSource status --porcelain --untracked-files=no
+Assert ($LASTEXITCODE -eq 0 -and !$sourceStatus) 'Package the immutable tracked source; local tracked changes must be recorded first'
 $packagingRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $packagingRevision = & git -C $packagingRoot rev-parse HEAD
 Assert ($LASTEXITCODE -eq 0 -and $packagingRevision -cmatch '^[0-9a-f]{40}$') 'The packaging source revision is unavailable'
@@ -155,6 +157,7 @@ $artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evide
 @{
     packageVersion = $Version; architecture = 'x64'; wixVersion = '6.0.2'
     sourceRevision = $sourceRevision; files = $inventory
+    trackedSourceClean = $true
     targetDatabase = $database; driverName = 'ODBCPP ' + $product.name
     packagingRevision = $packagingRevision
     packagingRecipeSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash

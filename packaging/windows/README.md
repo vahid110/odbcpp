@@ -17,10 +17,13 @@ They have separate upgrade/component identities, driver registrations
 (`ODBCPP PostgreSQL` / `ODBCPP Redshift`) and install directories under
 `Program Files/ODBCPP`. Installing or upgrading one must preserve the other.
 The existing PostgreSQL identities are unchanged. MySQL and mismatched graphs
-are rejected before staging. Keep the configured source clean and immutable;
-the inventory records its Git revision, build-cache hash, separate packaging
+are rejected before staging. Keep the configured tracked source clean and immutable;
+untracked qualification XML/log reports do not block packaging. The inventory
+records the tracked checkout's Git revision, build-cache hash, separate packaging
 revision and actual recipe hashes. Payload hashes identify the runtime images;
-packaging an older artifact does not become a new compilation result.
+packaging an older artifact does not become a new compilation result. The
+tracked-source guard alone does not prove which source compiled a cached image;
+retain its actual source/image/build/CI evidence separately.
 
 The build pins WiX 6.0.2, rejects non-x64 PE payloads, stages only runtime files
 and notices, and emits an MSI, SHA-256 checksum and per-file dependency inventory.
