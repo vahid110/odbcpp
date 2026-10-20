@@ -1,3 +1,4 @@
+#include "../test_live_package_inputs.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
@@ -18,6 +19,7 @@
 #include <vector>
 
 namespace {
+using odbcpp::test::live_package_inputs::fixture_smallint_length;
 // Compile-time fixture admission witnesses; none dispatch SQL or create objects.
 constexpr std::uintptr_t remaining_seconds(std::chrono::milliseconds remaining) {
   const auto seconds=std::chrono::duration_cast<std::chrono::seconds>(remaining).count();
@@ -140,7 +142,7 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
       std::array<SQLCHAR,256> message{};
       SQLSMALLINT length=0;
       const auto diagnostic=SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state.data(),nullptr,
-          message.data(),message.size(),&length);
+          message.data(),fixture_smallint_length(message.size()),&length);
       // Truncated/missing diagnostics and unrelated errors remain unknown. Only
       // these exact calls fail local validation before any backend exchange.
       if (diagnostic==SQL_SUCCESS && state[5]==0 && length>=0 &&
@@ -179,7 +181,8 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
   void SetUp() override {
     // This is only an execution guard. Protected checkpoint authority must
     // separately admit this exact bounded fixture and its Redshift principal.
-    const auto* enabled=std::getenv("ODBCPP_REDSHIFT_COLUMNS_OMITTED_TABLE_NATIVE");
+    const auto enabled_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_COLUMNS_OMITTED_TABLE_NATIVE");
+    const char* enabled = enabled_environment ? enabled_environment->c_str() : nullptr;
     if (!enabled || std::string(enabled)!="1") {
       GTEST_SKIP()<<"Separately admitted real Redshift test";
     }
@@ -195,7 +198,7 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&stmt));
     ASSERT_TRUE(cap());
     std::array<char,1025> name{};SQLSMALLINT length=0;
-    ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_DATABASE_NAME,name.data(),name.size(),&length));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_DATABASE_NAME,name.data(),fixture_smallint_length(name.size()),&length));
     ASSERT_GT(length,0);ASSERT_LT(static_cast<std::size_t>(length),name.size());database.assign(name.data(),length);
     ASSERT_TRUE(database=="odbcpp_pilot");
     schema="rs5_cols_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"_雪";
@@ -276,13 +279,13 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     const auto s=metadata?quoted_identifier(schema):literal_pattern(schema);
     // No column filter, so NULL and % equivalence is measured across all tables.
     if (!GetParam()) {
-      return observe(SQLColumns(stmt,chars(database),database.size(),chars(s),s.size(),
+      return observe(SQLColumns(stmt,chars(database),fixture_smallint_length(database.size()),chars(s),fixture_smallint_length(s.size()),
           table?chars(*table):nullptr,table?static_cast<SQLSMALLINT>(table->size()):0,nullptr,0),expected);
     }
     auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(s),t=rs::odbc::utf8_to_wide(table.value_or(""));
     if(!db || !sc || !t)return SQL_ERROR;
     SQLWCHAR empty=0;auto* data=table?(t->empty()?&empty:t->data()):nullptr;
-    return observe(SQLColumnsW(stmt,db->data(),db->size(),sc->data(),sc->size(),data,
+    return observe(SQLColumnsW(stmt,db->data(),fixture_smallint_length(db->size()),sc->data(),fixture_smallint_length(sc->size()),data,
         table?static_cast<SQLSMALLINT>(t->size()):0,nullptr,0),expected);
   }
   SQLRETURN schema_columns(const std::optional<std::string>& schema_pattern,
@@ -298,18 +301,18 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
         LocalRefusal::ColumnPattern:LocalRefusal::None;
     const auto table=literal_pattern(exact_table);
     if (!GetParam()) {
-      return observe(SQLColumns(stmt,chars(database),database.size(),
+      return observe(SQLColumns(stmt,chars(database),fixture_smallint_length(database.size()),
           schema_pattern?chars(*schema_pattern):nullptr,
           schema_pattern?static_cast<SQLSMALLINT>(schema_pattern->size()):0,
-          chars(table),table.size(),nullptr,0),expected);
+          chars(table),fixture_smallint_length(table.size()),nullptr,0),expected);
     }
     auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(schema_pattern.value_or("")),
         tb=rs::odbc::utf8_to_wide(table);
     if (!db || !sc || !tb) return SQL_ERROR;
     SQLWCHAR empty=0;
     auto* schema_data=schema_pattern?(sc->empty()?&empty:sc->data()):nullptr;
-    return observe(SQLColumnsW(stmt,db->data(),db->size(),schema_data,
-        schema_pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),nullptr,0),expected);
+    return observe(SQLColumnsW(stmt,db->data(),fixture_smallint_length(db->size()),schema_data,
+        schema_pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),fixture_smallint_length(tb->size()),nullptr,0),expected);
   }
   SQLRETURN schema_tables(const std::optional<std::string>& pattern,const std::string& table) {
     if (!cap()) {
@@ -324,16 +327,16 @@ class ColumnsOmittedTableNative : public testing::TestWithParam<bool> {
     const auto catalog=literal_pattern(database),object=literal_pattern(table);
     const std::string types="TABLE";
     if (!GetParam()) {
-      return observe(SQLTables(stmt,chars(catalog),catalog.size(),
+      return observe(SQLTables(stmt,chars(catalog),fixture_smallint_length(catalog.size()),
           pattern?chars(*pattern):nullptr,pattern?static_cast<SQLSMALLINT>(pattern->size()):0,
-          chars(object),object.size(),chars(types),types.size()),expected);
+          chars(object),fixture_smallint_length(object.size()),chars(types),fixture_smallint_length(types.size())),expected);
     }
     auto c=rs::odbc::utf8_to_wide(catalog),sc=rs::odbc::utf8_to_wide(pattern.value_or("")),
         tb=rs::odbc::utf8_to_wide(object),ty=rs::odbc::utf8_to_wide(types);
     if (!c || !sc || !tb || !ty) return SQL_ERROR;
     SQLWCHAR empty=0;auto* schema_data=pattern?(sc->empty()?&empty:sc->data()):nullptr;
-    return observe(SQLTablesW(stmt,c->data(),c->size(),schema_data,
-        pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),tb->size(),ty->data(),ty->size()),expected);
+    return observe(SQLTablesW(stmt,c->data(),fixture_smallint_length(c->size()),schema_data,
+        pattern?static_cast<SQLSMALLINT>(sc->size()):0,tb->data(),fixture_smallint_length(tb->size()),ty->data(),fixture_smallint_length(ty->size())),expected);
   }
   std::vector<std::string> table_rows() {
     SQLSMALLINT count=0;EXPECT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(5,count);
@@ -376,7 +379,7 @@ TEST_P(ColumnsOmittedTableNative, NullUniversalExactIdentifiersEmptyAndRecovery)
   ASSERT_EQ(SQL_SUCCESS,columns(std::string{}));EXPECT_TRUE(rows().empty());
   ASSERT_EQ(SQL_ERROR,columns(std::nullopt,true));
   std::array<SQLCHAR,6> state{};std::array<SQLCHAR,1024> message{};SQLINTEGER native=0;SQLSMALLINT length=0;
-  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state.data(),&native,message.data(),message.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state.data(),&native,message.data(),fixture_smallint_length(message.size()),&length));
   EXPECT_STREQ("HY009",reinterpret_cast<char*>(state.data()));
   ASSERT_EQ(SQL_SUCCESS,columns(std::nullopt));EXPECT_EQ(omitted,rows());
 }

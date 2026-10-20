@@ -994,7 +994,9 @@ static SQLRETURN SQLSetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER a
     }
     return conn->set_current_catalog(*catalog);
   }
-  return SQLSetConnectAttr(
+  // Public SQL symbols can be interposed by an ELF Driver Manager holding
+  // its own lock. The wide entry point already owns our C-API guard.
+  return SQLSetConnectAttr_impl(
       connection_handle, attribute, value, string_length);
 }
 
@@ -1058,7 +1060,7 @@ static SQLRETURN SQLGetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER a
     }
     return result;
   }
-  return SQLGetConnectAttr(
+  return SQLGetConnectAttr_impl(
       connection_handle, attribute, value, buffer_length, string_length);
 }
 
@@ -1094,8 +1096,13 @@ static SQLRETURN SQLEndTran_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
       const auto connection = HandleRegistry::instance().get_handle_as<
           ODBCConnection>(connection_handle);
       if (!connection || !connection->is_connected()) continue;
-      const auto result = SQLEndTran(
-          SQL_HANDLE_DBC, connection_handle, completion_type);
+      // Keep the child handle guard and return-code bookkeeping without
+      // resolving an exported SQL symbol through the host Driver Manager.
+      const auto result = rs::odbc::detail::invoke_c_api(
+          connection_handle, "SQLEndTran", [&] {
+            return SQLEndTran_impl(
+                SQL_HANDLE_DBC, connection_handle, completion_type);
+          });
       if (result == SQL_ERROR || result == SQL_INVALID_HANDLE) {
         aggregate = SQL_ERROR;
       } else if (result == SQL_SUCCESS_WITH_INFO &&
@@ -1204,7 +1211,7 @@ static SQLRETURN SQLSetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attri
 
 static SQLRETURN SQLSetStmtAttrW_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
                           SQLPOINTER value, SQLINTEGER string_length) {
-  return SQLSetStmtAttr(statement_handle, attribute, value, string_length);
+  return SQLSetStmtAttr_impl(statement_handle, attribute, value, string_length);
 }
 
 static SQLRETURN SQLGetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
@@ -1229,7 +1236,7 @@ static SQLRETURN SQLGetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attri
 static SQLRETURN SQLGetStmtAttrW_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
                           SQLPOINTER value, SQLINTEGER buffer_length,
                           SQLINTEGER* string_length) {
-  return SQLGetStmtAttr(
+  return SQLGetStmtAttr_impl(
       statement_handle, attribute, value, buffer_length, string_length);
 }
 
@@ -1499,7 +1506,7 @@ static SQLRETURN SQLGetDiagFieldW_impl(
       diag_identifier == SQL_DIAG_NATIVE ||
       diag_identifier == SQL_DIAG_COLUMN_NUMBER ||
       diag_identifier == SQL_DIAG_ROW_NUMBER) {
-    return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
+    return SQLGetDiagField_impl(handle_type, handle, rec_number, diag_identifier,
                            diag_info_ptr, buffer_length, string_length_ptr);
   }
   // Reject unsupported identifiers independently of record availability.
@@ -1565,7 +1572,7 @@ static SQLRETURN SQLError_impl(SQLHENV environment_handle, SQLHDBC connection_ha
   }
   const auto record_number = obj->legacy_diagnostic_record_number();
   if (!record_number) return SQL_NO_DATA;
-  const auto result = SQLGetDiagRec(
+  const auto result = SQLGetDiagRec_impl(
       handle_type, handle, *record_number, sqlstate, native_error,
       message_text, buffer_length, text_length);
   if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
@@ -1601,7 +1608,7 @@ static SQLRETURN SQLErrorW_impl(
   }
   const auto record_number = obj->legacy_diagnostic_record_number();
   if (!record_number) return SQL_NO_DATA;
-  const auto result = SQLGetDiagRecW(
+  const auto result = SQLGetDiagRecW_impl(
       handle_type, handle, *record_number, sqlstate, native_error,
       message_text, buffer_length, text_length);
   if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
@@ -1935,7 +1942,7 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
         conn, *value, static_cast<SQLWCHAR*>(info_value),
         info_value ? buffer_length : 0, string_length, "Driver information was truncated");
   }
-  return SQLGetInfo(connection_handle, info_type, info_value, buffer_length,
+  return SQLGetInfo_impl(connection_handle, info_type, info_value, buffer_length,
                     string_length);
 }
 
@@ -3410,16 +3417,20 @@ ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 // Active cancellation never updates the executing operation's diagnostics or
 // header. Between Need Data calls, local reset takes the ordinary domain lease
 // after claiming the attempt; that idle reset clears its diagnostics normally.
-extern "C" SQLRETURN SQLCancel(SQLHSTMT statement_handle) {
+static SQLRETURN SQLCancel_impl(SQLHSTMT statement_handle) {
   try {
     auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCStatement>(statement_handle);
     return statement ? statement->cancel() : SQL_INVALID_HANDLE;
   } catch (...) { return SQL_ERROR; }
 }
 
+extern "C" SQLRETURN SQLCancel(SQLHSTMT statement_handle) {
+  return SQLCancel_impl(statement_handle);
+}
+
 // Statement cancellation must bypass the ordinary executing operation lease.
 extern "C" SQLRETURN SQL_API SQLCancelHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
-  if (handle_type == SQL_HANDLE_STMT) return SQLCancel(handle);
+  if (handle_type == SQL_HANDLE_STMT) return SQLCancel_impl(handle);
   if (handle_type != SQL_HANDLE_DBC && handle_type != SQL_HANDLE_ENV &&
       handle_type != SQL_HANDLE_DESC) return SQL_INVALID_HANDLE;
   try {

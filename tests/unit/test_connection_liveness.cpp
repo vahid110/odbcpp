@@ -3809,6 +3809,8 @@ TEST(BackendResultContractTest, UnreportedSuccessIsConservativeAndErrorSnapshotH
   using namespace rs::core::database;
   const SessionSnapshot unknown{};
   BackendResult<QueryResult> value{QueryResult{}};
+  ASSERT_TRUE(value.has_value());
+  ASSERT_FALSE(value->error.has_value());
   BackendResult<void> empty;
   EXPECT_EQ(unknown, value.session_snapshot()); EXPECT_EQ(unknown, empty.session_snapshot());
   const SessionSnapshot idle{SessionState::Idle, SessionDisposition::Reusable};

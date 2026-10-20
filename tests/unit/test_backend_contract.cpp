@@ -7227,8 +7227,14 @@ TEST_F(RetrieveDataTest, ExplicitUnboundScalarGetDataKeepsUnicodeNullAndMultirow
   EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,2,SQL_C_CHAR,chunk,sizeof(chunk),&chunk_length));EXPECT_EQ("HY010",state());
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,3*sizeof(SQLWCHAR),&chunk_length));
   EXPECT_EQ((sizeof(SQLWCHAR)==2?2:1)*sizeof(SQLWCHAR),chunk_length);
-  if(sizeof(SQLWCHAR)==2){EXPECT_EQ(0xd83d,chunk[0]);EXPECT_EQ(0xde00,chunk[1]);EXPECT_EQ(0,chunk[2]);}
-  else{EXPECT_EQ(0x1f600,chunk[0]);EXPECT_EQ(0,chunk[1]);}
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    EXPECT_EQ(0xd83d,chunk[0]);
+    EXPECT_EQ(0xde00,chunk[1]);
+    EXPECT_EQ(0,chunk[2]);
+  } else {
+    EXPECT_EQ(0x1f600,chunk[0]);
+    EXPECT_EQ(0,chunk[1]);
+  }
   EXPECT_EQ(0x7777,chunk[3]);ASSERT_EQ(SQL_NO_DATA,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk)-sizeof(SQLWCHAR),&chunk_length));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));chunk_length=73;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk)-sizeof(SQLWCHAR),&chunk_length));EXPECT_EQ(SQL_NULL_DATA,chunk_length);
@@ -7433,8 +7439,14 @@ TEST_F(ParameterBindingOffsetTest, ShiftedWideNumericSplitNullFieldsRetainPrecis
   ASSERT_NO_FATAL_FAILURE(prepare("numeric ?, unicode ?", {{ScalarType::Numeric,0,0,true},{ScalarType::VarChar,0,0,true}}));
   pages[1].numeric.precision=5;pages[1].numeric.scale=2;pages[1].numeric.sign=1;pages[1].numeric.val[0]=0x39;pages[1].numeric.val[1]=0x30;
   pages[1].wide[0]=0x00e9;
-  if(sizeof(SQLWCHAR)==2){pages[1].wide[1]=0xd83d;pages[1].wide[2]=0xde00;pages[1].wide_length=3*sizeof(SQLWCHAR);}
-  else{pages[1].wide[1]=static_cast<SQLWCHAR>(0x1f600);pages[1].wide_length=2*sizeof(SQLWCHAR);}
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    pages[1].wide[1]=0xd83d;
+    pages[1].wide[2]=0xde00;
+    pages[1].wide_length=3*sizeof(SQLWCHAR);
+  } else {
+    pages[1].wide[1]=static_cast<SQLWCHAR>(0x1f600);
+    pages[1].wide_length=2*sizeof(SQLWCHAR);
+  }
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_NUMERIC,5,2,&pages[0].numeric,0,&pages[0].numeric_length));
   // C numeric representation uses APD dimensions; bind arguments set SQL/IPD hints.
   ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_PRECISION,number(5),0));

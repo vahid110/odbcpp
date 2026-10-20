@@ -487,14 +487,19 @@ if(UNIX OR WIN32)
 
     # This consumer exercises the installed driver through the actual manager.
     # Default-off: it never joins the ordinary PostgreSQL integration graph.
+    set(_redshift_package_narrow_manager FALSE)
+    if((WIN32 AND ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO") OR
+       (NOT WIN32 AND ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC"))
+      set(_redshift_package_narrow_manager TRUE)
+    endif()
     if(ODBCPP_REDSHIFT_PACKAGE_LIVE_TESTS)
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
-         NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
-         NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" OR
+         NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux|Windows)$" OR
+         NOT _redshift_package_narrow_manager OR
          NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" OR
          NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2")
         message(FATAL_ERROR
-          "Installed Redshift live tests require Darwin, UNIXODBC and explicit matched SQLWCHAR size 2")
+          "Installed Redshift live tests require a supported OS, Windows ODBC or unixODBC, and explicit matched SQLWCHAR size 2")
       endif()
       add_executable(it_redshift_package_live
         tests/driver_manager/it_redshift_package_live.cpp)
@@ -502,6 +507,9 @@ if(UNIX OR WIN32)
         ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
       target_link_libraries(it_redshift_package_live PRIVATE
         GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(it_redshift_package_live PRIVATE advapi32)
+      endif()
       target_compile_definitions(it_redshift_package_live PRIVATE
         ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2)
@@ -516,19 +524,19 @@ if(UNIX OR WIN32)
       # Bound buffers require matching application and driver wide-code units.
       # These explicit pairs are package candidates, not an Excel ABI observation.
       set(_redshift_import_matched_pair FALSE)
-      if((ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" AND
+      if((_redshift_package_narrow_manager AND
           ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" AND
           ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2") OR
-         (ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND
+         (NOT WIN32 AND ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND
           ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "4" AND
           ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "4"))
         set(_redshift_import_matched_pair TRUE)
       endif()
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
-         NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+         NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux|Windows)$" OR
          NOT _redshift_import_matched_pair)
         message(FATAL_ERROR
-          "Installed Redshift import live tests require Darwin and explicit UNIXODBC 2/2 or IODBC 4/4")
+          "Installed Redshift import live tests require a supported OS and explicit Windows ODBC/unixODBC 2/2 or iODBC 4/4")
       endif()
       add_executable(it_redshift_package_import_live
         tests/driver_manager/it_redshift_package_import_live.cpp)
@@ -536,6 +544,9 @@ if(UNIX OR WIN32)
         ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
       target_link_libraries(it_redshift_package_import_live PRIVATE
         GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(it_redshift_package_import_live PRIVATE advapi32)
+      endif()
       target_compile_definitions(it_redshift_package_import_live PRIVATE
         ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE}
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})

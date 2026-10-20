@@ -186,7 +186,10 @@ endif()
 
 function(run_windows_fixture name output expect_success)
   set(_fixture_dir "${BINARY_DIR}/crypto-windows-${name}")
-  file(MAKE_DIRECTORY "${_fixture_dir}")
+  set(_artifact "${_fixture_dir}/openssl/odbcpp.dll")
+  file(MAKE_DIRECTORY "${_fixture_dir}/openssl")
+  file(WRITE "${_artifact}" "fixture")
+  string(REPLACE "@ARTIFACT@" "${_artifact}" output "${output}")
   set(_manifest "${_fixture_dir}/manifest.json")
   file(WRITE "${_manifest}"
     "{\"provider\":\"OPENSSL\",\"requestedLinkage\":\"BUNDLED_SHARED\"}\n")
@@ -223,6 +226,10 @@ endfunction()
 
 run_windows_fixture(pe_imports_ok
   "Image has dependencies:\n  LiBsSl-3-X64.DlL\n  libcrypto-3-x64.dll\n  KERNEL32.dll" true)
+run_windows_fixture(pe_imports_artifact_header
+  "Dump of file @ARTIFACT@\n\nFile Type: DLL\n  Image has dependencies:\n  LiBsSl-3-X64.DlL\n  libcrypto-3-x64.dll\n  KERNEL32.dll" true)
+run_windows_fixture(pe_wrong_artifact_header
+  "Dump of file C:/foreign/openssl/odbcpp.dll\n  LiBsSl-3-X64.DlL\n  libcrypto-3-x64.dll" false)
 run_windows_fixture(pe_missing_crypto "  libssl-3-x64.dll" false)
 run_windows_fixture(pe_duplicate_ssl
   "  libssl-3-x64.dll\n  LIBSSL-3-X64.DLL\n  libcrypto-3-x64.dll" false)

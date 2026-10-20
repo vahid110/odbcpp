@@ -1,3 +1,4 @@
+#include "../test_live_package_inputs.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
@@ -20,6 +21,7 @@
 #include <span>
 
 namespace {
+using odbcpp::test::live_package_inputs::fixture_smallint_length;
 // A whole-second ODBC timeout must never round an expired/subsecond budget
 // up into a fresh operation. This is fixture admission, not a driver timeout.
 constexpr std::uintptr_t checkpoint_timeout_seconds(std::chrono::milliseconds remaining) {
@@ -114,7 +116,8 @@ protected:
     return statement;
   }
   void SetUp() override {
-    const char* configured = std::getenv("ODBCPP_REDSHIFT_TEST_CONNECTION");
+    const auto configured_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_CONNECTION");
+    const char* configured = configured_environment ? configured_environment->c_str() : nullptr;
     ASSERT_NE(configured, nullptr)
         << "ODBCPP_REDSHIFT_TEST_CONNECTION is required; the real Redshift "
            "pilot must fail rather than skip when its endpoint is absent";
@@ -420,8 +423,10 @@ TEST_F(RedshiftRealTest, PreparedScalarAndNull) {
 
 // Prepared proof inventory only: these cases are not admitted by a paid runner.
 TEST_F(RedshiftRealTest, RowVersionEmptyDescriptorContract) {
-  const char* schema = std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
-  const char* table = std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+  const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
+  const char* schema = schema_environment ? schema_environment->c_str() : nullptr;
+  const auto table_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_TABLE");
+  const char* table = table_environment ? table_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, schema); ASSERT_NE(nullptr, table);
   ASSERT_NE('\0', *schema); ASSERT_NE('\0', *table);
   ASSERT_TRUE(connect());
@@ -448,8 +453,10 @@ TEST_F(RedshiftRealTest, RowVersionEmptyDescriptorContract) {
 }
 
 TEST_F(RedshiftRealTest, StatisticsQuickEmptyDescriptorContract) {
-  const char* schema = std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
-  const char* table = std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+  const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
+  const char* schema = schema_environment ? schema_environment->c_str() : nullptr;
+  const auto table_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_TABLE");
+  const char* table = table_environment ? table_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, schema); ASSERT_NE(nullptr, table);
   ASSERT_NE('\0', *schema); ASSERT_NE('\0', *table);
   ASSERT_TRUE(connect());
@@ -1104,8 +1111,10 @@ TEST_F(RedshiftRealTest, ProcedureParameterCatalogContract) {
 }
 
 TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
-  const char* schema = std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
-  const char* table = std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+  const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
+  const char* schema = schema_environment ? schema_environment->c_str() : nullptr;
+  const auto table_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_TABLE");
+  const char* table = table_environment ? table_environment->c_str() : nullptr;
   ASSERT_NE(schema, nullptr)
       << "ODBCPP_REDSHIFT_TEST_SCHEMA is required for pilot metadata evidence";
   ASSERT_NE(table, nullptr)
@@ -1331,7 +1340,8 @@ TEST_F(RedshiftRealTest, IAMPrincipalScalar) {
 }
 
 TEST_F(RedshiftRealTest, IAMInvalidPassword) {
-  const char* invalid = std::getenv("ODBCPP_REDSHIFT_IAM_INVALID_CONNECTION");
+  const auto invalid_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_IAM_INVALID_CONNECTION");
+  const char* invalid = invalid_environment ? invalid_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, invalid);
   const auto valid_fields = rs::odbc::ConnectionString::parse(connection_string_);
   const auto invalid_fields = rs::odbc::ConnectionString::parse(invalid);
@@ -1351,8 +1361,10 @@ TEST_F(RedshiftRealTest, IAMInvalidPassword) {
 // Future ordinary-password proof only. The reviewed runner supplies both
 // configurations and expected principal; registration does not admit live SQL.
 TEST_F(RedshiftRealTest, PasswordRejectedThenFreshValidConnection) {
-  const char* invalid = std::getenv("ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION");
-  const char* expected = std::getenv("ODBCPP_REDSHIFT_AUTH_EXPECTED_USER");
+  const auto invalid_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION");
+  const char* invalid = invalid_environment ? invalid_environment->c_str() : nullptr;
+  const auto expected_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_AUTH_EXPECTED_USER");
+  const char* expected = expected_environment ? expected_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, invalid);
   ASSERT_NE(nullptr, expected);
   const std::string invalid_connection{invalid};
@@ -1422,7 +1434,8 @@ TEST_F(RedshiftRealTest, PasswordRejectedThenFreshValidConnection) {
 class RedshiftNumericResultBoundaryRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* marker = std::getenv("ODBCPP_REDSHIFT_NUMERIC_RESULT_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_NUMERIC_RESULT_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if (marker == nullptr) {
       GTEST_SKIP() << "Numeric result boundary scope is not admitted";
     }
@@ -1639,7 +1652,8 @@ TEST_F(RedshiftRealTest, TypedNullAndOutputPreservation) {
 class RedshiftCatalogVarbyteRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* admission=std::getenv("ODBCPP_REDSHIFT_CATALOG_VARBYTE_ADMISSION");
+    const auto admission_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_CATALOG_VARBYTE_ADMISSION");
+    const char* admission = admission_environment ? admission_environment->c_str() : nullptr;
     if(admission==nullptr) { GTEST_SKIP() << "Catalog/VARBYTE no-DDL scope is not admitted"; }
     ASSERT_TRUE(std::string_view(admission)=="catalog-varbyte-no-ddl-v1")
         << "Invalid catalog/VARBYTE no-DDL scope marker";
@@ -1781,7 +1795,8 @@ TEST_F(RedshiftCatalogVarbyteRealTest, VarbyteConstantDirectPreparedResultContra
 class RedshiftVarbyteTextParameterRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* admission=std::getenv("ODBCPP_REDSHIFT_VARBYTE_TEXT_PARAMETER_ADMISSION");
+    const auto admission_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_VARBYTE_TEXT_PARAMETER_ADMISSION");
+    const char* admission = admission_environment ? admission_environment->c_str() : nullptr;
     if(admission==nullptr) { GTEST_SKIP() << "Prepared hex-text VARBYTE scope is not admitted"; }
     ASSERT_TRUE(std::string_view(admission)=="varbyte-hex-text-parameter-v1")
         << "Invalid prepared hex-text VARBYTE scope marker";
@@ -1874,7 +1889,8 @@ protected:
   rs::util::Deadline workflow_end_{};
   void SetUp() override {
     workflow_end_=rs::util::Clock::now()+std::chrono::seconds{40};
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_METADATA_WORKFLOW_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_WORKFLOW_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Metadata workflow scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="metadata-prepared-workflow-v1");
     RedshiftRealTest::SetUp();
@@ -1946,7 +1962,7 @@ protected:
     for(SQLUSMALLINT column=1;column<=fields.size();++column) {
       SCOPED_TRACE(fields[column-1].name); // Closed field label, never returned data.
       std::array<SQLCHAR,64> name{};SQLSMALLINT length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
-      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&length,&type,&size,&digits,&nullable));
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),fixture_smallint_length(name.size()),&length,&type,&size,&digits,&nullable));
       ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLSMALLINT>(name.size()));
       std::string actual(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(length));
       if(scope==DescriptorScope::ShowSchemas || scope==DescriptorScope::ShowTables) {
@@ -2060,8 +2076,10 @@ protected:
       ASSERT_TRUE(base.contains(key));ASSERT_TRUE(!base.at(key).empty());ASSERT_TRUE(base.at(key).find('\0')==std::string::npos);
     }
     ASSERT_TRUE(base.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(base.at("UID")=="odbcpp_pilot_test");ASSERT_TRUE(base.at("PORT")=="5439");
-    const char* schema_env=std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
-    const char* table_env=std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+    const auto schema_env_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
+    const char* schema_env = schema_env_environment ? schema_env_environment->c_str() : nullptr;
+    const auto table_env_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_TABLE");
+    const char* table_env = table_env_environment ? table_env_environment->c_str() : nullptr;
     ASSERT_NE(nullptr,schema_env);ASSERT_NE(nullptr,table_env);
     std::string schema,table;
     for(const auto& pair:{std::pair{schema_env,&schema},std::pair{table_env,&table}}) {
@@ -2179,7 +2197,7 @@ protected:
       const char* aliases[]{"id","value","marker","maybe_value"};
       for(SQLUSMALLINT column=1;column<=4;++column) {
         std::array<SQLCHAR,32> name{};SQLSMALLINT name_length=-1,type=-1,scale=-1,nullable=-1;SQLULEN size=99;
-        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&name_length,&type,&size,&scale,&nullable));
+        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),fixture_smallint_length(name.size()),&name_length,&type,&size,&scale,&nullable));
         ASSERT_GE(name_length,0);ASSERT_LT(name_length,32);
         EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(name_length))==aliases[column-1]);
         EXPECT_EQ(column==1?SQL_INTEGER:SQL_VARCHAR,type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
@@ -2240,7 +2258,8 @@ TEST_F(RedshiftMetadataWorkflowRealTest, MetadataToPreparedQueryLegacyConfigured
 class RedshiftDecimalParameterRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_DECIMAL_PARAMETER_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_DECIMAL_PARAMETER_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Prepared decimal scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="decimal-struct-parameter-v1")
         << "Invalid prepared decimal scope marker";
@@ -2282,7 +2301,7 @@ TEST_F(RedshiftDecimalParameterRealTest, PreparedExactDecimalAndNull) {
       ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(checkpoint_statement(hstmt_),&count));ASSERT_EQ(1,count);
       std::array<SQLCHAR,16> name{};
       SQLSMALLINT name_length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
-      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(checkpoint_statement(hstmt_),1,name.data(),name.size(),&name_length,
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(checkpoint_statement(hstmt_),1,name.data(),fixture_smallint_length(name.size()),&name_length,
           &type,&size,&digits,&nullable));
       EXPECT_EQ(6,name_length);EXPECT_EQ(0,std::memcmp(name.data(),"amount",7));
       EXPECT_EQ(SQL_NUMERIC,type);EXPECT_EQ(5U,size);EXPECT_EQ(2,digits);
@@ -2348,7 +2367,8 @@ TEST_F(RedshiftDecimalParameterRealTest, PreparedExactDecimalAndNull) {
 class RedshiftTemporalParameterRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_TEMPORAL_PARAMETER_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEMPORAL_PARAMETER_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Prepared temporal scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="temporal-struct-parameter-v1")
         << "Invalid prepared temporal scope marker";
@@ -2421,7 +2441,7 @@ TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
       for(SQLUSMALLINT column=1;column<=3;++column) {
         SCOPED_TRACE(column);
         std::array<SQLCHAR,32> name{};SQLSMALLINT name_length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
-        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(checkpoint_statement(hstmt_),column,name.data(),name.size(),&name_length,
+        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(checkpoint_statement(hstmt_),column,name.data(),fixture_smallint_length(name.size()),&name_length,
             &type,&size,&digits,&nullable));
         ASSERT_GE(name_length,0);ASSERT_LT(static_cast<std::size_t>(name_length),name.size());
         Descriptor observed{std::string(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(name_length)),type,size,digits,nullable};
@@ -2431,7 +2451,7 @@ TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
             std::pair{SQL_DESC_TYPE,SQLSMALLINT(SQL_DATETIME)},
             std::pair{SQL_DESC_SCALE,scales[column-1]}}) {
           SCOPED_TRACE(field.first);
-          SQLLEN actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(checkpoint_statement(hstmt_),column,field.first,nullptr,0,nullptr,&actual))
+          SQLLEN actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(checkpoint_statement(hstmt_),column,static_cast<SQLUSMALLINT>(field.first),nullptr,0,nullptr,&actual))
               << get_error(SQL_HANDLE_STMT,hstmt_);
           EXPECT_EQ(field.second,actual);
         }
@@ -2505,7 +2525,8 @@ TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
 class RedshiftUnicodeChunkRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_UNICODE_CHUNK_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_UNICODE_CHUNK_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Unicode chunk scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="unicode-chunk-result-v1") << "Invalid Unicode chunk scope marker";
     // FIRST gate, before configuration, handles or connection work.
@@ -2564,7 +2585,7 @@ TEST_F(RedshiftUnicodeChunkRealTest, PreparedWideChunksBoundTruncationAndNull) {
       SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(checkpoint_statement(hstmt_),&count));ASSERT_EQ(2,count);
       for(SQLUSMALLINT column=1;column<=2;++column) {
         SCOPED_TRACE(column);std::array<SQLCHAR,32> name{};SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1;SQLULEN size=99;
-        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(checkpoint_statement(hstmt_),column,name.data(),name.size(),&length,&type,&size,&scale,&nullable))
+        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(checkpoint_statement(hstmt_),column,name.data(),fixture_smallint_length(name.size()),&length,&type,&size,&scale,&nullable))
             << get_error(SQL_HANDLE_STMT,hstmt_);
         ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length),name.size());
         Descriptor observed{std::string(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(length)),type,size,scale,nullable};
@@ -2572,7 +2593,7 @@ TEST_F(RedshiftUnicodeChunkRealTest, PreparedWideChunksBoundTruncationAndNull) {
         EXPECT_EQ(64u,size);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
         for(const auto& field:{std::pair{SQL_DESC_CONCISE_TYPE,SQLLEN(SQL_VARCHAR)},std::pair{SQL_DESC_LENGTH,SQLLEN(64)},std::pair{SQL_DESC_SCALE,SQLLEN(0)}}) {
           SCOPED_TRACE(field.first);SQLLEN value=-1;
-          ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(checkpoint_statement(hstmt_),column,field.first,nullptr,0,nullptr,&value)) << get_error(SQL_HANDLE_STMT,hstmt_);
+          ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(checkpoint_statement(hstmt_),column,static_cast<SQLUSMALLINT>(field.first),nullptr,0,nullptr,&value)) << get_error(SQL_HANDLE_STMT,hstmt_);
           EXPECT_EQ(field.second,value);
         }
         if(trial==0) { owned_descriptors[column-1]=observed; }
@@ -2654,7 +2675,8 @@ protected:
   SQLUSMALLINT parameter_status_ = SQL_PARAM_UNUSED;
 
   void SetUp() override {
-    const char* marker = std::getenv("ODBCPP_REDSHIFT_BOOLEAN_FLOATING_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_BOOLEAN_FLOATING_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if (marker == nullptr) {
       GTEST_SKIP() << "Boolean/floating scope is not admitted";
     }
@@ -2889,7 +2911,8 @@ protected:
   SQLUSMALLINT row_status_ = SQL_ROW_NOROW;
 
   void SetUp() override {
-    const char* marker = std::getenv("ODBCPP_REDSHIFT_MULTIROW_FETCH_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_MULTIROW_FETCH_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if (marker == nullptr) {
       GTEST_SKIP() << "Multirow fetch scope is not admitted";
     }
@@ -3112,7 +3135,8 @@ TEST_F(RedshiftMultirowFetchRealTest, OrderedRowsStatusNullAndRecovery) {
 class RedshiftUnicodeAliasMetadataRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* marker = std::getenv("ODBCPP_REDSHIFT_UNICODE_ALIAS_METADATA_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_UNICODE_ALIAS_METADATA_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if (marker == nullptr) {
       GTEST_SKIP() << "Unicode alias metadata no-DDL scope is not admitted";
     }
@@ -3282,7 +3306,8 @@ protected:
     return result;
   }
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_UNICODE_CATALOG_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_UNICODE_CATALOG_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Unicode catalog fixture-reuse scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="unicode-catalog-bmp-fixture-reuse-v1") << "Invalid Unicode catalog scope marker";
     // FIRST gate, before endpoint/configuration/handles/connection work.
@@ -3542,7 +3567,8 @@ protected:
   SQLUSMALLINT row_status_ = SQL_ROW_NOROW;
 
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_OPERATIONAL_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_OPERATIONAL_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Operational recovery scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="operational-recovery-v1") << "Invalid operational scope marker";
     // FIRST gate, before clock/configuration/handles/connection work.
@@ -3775,7 +3801,8 @@ protected:
   SQLUSMALLINT row_status_ = SQL_ROW_NOROW, parameter_status_ = SQL_PARAM_UNUSED;
 
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_BUFFERED_LIFECYCLE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_BUFFERED_LIFECYCLE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Buffered lifecycle scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="operational-buffered-lifecycle-v1") << "Invalid buffered lifecycle scope marker";
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -4026,7 +4053,8 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_STATUS_PTR,nullptr,0));
   }
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_COMMON_TYPE_BOUNDARIES_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_COMMON_TYPE_BOUNDARIES_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Common-type boundaries scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="common-type-boundaries-v1") << "Invalid common-type boundaries scope marker";
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -4285,7 +4313,8 @@ protected:
   struct OwnedRow { SQLINTEGER ordinal; SQLBIGINT total; std::optional<std::string> payload; };
 
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_MATERIALIZED_ENVELOPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_MATERIALIZED_ENVELOPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Materialized envelope scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="materialized-envelope-v1") << "Invalid materialized envelope scope marker";
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -4601,7 +4630,8 @@ protected:
   struct OwnedRow {std::array<std::optional<std::string>,5> fields;std::array<std::vector<SQLWCHAR>,5> wide_fields;bool wide_remarks_null=true;};
 
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_SHOW_TABLES_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SHOW_TABLES_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "SHOW tables scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="show-tables-v1") << "Invalid SHOW tables scope marker";
     ASSERT_TRUE(sizeof(SQLWCHAR)==2u || sizeof(SQLWCHAR)==4u)
@@ -4614,7 +4644,10 @@ protected:
     }
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
     ASSERT_TRUE(settings.at("PORT")=="5439");ASSERT_FALSE(settings.contains("DSN"));ASSERT_FALSE(settings.contains("REDSHIFTCATALOGMODE"));
-    const char* schema=std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");const char* table=std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+    const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
+    const char* schema = schema_environment ? schema_environment->c_str() : nullptr;
+    const auto table_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_TABLE");
+    const char* table = table_environment ? table_environment->c_str() : nullptr;
     ASSERT_NE(nullptr,schema);ASSERT_NE(nullptr,table);
     for(const auto& pair:{std::pair{schema,&schema_},std::pair{table,&table_}}) {
       std::size_t count=0;while(count<=128&&pair.first[count]!='\0') { ++count; }
@@ -4873,7 +4906,8 @@ protected:
     bool operator==(const OwnedColumn&)const=default;
   };
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_SHOW_COLUMNS_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SHOW_COLUMNS_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) {GTEST_SKIP() << "SHOW columns scope is not admitted";}
     ASSERT_TRUE(std::string_view(marker)=="show-columns-v1") << "Invalid SHOW columns scope marker";
     ASSERT_TRUE(sizeof(SQLWCHAR)==2u || sizeof(SQLWCHAR)==4u)
@@ -4885,7 +4919,10 @@ protected:
     for(const char* key:{"SERVER","PORT","DATABASE","UID","PWD","SSLCAFILE"}) {ASSERT_TRUE(settings.contains(key));ASSERT_FALSE(settings.at(key).empty());}
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
     ASSERT_TRUE(settings.at("PORT")=="5439");ASSERT_FALSE(settings.contains("DSN"));ASSERT_FALSE(settings.contains("REDSHIFTCATALOGMODE"));
-    const char* schema=std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");const char* table=std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+    const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
+    const char* schema = schema_environment ? schema_environment->c_str() : nullptr;
+    const auto table_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_TABLE");
+    const char* table = table_environment ? table_environment->c_str() : nullptr;
     ASSERT_NE(nullptr,schema);ASSERT_NE(nullptr,table);
     for(const auto& pair:{std::pair{schema,&schema_},std::pair{table,&table_}}) {
       std::size_t count=0;while(count<=128&&pair.first[count]!='\0') {++count;}
@@ -5137,11 +5174,13 @@ protected:
   SQLLEN token_lengths_[3]{73,73,73}, piece_length_{73};
 
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_RECENT_FEATURES_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_RECENT_FEATURES_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Recent committed feature scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="recent-committed-features-v1");
     // The complete selected inventory includes only this fixed session TEMP DDL.
-    const char* temp=std::getenv("ODBCPP_REDSHIFT_RECENT_TEMP_TABLE_ADMISSION");
+    const auto temp_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_RECENT_TEMP_TABLE_ADMISSION");
+    const char* temp = temp_environment ? temp_environment->c_str() : nullptr;
     ASSERT_NE(temp,nullptr); ASSERT_TRUE(std::string_view(temp)=="session-temp-insert-v1");
     window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
     RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
@@ -5395,7 +5434,8 @@ protected:
 
   static SQLPOINTER number(std::uintptr_t value) { return reinterpret_cast<SQLPOINTER>(value); }
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_EXPANDED_BINDING_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_EXPANDED_BINDING_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Expanded binding scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="recent-expanded-bindings-v1");
     window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
@@ -5697,10 +5737,12 @@ protected:
     std::vector<SQLWCHAR> result; for(unsigned char ch:value) { result.push_back(static_cast<SQLWCHAR>(ch)); } result.push_back(0); return result;
   }
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_METADATA_ID_NATIVE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_ID_NATIVE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Identifier metadata native scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="metadata-id-existing-read-only-v1");
-    const char* fixture=std::getenv("ODBCPP_REDSHIFT_METADATA_FIXTURE_REUSE_ADMISSION");
+    const auto fixture_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_FIXTURE_REUSE_ADMISSION");
+    const char* fixture = fixture_environment ? fixture_environment->c_str() : nullptr;
     ASSERT_NE(nullptr,fixture); ASSERT_TRUE(std::string_view(fixture)=="existing-quoted-key-and-absent-procedure-v1");
     setup_handles();
   }
@@ -5917,7 +5959,8 @@ protected:
   struct Processed { unsigned char before{0xc3}; SQLULEN value{91}; unsigned char after{0xd4}; } processed_;
   struct Output { unsigned char before{0xe1}; SQLINTEGER value{-91}; unsigned char after{0xf2}; } output_;
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_BIT_PRECISION_NATIVE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_BIT_PRECISION_NATIVE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "BIT numeric precision native scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="bit-numeric-precision-v1"); setup_handles();
   }
@@ -5990,7 +6033,8 @@ class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
   static constexpr const char* table_name_="odbcpp_temporal_escape_scope";
 
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_TEMPORAL_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEMPORAL_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Temporal escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="temporal-escapes-v1");
     // FIRST gate, before clocks/settings/handle/provider actions.
@@ -6204,7 +6248,8 @@ class RedshiftLocateEscapeRealTest : public RedshiftTemporalEscapeRealTest {
   std::array<char,32> hay_{};
   SQLLEN needle_length_{SQL_NTS},hay_length_{SQL_NTS};
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_LOCATE_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_LOCATE_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "LOCATE escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="locate-escapes-v1");
     // This suite has its own FIRST gate, not the temporal suite's admission.
@@ -6346,7 +6391,8 @@ class RedshiftLengthEscapeRealTest : public RedshiftLocateEscapeRealTest {
   IntegerCell raw_{};SQLLEN raw_length_{97};
   std::array<char,32> input_{};SQLLEN input_length_{SQL_NTS};
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_LENGTH_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_LENGTH_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "LENGTH escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="length-escapes-v1");
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -6477,7 +6523,8 @@ class RedshiftCalendarEscapeRealTest : public RedshiftLocateEscapeRealTest {
   static constexpr std::size_t fixture_columns_=13,fixture_rows_=4,fixture_cells_=52;
   static_assert(fixture_columns_*fixture_rows_==fixture_cells_);
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_CALENDAR_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_CALENDAR_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Calendar escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="calendar-escapes-v1");
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -6624,7 +6671,8 @@ class RedshiftClockEscapeRealTest : public RedshiftLocateEscapeRealTest {
   static constexpr std::size_t fixture_columns_=13,fixture_rows_=4,fixture_cells_=52;
   static_assert(fixture_columns_*fixture_rows_==fixture_cells_);
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_CLOCK_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_CLOCK_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Clock escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="clock-escapes-v1");
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -6774,7 +6822,8 @@ protected:
   std::size_t property_bytes_{};
 
   void SetUp() override {
-    const char* marker = std::getenv("ODBCPP_REDSHIFT_FK_OBSERVATION_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_FK_OBSERVATION_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if (marker == nullptr) { GTEST_SKIP() << "FK observation scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker) == "fk-owning-observation-v1");
     window_end_ = rs::util::Clock::now() + std::chrono::seconds{60};
@@ -6954,7 +7003,8 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
     sql+=" FROM odbcpp_day_ordinal_escape_scope";sql+=prepared?" WHERE id=1":" ORDER BY id";return sql;
   }
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_DAY_ORDINAL_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_DAY_ORDINAL_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP()<<"Day ordinal escape scope is not admitted"; }
     const std::string_view expected=std::string_view(::testing::UnitTest::GetInstance()->current_test_info()->name())=="DirectDateTimestampOrdinalsAnsiWideNullAndRecovery"?"day_ordinal_date_ts_direct_v1":"day_ordinal_date_ts_prepared_v1";
     ASSERT_TRUE(std::string_view(marker)==expected);
@@ -7133,7 +7183,8 @@ class RedshiftLogFloat8EscapeRealTest : public RedshiftLocateEscapeRealTest {
         "SELECT id,{fn LOG(x)},LN(x),{fn LOG10(x)},LOG(x) FROM odbcpp_log_float8_escape_scope ORDER BY id";
   }
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_LOG_FLOAT8_ESCAPE_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_LOG_FLOAT8_ESCAPE_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP()<<"FLOAT8 logarithm escape scope is not admitted"; }
     const std::string_view expected=std::string_view(::testing::UnitTest::GetInstance()->current_test_info()->name())=="DirectFloat8NaturalBaseTenAnsiWideNullAndRecovery"?"log_float8_direct_v1":"log_float8_prepared_v1";
     ASSERT_TRUE(std::string_view(marker)==expected);
@@ -7316,7 +7367,8 @@ class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeReal
   SQLLEN date_output_length_{97};
   static std::string metadata_sql(){return "SELECT CAST(? AS INTEGER),CAST(? AS DATE),CAST(? AS TIMESTAMP)";}
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_CONNECTION_METADATA_TIMEOUT_ADMISSION");
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_CONNECTION_METADATA_TIMEOUT_ADMISSION");
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr){GTEST_SKIP()<<"Connected metadata timeout happy scope not admitted";}
     ASSERT_EQ(std::string_view("connection_metadata_timeout_happy_v1"),std::string_view(marker));
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -7444,7 +7496,8 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
                    "login_timeout_options_happy_v1");
   }
   void setup_admitted(const char* environment, const char* expected_marker) {
-    const char* marker=std::getenv(environment);
+    const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment(environment);
+    const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr){GTEST_SKIP()<<"Selected happy scope not admitted";}
     ASSERT_EQ(std::string_view(expected_marker),std::string_view(marker));
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
@@ -7724,7 +7777,8 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_READ_ONLY_ADMISSION", "readonly_owned_fixture_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const char* name = std::getenv("ODBCPP_REDSHIFT_READ_ONLY_TABLE");
+    const auto name_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_READ_ONLY_TABLE");
+    const char* name = name_environment ? name_environment->c_str() : nullptr;
     ASSERT_NE(nullptr, name);
     const std::string_view selected(name);
     constexpr std::string_view prefix = "odbcpp_readonly_";
@@ -8426,7 +8480,7 @@ class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
       ASSERT_TRUE(cap(window_end_, true));
       ASSERT_TRUE(observed(SQLFetch(statement)));
       SQLLEN bytes = 66;
-      for (SQLUSMALLINT column : {1, 2, 3}) {
+      for (SQLUSMALLINT column : std::array<SQLUSMALLINT, 3>{1, 2, 3}) {
         SQLCHAR value = 71;
         ASSERT_TRUE(cap(window_end_, true));
         ASSERT_TRUE(observed(SQLGetData(statement, column, SQL_C_CHAR, &value, 1, &bytes)));
@@ -8624,7 +8678,7 @@ class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
       ASSERT_GT(bytes, 0); ASSERT_LT(bytes, static_cast<SQLLEN>(sizeof(cell.value)));
       EXPECT_EQ(77, cell.guard); EXPECT_EQ(0, cell.value[static_cast<std::size_t>(bytes)]);
       catalogs.emplace_back(reinterpret_cast<char*>(cell.value), static_cast<std::size_t>(bytes));
-      for (SQLUSMALLINT column : {2, 3, 4, 5}) {
+      for (SQLUSMALLINT column : std::array<SQLUSMALLINT, 4>{2, 3, 4, 5}) {
         SQLCHAR unchanged = 71; ASSERT_TRUE(cap(window_end_, true));
         ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, &unchanged, 1, &bytes)));
         EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, unchanged);
@@ -8681,8 +8735,10 @@ class RedshiftMetadataScopeShowRealTest : public RedshiftMetadataScopeRealTest {
     const auto existing_name = [](const char* value) {
       return value && *value && std::strlen(value) <= 128 && rs::odbc::utf8_code_point_count(value).has_value();
     };
-    const char* second = std::getenv("ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE");
-    const char* schema = std::getenv("ODBCPP_REDSHIFT_METADATA_SCOPE_COMMON_SCHEMA");
+    const auto second_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE");
+    const char* second = second_environment ? second_environment->c_str() : nullptr;
+    const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_SCOPE_COMMON_SCHEMA");
+    const char* schema = schema_environment ? schema_environment->c_str() : nullptr;
     ASSERT_TRUE(existing_name(second)); ASSERT_TRUE(existing_name(schema));
     second_database_ = second; common_schema_ = schema; ASSERT_NE("odbcpp_pilot", second_database_);
     // Explicit finite controls are prerequisites, not silently enlarged here.
@@ -8818,7 +8874,7 @@ TEST_F(RedshiftMetadataScopeShowRealTest, TwoVisibleDatabasesKeepCommonSchemaIde
     ASSERT_TRUE(observed(rc));
     if (++rows > 64) { unknown_completion_ = true; FAIL() << "Schema coverage exceeded admitted row bound"; }
     std::string catalog, schema;
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::array<SQLUSMALLINT, 2>{1, 2}) {
       struct { SQLCHAR value[512]{}; SQLCHAR guard = 77; } cell; SQLLEN bytes = -1;
       ASSERT_TRUE(cap(window_end_, true));
       ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, cell.value, sizeof(cell.value), &bytes)));
@@ -8828,7 +8884,7 @@ TEST_F(RedshiftMetadataScopeShowRealTest, TwoVisibleDatabasesKeepCommonSchemaIde
     }
     EXPECT_TRUE(std::binary_search(expected_catalogs.begin(), expected_catalogs.end(), catalog));
     EXPECT_TRUE(identities.emplace(catalog, schema).second);
-    for (SQLUSMALLINT column : {3, 4, 5}) {
+    for (SQLUSMALLINT column : std::array<SQLUSMALLINT, 3>{3, 4, 5}) {
       SQLCHAR unchanged = 71; SQLLEN bytes = 97; ASSERT_TRUE(cap(window_end_, true));
       ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, &unchanged, 1, &bytes)));
       EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, unchanged);
@@ -8910,7 +8966,7 @@ class RedshiftNegativeNumericScaleRealTest : public RedshiftLoginTimeoutOptionsR
         reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(scale)), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(desc, column, SQL_DESC_DATA_PTR, data, 0));
   }
-  void small(const SQL_NUMERIC_STRUCT& value, SQLSMALLINT precision,
+  void expect_small_numeric(const SQL_NUMERIC_STRUCT& value, SQLSMALLINT precision,
              SQLSMALLINT scale, unsigned coefficient, unsigned sign) {
     EXPECT_EQ(precision, value.precision); EXPECT_EQ(scale, value.scale);
     EXPECT_EQ(sign, value.sign); EXPECT_EQ(coefficient, value.val[0]);
@@ -8937,14 +8993,14 @@ TEST_F(RedshiftNegativeNumericScaleRealTest, DescriptorLossNullOwnershipAndRecov
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
   SQL_NUMERIC_STRUCT numeric{};
   std::memcpy(&numeric, numeric_buffer, sizeof(numeric));
-  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -3, 12, 1));
+  ASSERT_NO_FATAL_FAILURE(expect_small_numeric(numeric, 2, -3, 12, 1));
   EXPECT_EQ(sizeof(numeric), static_cast<std::size_t>(length));
   EXPECT_EQ(SQL_ROW_SUCCESS, status); EXPECT_EQ(1u, fetched);
   ASSERT_NO_FATAL_FAILURE(dimensions(ard, 2, 2, -1));
   ASSERT_TRUE(cap(window_end_, true));
   ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE, &numeric, 0, &length),
       SQL_SUCCESS_WITH_INFO, "01S07"));
-  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -1, 12, 0));
+  ASSERT_NO_FATAL_FAILURE(expect_small_numeric(numeric, 2, -1, 12, 0));
   ASSERT_NO_FATAL_FAILURE(dimensions(ard, 3, 5, -1));
   std::memset(&numeric, 0x5a, sizeof(numeric)); const auto poison = numeric; length = 73;
   ASSERT_TRUE(cap(window_end_, true));
@@ -8967,13 +9023,13 @@ TEST_F(RedshiftNegativeNumericScaleRealTest, DescriptorLossNullOwnershipAndRecov
   ASSERT_TRUE(cap(window_end_, true));
   ASSERT_TRUE(observed(SQLGetData(hstmt_, 6, SQL_C_NUMERIC, &numeric, 0, &length),
       SQL_SUCCESS_WITH_INFO, "01S07"));
-  ASSERT_NO_FATAL_FAILURE(small(numeric, 38, 0, 123, 1));
+  ASSERT_NO_FATAL_FAILURE(expect_small_numeric(numeric, 38, 0, 123, 1));
 
   ASSERT_NO_FATAL_FAILURE(dimensions(ard, 1, 2, -1, numeric_buffer));
   ASSERT_TRUE(cap(window_end_, true));
   ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_SUCCESS_WITH_INFO, "01S07"));
   std::memcpy(&numeric, numeric_buffer, sizeof(numeric));
-  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -1, 12, 0));
+  ASSERT_NO_FATAL_FAILURE(expect_small_numeric(numeric, 2, -1, 12, 0));
   EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO, status); EXPECT_EQ(1u, fetched);
   output.fill(0x5a); length = 73;
   ASSERT_TRUE(cap(window_end_, true));
@@ -8988,7 +9044,7 @@ TEST_F(RedshiftNegativeNumericScaleRealTest, DescriptorLossNullOwnershipAndRecov
   for (const auto byte : output) EXPECT_EQ(0x5a, byte);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
   std::memcpy(&numeric, numeric_buffer, sizeof(numeric));
-  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -1, 12, 1));
+  ASSERT_NO_FATAL_FAILURE(expect_small_numeric(numeric, 2, -1, 12, 1));
   EXPECT_EQ(0x5a, output.front()); EXPECT_EQ(0x5a, output.back());
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
@@ -10452,7 +10508,8 @@ TEST_F(RedshiftNumericBinaryInputRealTest, NumericBinaryInputPairsNullApdAndOwni
 void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
   // Source authorship/compile only. A protected finite checkpoint must admit
   // this exact case and the existing composite-PK fixture before any body runs.
-  const auto* enabled=std::getenv("ODBCPP_REDSHIFT_CURRENT_PK_NATIVE");
+  const auto enabled_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_CURRENT_PK_NATIVE");
+  const char* enabled = enabled_environment ? enabled_environment->c_str() : nullptr;
   if (!enabled || std::string_view(enabled)!="1") {
     GTEST_SKIP()<<"Separately admitted current-database primary-key fixture";
   }
@@ -10463,7 +10520,7 @@ void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(5),0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(SQL_FALSE),0));
   std::array<SQLCHAR,1025> name{};SQLSMALLINT length=0;
-  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_DATABASE_NAME,name.data(),name.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_DATABASE_NAME,name.data(),fixture_smallint_length(name.size()),&length));
   ASSERT_GT(length,0);ASSERT_LT(static_cast<std::size_t>(length),name.size());
   const std::string database(reinterpret_cast<char*>(name.data()),length);
   const std::string schema="odbcpp_fixture",table="m2_catalog_parent_20261003_c01";
@@ -10479,8 +10536,8 @@ void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
     } else {
       result=SQLPrimaryKeys(checkpoint_statement(hstmt_),explicit_catalog?reinterpret_cast<SQLCHAR*>(const_cast<char*>(database.data())):nullptr,
           explicit_catalog?static_cast<SQLSMALLINT>(database.size()):0,
-          reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema.data())),schema.size(),
-          reinterpret_cast<SQLCHAR*>(const_cast<char*>(table.data())),table.size());
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema.data())),fixture_smallint_length(schema.size()),
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(table.data())),fixture_smallint_length(table.size()));
     }
     ASSERT_TRUE(catalog_succeeded(result))<<metadata_diagnostic();
     SQLSMALLINT columns=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(checkpoint_statement(hstmt_),&columns));ASSERT_EQ(6,columns);
@@ -10516,7 +10573,8 @@ TEST_F(RedshiftRealTest, CurrentDatabasePrimaryKeyNullCatalogWide) {
 
 
 void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
-  const auto* enabled = std::getenv("ODBCPP_REDSHIFT_CURRENT_FK_NATIVE");
+  const auto enabled_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_CURRENT_FK_NATIVE");
+  const char* enabled = enabled_environment ? enabled_environment->c_str() : nullptr;
   if (!enabled || std::string_view(enabled) != "1") {
     GTEST_SKIP() << "Separately admitted current-database foreign-key fixture";
   }
@@ -10530,7 +10588,7 @@ void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
       reinterpret_cast<SQLPOINTER>(SQL_FALSE), 0));
   std::array<SQLCHAR, 1025> name{};
   SQLSMALLINT length = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc_, SQL_DATABASE_NAME, name.data(), name.size(), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc_, SQL_DATABASE_NAME, name.data(), fixture_smallint_length(name.size()), &length));
   ASSERT_GT(length, 0);
   ASSERT_LT(static_cast<std::size_t>(length), name.size());
   const std::string database(reinterpret_cast<char*>(name.data()), length);
@@ -10559,23 +10617,23 @@ void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
         ASSERT_TRUE(pk);
         ASSERT_TRUE(fk);
         result = SQLForeignKeysW(checkpoint_statement(hstmt_),
-            primary && explicit_catalog ? db->data() : nullptr, primary && explicit_catalog ? db->size() : 0,
-            primary ? sc->data() : nullptr, primary ? sc->size() : 0,
-            primary ? pk->data() : nullptr, primary ? pk->size() : 0,
-            foreign && explicit_catalog ? db->data() : nullptr, foreign && explicit_catalog ? db->size() : 0,
-            foreign ? sc->data() : nullptr, foreign ? sc->size() : 0,
-            foreign ? fk->data() : nullptr, foreign ? fk->size() : 0);
+            primary && explicit_catalog ? db->data() : nullptr, fixture_smallint_length(primary && explicit_catalog ? db->size() : 0),
+            primary ? sc->data() : nullptr, fixture_smallint_length(primary ? sc->size() : 0),
+            primary ? pk->data() : nullptr, fixture_smallint_length(primary ? pk->size() : 0),
+            foreign && explicit_catalog ? db->data() : nullptr, fixture_smallint_length(foreign && explicit_catalog ? db->size() : 0),
+            foreign ? sc->data() : nullptr, fixture_smallint_length(foreign ? sc->size() : 0),
+            foreign ? fk->data() : nullptr, fixture_smallint_length(foreign ? fk->size() : 0));
       } else {
         const auto chars = [](const std::string& text) {
           return reinterpret_cast<SQLCHAR*>(const_cast<char*>(text.data()));
         };
         result = SQLForeignKeys(checkpoint_statement(hstmt_),
-            primary && explicit_catalog ? chars(database) : nullptr, primary && explicit_catalog ? database.size() : 0,
-            primary ? chars(schema) : nullptr, primary ? schema.size() : 0,
-            primary ? chars(parent) : nullptr, primary ? parent.size() : 0,
-            foreign && explicit_catalog ? chars(database) : nullptr, foreign && explicit_catalog ? database.size() : 0,
-            foreign ? chars(schema) : nullptr, foreign ? schema.size() : 0,
-            foreign ? chars(child) : nullptr, foreign ? child.size() : 0);
+            primary && explicit_catalog ? chars(database) : nullptr, fixture_smallint_length(primary && explicit_catalog ? database.size() : 0),
+            primary ? chars(schema) : nullptr, fixture_smallint_length(primary ? schema.size() : 0),
+            primary ? chars(parent) : nullptr, fixture_smallint_length(primary ? parent.size() : 0),
+            foreign && explicit_catalog ? chars(database) : nullptr, fixture_smallint_length(foreign && explicit_catalog ? database.size() : 0),
+            foreign ? chars(schema) : nullptr, fixture_smallint_length(foreign ? schema.size() : 0),
+            foreign ? chars(child) : nullptr, fixture_smallint_length(foreign ? child.size() : 0));
       }
       ASSERT_TRUE(catalog_succeeded(result)) << metadata_diagnostic();
       expect_catalog_fields(fields);
@@ -10625,13 +10683,16 @@ TEST_F(RedshiftRealTest, CurrentDatabaseForeignKeyNullCatalogWide) {
 // A future protected runner must select an existing physical VARBYTE table;
 // authoring/compiling this fixture provides no SQL, DDL or cloud authority.
 void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
-  const char* admission = std::getenv("ODBCPP_REDSHIFT_VARBYTE_CATALOG_TYPE_ADMISSION");
+  const auto admission_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_VARBYTE_CATALOG_TYPE_ADMISSION");
+  const char* admission = admission_environment ? admission_environment->c_str() : nullptr;
   if (!admission) {
     GTEST_SKIP() << "Separately admitted existing VARBYTE table metadata";
   }
   ASSERT_EQ(std::string_view("varbyte-catalog-type-v1"), std::string_view(admission));
-  const char* schema_input = std::getenv("ODBCPP_REDSHIFT_VARBYTE_CATALOG_SCHEMA");
-  const char* table_input = std::getenv("ODBCPP_REDSHIFT_VARBYTE_CATALOG_TABLE");
+  const auto schema_input_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_VARBYTE_CATALOG_SCHEMA");
+  const char* schema_input = schema_input_environment ? schema_input_environment->c_str() : nullptr;
+  const auto table_input_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_VARBYTE_CATALOG_TABLE");
+  const char* table_input = table_input_environment ? table_input_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, schema_input);
   ASSERT_NE(nullptr, table_input);
   const std::string schema{schema_input}, table{table_input};
@@ -10664,7 +10725,7 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
     std::array<SQLCHAR, 1025> database_buffer{};
     SQLSMALLINT database_length = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc_, SQL_DATABASE_NAME, database_buffer.data(),
-        database_buffer.size(), &database_length));
+        fixture_smallint_length(database_buffer.size()), &database_length));
     ASSERT_GT(database_length, 0);
     ASSERT_LT(static_cast<std::size_t>(database_length), database_buffer.size());
     const std::string database{reinterpret_cast<char*>(database_buffer.data()), static_cast<std::size_t>(database_length)};
@@ -10676,14 +10737,14 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
         ASSERT_TRUE(db);
         ASSERT_TRUE(sc);
         ASSERT_TRUE(target);
-        status = SQLColumnsW(checkpoint_statement(hstmt_), db->data(), db->size(), sc->data(), sc->size(),
-            target->data(), target->size(), nullptr, 0);
+        status = SQLColumnsW(checkpoint_statement(hstmt_), db->data(), fixture_smallint_length(db->size()), sc->data(), fixture_smallint_length(sc->size()),
+            target->data(), fixture_smallint_length(target->size()), nullptr, 0);
       } else {
         const auto chars = [](const std::string& text) {
           return reinterpret_cast<SQLCHAR*>(const_cast<char*>(text.data()));
         };
-        status = SQLColumns(checkpoint_statement(hstmt_), chars(database), database.size(), chars(schema_pattern), schema_pattern.size(),
-            chars(table_pattern), table_pattern.size(), nullptr, 0);
+        status = SQLColumns(checkpoint_statement(hstmt_), chars(database), fixture_smallint_length(database.size()), chars(schema_pattern), fixture_smallint_length(schema_pattern.size()),
+            chars(table_pattern), fixture_smallint_length(table_pattern.size()), nullptr, 0);
       }
       ASSERT_TRUE(catalog_succeeded(status)) << metadata_diagnostic();
       SQLSMALLINT columns = 0;
@@ -10758,13 +10819,16 @@ TEST_F(RedshiftRealTest, VarbyteCatalogTypeClassificationWide) {
 // Separate future admission for metadata of an existing physical SUPER column.
 // No SUPER payload, OID, maximum, DDL or live execution is qualified here.
 void RedshiftRealTest::super_catalog_type_classification(bool wide) {
-  const char* admission = std::getenv("ODBCPP_REDSHIFT_SUPER_CATALOG_TYPE_ADMISSION");
+  const auto admission_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SUPER_CATALOG_TYPE_ADMISSION");
+  const char* admission = admission_environment ? admission_environment->c_str() : nullptr;
   if (!admission) {
     GTEST_SKIP() << "Separately admitted existing SUPER table metadata";
   }
   ASSERT_EQ(std::string_view("super-catalog-type-v1"), std::string_view(admission));
-  const char* schema_input = std::getenv("ODBCPP_REDSHIFT_SUPER_CATALOG_SCHEMA");
-  const char* table_input = std::getenv("ODBCPP_REDSHIFT_SUPER_CATALOG_TABLE");
+  const auto schema_input_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SUPER_CATALOG_SCHEMA");
+  const char* schema_input = schema_input_environment ? schema_input_environment->c_str() : nullptr;
+  const auto table_input_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SUPER_CATALOG_TABLE");
+  const char* table_input = table_input_environment ? table_input_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, schema_input);
   ASSERT_NE(nullptr, table_input);
   const std::string schema{schema_input}, table{table_input};
@@ -10888,13 +10952,16 @@ TEST_F(RedshiftRealTest, SuperCatalogTypeClassificationWide) {
 }
 
 void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
-  const char* admission = std::getenv("ODBCPP_REDSHIFT_SPATIAL_CATALOG_TYPE_ADMISSION");
+  const auto admission_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SPATIAL_CATALOG_TYPE_ADMISSION");
+  const char* admission = admission_environment ? admission_environment->c_str() : nullptr;
   if (!admission) {
     GTEST_SKIP() << "Separately admitted existing spatial table metadata";
   }
   ASSERT_EQ(std::string_view("spatial-catalog-type-v1"), std::string_view(admission));
-  const char* schema_input = std::getenv("ODBCPP_REDSHIFT_SPATIAL_CATALOG_SCHEMA");
-  const char* table_input = std::getenv("ODBCPP_REDSHIFT_SPATIAL_CATALOG_TABLE");
+  const auto schema_input_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SPATIAL_CATALOG_SCHEMA");
+  const char* schema_input = schema_input_environment ? schema_input_environment->c_str() : nullptr;
+  const auto table_input_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_SPATIAL_CATALOG_TABLE");
+  const char* table_input = table_input_environment ? table_input_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, schema_input);
   ASSERT_NE(nullptr, table_input);
   const std::string schema{schema_input}, table{table_input};
