@@ -1,7 +1,23 @@
 # Existing disposable Windows CI token owns installation; this never requests elevation.
-param([string]$Artifacts = 'package-artifacts')
+param([string]$Artifacts = 'package-artifacts', [switch]$VerifyCleanup)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+if ($VerifyCleanup) {
+    # Read-only mode grants no installer action and needs no administrator token.
+    $evidence = Join-Path $env:RUNNER_TEMP 'dual-product-package-evidence'
+    $summaryPath = Join-Path $evidence 'lifecycle/summary.json'
+    if (!(Test-Path -LiteralPath $summaryPath)) { throw 'Legacy package cases unrun: combined installer cleanup is unavailable.' }
+    $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+    $cleanup = @($summary.cleanup)
+    $names = @($cleanup | ForEach-Object product | Sort-Object) -join ','
+    if ($summary.result -notin @('PASS','FAIL') -or
+        $cleanup.Count -ne 2 -or $names -cne 'PostgreSQL,Redshift' -or
+        @($cleanup | Where-Object { !$_.owned_installation_absent -or $_.error }).Count -ne 0) {
+        throw 'Legacy package cases unrun: combined owned MSI cleanup is not verified.'
+    }
+    Write-Host 'Both owned installations are absent; independent legacy package cases may run.'
+    return
+}
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Unattended package qualification requires an already elevated disposable CI session; no elevation was requested.'

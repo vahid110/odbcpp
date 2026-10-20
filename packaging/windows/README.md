@@ -119,8 +119,11 @@ Routine installer qualification runs unattended in the existing disposable
 `tools/ci/windows-product-packages.ps1`: build the Redshift runtime/MSIs and both
 setup test programs, consume the same-run PostgreSQL MSI, then execute the
 combined lifecycle above before the existing PostgreSQL package checks. Raw MSI,
-CTest/GoogleTest and cleanup evidence is uploaded even on failure. The entry
-refuses a non-elevated session and never opens UAC or configures a privileged
+CTest/GoogleTest and cleanup evidence is uploaded even on failure. Independent
+legacy cases may run after an ordinary combined-test
+failure only when both owned MSI cleanups are verified; missing or unknown
+cleanup stops further installer mutations.
+The installer entry refuses a non-elevated session and never opens UAC or configures a privileged
 local helper. Actual local Power BI/Access testing remains separate; installing
 or updating its Program Files driver still requires local Windows consent.
 

@@ -28,7 +28,7 @@ BODY_SHA256 = {
     'build-and-test': 'a5f64cdc03b610e37ca827a9c189430effc5d21655f5b4d5fc7e13790dc77c3f',
     'redshift-build': '83dd943e7dad86a66e4c44124163bbd612194b914c19abba7fd702d218787048',
     'windows-live': '79bb1a40d5fa0a94938f1b4fa4a4165326919139b7d88387df0e15f35cca0517',
-    'windows-package': 'ad61ff8b26b2a9ef025e108ae866e46489bd681170f21425a07200eb4fe692be',
+    'windows-package': 'd3191013a82d6c6a45fe352f17c7d8888f12996877775fcd53991a99620842d8',
     'windows-linked-server': 'f7f15d6261db38ead9993bb28ea275523b1af5835780e1c28ed075844f536c0d',
     'linux-sanitizers': 'e302e94886a90342a0abf1b386d46afb5b36d13ea49c6802034ffbc12188d2ab',
     'linux-openssl-static': '04a0418d777e90f5fd04e9a1fcca6fdec7c4731630d11c765825ab29abd1d930',
@@ -160,7 +160,9 @@ class ThreePlatformScheduling(unittest.TestCase):
         block = self.blocks['windows-package']
         self.assertIn('needs: windows-live', block)
         self.assertLess(block.index('windows-product-packages.ps1'),
-                        block.index('run: ./tools/ci/windows-package.ps1'))
+                        block.index('./tools/ci/windows-package.ps1'))
+        self.assertIn('- name: Validate fresh-runner package lifecycle\n        if: always()', block)
+        self.assertIn('./tools/ci/windows-product-packages.ps1 -VerifyCleanup', block)
         self.assertIn('${{ runner.temp }}/dual-product-package-evidence', block)
         script = (ROOT/'tools/ci/windows-product-packages.ps1').read_text()
         self.assertIn('WindowsBuiltInRole]::Administrator', script)
