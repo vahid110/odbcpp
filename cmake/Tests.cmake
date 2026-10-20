@@ -280,9 +280,16 @@ add_test(
 set_tests_properties(test_crypto_manifest PROPERTIES LABELS "unit;architecture")
 
 if(WIN32)
-  get_filename_component(_linker_directory "${CMAKE_LINKER}" DIRECTORY)
-  find_program(ODBCPP_CRYPTO_INSPECTOR dumpbin
-    HINTS "${_linker_directory}")
+  add_test(
+    NAME test_crypto_inspector_without_tests
+    COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            "-DLINKER=${CMAKE_LINKER}"
+            "-DGENERATOR=${CMAKE_GENERATOR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoInspectorConfiguration.cmake)
+  set_tests_properties(test_crypto_inspector_without_tests
+    PROPERTIES LABELS "unit;architecture")
 elseif(APPLE)
   find_program(ODBCPP_CRYPTO_INSPECTOR otool)
 elseif(UNIX)
