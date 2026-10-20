@@ -184,7 +184,20 @@ TEST_F(LivePackageInputTest, RegistrySelectionRequiresExactRegularImageAndString
   ASSERT_TRUE(set_value(file_.native()));
   EXPECT_TRUE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_));
   EXPECT_FALSE(inputs::registered_driver_path_matches(HKEY_CURRENT_USER, key_name, file_.filename()));
+  // The temporary fixture and a Windows CI checkout may be on different drives.
+  // Use the fixture's directory so the relative value still resolves to the
+  // exact existing file, preserving the rejection assertion below.
+  struct RestoreCurrentDirectory {
+    fs::path previous = fs::current_path();
+    ~RestoreCurrentDirectory() {
+      std::error_code error;
+      fs::current_path(previous, error);
+      EXPECT_FALSE(error) << error.message();
+    }
+  } restore_current_directory;
+  fs::current_path(directory_);
   const auto relative = fs::relative(file_, fs::current_path());
+  ASSERT_FALSE(relative.empty());
   ASSERT_TRUE(relative.is_relative());
   ASSERT_EQ(file_, fs::canonical(relative));
   ASSERT_TRUE(set_value(relative.native()));

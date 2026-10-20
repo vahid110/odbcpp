@@ -114,6 +114,16 @@ product graph as `it_setup_registration`, default-off from registration until
 `ODBCPP_INSTALLED_SETUP_TESTS=ON`. The small entry point compiles the adapter test
 only; it does not establish a new product build or replace product regression.
 
+Routine installer qualification runs unattended in the existing disposable
+`windows-package` CI job. Its pre-existing administrator token runs
+`tools/ci/windows-product-packages.ps1`: build the Redshift runtime/MSIs and both
+setup test programs, consume the same-run PostgreSQL MSI, then execute the
+combined lifecycle above before the existing PostgreSQL package checks. Raw MSI,
+CTest/GoogleTest and cleanup evidence is uploaded even on failure. The entry
+refuses a non-elevated session and never opens UAC or configures a privileged
+local helper. Actual local Power BI/Access testing remains separate; installing
+or updating its Program Files driver still requires local Windows consent.
+
 This proves exact-import staging and fresh-process app-local loader origin for
 the packaged OpenSSL profile. It does not prove coexistence when another module
 has already loaded a same-basename crypto provider, symbol isolation, FIPS, or a

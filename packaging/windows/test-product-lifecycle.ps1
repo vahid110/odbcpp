@@ -1,4 +1,4 @@
-# Local x64 MSI coexistence/upgrade/removal. No database, cloud, DSN or GUI actions.
+# Native x64 MSI coexistence/upgrade/removal and owned User DSNs. No database/cloud/GUI calls.
 param(
     [Parameter(Mandatory=$true)][string]$PostgreSqlPackage,
     [Parameter(Mandatory=$true)][string]$RedshiftPackage,
@@ -165,7 +165,9 @@ try {
         $mapping = Get-ItemProperty -LiteralPath 'HKLM:/SOFTWARE/ODBC/ODBCINST.INI/ODBC Drivers'
         Assert ($null -eq $mapping.PSObject.Properties["ODBCPP $name"]) 'Refuse an existing driver mapping'
         $related = $installer.RelatedProducts($products[$name].upgrade)
-        try { Assert ($related.Count -eq 0) 'Refuse an existing product in this upgrade family' }
+        # Windows Installer's StringList is enumerable; its COM Count member is
+        # not exposed by PowerShell. Enumerate it before checking for collisions.
+        try { Assert (@($related).Count -eq 0) 'Refuse an existing product in this upgrade family' }
         finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($related) }
     }
     $pg = Pin-Package $PostgreSqlPackage 'PostgreSQL' '1.0.0'
