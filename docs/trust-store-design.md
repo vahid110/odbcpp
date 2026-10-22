@@ -208,6 +208,10 @@ administrator distrust is respected through the distro tooling.
   handshake, and the provider's error detail is kept in the diagnostic.
 - `SSLCADIR`: must be an existing directory; OpenSSL hash-named lookup.
   A directory with no matching hash fails at verification.
+  POSIX uses the selected OpenSSL provider's native directory policy, which can
+  skip malformed entries in newer releases. The Windows UTF-8 lookup stops at
+  a malformed entry before trying later suffixes. Neither policy makes malformed
+  bytes a trust anchor or falls back to the system store.
 - Paths are UTF-8 (ODBC wide input is converted); spaces and non-ASCII paths
   are supported. Files are opened by the provider (`BIO_new_file`, which
   converts UTF-8 to a wide path on Windows); type checks use the wide

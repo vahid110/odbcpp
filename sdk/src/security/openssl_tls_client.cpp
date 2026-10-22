@@ -116,8 +116,11 @@ extern "C" int odbcpp_trust_no_password(char*, int, int, void*) noexcept {
   return 0;
 }
 
+// AWS-LC exposes the X509_LU_* values without OpenSSL's lookup-type typedef.
+// This private parser only discriminates those values; callbacks retain their
+// provider-declared signatures.
 std::string load_pem_file(X509_STORE* store, const std::string& path,
-                          X509_LOOKUP_TYPE type = X509_LU_NONE,
+                          int type = X509_LU_NONE,
                           std::uintmax_t* remaining_bytes = nullptr) {
   std::error_code error;
   std::filesystem::file_status status;

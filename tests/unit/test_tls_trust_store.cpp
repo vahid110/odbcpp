@@ -285,6 +285,31 @@ TEST_F(TlsTrustStoreTest, HashedDirectoryIgnoresWrongHashAndCrlSuffixForCertific
   EXPECT_FALSE(client.peer_identity_verified());
 }
 
+TEST_F(TlsTrustStoreTest, MalformedHashEntriesCannotSupplyTheMissingIssuer) {
+  const auto directory = temp.path() / "malformed without issuer";
+  std::filesystem::create_directories(directory);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  pki::write_file(hash_entry(directory, hash, 0), "not a certificate\n");
+  {
+    TlsClient client;
+    client.configure(custom_directory(directory));
+    EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+    EXPECT_FALSE(client.peer_identity_verified());
+  }
+  const auto collision = pki::issue({"ODBCPP Test Root", true, {}, {}, ""}, nullptr);
+  ASSERT_EQ(hash, ::X509_subject_name_hash(collision.cert.get()));
+  pki::write_file(hash_entry(directory, hash, 0), pki::pem(collision.cert.get()) +
+      "-----BEGIN CERTIFICATE-----\nnot valid base64!\n-----END CERTIFICATE-----\n");
+  TlsClient wrong_key;
+  wrong_key.configure(custom_directory(directory));
+  EXPECT_EQ(connect(wrong_key).state, TlsStepState::TlsError);
+  EXPECT_FALSE(wrong_key.peer_identity_verified());
+}
+
+#ifdef _WIN32
+// These fail-stop assertions specify the SDK's Windows UTF-8 directory lookup.
+// POSIX uses native OpenSSL: newer releases can skip malformed hash files and
+// load a valid later suffix. That is not acceptance of the malformed bytes.
 TEST_F(TlsTrustStoreTest, HashedDirectoryStopsAtMalformedEntry) {
   const auto directory = temp.path() / "malformed prefix";
   std::filesystem::create_directories(directory);
@@ -320,6 +345,7 @@ TEST_F(TlsTrustStoreTest, HashedDirectoryStopsAfterValidCollisionWithMalformedTa
   EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
   EXPECT_TRUE(repaired.peer_identity_verified());
 }
+#endif
 
 TEST_F(TlsTrustStoreTest, HashedDirectoryReadsNewFileAfterContextCreation) {
   const auto directory = temp.path() / "late issuer";
