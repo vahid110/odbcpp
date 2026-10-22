@@ -1676,8 +1676,17 @@ BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     std::span<const std::uint32_t> ids, rs::util::Deadline deadline) {
   ResolvedTypeMap resolved;
   std::vector<std::uint32_t> unresolved;
+  // Spatial result families are not parameter families: binary input is
+  // VARBYTE, which Redshift does not convert implicitly to GEOMETRY/GEOGRAPHY.
+  // Parameter descriptions keep the baseline unknown fallback.
+  const auto describe_parameter = [&](std::uint32_t id, std::int32_t modifier) {
+    if (catalog_profile_ == PgCatalogProfile::Redshift &&
+        (id == 3000 || id == 3001 || id == 3999))
+      return GenericDatabaseConnection::describe_type(id, -1, modifier);
+    return describe_type(id, -1, modifier);
+  };
   for (const auto id : ids) {
-    const auto type = describe_type(id, -1, -1);
+    const auto type = describe_parameter(id, -1);
     const auto inserted = resolved.emplace(id, type).second;
     if (inserted && id != 0 && !type.known) unresolved.push_back(id);
   }
@@ -1749,7 +1758,7 @@ BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
           error.session_state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
       return error;
     }
-    resolved.at(original) = describe_type(base, -1, modifier);
+    resolved.at(original) = describe_parameter(base, modifier);
   }
   return resolved;
 }

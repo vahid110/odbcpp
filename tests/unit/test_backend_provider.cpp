@@ -422,7 +422,7 @@ TEST(CharacterMetadataPolicyTest, DisabledUnknownZeroAndOtherFamiliesPreserveAct
       EXPECT_EQ(type, selected.type); EXPECT_EQ(65535u, selected.column_size);
     }
   }
-  for (const auto native : {NativeTypeInfo{ScalarType::VarChar, 65535, 0, false},
+  for (const auto& native : {NativeTypeInfo{ScalarType::VarChar, 65535, 0, false},
                             NativeTypeInfo{ScalarType::VarChar, 0, 0, true}}) {
     const auto selected = apply_character_metadata_policy(native, {1, 7});
     EXPECT_EQ(native.type, selected.type); EXPECT_EQ(native.column_size, selected.column_size);

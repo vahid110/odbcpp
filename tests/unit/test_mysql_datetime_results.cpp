@@ -58,7 +58,7 @@ TEST(MySqlDatetimeResultsTest, DirectAndBinaryAffinityIsSymmetricBeforeNullOrVal
     auto direct=query_detail::row(null?direct_null:direct_date,good,0,errors,datetime);ASSERT_TRUE(direct);
     EXPECT_EQ(*binary,*direct);EXPECT_TRUE(errors.empty());
   }
-  for (const auto info:{NativeTypeInfo{ScalarType::BigInt,19,0,true},NativeTypeInfo{ScalarType::Timestamp,26,6,false},
+  for (const auto& info:{NativeTypeInfo{ScalarType::BigInt,19,0,true},NativeTypeInfo{ScalarType::Timestamp,26,6,false},
       NativeTypeInfo{ScalarType::Timestamp,25,6,true},NativeTypeInfo{ScalarType::Timestamp,19,-1,true},
       NativeTypeInfo{ScalarType::Timestamp,27,7,true}}) {
     const std::vector<ResultColumnMetadata> bad{{"datetime",info}};

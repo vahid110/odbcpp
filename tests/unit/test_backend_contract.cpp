@@ -4512,6 +4512,12 @@ TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelected
       for(const char* spatial:{"geometry","geography"}) {
         ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLCHAR spatial_name[32]{};SQLLEN spatial_length=-1;
         ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,spatial_name,sizeof(spatial_name),&spatial_length));EXPECT_STREQ(spatial,reinterpret_cast<char*>(spatial_name));
+        for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLINTEGER>{2,SQL_LONGVARBINARY},{3,1048447},{8,SQL_FALSE},{16,SQL_LONGVARBINARY}}) {
+          SQLINTEGER value=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&spatial_length));EXPECT_EQ(expected,value);
+        }
+        for(const SQLUSMALLINT field:{SQLUSMALLINT{4},SQLUSMALLINT{5},SQLUSMALLINT{6}}) {
+          SQLCHAR text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_CHAR,text,sizeof(text),&spatial_length));EXPECT_EQ(SQL_NULL_DATA,spatial_length);
+        }
       }
     }
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
@@ -4528,6 +4534,12 @@ TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelected
   {
     SQLCHAR name[32]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,name,sizeof(name),&indicator));
     ASSERT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(name,"super",6));
+    for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLINTEGER>{2,SQL_LONGVARCHAR},{3,16777216},{8,SQL_TRUE},{9,SQL_SEARCHABLE},{16,SQL_LONGVARCHAR}}) {
+      SQLINTEGER value=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(expected,value);
+    }
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{4},SQLUSMALLINT{5},SQLUSMALLINT{6}}) {
+      SQLCHAR text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_CHAR,text,sizeof(text),&indicator));EXPECT_EQ(SQL_NULL_DATA,indicator);
+    }
   }
   EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_ALL_TYPES));std::size_t selected[3]{};

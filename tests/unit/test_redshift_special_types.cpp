@@ -65,6 +65,7 @@ std::string complete(std::string_view tag) {
 // Shared script: SQL text -> backend frames before ReadyForQuery.
 struct WireScript {
   std::map<std::string, std::string> responses;
+  std::vector<std::pair<std::string, std::string>> prefix_responses;
   std::vector<std::string> received_sql;
 };
 
@@ -103,6 +104,9 @@ class RedshiftWire final : public rs::core::transport::ITransport {
     script_->received_sql.push_back(sql);
     const auto found = script_->responses.find(sql);
     if (found != script_->responses.end()) return found->second;
+    for (const auto& [prefix, response] : script_->prefix_responses) {
+      if (sql.starts_with(prefix)) return response;
+    }
     static constexpr char error[] = "SERROR\0C42601\0Munscripted statement\0";
     return frame('E', std::string_view(error, sizeof(error)));
   }
@@ -297,6 +301,9 @@ TEST_F(RedshiftSpecialTypesTest, SuperResultMetadataIsLongVarcharNamedSuper) {
   EXPECT_EQ(SQL_NO_TOTAL, column_number(1, SQL_DESC_OCTET_LENGTH));
   EXPECT_EQ(SQL_NO_TOTAL, column_number(1, SQL_DESC_DISPLAY_SIZE));
   EXPECT_EQ(SQL_TRUE, column_number(1, SQL_DESC_CASE_SENSITIVE));
+  // Name-derived fields follow the advertised "super" row, not the "text" family.
+  EXPECT_EQ("", column_text(1, SQL_DESC_LITERAL_PREFIX));
+  EXPECT_EQ("", column_text(1, SQL_DESC_LITERAL_SUFFIX));
   SQLHDESC ird = nullptr;
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
   char name[16]{};
@@ -622,24 +629,35 @@ TEST_F(RedshiftSpecialTypesTest, TypeInfoAdvertisesSpatialAfterVarbyteWithDocume
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
 }
 
-TEST_F(RedshiftSpecialTypesTest, SpatialParameterDescriptionIsNamedAndBinaryInputStaysVarbyte) {
+TEST_F(RedshiftSpecialTypesTest, SpatialParameterDescriptionKeepsBaselineUnknownFamily) {
+  // Review finding: describing a spatial parameter as LONGVARBINARY would steer
+  // applications to a VARBYTE bind that Redshift does not convert implicitly.
+  // Parameter metadata keeps the baseline unknown fallback and its discovery.
   script->responses["INSERT INTO spatial_fixture VALUES ($1, $2)"] =
       frame('1', "") + frame('t', be16(2) + be32(3000) + be32(3001)) + frame('n', "");
+  script->prefix_responses.emplace_back("WITH RECURSIVE type_chain",
+      row_description({{"original_oid", 25}, {"type_oid", 25}, {"type_modifier", 25}}) +
+      data_row({std::string("3000"), std::string("3000"), std::string("-1")}) +
+      data_row({std::string("3001"), std::string("3001"), std::string("-1")}) + complete("SELECT 2"));
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>("INSERT INTO spatial_fixture VALUES (?, ?)")), SQL_NTS));
   SQLHDESC ipd = nullptr;
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_PARAM_DESC, &ipd, 0, nullptr));
-  const char* names[]{"geometry", "geography"};
   for (SQLUSMALLINT parameter = 1; parameter <= 2; ++parameter) {
+    SCOPED_TRACE(parameter);
     SQLSMALLINT type = -1;
     SQLULEN size = 99;
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, parameter, &type, &size, nullptr, nullptr));
-    EXPECT_EQ(SQL_LONGVARBINARY, type);
-    EXPECT_EQ(0u, size);
+    EXPECT_EQ(SQL_VARCHAR, type);
+    EXPECT_NE(SQL_LONGVARBINARY, type);
     char name[16]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, parameter, SQL_DESC_TYPE_NAME, name, sizeof(name), nullptr));
-    EXPECT_STREQ(names[parameter - 1], name);
+    EXPECT_STRNE("geometry", name);
+    EXPECT_STRNE("geography", name);
   }
+  const auto discovery = std::count_if(script->received_sql.begin(), script->received_sql.end(),
+      [](const std::string& sql) { return sql.starts_with("WITH RECURSIVE type_chain"); });
+  EXPECT_EQ(1, discovery); // Unchanged baseline resolver behaviour for unknown OIDs.
 }
 
 } // namespace

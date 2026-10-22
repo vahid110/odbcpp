@@ -65,11 +65,17 @@ fails closed on an inconsistent payload rather than guessing (see below).
 * Cells are server-produced JSON text, validated as UTF-8 and preserved byte for
   byte. No driver-side JSON parsing or reserialization. SQL NULL is a NULL cell
   (`SQL_NULL_DATA`); the JSON literal `null` is the 4-byte text `null`.
-* TYPE_NAME / LOCAL_TYPE_NAME `super` for IRD, `SQLColAttribute`,
-  `SQLDescribeParam`/IPD, matching SQLColumns' lower-case catalog label.
+* TYPE_NAME / LOCAL_TYPE_NAME `super` for the IRD (`SQLColAttribute`,
+  `SQLGetDescField`) and the IPD after a parameter description (`SQLDescribeParam`
+  itself returns no name), matching SQLColumns' lower-case catalog label. The
+  name-derived descriptor fields (literal prefix/suffix, case sensitivity) follow
+  the advertised `super` row, not the generic `text` family row.
 * SQLGetTypeInfo row `super`, `SQL_LONGVARCHAR`, COLUMN_SIZE 16777216 (D2), no
   literal prefix/suffix (no SUPER literal syntax; a quoted literal is a VARCHAR
   that the server converts into a SUPER *string* scalar), case sensitive.
+  **Compatibility note:** this is now the only Redshift `SQL_LONGVARCHAR` row.
+  DDL generators that pick the first LONGVARCHAR row will choose SUPER, as with
+  the AWS driver (A5); text inserted into SUPER becomes a string scalar.
 * Parameters: there is no SUPER parameter type. A character parameter remains
   OID 25 text. Assigning text to a SUPER column yields a SUPER string scalar;
   JSON objects/arrays require explicit `JSON_PARSE(?)`. Both pathways are
@@ -83,12 +89,14 @@ fails closed on an inconsistent payload rather than guessing (see below).
   SQLGetTypeInfo, not as a per-column dimension.
 * The application value is the EWKB byte string. `SQL_C_BINARY`/`SQL_C_DEFAULT`
   return the bytes (including zero bytes); `SQL_C_CHAR`/`SQL_C_WCHAR` return the
-  driver's existing generic lower-case hex of those bytes. No WKT, no SRID rewriting, no SQL
-  rewriting.
+  driver's existing generic lower-case hex of those bytes (as for VARBYTE; the
+  AWS driver emits upper case, `rsutil.c:1270`, and ODBC does not specify case).
+  No WKT, no SRID rewriting, no SQL rewriting.
 * Backend codec by OID (Redshift profile only):
   * 3999 GEOMETRYHEX and 3001 GEOGRAPHY: strict even-length hexadecimal
     (shared `rs::util::decode_hex`, as for VARBYTE). Invalid text is a deferred
-    cell error (`22018`-class data error at fetch), never raw fallback.
+    cell error (`22018`, raised at `SQLGetData`, or at `SQLFetch` for a bound
+    column), never raw fallback.
   * 3000 GEOMETRY: the cell bytes are the EWKB value. The first byte of any
     WKB/EWKB value is its byte-order flag (0x00 or 0x01). A non-empty payload
     whose first byte is neither is reported as a deferred cell error. This also
@@ -101,17 +109,22 @@ fails closed on an inconsistent payload rather than guessing (see below).
   convert implicitly to spatial types (Redshift documentation). Supported
   pathway: explicit SQL such as `ST_GeomFromEWKB(?)` with a hex character
   parameter; authored as live GoogleTests, unrun. No implicit rewriting.
+  A ParameterDescription carrying a spatial OID keeps the baseline unknown
+  `SQL_VARCHAR` fallback (and its existing `pg_type` discovery) rather than
+  `SQL_LONGVARBINARY`: advertising binary would steer metadata-driven
+  applications to a VARBYTE bind that the server rejects (independent review
+  finding). A direct spatial parameter path is not provided.
 * HLLSKETCH (2935) is out of scope and retains the unknown fallback.
 
 ### Physical ownership
 
 | Component | Owner file | Rationale | Allowed dependencies | Proof |
 |---|---|---|---|---|
-| `NativeTypeInfo::type_name` (optional owning backend presentation name) | `sdk/include/odbcpp/database/native_type_info.h` | Provider-neutral normalized contract: a family (`LongVarChar`) cannot identify the native type name an application sees. Not a native ID, no codec. | std only | `test_native_types`, `test_backend_contract` |
+| `NativeTypeInfo::type_name` (optional owning backend presentation name) | `sdk/include/odbcpp/database/native_type_info.h` | Provider-neutral normalized contract: a family (`LongVarChar`) cannot identify the native type name an application sees. Not a native ID, no codec. | std only | `test_native_types`, `test_redshift_special_types` |
 | Native-ID-aware cell hook `normalize_native_result_value` | `core/database/generic_database_connection.{h,cpp}` | Shared result normalization already owns cell decoding; it must pass the native ID so a backend can select a codec. Default forwards to the existing family codec. | core/database | `test_native_types` (`RedshiftSpatialCodecsFollowNativeOidAndFailClosed`), `test_redshift_special_types` |
-| Redshift OID families, names and codecs (4000/3000/3001/3999) | `core/database/postgres/pg_value.cpp` (`PgDatabaseConnection`) | Native OIDs and EWKB/hex framing are Redshift backend semantics; PostgreSQL profile is unchanged. | `odbcpp/util/hex.h` | `test_native_types`, `test_connection_liveness` |
+| Redshift OID families, names and codecs (4000/3000/3001/3999) | `core/database/postgres/pg_value.cpp` (`PgDatabaseConnection`) | Native OIDs and EWKB/hex framing are Redshift backend semantics; PostgreSQL profile is unchanged. | `odbcpp/util/hex.h` | `test_native_types`, `test_redshift_special_types` |
 | SQLGetTypeInfo advertisements | `core/database/postgres/pg_type_catalog.cpp` | Existing Redshift DDL advertisement table. | none | `test_backend_contract` |
-| TYPE_NAME presentation on IRD/IPD | `odbc/odbc_handles.cpp` | ODBC descriptor adaptation. | SDK contract only | `test_backend_contract` |
+| TYPE_NAME presentation on IRD/IPD | `odbc/odbc_handles.cpp` | ODBC descriptor adaptation. | SDK contract only | `test_redshift_special_types` |
 | Binary hex/raw, chunking, truncation, NULL | existing `odbc/odbc_handles.cpp` | Reused unchanged; no spatial or JSON framework. | — | existing + new adapter tests |
 
 ## Pending evidence
@@ -120,6 +133,15 @@ fails closed on an inconsistent payload rather than guessing (see below).
   SUPER text payload for object/array/scalar/Unicode/large values; text and
   `JSON_PARSE(?)` parameter semantics; `ST_GeomFromEWKB(?)` round trip; SEARCHABLE
   semantics for spatial types. Authored in `tests/integration/it_redshift_real.cpp`,
-  skipped unless the `ODBCPP_REDSHIFT_SPECIAL_TYPES_ADMISSION` fixture is admitted.
+  skipped unless `ODBCPP_REDSHIFT_SPECIAL_TYPES_ADMISSION=special-types-v1` is set
+  by an admitted runner; a full live checkpoint must update its runner and report
+  these six cases as SKIP otherwise. They use constant SQL only (no DDL) and rely
+  on the base `connect()` fixture for endpoint identity.
+* The live `ContemporaryDdlTypeInfoPolicyContract` passed earlier under the old
+  TypeInfo oracle and needs a fresh run under the changed oracle.
+* SDK ABI: `NativeTypeInfo` gains a `std::optional<std::string>` (no longer
+  trivially copyable; larger) and `GenericDatabaseConnection` gains a virtual;
+  both headers are rebuild-only internal/legacy-installed contracts. MSVC/GCC
+  builds of this change are pending.
 * Windows/Linux builds, unixODBC/Windows DM and DM2/DM4 behaviour.
 * Simba runtime comparison (no binary available).

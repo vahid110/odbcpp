@@ -218,9 +218,8 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   auto backend = DatabaseFactory::create_connection();
   const auto catalog = configured_backend_provider().type_catalog(backend->server_version());
   const bool redshift = DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift;
-  // Changed oracle: Redshift adds its SUPER advertisement (14 -> 15 rows);
-  // see docs/redshift-special-types.md.
-  // Redshift additionally advertises GEOMETRY and GEOGRAPHY (15 -> 17 rows).
+  // Changed oracle (docs/redshift-special-types.md): Redshift adds SUPER,
+  // GEOMETRY and GEOGRAPHY advertisements (14 -> 17 rows).
   ASSERT_EQ(redshift ? 17u : 15u, catalog.size());
   int chars = 0;
   int varbytes = 0;

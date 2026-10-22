@@ -1282,6 +1282,12 @@ void require_normalized_columns(const rs::core::database::QueryResult& result) {
       throw std::invalid_argument("Data source returned invalid cell error coordinates");
     }
   }
+  for (const auto& native : result.normalized_parameter_types) {
+    if (native.type_name && (!native.known || native.type_name->empty() ||
+        native.type_name->find('\0') != std::string::npos ||
+        !rs::util::utf8_code_point_count(*native.type_name)))
+      throw std::invalid_argument("Data source returned invalid type name metadata");
+  }
   for (const auto& column : result.columns) {
     if (!column.normalized_type) {
       throw std::invalid_argument("Data source returned unnormalized column metadata");
@@ -1302,6 +1308,21 @@ void require_normalized_columns(const rs::core::database::QueryResult& result) {
             *native.declared_type == rs::core::database::ScalarType::Boolean)))))
       throw std::invalid_argument("Data source returned invalid character metadata");
   }
+}
+
+// A backend type name selects its advertised definition for name-derived
+// descriptor fields; the family row otherwise supplies them (e.g. "text").
+void apply_native_type_name(DescriptorRecord& record, const std::string& name,
+    std::span<const rs::core::database::TypeDefinition> advertised) {
+  record.type_name = name;
+  record.local_type_name = name;
+  const auto found = std::find_if(advertised.begin(), advertised.end(), [&](const auto& type) {
+    return type.name == name && odbc_scalar_type(type.type) == record.concise_type;
+  });
+  if (found == advertised.end()) return;
+  record.literal_prefix = found->literal_prefix ? std::string(*found->literal_prefix) : std::string{};
+  record.literal_suffix = found->literal_suffix ? std::string(*found->literal_suffix) : std::string{};
+  record.case_sensitive = found->case_sensitive ? SQL_TRUE : SQL_FALSE;
 }
 
 ColumnInfo column_info_for(
@@ -7929,8 +7950,8 @@ bool ODBCStatement::apply_result_metadata(
         record.case_sensitive = SQL_FALSE;
     }
     if (index < result.columns.size() && result.columns[index].normalized_type->type_name) {
-      record.type_name = *result.columns[index].normalized_type->type_name;
-      record.local_type_name = record.type_name;
+      apply_native_type_name(record, *result.columns[index].normalized_type->type_name,
+                             conn_->type_catalog());
     }
     row_descriptor_records.push_back(std::move(record));
   }
@@ -7951,11 +7972,8 @@ bool ODBCStatement::apply_result_metadata(
     parameter_descriptor_records.reserve(staged_parameters.size());
     for (std::size_t index = 0; index < staged_parameters.size(); ++index) {
       auto record = descriptor_record_for(staged_parameters[index], conn_->result_type_catalog());
-      // A retained caller-bound family keeps its catalog name.
-      const auto& native = result.normalized_parameter_types[index];
-      if (native.type_name && record.concise_type == odbc_scalar_type(native.type)) {
-        record.type_name = *native.type_name;
-        record.local_type_name = record.type_name;
+      if (const auto& native = result.normalized_parameter_types[index]; native.type_name) {
+        apply_native_type_name(record, *native.type_name, conn_->type_catalog());
       }
       if (const auto* prior = implementation_descriptor->record(index)) {
         record.bound_sql_type = prior->bound_sql_type;

@@ -18,7 +18,7 @@ Special types (SUPER, GEOMETRY, GEOGRAPHY) are in
 
 A row is "supported" only where the active path implements it; the generic
 character fallback is not counted as support. Executed status in this session:
-U/W/F only, macOS/iODBC UCS4 Release (see `CANDIDATE.md`). PG and L rows are
+U/W/F only, macOS/iODBC UCS4 Release (see `CANDIDATE.md` in the session status directory). PG and L rows are
 inventory; they were not run here.
 
 ## Active paths (verified)
@@ -77,7 +77,7 @@ Status: **C** covered, **P** partial, **G** gap (no test), **D** demonstrated de
 | N7 | Non-finite to integer/NUMERIC/CHAR | 22003 (numeric), raw text for CHAR | Policies tested | F `Nonfinite*`, `CharacterNonfinite*` | C |
 | N8 | Signed zero | `-0` preserved for floats | Parameters: tested; results: PG only | U `FullLiteralWiresKeepExtremesSubnormalsAndSignedZero`; PG | P (no Redshift result case) |
 | N9 | Float underflow to zero on narrowing | 22003 | Rejects | PG `FloatingConversionRejectsUnderflowToZero` | C |
-| N10 | **DOUBLE result precision** | `SQL_C_DOUBLE` should equal the stored IEEE value | Results are server text. Redshift (PostgreSQL 8.0 lineage) default `extra_float_digits` is not set by the driver; if the server emits 15 significant digits, e.g. `0.1::float8+0.2::float8` arrives as `0.3`, the C double is not the stored value. Not observed. | — | **G (P1)**: author L case; decide on session `extra_float_digits` only after live proof |
+| N10 | **DOUBLE result precision** | `SQL_C_DOUBLE` should equal the stored IEEE value | Results are server text. ODBCPP sets no `extra_float_digits`; the pinned AWS JDBC driver sets it to 3 or 2 at startup (`ConnectionFactoryImpl.java:425-428,910` @773fa16), which is reference evidence that default output is rounded. If the server emits 15 significant digits, `0.1::float8+0.2::float8` arrives as `0.3` and a rounded maximum can overflow. Not observed on Redshift. | — | **G (P1)**: author L case; decide on session `extra_float_digits` only after live proof |
 | N11 | NUMERIC with no typmod | Unknown size 0 | `NUMERIC` size 0 | U `PreservesNumericAndTemporalModifiers` | C |
 
 ### Temporal

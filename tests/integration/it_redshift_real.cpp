@@ -11128,7 +11128,7 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   SQLCHAR query[] =
       "SELECT JSON_PARSE('{\"a\":1,\"b\":[true,null]}') AS o, JSON_PARSE('[1,\"abc\",null]') AS a, "
       "JSON_PARSE('\"s\"') AS s, JSON_PARSE('null') AS jn, CAST(NULL AS SUPER) AS sn, "
-      "JSON_PARSE('\"\\u20ac\"') AS u";
+      "JSON_PARSE('\"\xe2\x82\xac\"') AS u";
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS))
       << get_error(SQL_HANDLE_STMT, hstmt_);
   SQLSMALLINT count = 0;
@@ -11268,7 +11268,7 @@ TEST_F(RedshiftSpecialTypesRealTest, SpatialInputUsesExplicitEwkbFunction) {
 // Audit V7: raw SQL_C_BINARY -> VARBYTE parameter (6551, binary format).
 TEST_F(RedshiftSpecialTypesRealTest, RawBinaryVarbyteParameterRoundTrip) {
   ASSERT_TRUE(connect());
-  SQLCHAR query[] = "SELECT TO_HEX(?) AS hex";
+  SQLCHAR query[] = "SELECT TO_HEX(CAST(? AS VARBYTE)) AS hex";
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
   unsigned char bytes[] = {0x00, 0x41, 0xff};
   const std::pair<SQLLEN, const char*> cases[]{{3, "0041ff"}, {0, ""}, {SQL_NULL_DATA, nullptr}};
@@ -11298,10 +11298,14 @@ TEST_F(RedshiftSpecialTypesRealTest, DoubleResultRoundTripsStoredValue) {
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
   SQLLEN length = 0;
+  // Server text is recorded first. Without extra_float_digits (AWS JDBC sets it;
+  // ODBCPP does not) a rounded maximum may overflow: EXPECT, not ASSERT.
   RecordProperty("double_sum_server_text", text_cell(3, length));
   double sum = 0, max = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_DOUBLE, &sum, sizeof(sum), &length));
-  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_DOUBLE, &max, sizeof(max), &length));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_DOUBLE, &sum, sizeof(sum), &length))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_DOUBLE, &max, sizeof(max), &length))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
   EXPECT_EQ(0.1 + 0.2, sum);
   EXPECT_EQ(std::numeric_limits<double>::max(), max);
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
