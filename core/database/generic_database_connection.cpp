@@ -932,7 +932,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       }
       return item;
     };
-    const auto normalize_cells = [&](QueryResult& item) {
+    const auto normalize_cells = [&](QueryResult& item, const ParsedQueryResult& parsed) {
       for (std::size_t row = 0; row < item.rows.size(); ++row) {
         for (std::size_t column = 0; column < item.rows[row].size() && column < item.columns.size(); ++column) {
           auto& cell = item.rows[row][column];
@@ -952,7 +952,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           }
           if (type != ScalarType::Binary && type != ScalarType::LongVarBinary &&
               type != ScalarType::Boolean) continue;
-          auto canonical = normalize_result_value(type, *cell);
+          auto canonical = column < parsed.columns.size()
+              ? normalize_native_result_value(parsed.columns[column].type_id, type, *cell)
+              : normalize_result_value(type, *cell);
           if (canonical) cell = std::move(*canonical);
           else {
             cell = std::string{};
@@ -963,12 +965,12 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     };
     auto normalized = normalize_item(result);
     if (normalized.has_error()) return std::move(normalized.backend_error());
-    normalize_cells(*normalized);
+    normalize_cells(*normalized, result);
     normalized->additional_results.reserve(result.additional_results.size());
     for (auto& parsed : result.additional_results) {
       auto item = normalize_item(parsed);
       if (item.has_error()) return std::move(item.backend_error());
-      normalize_cells(*item);
+      normalize_cells(*item, parsed);
       normalized->additional_results.push_back(std::move(*item));
     }
     if (kind == ResponseKind::Description && !query_error)

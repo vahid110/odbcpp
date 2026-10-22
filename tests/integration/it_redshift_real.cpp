@@ -1712,11 +1712,18 @@ TEST_F(RedshiftCatalogVarbyteRealTest, ContemporaryDdlTypeInfoPolicyContract) {
   ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(checkpoint_statement(hstmt_),SQL_VARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_CHAR,owned.data(),owned.size(),&length));ASSERT_EQ(7,length);
   const auto snapshot=owned;ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
-  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
+  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY}}) {
     ASSERT_FALSE(HasFailure());
     ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(checkpoint_statement(hstmt_),removed));expect_catalog_fields(fields);ASSERT_FALSE(HasFailure());
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));EXPECT_EQ(snapshot,owned);
   }
+  // Changed oracle 2026-10-22 (docs/redshift-special-types.md): LONGVARCHAR now
+  // advertises only SUPER, matching SQLColumns; earlier passes used the prior oracle.
+  ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(checkpoint_statement(hstmt_),SQL_LONGVARCHAR));expect_catalog_fields(fields);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));expect_catalog_text(1,"super");expect_catalog_integer(2,SQL_LONGVARCHAR);
+  expect_catalog_integer(3,16777216);expect_catalog_null(4);expect_catalog_null(5);expect_catalog_null(6);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));EXPECT_EQ(snapshot,owned);
   RecordProperty("type_info_policy","contemporary_static_ddl_not_native_maximum");
 }
 
@@ -11082,4 +11089,99 @@ TEST_F(RedshiftRealTest, SpatialCatalogTypeClassificationAnsi) {
 }
 TEST_F(RedshiftRealTest, SpatialCatalogTypeClassificationWide) {
   spatial_catalog_type_classification(true);
+}
+
+// Prospective special-type checkpoint (docs/redshift-special-types.md). Constant
+// SQL only, no DDL or table fixture. Compiling this source grants no SQL; a
+// separately admitted runner must supply the marker and connection authority.
+class RedshiftSpecialTypesRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* admission = std::getenv("ODBCPP_REDSHIFT_SPECIAL_TYPES_ADMISSION");
+    if (admission == nullptr) {
+      GTEST_SKIP() << "Special-type constant-query scope is not admitted";
+    }
+    ASSERT_TRUE(std::string_view(admission) == "special-types-v1")
+        << "Invalid special-type scope marker";
+    RedshiftRealTest::SetUp();
+  }
+  std::string text_cell(SQLUSMALLINT column, SQLLEN& length) {
+    std::array<char, 512> buffer{};
+    length = -7;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, buffer.data(), buffer.size(), &length))
+        << get_error(SQL_HANDLE_STMT, hstmt_);
+    if (length < 0) {
+      return {};
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(length));
+  }
+};
+
+TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
+  ASSERT_TRUE(connect());
+  SQLCHAR query[] =
+      "SELECT JSON_PARSE('{\"a\":1,\"b\":[true,null]}') AS o, JSON_PARSE('[1,\"abc\",null]') AS a, "
+      "JSON_PARSE('\"s\"') AS s, JSON_PARSE('null') AS jn, CAST(NULL AS SUPER) AS sn, "
+      "JSON_PARSE('\"\\u20ac\"') AS u";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  SQLSMALLINT count = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count));
+  ASSERT_EQ(6, count);
+  for (SQLUSMALLINT column = 1; column <= 6; ++column) {
+    SQLSMALLINT type = -1;
+    SQLULEN size = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, nullptr, 0, nullptr, &type, &size, nullptr, nullptr));
+    EXPECT_EQ(SQL_LONGVARCHAR, type);
+    EXPECT_EQ(0u, size);
+    char name[16]{};
+    SQLSMALLINT name_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_TYPE_NAME, name, sizeof(name), &name_length, nullptr));
+    EXPECT_STREQ("super", name);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLLEN length = 0;
+  EXPECT_EQ("{\"a\":1,\"b\":[true,null]}", text_cell(1, length));
+  EXPECT_EQ("[1,\"abc\",null]", text_cell(2, length));
+  EXPECT_EQ("\"s\"", text_cell(3, length));
+  EXPECT_EQ("null", text_cell(4, length));
+  text_cell(5, length);
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  // Server JSON serialization of U+20AC; either escaped or literal is recorded.
+  const auto unicode = text_cell(6, length);
+  RecordProperty("super_unicode_serialization", unicode);
+  EXPECT_TRUE(unicode == "\"\xe2\x82\xac\"" || unicode == "\"\\u20ac\"") << unicode;
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+TEST_F(RedshiftSpecialTypesRealTest, SuperTextParameterIsAStringUnlessJsonParsed) {
+  ASSERT_TRUE(connect());
+  SQLCHAR query[] = "SELECT JSON_TYPEOF(?::SUPER) AS direct, JSON_TYPEOF(JSON_PARSE(?)) AS parsed, JSON_PARSE(?) AS value";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  char input[] = "{\"k\":[1,2]}";
+  SQLLEN input_length = SQL_NTS;
+  for (SQLUSMALLINT parameter = 1; parameter <= 3; ++parameter) {
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, parameter, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        sizeof(input) - 1, 0, input, sizeof(input), &input_length));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(checkpoint_statement(hstmt_))) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLLEN length = 0;
+  EXPECT_EQ("string", text_cell(1, length)); // Redshift SUPER casting semantics.
+  EXPECT_EQ("object", text_cell(2, length));
+  EXPECT_EQ("{\"k\":[1,2]}", text_cell(3, length));
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  // Malformed JSON is a server diagnostic; the statement remains reusable.
+  char malformed[] = "{\"k\":";
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+      sizeof(malformed) - 1, 0, malformed, sizeof(malformed), &input_length));
+  EXPECT_EQ(SQL_ERROR, SQLExecute(checkpoint_statement(hstmt_)));
+  RecordProperty("super_malformed_json_sqlstate", get_error(SQL_HANDLE_STMT, hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+      sizeof(input) - 1, 0, input, sizeof(input), &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(checkpoint_statement(hstmt_))) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 }

@@ -8,6 +8,13 @@ NativeTypeInfo PgDatabaseConnection::describe_type(
     // The result family is evidenced; wire size/modifier semantics are not.
     return {ScalarType::LongVarBinary, 0, 0, true};
   }
+  if (catalog_profile_ == PgCatalogProfile::Redshift && id == 4000) {
+    // SUPER: server-serialized JSON text. The 16 MB object limit is not a
+    // per-column character length, so the dimension stays unknown.
+    NativeTypeInfo super{ScalarType::LongVarChar, 0, 0, true};
+    super.type_name = "super";
+    return super;
+  }
   return GenericDatabaseConnection::describe_type(id, size, modifier);
 }
 

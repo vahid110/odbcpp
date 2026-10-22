@@ -4510,10 +4510,19 @@ TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelected
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
     EXPECT_EQ(0,std::memcmp(name,item.name,std::strlen(item.name)+1));
   }
-  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
+  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY}}) {
     ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,removed));SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(19,count);
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   }
+  // Changed oracle (docs/redshift-special-types.md): PostgreSQL text stays
+  // absent, but SQLColumns' SUPER family is now advertised as its only
+  // LONGVARCHAR row (ODBC SQLGetTypeInfo; AWS ODBC rscatalog.cpp:3152-3180).
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_LONGVARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  {
+    SQLCHAR name[32]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,name,sizeof(name),&indicator));
+    ASSERT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(name,"super",6));
+  }
+  EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_ALL_TYPES));std::size_t selected[3]{};
   for(SQLRETURN rc=SQLFetch(stmt);rc!=SQL_NO_DATA;rc=SQLFetch(stmt)) {
     ASSERT_EQ(SQL_SUCCESS,rc);SQLCHAR name[64]{};SQLLEN length=-1;
@@ -4601,9 +4610,14 @@ TEST_F(BackendContractTest, ResultDefinitionsPreserveFamilyMetadataWhileRedshift
   }
   SQLHSTMT metadata_stmt=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&metadata_stmt));
   struct StatementCleanup {SQLHSTMT handle;~StatementCleanup(){SQLFreeHandle(SQL_HANDLE_STMT,handle);}} cleanup{metadata_stmt};
-  for(const SQLSMALLINT type:{SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
-    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,type));EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,SQL_VARBINARY));EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
+  // Changed oracle (docs/redshift-special-types.md): the result family "text"
+  // stays a result-only name; DDL LONGVARCHAR advertises only SUPER.
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,SQL_LONGVARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(metadata_stmt));
+  {
+    char advertised[16]{};SQLLEN advertised_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(metadata_stmt,1,SQL_C_CHAR,advertised,sizeof(advertised),&advertised_length));EXPECT_STREQ("super",advertised);
   }
+  EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLCHAR binary[4]{'x','x','x','x'};SQLLEN indicator=-1;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_BINARY,binary,3,&indicator));EXPECT_EQ(3,indicator);const SQLCHAR expected_binary[]{0,'A','B'};EXPECT_EQ(0,std::memcmp(binary,expected_binary,sizeof(expected_binary)));EXPECT_EQ('x',binary[3]);
   char text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,text,sizeof(text),&indicator));EXPECT_EQ(4,indicator);EXPECT_EQ(0,std::memcmp(text,"Text",5));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));

@@ -32,6 +32,12 @@ public:
       ScalarType type, std::string_view value) const {
     return parser_->normalize_result_value(type, value);
   }
+  // A backend may select a native codec by its result column type ID.
+  virtual std::optional<std::string> normalize_native_result_value(
+      std::uint32_t id, ScalarType type, std::string_view value) const {
+    static_cast<void>(id);
+    return normalize_result_value(type, value);
+  }
 
   // Resolve all native IDs atomically using the original operation deadline.
   virtual BackendResult<ResolvedTypeMap> resolve_types(

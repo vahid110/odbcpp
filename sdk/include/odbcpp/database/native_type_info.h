@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 
 namespace rs::core::database {
 
@@ -37,6 +38,9 @@ struct NativeTypeInfo {
   // Parameter metadata remains native and does not acquire this presentation tag.
   std::optional<ScalarType> declared_type{};
   std::optional<std::uint64_t> declared_column_size{};
+  // Owning backend type name for TYPE_NAME presentation when the family's
+  // catalog name does not identify the native type. Never a native ID or codec.
+  std::optional<std::string> type_name{};
 };
 
 inline NativeTypeInfo apply_character_metadata_policy(

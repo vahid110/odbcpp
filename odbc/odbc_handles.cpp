@@ -1287,6 +1287,10 @@ void require_normalized_columns(const rs::core::database::QueryResult& result) {
       throw std::invalid_argument("Data source returned unnormalized column metadata");
     }
     const auto& native = *column.normalized_type;
+    if (native.type_name && (!native.known || native.type_name->empty() ||
+        native.type_name->find('\0') != std::string::npos ||
+        !rs::util::utf8_code_point_count(*native.type_name)))
+      throw std::invalid_argument("Data source returned invalid type name metadata");
     if (native.column_size > static_cast<std::uint64_t>(std::numeric_limits<SQLULEN>::max()) ||
         native.declared_type.has_value() != native.declared_column_size.has_value() ||
         (native.declared_type && (!native.known ||
@@ -7924,6 +7928,10 @@ bool ODBCStatement::apply_result_metadata(
       if (*result.columns[index].normalized_type->declared_type == rs::core::database::ScalarType::Boolean)
         record.case_sensitive = SQL_FALSE;
     }
+    if (index < result.columns.size() && result.columns[index].normalized_type->type_name) {
+      record.type_name = *result.columns[index].normalized_type->type_name;
+      record.local_type_name = record.type_name;
+    }
     row_descriptor_records.push_back(std::move(record));
   }
 
@@ -7943,6 +7951,12 @@ bool ODBCStatement::apply_result_metadata(
     parameter_descriptor_records.reserve(staged_parameters.size());
     for (std::size_t index = 0; index < staged_parameters.size(); ++index) {
       auto record = descriptor_record_for(staged_parameters[index], conn_->result_type_catalog());
+      // A retained caller-bound family keeps its catalog name.
+      const auto& native = result.normalized_parameter_types[index];
+      if (native.type_name && record.concise_type == odbc_scalar_type(native.type)) {
+        record.type_name = *native.type_name;
+        record.local_type_name = record.type_name;
+      }
       if (const auto* prior = implementation_descriptor->record(index)) {
         record.bound_sql_type = prior->bound_sql_type;
         record.bound_sql_length = prior->bound_sql_length;

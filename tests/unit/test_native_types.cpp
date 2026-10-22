@@ -218,9 +218,12 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   auto backend = DatabaseFactory::create_connection();
   const auto catalog = configured_backend_provider().type_catalog(backend->server_version());
   const bool redshift = DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift;
-  ASSERT_EQ(redshift ? 14u : 15u, catalog.size());
+  // Changed oracle: Redshift adds its SUPER advertisement (14 -> 15 rows);
+  // see docs/redshift-special-types.md.
+  ASSERT_EQ(15u, catalog.size()); // Both profiles now advertise 15 rows.
   int chars = 0;
   int varbytes = 0;
+  int supers = 0;
   for (const auto& type : catalog) {
     EXPECT_FALSE(type.name.empty());
     EXPECT_GT(type.column_size, 0u);
@@ -244,7 +247,14 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
     }
     if (redshift) {
       EXPECT_NE(ScalarType::Binary, type.type);
-      EXPECT_NE(ScalarType::LongVarChar, type.type);
+    }
+    if (redshift && type.type == ScalarType::LongVarChar) {
+      ++supers; // PostgreSQL text remains absent; only SUPER is LONGVARCHAR.
+      EXPECT_EQ("super", type.name);
+      EXPECT_EQ(16777216u, type.column_size);
+      EXPECT_FALSE(type.literal_prefix.has_value());
+      EXPECT_FALSE(type.create_params.has_value());
+      EXPECT_TRUE(type.case_sensitive);
     }
     if (type.type == ScalarType::LongVarBinary) {
       ++varbytes;
@@ -266,6 +276,7 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   }
   EXPECT_EQ(1, chars);
   EXPECT_EQ(redshift ? 1 : 0, varbytes);
+  EXPECT_EQ(redshift ? 1 : 0, supers);
   EXPECT_FALSE(backend->is_connected());
 }
 
@@ -643,4 +654,42 @@ TEST(NativeTypeTest, RedshiftVarbyteParameterMetadataFailsLocallyWithoutDiscover
   ASSERT_TRUE(retry);
   EXPECT_EQ(ScalarType::LongVarBinary, retry->at(6551).type);
   EXPECT_FALSE(redshift.is_connected());
+}
+
+TEST(NativeTypeTest, RedshiftSuperIsNamedLongVarcharOnlyInRedshiftProfile) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  EXPECT_FALSE(pg.describe_type(4000, -1, -1).known);
+  EXPECT_EQ(ScalarType::VarChar, pg.describe_type(4000, -1, -1).type);
+  EXPECT_FALSE(pg.describe_type(4000, -1, -1).type_name);
+  for (const auto modifier : {-1, 0, 1028}) {
+    const auto native = redshift.describe_type(4000, -1, modifier);
+    EXPECT_TRUE(native.known);
+    EXPECT_EQ(ScalarType::LongVarChar, native.type);
+    EXPECT_EQ(0u, native.column_size); // Unknown, not the 16 MB object bound.
+    EXPECT_EQ(0, native.decimal_digits);
+    EXPECT_EQ(std::optional<std::string>("super"), native.type_name);
+    EXPECT_FALSE(native.declared_type);
+  }
+  // SUPER text is preserved byte for byte; no JSON reserialization.
+  EXPECT_EQ(std::optional<std::string>(R"({"a" : 1})"),
+      redshift.normalize_result_value(ScalarType::LongVarChar, R"({"a" : 1})"));
+  const std::uint32_t ids[]{4000};
+  const auto resolved = redshift.resolve_types(ids, rs::util::Deadline{});
+  ASSERT_TRUE(resolved); // Known metadata needs no transport or discovery SQL.
+  EXPECT_EQ(ScalarType::LongVarChar, resolved->at(4000).type);
+  EXPECT_EQ(std::optional<std::string>("super"), resolved->at(4000).type_name);
+  EXPECT_FALSE(redshift.is_connected());
+}
+
+TEST(NativeTypeTest, CharacterPolicyLeavesSuperPresentationUntouched) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const auto native = apply_character_metadata_policy(
+      redshift.describe_type(4000, -1, -1), CharacterMetadataPolicy{255, 65535, true});
+  EXPECT_EQ(ScalarType::LongVarChar, native.type);
+  EXPECT_EQ(0u, native.column_size);
+  EXPECT_FALSE(native.declared_type);
+  EXPECT_EQ(std::optional<std::string>("super"), native.type_name);
 }
