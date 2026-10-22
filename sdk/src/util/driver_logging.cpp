@@ -246,6 +246,14 @@ bool parse_flag(std::string_view name, std::string_view value) {
                               " must be true or false");
 }
 
+bool is_public_label(std::string_view value) noexcept {
+  return !value.empty() && value.size() <= 64 &&
+      std::all_of(value.begin(), value.end(), [](char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+            ch == '.' || ch == '-';
+      });
+}
+
 class DriverLogger::Impl {
 public:
   explicit Impl(std::shared_ptr<spdlog::logger> value)

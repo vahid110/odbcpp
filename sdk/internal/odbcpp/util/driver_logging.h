@@ -79,6 +79,10 @@ private:
 // Shared true/false vocabulary for logging configuration keys.
 bool parse_flag(std::string_view name, std::string_view value);
 
+// True for a closed-vocabulary label safe to publish unchanged: 1-64 bytes of
+// [a-z0-9.-]. The shape cannot carry SQL, identifiers or free-form text.
+bool is_public_label(std::string_view value) noexcept;
+
 std::string_view to_string(LogLevel level) noexcept;
 std::string_view to_string(LogFormat format) noexcept;
 std::string_view to_string(LogSink sink) noexcept;

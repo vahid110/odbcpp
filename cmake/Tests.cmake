@@ -167,12 +167,26 @@ endif()
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime)$")
-    continue() # Optional SDK consumers are explicitly registered below.
+  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_odbc_trace_reload)$")
+    continue() # Optional SDK consumers and dynamic-load tests are explicitly registered below.
   endif()
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
+# Loads the real driver library like a Driver Manager; it must not link the
+# static core, so unload runs the driver image's own shutdown path.
+add_executable(test_odbc_trace_reload tests/unit/test_odbc_trace_reload.cpp)
+target_include_directories(test_odbc_trace_reload PRIVATE ${ODBC_INCLUDE_DIR})
+target_link_libraries(test_odbc_trace_reload PRIVATE GTest::gtest_main ${CMAKE_DL_LIBS})
+target_compile_definitions(test_odbc_trace_reload PRIVATE
+  ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:${PROJECT_NAME}_driver>")
+apply_compiler_settings(test_odbc_trace_reload)
+add_dependencies(test_odbc_trace_reload ${PROJECT_NAME}_driver)
+set_target_properties(test_odbc_trace_reload PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_odbc_trace_reload COMMAND test_odbc_trace_reload)
+set_tests_properties(test_odbc_trace_reload PROPERTIES LABELS "unit" TIMEOUT 60
+  SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]")
 # The backend contract suite exceeds the standard COFF section limit on MSVC.
 if(MSVC)
   target_compile_options(test_backend_contract PRIVATE /bigobj)

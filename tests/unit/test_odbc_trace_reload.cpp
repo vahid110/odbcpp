@@ -1,0 +1,181 @@
+#include <gtest/gtest.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#else
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
+#include <sql.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <string_view>
+
+// Loads the real driver library the way a Driver Manager does, without linking
+// the driver's static core, so unload runs the library's own shutdown path.
+namespace {
+
+using AllocHandle = SQLRETURN (SQL_API*)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
+using FreeHandle = SQLRETURN (SQL_API*)(SQLSMALLINT, SQLHANDLE);
+
+#ifdef _WIN32
+// LOAD_WITH_ALTERED_SEARCH_PATH and full-path GetModuleHandle both require a
+// native backslash path; CMake's generator expression uses forward slashes.
+std::wstring native_driver_path() {
+  return std::filesystem::path(ODBCPP_DRIVER_LIBRARY_PATH).make_preferred().wstring();
+}
+#endif
+
+class DriverLibrary {
+public:
+  bool load() {
+#ifdef _WIN32
+    handle_ = LoadLibraryExW(native_driver_path().c_str(), nullptr,
+                             LOAD_WITH_ALTERED_SEARCH_PATH);
+#else
+    handle_ = dlopen(ODBCPP_DRIVER_LIBRARY_PATH, RTLD_NOW | RTLD_LOCAL);
+#endif
+    return handle_ != nullptr;
+  }
+
+  template <typename Function>
+  Function symbol(const char* name) const {
+#ifdef _WIN32
+    return reinterpret_cast<Function>(
+        GetProcAddress(static_cast<HMODULE>(handle_), name));
+#else
+    return reinterpret_cast<Function>(dlsym(handle_, name));
+#endif
+  }
+
+  bool unload() {
+    if (!handle_) return true;
+#ifdef _WIN32
+    const bool unloaded = FreeLibrary(static_cast<HMODULE>(handle_)) != FALSE;
+#else
+    const bool unloaded = dlclose(handle_) == 0;
+#endif
+    handle_ = nullptr;
+    return unloaded;
+  }
+
+  // True when the loader actually removed the image after unload().
+  static bool resident() {
+#ifdef _WIN32
+    return GetModuleHandleW(native_driver_path().c_str()) != nullptr;
+#else
+    void* probe = dlopen(ODBCPP_DRIVER_LIBRARY_PATH, RTLD_NOW | RTLD_NOLOAD);
+    if (probe) dlclose(probe);
+    return probe != nullptr;
+#endif
+  }
+
+  ~DriverLibrary() { unload(); }
+
+private:
+  void* handle_ = nullptr;
+};
+
+void set_environment(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  if (value.empty()) {
+    unsetenv(name);
+  } else {
+    setenv(name, value.c_str(), 1);
+  }
+#endif
+}
+
+// Restores the process environment and removes the directory on every exit
+// path, including a failed ASSERT.
+struct TraceEnvironment {
+  explicit TraceEnvironment(const std::filesystem::path& directory_path)
+      : directory(directory_path) {
+    std::filesystem::create_directories(directory);
+    set_environment("ODBCPP_TRACE", "1");
+    set_environment("ODBCPP_TRACE_FILE", (directory / "trace.log").string());
+    // Overrides any registered driver-section format so text matching holds.
+    set_environment("ODBCPP_TRACE_FORMAT", "Text");
+  }
+  ~TraceEnvironment() {
+    for (const char* name : {"ODBCPP_TRACE", "ODBCPP_TRACE_FILE", "ODBCPP_TRACE_FORMAT"}) {
+      set_environment(name, "");
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+  }
+  TraceEnvironment(const TraceEnvironment&) = delete;
+  TraceEnvironment& operator=(const TraceEnvironment&) = delete;
+  std::filesystem::path directory;
+};
+
+std::string read_file(const std::filesystem::path& path) {
+  std::ifstream input(path);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+std::size_t count(const std::string& text, std::string_view needle) {
+  std::size_t found = 0;
+  for (auto at = text.find(needle); at != std::string::npos;
+       at = text.find(needle, at + needle.size())) {
+    ++found;
+  }
+  return found;
+}
+
+TEST(OdbcTraceReload, UnloadClosesTheTraceFileAndReloadStartsFresh) {
+#ifdef _WIN32
+  const auto process = _getpid();
+#else
+  const auto process = getpid();
+#endif
+  const TraceEnvironment environment(std::filesystem::temp_directory_path() /
+      ("odbcpp-trace-reload-" + std::to_string(process)));
+  const auto& directory = environment.directory;
+  const auto path = directory / "trace.log";
+
+  bool stayed_resident = false;
+  for (int cycle = 0; cycle < 2 && !stayed_resident; ++cycle) {
+    SCOPED_TRACE(cycle);
+    DriverLibrary driver;
+    ASSERT_TRUE(driver.load()) << ODBCPP_DRIVER_LIBRARY_PATH;
+    const auto alloc = driver.symbol<AllocHandle>("SQLAllocHandle");
+    const auto release = driver.symbol<FreeHandle>("SQLFreeHandle");
+    ASSERT_NE(nullptr, alloc);
+    ASSERT_NE(nullptr, release);
+    SQLHANDLE odbc_environment = SQL_NULL_HANDLE;
+    ASSERT_EQ(SQL_SUCCESS, alloc(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &odbc_environment));
+    EXPECT_EQ(SQL_SUCCESS, release(SQL_HANDLE_ENV, odbc_environment));
+    ASSERT_TRUE(driver.unload());
+    if (DriverLibrary::resident()) {
+      stayed_resident = true;
+      break;
+    }
+
+    const auto contents = read_file(path);
+    EXPECT_EQ(2u, count(contents, "event=odbc_trace_enter"));
+    EXPECT_EQ(2u, count(contents, "event=odbc_trace_exit"));
+    // A fresh image resolves its own tracer: call identifiers restart.
+    EXPECT_NE(std::string::npos, contents.find("call=\"1\""));
+    EXPECT_EQ(std::string::npos, contents.find("call=\"3\""));
+    // Windows refuses to rename an open file; unload must have closed it.
+    std::error_code renamed;
+    std::filesystem::rename(path, directory / ("cycle-" + std::to_string(cycle) + ".log"),
+                            renamed);
+    EXPECT_FALSE(renamed) << renamed.message();
+  }
+
+  if (stayed_resident) {
+    GTEST_SKIP() << "The platform loader kept the driver image resident after "
+                    "unload; unload-time sink closure was not observable.";
+  }
+}
+
+}  // namespace

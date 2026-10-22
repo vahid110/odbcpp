@@ -390,12 +390,15 @@ void install_locked(const std::optional<TraceOptions>& options) {
 
 // Driver Managers unload and reload the driver library. Closing the sink at
 // unload/exit releases the file for rotation and the next load.
+// At ExitProcess other threads are already terminated; one may have held the
+// mutex. Never block there: Disabled is always published, the sink is closed
+// only when the mutex is free (the file is then released by process exit).
 struct ShutdownGuard {
   ~ShutdownGuard() {
+    tracer_state.store(kDisabled, std::memory_order_release);
     try {
-      std::lock_guard lock(tracer_mutex());
-      tracer_state.store(kDisabled, std::memory_order_release);
-      current_tracer().reset();
+      std::unique_lock lock(tracer_mutex(), std::try_to_lock);
+      if (lock.owns_lock()) current_tracer().reset();
     } catch (...) {
     }
   }

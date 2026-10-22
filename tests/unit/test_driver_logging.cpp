@@ -551,6 +551,36 @@ TEST(DriverLoggerTest, SensitiveOptInRevealsOnlySensitiveFieldsFromSpans) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(DriverLoggingOptionsTest, PublicLabelsAreBoundedClosedVocabularyOnly) {
+  using rs::core::logging::is_public_label;
+  EXPECT_TRUE(is_public_label("schema.show-rows"));
+  EXPECT_TRUE(is_public_label("primary-key.identity"));
+  EXPECT_TRUE(is_public_label(std::string(64, 'a')));
+  EXPECT_FALSE(is_public_label(""));
+  EXPECT_FALSE(is_public_label(std::string(65, 'a')));
+  EXPECT_FALSE(is_public_label("schema.Show"));
+  EXPECT_FALSE(is_public_label("schema show"));
+  EXPECT_FALSE(is_public_label("table.'secret'"));
+  EXPECT_FALSE(is_public_label("table;drop"));
+  EXPECT_FALSE(is_public_label(std::string("ok\0x", 4)));
+}
+
+TEST(DriverLoggingOptionsTest, CatalogReasonPublishesOnlyWellFormedBackendLabels) {
+  using rs::odbc::detail::catalog_error_reason_for_log;
+  rs::core::database::BackendError labelled{
+      rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      "Invalid Redshift table metadata: completion"};
+  labelled.public_reason = "table.completion";
+  EXPECT_EQ("table.completion", catalog_error_reason_for_log(labelled));
+  // The message is never parsed, even when it has a recognizable shape.
+  rs::core::database::BackendError unlabelled{
+      rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      "Invalid Redshift table metadata: completion"};
+  EXPECT_EQ("unclassified", catalog_error_reason_for_log(unlabelled));
+  unlabelled.public_reason = "table.'private_table'";
+  EXPECT_EQ("unclassified", catalog_error_reason_for_log(unlabelled));
+}
+
 TEST(DriverLoggingOptionsTest, SensitiveOptInIsNeverReadFromConfigurationLayers) {
   const std::map<std::string, std::string> layer{
       {"LogLevel", "Trace"}, {"LogSensitive", "true"}};

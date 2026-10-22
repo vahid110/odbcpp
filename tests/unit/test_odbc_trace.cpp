@@ -4,6 +4,7 @@
 #include "odbc/odbc_trace.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -516,6 +518,60 @@ TEST_F(OdbcTraceTest, WideTextHonorsExplicitLengthsAndReadBounds) {
   EXPECT_FALSE(contains(contents, "salesXY"));
   EXPECT_FALSE(contains(contents, "[invalid wide text]"));
   EXPECT_TRUE(contains(contents, "TableName=\"tttt"));
+}
+
+std::string field_value(const std::string& line, std::string_view key) {
+  const auto marker = std::string(key) + "=\"";
+  const auto start = line.find(marker);
+  if (start == std::string::npos) return {};
+  const auto value = start + marker.size();
+  return line.substr(value, line.find('"', value) - value);
+}
+
+TEST_F(OdbcTraceTest, CancelTracingFromAnotherThreadNeitherWaitsNorBorrowsDiagnostics) {
+  Tracer::configure(trace_to(path_));
+  const auto statement = reinterpret_cast<SQLHSTMT>(std::uintptr_t{0x5150});
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  std::thread executing([&] {
+    traced_call("SQLExecute", SQL_NULL_HANDLE, true,
+        [&]() noexcept -> SQLRETURN {
+          entered.store(true);
+          const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+          while (!release.load() && std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::yield();
+          }
+          return SQL_SUCCESS;
+        },
+        statement);
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  while (!entered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  const bool was_in_flight = entered.load();
+  // The real export: an unregistered statement is SQL_INVALID_HANDLE. Tracing
+  // must not wait for the in-flight call or borrow its diagnostics.
+  const auto cancelled = SQLCancel(statement);
+  release.store(true);
+  executing.join();
+  const auto contents = finish();
+
+  ASSERT_TRUE(was_in_flight);
+  EXPECT_EQ(SQL_INVALID_HANDLE, cancelled);
+  const auto events = lines_with(contents, "event=odbc_trace_");
+  ASSERT_EQ(4u, events.size());
+  EXPECT_TRUE(contains(events[0], "event=odbc_trace_enter") && contains(events[0], "\"SQLExecute\""));
+  EXPECT_TRUE(contains(events[1], "event=odbc_trace_enter") && contains(events[1], "\"SQLCancel\""));
+  EXPECT_TRUE(contains(events[2], "event=odbc_trace_exit") && contains(events[2], "\"SQLCancel\""));
+  EXPECT_TRUE(contains(events[3], "event=odbc_trace_exit") && contains(events[3], "\"SQLExecute\""));
+  EXPECT_TRUE(contains(events[2], "return=\"SQL_INVALID_HANDLE\""));
+  EXPECT_FALSE(contains(events[2], "sqlstate="));
+  EXPECT_TRUE(contains(events[1], "StatementHandle=\"0x5150\""));
+  EXPECT_EQ(field_value(events[1], "call"), field_value(events[2], "call"));
+  EXPECT_EQ(field_value(events[0], "call"), field_value(events[3], "call"));
+  EXPECT_NE(field_value(events[0], "call"), field_value(events[1], "call"));
+  EXPECT_NE(field_value(events[0], "thread"), field_value(events[1], "thread"));
 }
 
 TEST_F(OdbcTraceTest, NestedCallsAndDisabledTracingWriteNothing) {

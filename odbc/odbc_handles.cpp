@@ -909,18 +909,6 @@ std::string native_error_sqlstate_for_log(const rs::core::database::BackendError
   return *error.native_state;
 }
 
-// Logging adaptation only: the backend owns its closed public-label vocabulary
-// and never derives it from server text. Keep a shape check so a malformed label
-// cannot carry SQL or identifiers into logs; the message is never inspected.
-std::string catalog_error_reason_for_log(const rs::core::database::BackendError& error) {
-  const std::string_view reason{error.public_reason};
-  const bool valid = !reason.empty() && reason.size() <= 64 &&
-      std::all_of(reason.begin(), reason.end(), [](char ch) {
-        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-            ch == '.' || ch == '-';
-      });
-  return valid ? std::string(reason) : "unclassified";
-}
 
 std::string query_failure_sqlstate(
     const rs::core::database::IBackendProvider& provider,
@@ -1833,6 +1821,16 @@ bool is_known_column_attribute(SQLUSMALLINT field_identifier) {
 }
 
 } // namespace
+
+namespace detail {
+// Logging adaptation only: the backend owns its closed public-label vocabulary
+// and never derives it from server text. The SDK shape check keeps a malformed
+// label from carrying SQL or identifiers into logs; the message is never read.
+std::string catalog_error_reason_for_log(const rs::core::database::BackendError& error) {
+  return rs::core::logging::is_public_label(error.public_reason)
+      ? error.public_reason : std::string("unclassified");
+}
+}  // namespace detail
 
 bool is_character_column_attribute(SQLUSMALLINT field_identifier) {
   static constexpr std::array<SQLUSMALLINT, 17> attributes{
@@ -8482,7 +8480,7 @@ SQLRETURN ODBCStatement::execute_catalog(
                    result.backend_error().safe_summary(),
                    {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
                     {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
-                    {"catalog_reason", catalog_error_reason_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public}});
+                    {"catalog_reason", detail::catalog_error_reason_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public}});
         if (is_timeout_error(result.error()) ||
             result.session_snapshot().disposition == rs::core::database::SessionDisposition::Retire)
           conn_->close_connection();

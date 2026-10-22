@@ -6,6 +6,7 @@
 #include "core/database/postgres/redshift_catalog_query.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
 #include "core/database/postgres/redshift_foreign_key_contract.h"
+#include "odbcpp/util/driver_logging.h"
 
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
@@ -6262,4 +6263,95 @@ TEST(RedshiftSessionTemporarySchemas, MockRejectsNonliteralDatabaseAndAppendedCo
     EXPECT_EQ(1u, session.commands.size());
     EXPECT_EQ(invalid, session.commands.front());
   }
+}
+
+namespace {
+// Each backend-owned public label is exactly the fixed reason literal of its
+// family; the ODBC adapter publishes the label and never parses the message.
+void expect_family_label(const BackendError& error, std::string_view family) {
+  struct Family { std::string_view prefix; std::string_view label; };
+  static constexpr Family families[]{
+      {"Invalid Redshift schema metadata: ", "schema"},
+      {"Invalid Redshift table metadata: ", "table"},
+      {"Invalid Redshift column metadata: ", "column"},
+      {"Invalid Redshift routine metadata: ", "routine"},
+      {"Invalid current-database primary-key metadata: ", "primary-key"},
+      {"Invalid current-database foreign-key metadata: ", "foreign-key"}};
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, error.error_class);
+  const auto match = std::find_if(std::begin(families), std::end(families),
+      [&](const Family& candidate) { return candidate.label == family; });
+  ASSERT_NE(std::end(families), match);
+  const std::string_view message{error.message};
+  ASSERT_TRUE(message.starts_with(match->prefix)) << message;
+  const auto reason = message.substr(match->prefix.size());
+  EXPECT_EQ(std::string(family) + "." + std::string(reason), error.public_reason);
+  EXPECT_TRUE(rs::core::logging::is_public_label(error.public_reason)) << error.public_reason;
+}
+}  // namespace
+
+TEST(RedshiftBackendErrorLabels, EveryInvalidMetadataFamilyPublishesItsFixedReasonLabel) {
+  const SessionSnapshot reusable{SessionState::Idle, SessionDisposition::Reusable};
+  {
+    auto value = schema_lookup_fixture();
+    value.rows.clear();
+    const auto result = redshift_schema_database(BackendResult<QueryResult>{std::move(value), reusable});
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "schema");
+    EXPECT_EQ("schema.lookup-rows", result.backend_error().public_reason);
+  }
+  {
+    auto source = tables_response();
+    source.affected_rows = 3;
+    const auto result = normalize_redshift_tables("selected", "fixture", table_request(),
+        BackendResult<QueryResult>{std::move(source), reusable});
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "table");
+  }
+  {
+    auto value = columns_response();
+    value.affected_rows = 3;
+    const auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{std::move(value), reusable});
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "column");
+  }
+  {
+    RoutineExecutionSession session;
+    session.discovery({{"foreign", "s", "p", "1", "integer", std::nullopt, "same"}});
+    const auto result = session.execute_catalog(
+        ProcedureColumnsCatalogRequest{std::nullopt, "s", std::nullopt, std::nullopt},
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "routine");
+  }
+  {
+    auto raw = routine_identity();
+    raw.columns[0].name = "wrong";
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    const auto result = redshift_primary_key_database({std::move(raw), reusable}, budget,
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "primary-key");
+    EXPECT_EQ("primary-key.identity", result.backend_error().public_reason);
+  }
+  {
+    auto raw = routine_identity();
+    raw.columns[0].name = "wrong";
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    const auto result = redshift_foreign_key_database({std::move(raw), reusable}, budget,
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "foreign-key");
+    EXPECT_EQ("foreign-key.identity", result.backend_error().public_reason);
+  }
+}
+
+TEST(RedshiftBackendErrorLabels, TimeoutErrorsCarryNoPublicLabel) {
+  RoutineExecutionSession expired;
+  const auto timeout = expired.execute_catalog(
+      ProceduresCatalogRequest{std::nullopt, "s", std::nullopt},
+      rs::util::Clock::now() - std::chrono::seconds{1});
+  ASSERT_FALSE(timeout);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), timeout.error());
+  EXPECT_TRUE(timeout.backend_error().public_reason.empty());
 }
