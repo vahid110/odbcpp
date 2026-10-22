@@ -12,6 +12,7 @@
 #include "odbc/odbc_handles.h"
 #include "odbc/unicode.h"
 #include "odbcpp/transport/i_transport.h"
+#include "odbcpp/util/hex.h"
 
 #include <algorithm>
 #include <cstring>
@@ -448,6 +449,197 @@ TEST_F(RedshiftSpecialTypesTest, TypeInfoAdvertisesSuperAsLongVarchar) {
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   EXPECT_TRUE(script->received_sql.empty());
+}
+
+
+// EWKB for POINT(1 2) without SRID and GEOGRAPHY POINT(1 1) SRID 4326; the
+// first contains zero bytes. Hex forms from AWS Python integration data.
+const std::string kPointEwkb = rs::util::decode_hex("0101000000000000000000F03F0000000000000040").value();
+const std::string kGeographyEwkb = rs::util::decode_hex("0101000020E6100000000000000000F03F000000000000F03F").value();
+
+std::string spatial_response() {
+  // OID 3000 carries raw EWKB; 3999 and 3001 carry hexadecimal EWKB text.
+  std::string response = row_description({{"geom", 3000}, {"geomhex", 3999}, {"geog", 3001}});
+  response += data_row({kPointEwkb, std::string("0101000000000000000000f03f0000000000000040"),
+                        std::string("0101000020E6100000000000000000F03F000000000000F03F")});
+  response += data_row({std::nullopt, std::nullopt, std::nullopt});
+  response += data_row({std::string(), std::string(), std::string()});
+  return response + complete("SELECT 3");
+}
+
+TEST_F(RedshiftSpecialTypesTest, SpatialResultMetadataIsUnsizedLongVarbinaryWithNativeNames) {
+  script->responses["SELECT spatial"] = spatial_response();
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT spatial"));
+  const char* names[]{"geometry", "geometry", "geography"};
+  for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+    SCOPED_TRACE(column);
+    SQLSMALLINT type = -1, digits = -1;
+    SQLULEN size = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, column, nullptr, 0, nullptr, &type, &size, &digits, nullptr));
+    EXPECT_EQ(SQL_LONGVARBINARY, type);
+    EXPECT_EQ(0u, size); // No fixed maximum is advertised per column.
+    EXPECT_EQ(0, digits);
+    EXPECT_EQ(names[column - 1], column_text(column, SQL_DESC_TYPE_NAME));
+    EXPECT_EQ(names[column - 1], column_text(column, SQL_DESC_LOCAL_TYPE_NAME));
+    EXPECT_EQ(SQL_NO_TOTAL, column_number(column, SQL_DESC_OCTET_LENGTH));
+    EXPECT_EQ(SQL_NO_TOTAL, column_number(column, SQL_DESC_DISPLAY_SIZE));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  EXPECT_EQ((std::vector<std::string>{"SELECT spatial"}), script->received_sql);
+}
+
+TEST_F(RedshiftSpecialTypesTest, SpatialValuesAreEwkbBytesForBinaryAndDefaultAndHexForCharacter) {
+  script->responses["SELECT spatial"] = spatial_response();
+  const std::string expected[]{kPointEwkb, kPointEwkb, kGeographyEwkb};
+  for (const SQLSMALLINT target : {SQLSMALLINT{SQL_C_BINARY}, SQLSMALLINT{SQL_C_DEFAULT},
+                                   SQLSMALLINT{SQL_C_CHAR}, SQLSMALLINT{SQL_C_WCHAR}}) {
+    SCOPED_TRACE(target);
+    ASSERT_EQ(SQL_SUCCESS, execute("SELECT spatial"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+      SCOPED_TRACE(column);
+      alignas(SQLWCHAR) unsigned char buffer[512];
+      std::fill(std::begin(buffer), std::end(buffer), 0x5a);
+      SQLLEN length = -7;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, target, buffer, sizeof(buffer), &length));
+      const auto& bytes = expected[column - 1];
+      if (target == SQL_C_BINARY || target == SQL_C_DEFAULT) {
+        ASSERT_EQ(static_cast<SQLLEN>(bytes.size()), length);
+        EXPECT_EQ(0, std::memcmp(buffer, bytes.data(), bytes.size()));
+        EXPECT_EQ(0x5a, buffer[bytes.size()]);
+        continue;
+      }
+      // The existing generic binary-to-character conversion (also VARBYTE).
+      const auto hex_text = rs::util::encode_hex(bytes);
+      if (target == SQL_C_WCHAR) {
+        const auto wide = rs::odbc::utf8_to_wide(hex_text);
+        ASSERT_TRUE(wide);
+        ASSERT_EQ(static_cast<SQLLEN>(wide->size() * sizeof(SQLWCHAR)), length);
+        EXPECT_EQ(0, std::memcmp(buffer, wide->data(), static_cast<std::size_t>(length)));
+      } else {
+        ASSERT_EQ(static_cast<SQLLEN>(hex_text.size()), length);
+        EXPECT_EQ(hex_text, std::string(reinterpret_cast<char*>(buffer), hex_text.size()));
+      }
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+      unsigned char buffer[8]{};
+      SQLLEN length = -7;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, target, buffer, sizeof(buffer), &length));
+      EXPECT_EQ(SQL_NULL_DATA, length);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+      alignas(SQLWCHAR) unsigned char buffer[8]{};
+      SQLLEN length = -7;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, target, buffer, sizeof(buffer), &length));
+      EXPECT_EQ(0, length); // Empty payload is distinct from SQL NULL.
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(RedshiftSpecialTypesTest, LargeSpatialPayloadChunksAndBoundTruncationReportFullLength) {
+  // A synthetic multi-chunk EWKB-shaped payload: byte-order flag then all octets.
+  std::string large(1, '\1');
+  for (std::size_t i = 0; large.size() < 70001; ++i) large.push_back(static_cast<char>(i & 0xff));
+  const auto large_hex = rs::util::encode_hex(large);
+  script->responses["SELECT large_spatial"] =
+      row_description({{"geom", 3000}, {"geog", 3001}}) +
+      data_row({large, large_hex}) + data_row({kPointEwkb, std::nullopt}) + complete("SELECT 2");
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT large_spatial"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(large, chunked(1, SQL_C_BINARY, 4096));
+  EXPECT_EQ(large, chunked(2, SQL_C_BINARY, 4093)); // Odd chunk sizes keep byte offsets.
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT large_spatial"));
+  unsigned char bound[16];
+  SQLLEN indicator = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, bound, sizeof(bound), &indicator));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(static_cast<SQLLEN>(large.size()), indicator);
+  EXPECT_EQ(0, std::memcmp(bound, large.data(), sizeof(bound)));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt)); // 21-byte EWKB into 16 bytes.
+  EXPECT_EQ(static_cast<SQLLEN>(kPointEwkb.size()), indicator);
+  EXPECT_EQ(0, std::memcmp(bound, kPointEwkb.data(), sizeof(bound)));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(RedshiftSpecialTypesTest, InconsistentSpatialPayloadsAreDeferredDataErrorsNotCorruption) {
+  // Hex text under raw OID 3000, odd/invalid hex under 3999/3001: never
+  // silently returned as ASCII or partially decoded bytes.
+  script->responses["SELECT bad_spatial"] =
+      row_description({{"geom", 3000}, {"geomhex", 3999}, {"geog", 3001}}) +
+      data_row({std::string("0101000000000000000000F03F0000000000000040"),
+                std::string("0101zz"), std::string("010")}) +
+      data_row({kPointEwkb, std::string("01"), std::string("01")}) + complete("SELECT 2");
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT bad_spatial"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt)); // Unrequested malformed cells are deferred.
+  for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+    SCOPED_TRACE(column);
+    for (const SQLSMALLINT target : {SQLSMALLINT{SQL_C_BINARY}, SQLSMALLINT{SQL_C_CHAR}}) {
+      unsigned char buffer[64];
+      std::fill(std::begin(buffer), std::end(buffer), 0x5a);
+      SQLLEN length = 73;
+      EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, column, target, buffer, sizeof(buffer), &length));
+      EXPECT_EQ("22018", state());
+      EXPECT_EQ(73, length);
+      EXPECT_EQ(0x5a, buffer[0]);
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  unsigned char buffer[64]{};
+  SQLLEN length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, buffer, sizeof(buffer), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(kPointEwkb.size()), length);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 2, SQL_C_BINARY, buffer, sizeof(buffer), &length));
+  EXPECT_EQ(1, length);
+  EXPECT_EQ(0x01, buffer[0]);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(RedshiftSpecialTypesTest, TypeInfoAdvertisesSpatialAfterVarbyteWithDocumentedLimit) {
+  ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, SQL_LONGVARBINARY));
+  const std::pair<const char*, SQLINTEGER> expected[]{
+      {"varbyte", 16777216}, {"geometry", 1048447}, {"geography", 1048447}};
+  for (const auto& [name, size] : expected) {
+    SCOPED_TRACE(name);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    char actual[32]{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, actual, sizeof(actual), &length));
+    EXPECT_STREQ(name, actual);
+    SQLINTEGER column_size = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, SQL_C_LONG, &column_size, sizeof(column_size), &length));
+    EXPECT_EQ(size, column_size);
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(RedshiftSpecialTypesTest, SpatialParameterDescriptionIsNamedAndBinaryInputStaysVarbyte) {
+  script->responses["INSERT INTO spatial_fixture VALUES ($1, $2)"] =
+      frame('1', "") + frame('t', be16(2) + be32(3000) + be32(3001)) + frame('n', "");
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>("INSERT INTO spatial_fixture VALUES (?, ?)")), SQL_NTS));
+  SQLHDESC ipd = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_PARAM_DESC, &ipd, 0, nullptr));
+  const char* names[]{"geometry", "geography"};
+  for (SQLUSMALLINT parameter = 1; parameter <= 2; ++parameter) {
+    SQLSMALLINT type = -1;
+    SQLULEN size = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, parameter, &type, &size, nullptr, nullptr));
+    EXPECT_EQ(SQL_LONGVARBINARY, type);
+    EXPECT_EQ(0u, size);
+    char name[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, parameter, SQL_DESC_TYPE_NAME, name, sizeof(name), nullptr));
+    EXPECT_STREQ(names[parameter - 1], name);
+  }
 }
 
 } // namespace

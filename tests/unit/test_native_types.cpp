@@ -220,10 +220,12 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   const bool redshift = DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift;
   // Changed oracle: Redshift adds its SUPER advertisement (14 -> 15 rows);
   // see docs/redshift-special-types.md.
-  ASSERT_EQ(15u, catalog.size()); // Both profiles now advertise 15 rows.
+  // Redshift additionally advertises GEOMETRY and GEOGRAPHY (15 -> 17 rows).
+  ASSERT_EQ(redshift ? 17u : 15u, catalog.size());
   int chars = 0;
   int varbytes = 0;
   int supers = 0;
+  int spatial = 0;
   for (const auto& type : catalog) {
     EXPECT_FALSE(type.name.empty());
     EXPECT_GT(type.column_size, 0u);
@@ -256,6 +258,15 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
       EXPECT_FALSE(type.create_params.has_value());
       EXPECT_TRUE(type.case_sensitive);
     }
+    if (type.type == ScalarType::LongVarBinary && type.name != "varbyte") {
+      ++spatial; // Changed oracle: spatial rows follow VARBYTE.
+      EXPECT_TRUE(type.name == "geometry" || type.name == "geography") << type.name;
+      EXPECT_EQ(1048447u, type.column_size);
+      EXPECT_FALSE(type.literal_prefix.has_value());
+      EXPECT_FALSE(type.create_params.has_value());
+      EXPECT_FALSE(type.case_sensitive);
+      continue;
+    }
     if (type.type == ScalarType::LongVarBinary) {
       ++varbytes;
       EXPECT_TRUE(redshift);
@@ -277,6 +288,7 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   EXPECT_EQ(1, chars);
   EXPECT_EQ(redshift ? 1 : 0, varbytes);
   EXPECT_EQ(redshift ? 1 : 0, supers);
+  EXPECT_EQ(redshift ? 2 : 0, spatial);
   EXPECT_FALSE(backend->is_connected());
 }
 
@@ -692,4 +704,55 @@ TEST(NativeTypeTest, CharacterPolicyLeavesSuperPresentationUntouched) {
   EXPECT_EQ(0u, native.column_size);
   EXPECT_FALSE(native.declared_type);
   EXPECT_EQ(std::optional<std::string>("super"), native.type_name);
+}
+
+TEST(NativeTypeTest, RedshiftSpatialOidsAreNamedLongVarbinaryOnlyInRedshiftProfile) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const std::pair<std::uint32_t, const char*> cases[]{
+      {3000, "geometry"}, {3999, "geometry"}, {3001, "geography"}};
+  for (const auto& [oid, name] : cases) {
+    SCOPED_TRACE(oid);
+    EXPECT_FALSE(pg.describe_type(oid, -1, -1).known);
+    EXPECT_FALSE(pg.describe_type(oid, -1, -1).type_name);
+    const auto native = redshift.describe_type(oid, -1, -1);
+    EXPECT_TRUE(native.known);
+    EXPECT_EQ(ScalarType::LongVarBinary, native.type);
+    EXPECT_EQ(0u, native.column_size); // No fixed maximum per column.
+    EXPECT_EQ(std::optional<std::string>(name), native.type_name);
+  }
+  // VARBYTE keeps its existing unnamed family presentation.
+  EXPECT_FALSE(redshift.describe_type(6551, -1, -1).type_name);
+  EXPECT_FALSE(redshift.describe_type(2935, -1, -1).known); // HLLSKETCH out of scope.
+}
+
+TEST(BackendValueTest, RedshiftSpatialCodecsFollowNativeOidAndFailClosed) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const std::string raw("\x01\x01\x00\x00\x00\xff", 6);
+  // 3000: raw EWKB bytes preserved, including zero and high bytes.
+  EXPECT_EQ(std::optional<std::string>(raw),
+      redshift.normalize_native_result_value(3000, ScalarType::LongVarBinary, raw));
+  EXPECT_EQ(std::optional<std::string>(std::string("\0\1", 2)),
+      redshift.normalize_native_result_value(3000, ScalarType::LongVarBinary, std::string("\0\1", 2)));
+  EXPECT_EQ(std::optional<std::string>(""),
+      redshift.normalize_native_result_value(3000, ScalarType::LongVarBinary, ""));
+  for (const auto* invalid : {"0101000000", "\x02\x01", "x"}) {
+    EXPECT_FALSE(redshift.normalize_native_result_value(3000, ScalarType::LongVarBinary, invalid));
+  }
+  // 3999/3001: strict hexadecimal, like VARBYTE.
+  for (const std::uint32_t oid : {3999u, 3001u, 6551u}) {
+    SCOPED_TRACE(oid);
+    EXPECT_EQ(std::optional<std::string>(std::string("\x01\x00\xff", 3)),
+        redshift.normalize_native_result_value(oid, ScalarType::LongVarBinary, "0100fF"));
+    for (const auto* invalid : {"010", "01zz", "\\x01"}) {
+      EXPECT_FALSE(redshift.normalize_native_result_value(oid, ScalarType::LongVarBinary, invalid));
+    }
+  }
+  // The PostgreSQL profile never adopts Redshift OID semantics.
+  EXPECT_FALSE(pg.normalize_native_result_value(3000, ScalarType::LongVarBinary, raw));
+  EXPECT_EQ(std::optional<std::string>("abc"),
+      pg.normalize_native_result_value(3000, ScalarType::VarChar, "abc"));
 }

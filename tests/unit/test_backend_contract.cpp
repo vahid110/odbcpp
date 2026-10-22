@@ -4507,6 +4507,13 @@ TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelected
     for(const SQLUSMALLINT field:{SQLUSMALLINT{10},SQLUSMALLINT{14},SQLUSMALLINT{15},SQLUSMALLINT{18}}) {
       SQLINTEGER value=71;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(SQL_NULL_DATA,indicator);EXPECT_EQ(71,value);
     }
+    if(item.type==SQL_LONGVARBINARY) {
+      // Changed oracle (docs/redshift-special-types.md): spatial rows follow VARBYTE.
+      for(const char* spatial:{"geometry","geography"}) {
+        ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLCHAR spatial_name[32]{};SQLLEN spatial_length=-1;
+        ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,spatial_name,sizeof(spatial_name),&spatial_length));EXPECT_STREQ(spatial,reinterpret_cast<char*>(spatial_name));
+      }
+    }
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
     EXPECT_EQ(0,std::memcmp(name,item.name,std::strlen(item.name)+1));
   }

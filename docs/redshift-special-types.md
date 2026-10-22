@@ -83,7 +83,7 @@ fails closed on an inconsistent payload rather than guessing (see below).
   SQLGetTypeInfo, not as a per-column dimension.
 * The application value is the EWKB byte string. `SQL_C_BINARY`/`SQL_C_DEFAULT`
   return the bytes (including zero bytes); `SQL_C_CHAR`/`SQL_C_WCHAR` return the
-  generic upper-case hex of those bytes. No WKT, no SRID rewriting, no SQL
+  driver's existing generic lower-case hex of those bytes. No WKT, no SRID rewriting, no SQL
   rewriting.
 * Backend codec by OID (Redshift profile only):
   * 3999 GEOMETRYHEX and 3001 GEOGRAPHY: strict even-length hexadecimal

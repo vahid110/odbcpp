@@ -49,6 +49,9 @@ constexpr auto redshift_definitions = std::to_array<TypeDefinition>({
     {LongVarBinary, "varbyte", 16777216, {}, {}, "length", false, {}, {}, {}, 0},
     // Documented 16 MB SUPER object limit; SUPER has no literal syntax.
     {LongVarChar, "super", 16777216, {}, {}, {}, true, {}, {}, {}, 0},
+    // Documented 1,048,447-byte spatial object limit; EWKB has no literal form.
+    {LongVarBinary, "geometry", 1048447, {}, {}, {}, false, {}, {}, {}, 0},
+    {LongVarBinary, "geography", 1048447, {}, {}, {}, false, {}, {}, {}, 0},
 });
 // Preserve prior descriptor families independently of DDL advertisements.
 // Names remain selected family fallbacks, not native type-name receipts.

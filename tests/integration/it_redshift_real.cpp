@@ -1705,6 +1705,12 @@ TEST_F(RedshiftCatalogVarbyteRealTest, ContemporaryDdlTypeInfoPolicyContract) {
       expect_catalog_null(field);ASSERT_FALSE(HasFailure());
     }
     expect_catalog_integer(11,SQL_FALSE);expect_catalog_integer(16,item.type);ASSERT_FALSE(HasFailure());
+    if(item.type==SQL_LONGVARBINARY) {
+      // Changed oracle 2026-10-22: GEOMETRY/GEOGRAPHY follow VARBYTE.
+      for(const char* spatial:{"geometry","geography"}) {
+        ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));expect_catalog_text(1,spatial);expect_catalog_integer(3,1048447);ASSERT_FALSE(HasFailure());
+      }
+    }
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
   }
   ASSERT_FALSE(HasFailure());
@@ -11185,3 +11191,77 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperTextParameterIsAStringUnlessJsonParsed
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 }
+
+// EWKB expectations from AWS Python driver integration data
+// (248ffd5896c7a46bba115452dc10b8389d3ede54 _generate_test_datatype_tables.py:186-193).
+TEST_F(RedshiftSpecialTypesRealTest, SpatialResultsAreEwkbBytes) {
+  ASSERT_TRUE(connect());
+  SQLCHAR query[] =
+      "SELECT ST_GeomFromText('POINT(1 2)') AS g, ST_GeomFromText('POINT(1 2)', 4326) AS gs, "
+      "ST_GeogFromText('POINT(1 1)') AS gg, CAST(NULL AS GEOMETRY) AS gn";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  const char* names[]{"geometry", "geometry", "geography", "geometry"};
+  for (SQLUSMALLINT column = 1; column <= 4; ++column) {
+    SQLSMALLINT type = -1;
+    SQLULEN size = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, nullptr, 0, nullptr, &type, &size, nullptr, nullptr));
+    EXPECT_EQ(SQL_LONGVARBINARY, type);
+    EXPECT_EQ(0u, size);
+    char name[16]{};
+    SQLSMALLINT name_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_TYPE_NAME, name, sizeof(name), &name_length, nullptr));
+    EXPECT_STREQ(names[column - 1], name);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  const char* expected_hex[]{"0101000000000000000000F03F0000000000000040",
+                             "0101000020E6100000000000000000F03F0000000000000040",
+                             "0101000020E6100000000000000000F03F000000000000F03F"};
+  for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+    SCOPED_TRACE(column);
+    const std::string hex = expected_hex[column - 1];
+    std::array<unsigned char, 64> bytes{};
+    SQLLEN length = -7;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_BINARY, bytes.data(), bytes.size(), &length))
+        << get_error(SQL_HANDLE_STMT, hstmt_);
+    ASSERT_EQ(static_cast<SQLLEN>(hex.size() / 2), length);
+    std::string actual;
+    for (SQLLEN i = 0; i < length; ++i) {
+      static constexpr char digits[] = "0123456789ABCDEF";
+      actual.push_back(digits[bytes[static_cast<std::size_t>(i)] >> 4]);
+      actual.push_back(digits[bytes[static_cast<std::size_t>(i)] & 0x0f]);
+    }
+    EXPECT_EQ(hex, actual);
+  }
+  SQLLEN length = 0;
+  text_cell(4, length);
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  // Character retrieval is the driver's generic lower-case hex of the same bytes.
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+    std::string lower = expected_hex[column - 1];
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    EXPECT_EQ(lower, text_cell(column, length));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+TEST_F(RedshiftSpecialTypesRealTest, SpatialInputUsesExplicitEwkbFunction) {
+  ASSERT_TRUE(connect());
+  SQLCHAR query[] = "SELECT ST_AsEWKT(ST_GeomFromEWKB(?)) AS ewkt";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  char input[] = "0101000020E6100000000000000000F03F0000000000000040";
+  SQLLEN input_length = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+      sizeof(input) - 1, 0, input, sizeof(input), &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(checkpoint_statement(hstmt_))) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLLEN length = 0;
+  EXPECT_EQ("SRID=4326;POINT(1 2)", text_cell(1, length));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+

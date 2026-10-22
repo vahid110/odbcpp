@@ -49,6 +49,8 @@ public:
 
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;
+  std::optional<std::string> normalize_native_result_value(
+      std::uint32_t id, ScalarType type, std::string_view value) const override;
   NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                               std::int32_t modifier) const override;
 
