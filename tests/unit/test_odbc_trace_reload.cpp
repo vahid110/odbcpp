@@ -22,10 +22,18 @@
 #ifdef ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL
 // Compile-time isolated controls exercise the same main/CTest policy below.
 // These names can never satisfy the real loader evidence inventory.
-TEST(TraceReloadExitPolicyControl, Pass) { SUCCEED(); }
-TEST(TraceReloadExitPolicyControl, SkipA) { GTEST_SKIP() << "synthetic skip A"; }
-TEST(TraceReloadExitPolicyControl, SkipB) { GTEST_SKIP() << "synthetic skip B"; }
-TEST(TraceReloadExitPolicyControl, Failure) { ADD_FAILURE() << "synthetic failure"; }
+TEST(TraceReloadExitPolicyControl, Pass) {
+  SUCCEED();
+}
+TEST(TraceReloadExitPolicyControl, SkipA) {
+  GTEST_SKIP() << "synthetic skip A";
+}
+TEST(TraceReloadExitPolicyControl, SkipB) {
+  GTEST_SKIP() << "synthetic skip B";
+}
+TEST(TraceReloadExitPolicyControl, Failure) {
+  ADD_FAILURE() << "synthetic failure";
+}
 TEST(TraceReloadExitPolicyControl, FailureThenSkip) {
   ADD_FAILURE() << "synthetic failure before skip";
   GTEST_SKIP() << "must not hide the failure";
