@@ -138,6 +138,24 @@ bool capture(HWND window, const wchar_t* filename) {
   return ok;
 }
 
+// The dialog runs per-monitor-v2 aware. An unaware observer receives
+// DPI-virtualized GetClientRect/GetWindowRect values while control messages
+// such as TCM_GETITEMRECT return physical pixels, so above 100% scaling the
+// automation must share the dialog's coordinate space.
+struct ObserverDpiAwareness {
+  using SetDpi = DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
+  SetDpi set_dpi = reinterpret_cast<SetDpi>(
+      GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext"));
+  DPI_AWARENESS_CONTEXT previous =
+      set_dpi ? set_dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) : nullptr;
+  ObserverDpiAwareness() = default;
+  ObserverDpiAwareness(const ObserverDpiAwareness&) = delete;
+  ObserverDpiAwareness& operator=(const ObserverDpiAwareness&) = delete;
+  ~ObserverDpiAwareness() {
+    if (set_dpi && previous) set_dpi(previous);
+  }
+};
+
 struct DialogRun { bool accepted = false; std::vector<std::string> failures; };
 DialogRun run_dialog(Fields& fields, bool system_dsn, ConnectionTester tester,
                      const std::function<void(HWND, Observations&)>& actions) {
@@ -147,6 +165,7 @@ DialogRun run_dialog(Fields& fields, bool system_dsn, ConnectionTester tester,
   MSG queued{};
   PeekMessageW(&queued, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
   std::thread automation([&] {
+    const ObserverDpiAwareness observer_dpi;
     HWND window = nullptr;
     if (!wait_for([&] {
       window = find_dialog(ui_thread);
