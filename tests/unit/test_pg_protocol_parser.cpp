@@ -320,6 +320,34 @@ TEST(PgProtocolParserTest, ErrorResponseRequiresCompleteUniqueFields) {
                std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, ErrorTextIsPublishedAsValidUtf8) {
+  PgProtocolParser parser;
+  const std::string replacement("\xEF\xBF\xBD");
+  Message error{'E', {}};
+  append_cstring(error.payload, "SFATAL");
+  append_cstring(error.payload, "C28P01");
+  append_cstring(error.payload,
+                 std::string("Mauth \xE9 \xF0\x28\x8C\x28 \xE2\x82\xAC end"));
+  error.payload.push_back(std::byte{0});
+  const std::string expected = "auth " + replacement + " " + replacement +
+      "(" + replacement + "( \xE2\x82\xAC end";
+  EXPECT_EQ(expected, parser.extract_error_message(error));
+  EXPECT_EQ("28P01", parser.extract_error_sqlstate(error));
+
+  const auto result = parser.extract_query_result({error});
+  ASSERT_TRUE(result.error);
+  EXPECT_EQ("Query error: " + expected, result.error->message);
+  EXPECT_EQ("28P01", result.error->native_state);
+
+  Message truncated{'E', {}};
+  append_cstring(truncated.payload, "SERROR");
+  append_cstring(truncated.payload, "C42601");
+  append_cstring(truncated.payload, std::string("Mtail \xE2\x82"));
+  truncated.payload.push_back(std::byte{0});
+  EXPECT_EQ("tail " + replacement + replacement,
+            parser.extract_error_message(truncated));
+}
+
 TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
   PgProtocolParser parser;
   Message command{'C', {}};

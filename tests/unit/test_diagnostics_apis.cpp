@@ -476,6 +476,67 @@ TEST_F(DiagnosticsTest, SQLErrorSelectsHandlesAndAdvancesOnlyOnSuccess) {
                        0, nullptr));
 }
 
+TEST_F(DiagnosticsTest, SQLErrorW_UnconvertibleRecordDoesNotBlockLaterLegacyRecords) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    const std::string malformed("\xF0\x28\x8C\x28", 4);
+    statement->set_error("22018", malformed, 71);
+    statement->add_diagnostic("01000", 72, "second diagnostic");
+
+    // The record's wide text policy is unchanged: SQL_ERROR, with SQLSTATE and
+    // native error written and the message buffer and length untouched.
+    SQLWCHAR wide_state[6]{};
+    SQLINTEGER native_error = -1;
+    std::array<SQLWCHAR, 32> message{};
+    message.fill(0x5a5a);
+    SQLSMALLINT length = -1;
+    EXPECT_EQ(SQL_ERROR,
+              SQLErrorW(nullptr, nullptr, hstmt, wide_state, &native_error,
+                        message.data(), static_cast<SQLSMALLINT>(message.size()),
+                        &length));
+    EXPECT_EQ(71, native_error);
+    EXPECT_EQ(-1, length);
+    EXPECT_EQ(0x5a5a, message[0]);
+    constexpr char first_state[] = "22018";
+    for (std::size_t index = 0; index < sizeof(first_state); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(first_state[index]), wide_state[index]);
+    }
+
+    // Retrying can never convert that record, so the legacy cursor moves on
+    // and still reaches the next record and then SQL_NO_DATA.
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLErrorW(nullptr, nullptr, hstmt, wide_state, &native_error,
+                        message.data(), static_cast<SQLSMALLINT>(message.size()),
+                        &length));
+    EXPECT_EQ(72, native_error);
+    EXPECT_EQ(17, length);
+    constexpr char second_state[] = "01000";
+    for (std::size_t index = 0; index < sizeof(second_state); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(second_state[index]), wide_state[index]);
+    }
+    EXPECT_EQ(SQL_NO_DATA,
+              SQLErrorW(nullptr, nullptr, hstmt, wide_state, nullptr, nullptr, 0,
+                        nullptr));
+    EXPECT_EQ(2u, statement->get_diagnostic_count());
+
+    // A caller argument error is not a record failure and still retries.
+    statement->set_error("HY000", "retry after invalid buffer");
+    EXPECT_EQ(SQL_ERROR,
+              SQLErrorW(nullptr, nullptr, hstmt, wide_state, nullptr, nullptr, -1,
+                        nullptr));
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLErrorW(nullptr, nullptr, hstmt, wide_state, nullptr, nullptr, 0,
+                        nullptr));
+    constexpr char retry_state[] = "HY000";
+    for (std::size_t index = 0; index < sizeof(retry_state); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(retry_state[index]), wide_state[index]);
+    }
+    EXPECT_EQ(SQL_NO_DATA,
+              SQLErrorW(nullptr, nullptr, hstmt, wide_state, nullptr, nullptr, 0,
+                        nullptr));
+}
+
 TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidParameters) {
     // Test invalid record number
     SQLCHAR sqlstate[6];
