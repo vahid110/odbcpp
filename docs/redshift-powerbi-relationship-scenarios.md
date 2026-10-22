@@ -135,6 +135,47 @@ Use each platform's owning DM/driver width pair and actual inventories; ANSI
 calls here do not establish wide-call behavior. Do not substitute a selected
 relationship run for the complete applicable existing suite.
 
+## Bounded application owners
+
+The checked-in resource entry has an inert default and a public-only preflight:
+
+```sh
+python3 -B tools/development/redshift_powerbi_app_checkpoint.py
+python3 -B tools/development/redshift_powerbi_app_checkpoint.py preflight --plan /absolute/public/app-plan.json
+```
+
+Only an explicit `run --plan ... --admission ...` consumes a fresh private
+one-use admission. Its closed plan binds the canonical complete checkpoint
+partition, exact source/CI, native plan, tools, workload/input identity and
+existing operator policy. It reuses the WSL pilot lock and canonical resource,
+fixture and session controls. The original admission bounds include preparation,
+baseline, cap decision, positive import, reopen and cleanup; no phase resets them.
+WSL publishes DATA controls and never launches the GUI.
+
+After resource readiness, the coordinator runs the pinned
+`tools/development/windows_powerbi_owner.py --launch-local --plan ...
+--plan-sha256 ...` locally on the interactive Windows desktop. This starts only
+the fixed native owner under the existing job implementation, for at most three
+app launches. The native owner uses held inputs, exact owned User DSN values,
+observed process lifetimes and known-reader cleanup. It neither enters UI data
+nor parses feature results. Each explicit local action requires the held reviewed
+plan; the default command performs no registry, app, SQL or cloud operations.
+
+The baseline must close normally and prove zero principal sessions before the
+fresh reviewed demand/cap decision. A server peak at a restrictive cap, API trace
+pairs or configured parallel maximum alone is not that measurement. Both drivers
+use the same workload/input profile, user and resulting finite cap. The AWS
+comparison additionally needs its exact effective `DSN=...;LogLevel=2;LogPath=...;`
+connection recipe applied in Power BI and actual logs; DSN readback or an operator
+attestation alone cannot prove effective logging.
+
+Resource and native receipts deliberately remain provisional child-collection
+evidence. Final assessment must bind their hashes to the actual local launcher
+and resource-owner policy/process exits and job/reap proofs, including checks
+after publication and handle closure. Exit0 does not establish feature PASS;
+missing logs, API calls, app observations, cleanup or platform evidence remain
+explicitly incomplete. No private historical script is an execution prerequisite.
+
 ## Actual Power BI procedure and separate results
 
 Run only after fresh finite admission, actual fixture readiness and native
