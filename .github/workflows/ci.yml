@@ -698,7 +698,7 @@ jobs:
 
   windows-package:
     if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
     env:
@@ -713,9 +713,15 @@ jobs:
         with:
           name: windows-package-acceptance-inputs
           path: package-artifacts
-      - name: Validate fresh-runner package lifecycle
+      - name: Qualify both product MSIs and installed setup suites unattended
         shell: pwsh
-        run: ./tools/ci/windows-package.ps1
+        run: ./tools/ci/windows-product-packages.ps1
+      - name: Validate fresh-runner package lifecycle
+        if: always()
+        shell: pwsh
+        run: |
+          ./tools/ci/windows-product-packages.ps1 -VerifyCleanup
+          ./tools/ci/windows-package.ps1
       - name: Preserve package acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -723,6 +729,10 @@ jobs:
           name: windows-package-evidence
           path: |
             ${{ runner.temp }}/package-logs
+            ${{ runner.temp }}/dual-product-package-evidence
+            build-package-redshift/package/*.msi
+            build-package-redshift/package/*.sha256
+            build-package-redshift/package/payload-*/inventory.json
             ${{ runner.temp }}/odbcpp-administrator-*.png
             ${{ runner.temp }}/odbcpp-setup-*.bmp
             ${{ runner.temp }}/odbcpp-postgres.log

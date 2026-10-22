@@ -299,9 +299,16 @@ add_test(
 set_tests_properties(test_crypto_manifest PROPERTIES LABELS "unit;architecture")
 
 if(WIN32)
-  get_filename_component(_linker_directory "${CMAKE_LINKER}" DIRECTORY)
-  find_program(ODBCPP_CRYPTO_INSPECTOR dumpbin
-    HINTS "${_linker_directory}")
+  add_test(
+    NAME test_crypto_inspector_without_tests
+    COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            "-DLINKER=${CMAKE_LINKER}"
+            "-DGENERATOR=${CMAKE_GENERATOR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoInspectorConfiguration.cmake)
+  set_tests_properties(test_crypto_inspector_without_tests
+    PROPERTIES LABELS "unit;architecture")
 elseif(APPLE)
   find_program(ODBCPP_CRYPTO_INSPECTOR otool)
 elseif(UNIX)
@@ -711,6 +718,22 @@ if(WIN32)
 endif()
 
 if(WIN32)
+  # Explicit installed-package fixture; never join an unprovisioned local suite.
+  option(ODBCPP_INSTALLED_SETUP_TESTS "Register tests requiring the matching installed Windows MSI" OFF)
+  add_executable(it_setup_registration EXCLUDE_FROM_ALL tests/windows/it_setup_registration.cpp)
+  target_link_libraries(it_setup_registration PRIVATE odbccp32 advapi32 GTest::gtest_main)
+  if(MSVC)
+    target_link_libraries(it_setup_registration PRIVATE legacy_stdio_definitions)
+  endif()
+  if(TARGET_DATABASE STREQUAL "REDSHIFT")
+    target_compile_definitions(it_setup_registration PRIVATE ODBCPP_TEST_REDSHIFT_PACKAGE=1)
+  endif()
+  apply_compiler_settings(it_setup_registration)
+  set_target_properties(it_setup_registration PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  if(ODBCPP_INSTALLED_SETUP_TESTS)
+    add_test(NAME it_setup_registration COMMAND it_setup_registration)
+    set_tests_properties(it_setup_registration PROPERTIES LABELS "integration;windows;package" TIMEOUT 30)
+  endif()
   add_executable(it_package_load tests/windows/it_package_load.cpp)
   # The probe must not preload the system's C++ runtime before inspecting the DLLs.
   set_property(TARGET it_package_load PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

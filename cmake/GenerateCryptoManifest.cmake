@@ -1,3 +1,10 @@
+if(WIN32)
+  # Packaging consumes this tool even when the product tests are disabled.
+  get_filename_component(_linker_directory "${CMAKE_LINKER}" DIRECTORY)
+  find_program(ODBCPP_CRYPTO_INSPECTOR dumpbin
+    HINTS "${_linker_directory}")
+endif()
+
 function(odbcpp_json_quote output value)
   string(REPLACE "\\" "\\\\" _value "${value}")
   string(REPLACE "\"" "\\\"" _value "${_value}")
