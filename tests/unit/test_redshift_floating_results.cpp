@@ -11,6 +11,7 @@
 
 #include <bit>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -74,7 +75,7 @@ TEST(RedshiftFloatingCodecTest, ShortestExactTextKeepsDefaultNotationAndSpecials
       {"-0", "-0"},
       {"0", "0"},
       {"100000", "100000"},
-      {"1e+16", "1e+16"},
+      {"10000000000000000", "1e+16"}, // %.17g keeps fixed notation at exponent 16.
       {"123456789012345", "123456789012345"},
       {"1.2345678901234568e+17", "1.2345678901234568e+17"},
       {"0.0001", "0.0001"},
@@ -97,20 +98,34 @@ TEST(RedshiftFloatingCodecTest, ShortestExactTextKeepsDefaultNotationAndSpecials
     EXPECT_EQ(std::optional<std::string>(server),
               postgres_connection.normalize_native_result_value(701, ScalarType::Double, server));
   }
+  // Genuine %.8g float4out spellings (extra_float_digits=2).
   const std::pair<const char*, const char*> reals[]{
-      {"0.100000001", "0.1"},
-      {"3.40282347e+38", "3.4028235e+38"},
-      {"1.40129846e-45", "1e-45"},
+      {"0.1", "0.1"},
+      {"3.4028235e+38", "3.4028235e+38"},
+      {"1.4012985e-45", "1e-45"},
       {"100000", "100000"},
-      {"1e+06", "1e+06"},
+      {"1000000", "1e+06"},
       {"-0", "-0"},
       {"NaN", "NaN"},
+      // Documented residual: 8 digits name a neighbour of the stored 0x625d754f.
+      {"1.0212959e+21", "1.0212959e+21"},
   };
   for (const auto& [server, expected] : reals) {
     SCOPED_TRACE(server);
     EXPECT_EQ(std::optional<std::string>(expected),
               redshift.normalize_native_result_value(700, ScalarType::Real, server));
   }
+}
+
+TEST(RedshiftFloatingCodecTest, EightDigitRealResidualSelectsTheNamedNeighbour) {
+  // Not a fix claim: %.8g cannot identify every float. The stored value
+  // 0x625d754f prints as 1.0212959e+21, which is the float 0x625d7550.
+  postgres::PgDatabaseConnection redshift(nullptr, std::nullopt, postgres::PgCatalogProfile::Redshift);
+  const auto text = redshift.normalize_native_result_value(700, ScalarType::Real, "1.0212959e+21");
+  ASSERT_TRUE(text);
+  const float parsed = std::strtof(text->c_str(), nullptr);
+  EXPECT_EQ(0x625d7550u, std::bit_cast<std::uint32_t>(parsed));
+  EXPECT_NE(0x625d754fu, std::bit_cast<std::uint32_t>(parsed));
 }
 
 class RedshiftFloatingResultsTest : public RedshiftScriptedSessionTest {};
@@ -125,9 +140,9 @@ TEST_F(RedshiftFloatingResultsTest, SessionStartupRequestsExtraFloatDigits) {
 TEST_F(RedshiftFloatingResultsTest, DoubleAndRealTargetsReceiveTheStoredValue) {
   script->responses["SELECT floats"] =
       row_description({{"d", 701}, {"r", 700}}) +
-      data_row({std::string("0.30000000000000004"), std::string("0.100000001")}) +
-      data_row({std::string("1.7976931348623157e+308"), std::string("3.40282347e+38")}) +
-      data_row({std::string("4.9406564584124654e-324"), std::string("1.40129846e-45")}) +
+      data_row({std::string("0.30000000000000004"), std::string("0.1")}) +
+      data_row({std::string("1.7976931348623157e+308"), std::string("3.4028235e+38")}) +
+      data_row({std::string("4.9406564584124654e-324"), std::string("1.4012985e-45")}) +
       data_row({std::string("-0"), std::string("-0")}) +
       data_row({std::string("0.10000000000000001"), std::nullopt}) +
       complete("SELECT 5");

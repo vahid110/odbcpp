@@ -77,7 +77,7 @@ Status: **C** covered, **P** partial, **G** gap (no test), **D** demonstrated de
 | N7 | Non-finite to integer/NUMERIC/CHAR | 22003 (numeric), raw text for CHAR | Policies tested | F `Nonfinite*`, `CharacterNonfinite*` | C |
 | N8 | Signed zero | `-0` preserved for floats | Parameters: tested; results: PG only | U `FullLiteralWiresKeepExtremesSubnormalsAndSignedZero`; PG | P (no Redshift result case) |
 | N9 | Float underflow to zero on narrowing | 22003 | Rejects | PG `FloatingConversionRejectsUnderflowToZero` | C |
-| N10 | **DOUBLE/REAL result precision** | `SQL_C_DOUBLE`/`SQL_C_FLOAT` equal the stored IEEE value | **Fixed (Redshift profile).** The startup sends `extra_float_digits=2`, the pinned AWS JDBC default for Redshift's 8.0.2 server version (`ConnectionFactoryImpl.java:425-428` @773fa16), so float8 text identifies the stored value. The backend re-emits each REAL/DOUBLE cell as the shortest exact decimal (`pg_value.cpp`), keeping the server's default `%g` notation threshold, so exactly representable values keep their previous spelling. Specials and unrecognised spellings stay unchanged; the PostgreSQL profile is unchanged. | U `RedshiftFloatingStartupTest`, `RedshiftFloatingCodecTest`; W `RedshiftFloatingResultsTest.*`; L `DoubleResultRoundTripsStoredValue` (unrun) | **C (U/W), live pending.** Residuals: float4 with 2 extra digits gives 8 significant digits, so a REAL may still differ by one ulp (9 needed; `=3` is unverified on Redshift). REAL to `SQL_C_DOUBLE` parses the decimal rather than widening the float (same as baseline). |
+| N10 | **DOUBLE/REAL result precision** | `SQL_C_DOUBLE`/`SQL_C_FLOAT` equal the stored IEEE value | **Fixed (Redshift profile).** The startup sends `extra_float_digits=2`, the pinned AWS JDBC default for Redshift's 8.0.2 server version (`ConnectionFactoryImpl.java:425-428` @773fa16), so float8 text identifies the stored value. The backend re-emits each REAL/DOUBLE cell as the shortest exact decimal (`pg_value.cpp`), keeping the server's default `%g` notation threshold, so exactly representable values keep their previous spelling. Specials and unrecognised spellings stay unchanged; the PostgreSQL profile is unchanged. | U `RedshiftFloatingStartupTest`, `RedshiftFloatingCodecTest`; W `RedshiftFloatingResultsTest.*`; L `DoubleResultRoundTripsStoredValue` (unrun) | **C (U/W), live pending.** Residuals: float4 with 2 extra digits gives 8 significant digits, and some REALs need 9. Example: the stored bits `0x625d754f` print as `1.0212959e+21`, which identifies the neighbour `0x625d7550`, and the driver shows the neighbour's spelling. Clients cannot detect this; `=3` is unverified on Redshift. REAL to `SQL_C_DOUBLE` parses the decimal rather than widening the float (same as baseline). |
 | N11 | NUMERIC with no typmod | Unknown size 0 | `NUMERIC` size 0 | U `PreservesNumericAndTemporalModifiers` | C |
 
 ### Temporal
@@ -115,7 +115,22 @@ Status: **C** covered, **P** partial, **G** gap (no test), **D** demonstrated de
 1. **N10 — DOUBLE/REAL result precision: fixed** for the Redshift profile
    (`extra_float_digits=2` at startup, plus the shortest exact re-emission). The live case
    `DoubleResultRoundTripsStoredValue` must confirm the server accepts the startup
-   setting and emits 17 digits. Residuals: the REAL one-ulp edge and REAL to C_DOUBLE widening.
+   setting and emits 17 digits. Residuals: the REAL 8-digit neighbour case and REAL to C_DOUBLE widening.
+   **Compatibility:** values whose stored double is not the short decimal now
+   read exactly. For example, `3.0000000000000004` previously arrived as `3`:
+   * `SQL_C_LONG` and `SQL_C_NUMERIC` now report 01S07 fractional truncation;
+   * character text can be up to 24 characters, within the existing
+     DOUBLE display size of 24 but longer than COLUMN_SIZE 15, so buffers sized
+     from COLUMN_SIZE can get 01004.
+   This is ODBC-correct.
+
+   **Unverified:**
+   * Redshift Serverless and proxy acceptance of the startup parameter;
+   * whether `DISCARD ALL` (session reset) keeps it. If it is reset, the codec
+     accepts the shorter text; precision is lost but nothing fails.
+
+   **Build:** this is the first product use of floating-point `std::to_chars`, so
+   macOS needs deployment target 13.3 or later. GCC 11+ and MSVC are fine.
 2. **P1 V7 — raw binary VARBYTE parameters** lack live evidence; authored.
 3. **P2 T8 — INTERVAL families** are presented as untyped VARCHAR. Requires a
    design (SQL_INTERVAL_* metadata, struct conversion, parameters); out of scope.

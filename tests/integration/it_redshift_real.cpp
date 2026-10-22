@@ -11293,6 +11293,14 @@ TEST_F(RedshiftSpecialTypesRealTest, RawBinaryVarbyteParameterRoundTrip) {
 // Audit N10: whether DOUBLE text results reproduce the stored IEEE value.
 TEST_F(RedshiftSpecialTypesRealTest, DoubleResultRoundTripsStoredValue) {
   ASSERT_TRUE(connect());
+  SQLCHAR show[] = "SHOW extra_float_digits";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), show, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLLEN show_length = 0;
+  const auto digits = text_cell(1, show_length);
+  RecordProperty("extra_float_digits", digits);
+  EXPECT_EQ("2", digits); // Startup parameter accepted by the server.
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   SQLCHAR query[] = "SELECT 0.1::FLOAT8 + 0.2::FLOAT8 AS sum, 1.7976931348623157e308::FLOAT8 AS max, "
                     "(0.1::FLOAT8 + 0.2::FLOAT8)::VARCHAR AS text";
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
