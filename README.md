@@ -525,8 +525,9 @@ connection-string precedence; an empty value clears an inherited setting.
 `SSLCAFILE` and `SSLCADIR` cannot be set together, and a missing, empty or
 malformed custom CA fails the connection instead of falling back. Hostname/IP
 verification is always enforced. Native Windows/macOS verification uses no
-network (no intermediate download or automatic root update), so servers must send
-their intermediates, and a verdict after the login deadline is a timeout. See
+network (no intermediate download or automatic root update): servers must send
+their intermediates, Windows roots must already be installed locally, and a
+verdict after the login deadline is a timeout. See
 [docs/trust-store-design.md](docs/trust-store-design.md) for platform details.
 Requested TLS never falls back to plaintext.
 PostgreSQL sessions request UTF-8 client encoding and ISO/YMD DateStyle at

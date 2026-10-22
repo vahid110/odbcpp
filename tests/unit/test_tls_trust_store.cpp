@@ -4,9 +4,12 @@
 #include "odbcpp/security/tls_client.h"
 #include "tests/support/tls_test_pki.h"
 
+#include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace {

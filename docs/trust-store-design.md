@@ -156,10 +156,13 @@ engine (`HCCE_CURRENT_USER`) with requested usage server authentication, then
   `CERT_CHAIN_DISABLE_AIA` and `CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE`.
   CryptoAPI only bounds URL fetches per URL (`dwUrlRetrievalTimeout`), never in
   aggregate, so fetching could not honor the connection deadline. As on macOS,
-  the server must send its intermediates, and the root must already be installed
-  or cached locally (Windows ships most roots in crypt32 and prefetches CTLs
-  through the cryptographic services). A root that only automatic root update
-  would download fails closed. Install it, or use `SSLCAFILE`.
+  the server must send its intermediates. The root must also already be in the
+  local Root store: Windows preinstalls only a small set of roots and normally
+  downloads the others on demand through automatic root update, which is now
+  disabled for driver verification. A fresh or locked-down image without
+  Amazon Root CA 1 or Starfield Services Root CA G2 fails closed. Preinstall
+  the roots (Group Policy, enterprise deployment, `certutil -generateSSTFromWU`
+  plus import, or an earlier OS fetch), or use `SSLCAFILE`.
 
 ### macOS (Security framework)
 
