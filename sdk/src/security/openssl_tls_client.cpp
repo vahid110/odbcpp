@@ -539,17 +539,15 @@ private:
     }
     platform::EvaluationOptions options;
     options.test_anchors = self->platform_test_anchors_;
-    const auto now = std::chrono::steady_clock::now();
-    if (self->verification_deadline_ <= now) {
-      options.network_timeout = std::chrono::milliseconds::zero();
-    } else if (self->verification_deadline_ - now < platform::max_network_retrieval) {
-      options.network_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
-          self->verification_deadline_ - now);
-    }
     auto evaluation = platform::evaluate_server_chain(chain, options);
     if (!evaluation.trusted) {
       return reject(evaluation.reason.empty() ? "certificate is not trusted"
                                               : std::move(evaluation.reason));
+    }
+    // A verdict that arrives after the caller's original deadline never
+    // publishes trust; the transport reports the expired deadline.
+    if (std::chrono::steady_clock::now() >= self->verification_deadline_) {
+      return reject("verification completed after the connection deadline");
     }
     ::X509_STORE_CTX_set_error(store_context, X509_V_OK);
     return 1;

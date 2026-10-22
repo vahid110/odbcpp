@@ -15,11 +15,13 @@ using DerCertificate = std::vector<unsigned char>;
 
 inline constexpr std::size_t max_peer_chain_certificates = 16;
 inline constexpr std::size_t max_peer_certificate_bytes = 64 * 1024;
-inline constexpr std::chrono::milliseconds max_network_retrieval{15000};
 
 // True when this build evaluates server chains with the operating system's
 // verifier: CryptoAPI on Windows, Security.framework on macOS. Elsewhere the
-// system trust store is the distribution CA bundle selected below.
+// system trust store is the distribution CA bundle selected below. Native
+// evaluation never uses the network: only peer-supplied certificates and
+// locally installed or cached OS trust data (no AIA issuer fetch, no root
+// auto-update), so a missing intermediate or uninstalled root fails closed.
 bool native_verifier_available() noexcept;
 
 struct ChainEvaluation {
@@ -29,9 +31,6 @@ struct ChainEvaluation {
 };
 
 struct EvaluationOptions {
-  // Upper bound for verifier network retrieval (Windows root update/AIA).
-  // Zero restricts the verifier to cached data.
-  std::chrono::milliseconds network_timeout{max_network_retrieval};
   // Test-only anchor replacement for proving native chain evaluation without
   // modifying an OS store. Production callers always leave this empty.
   std::vector<DerCertificate> test_anchors;
@@ -40,6 +39,8 @@ struct EvaluationOptions {
 // chain[0] is the server leaf; later entries are untrusted peer-supplied
 // intermediates. Evaluates trust and the TLS server-authentication purpose
 // under OS policy; host name matching remains the TLS client's own check.
+// The call is synchronous and not preemptible; callers enforce their own
+// deadline on the returned verdict.
 ChainEvaluation evaluate_server_chain(const std::vector<DerCertificate>& chain,
                                       const EvaluationOptions& options);
 

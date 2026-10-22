@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "odbcpp/transport/async_tls_transport.h"
 #include "odbcpp/transport/socket_transport.h"
 #include "odbcpp/transport/transport_factory.h"
 #include "odbcpp/transport/socket_wait.h"
@@ -11,6 +12,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -35,7 +37,12 @@
 #ifndef _WIN32
 #include <netinet/tcp.h>
 #include <csignal>
+#include <cerrno>
+#include <cstdio>
+#include <fcntl.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #if defined(SO_NOSIGPIPE) && !defined(_WIN32)
@@ -269,6 +276,10 @@ public:
     return observed_sni_;
   }
 
+  // The self-signed server certificate and its OpenSSL hashed-directory name.
+  const std::string& certificate_pem() const noexcept { return certificate_pem_; }
+  const std::string& hashed_name() const noexcept { return hashed_name_; }
+
 private:
   void configure_certificate() {
     EVP_PKEY_CTX* key_context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
@@ -300,6 +311,18 @@ private:
         X509_sign(certificate, key, EVP_sha256()) > 0 &&
         SSL_CTX_use_certificate(context_, certificate) == 1 &&
         SSL_CTX_use_PrivateKey(context_, key) == 1;
+    if (configured) {
+      BIO* pem = BIO_new(BIO_s_mem());
+      if (pem && PEM_write_bio_X509(pem, certificate) == 1) {
+        char* data = nullptr;
+        const long size = BIO_get_mem_data(pem, &data);
+        certificate_pem_.assign(data, static_cast<std::size_t>(size));
+      }
+      BIO_free(pem);
+      std::array<char, 16> hashed{};
+      std::snprintf(hashed.data(), hashed.size(), "%08lx.0", X509_subject_name_hash(certificate));
+      hashed_name_ = hashed.data();
+    }
     EVP_PKEY_free(key);
     X509_free(certificate);
     if (!configured) throw std::runtime_error("failed to configure TLS test certificate");
@@ -322,7 +345,70 @@ private:
   std::condition_variable handshake_ready_;
   bool handshake_complete_{false};
   std::string observed_sni_;
+  std::string certificate_pem_;
+  std::string hashed_name_;
 };
+
+#ifndef _WIN32
+// A hashed CA directory whose only entry is a FIFO. OpenSSL's directory lookup
+// opens it during certificate verification and blocks until this writer
+// supplies the real trusted root at release_at, so the actual handshake
+// produces a genuine, successful verdict only after the chosen time.
+class DelayedTrustDirectory {
+public:
+  DelayedTrustDirectory(const TLSSleepingServer& server,
+                        std::chrono::steady_clock::time_point release_at)
+      : path_(std::filesystem::temp_directory_path() /
+              ("odbcpp-delayed-ca-" + std::to_string(::getpid()) + "-" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))) {
+    std::filesystem::create_directories(path_);
+    const auto fifo = (path_ / server.hashed_name()).string();
+    if (server.certificate_pem().empty() || ::mkfifo(fifo.c_str(), 0600) != 0) {
+      throw std::runtime_error("failed to create delayed trust FIFO");
+    }
+    writer_ = std::thread([this, fifo, pem = server.certificate_pem(), release_at] {
+      std::this_thread::sleep_until(release_at);
+      // Non-blocking open succeeds only once the verifier is reading.
+      const auto give_up = std::chrono::steady_clock::now() + 10s;
+      int fd = -1;
+      while ((fd = ::open(fifo.c_str(), O_WRONLY | O_NONBLOCK)) < 0 && errno == ENXIO &&
+             !stop_.load() && std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::sleep_for(5ms);
+      }
+      if (fd < 0) return;
+      std::size_t written = 0;
+      while (written < pem.size()) {
+        const auto count = ::write(fd, pem.data() + written, pem.size() - written);
+        if (count <= 0) break;
+        written += static_cast<std::size_t>(count);
+      }
+      ::close(fd);
+      delivered_ = written == pem.size();
+    });
+  }
+
+  ~DelayedTrustDirectory() {
+    finish();
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+  }
+
+  std::string directory() const { return path_.string(); }
+
+  // True when the verifier actually read the delayed root.
+  bool finish() {
+    stop_ = true;
+    if (writer_.joinable()) writer_.join();
+    return delivered_.load();
+  }
+
+private:
+  std::filesystem::path path_;
+  std::atomic<bool> stop_{false};
+  std::atomic<bool> delivered_{false};
+  std::thread writer_;
+};
+#endif
 
 void expect_receive_timeout(DeadlineModel model) {
   SleepingServer server(250ms);
@@ -1124,6 +1210,74 @@ TEST(TLSTransportDeadlineTest, RetriesFailedTrustStoreLoadOnReconnect) {
         << "the OpenSSL failure must reach the caller's diagnostic";
   }
 }
+
+#ifndef _WIN32
+TEST(TLSTransportDeadlineTest, DelayedTrustDirectoryControlVerifiesBeforeDeadline) {
+  TLSSleepingServer server(1s);
+  DelayedTrustDirectory trust(server, std::chrono::steady_clock::now());
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_ca_locations("", trust.directory());
+  auto connected = transport.connect("localhost", server.port(), rs::util::make_deadline(5s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  EXPECT_TRUE(transport.peer_identity_verified());
+  EXPECT_TRUE(trust.finish());
+}
+
+TEST(TLSTransportDeadlineTest, LateSuccessfulVerificationIsTimeoutAndNeverPublished) {
+  TLSSleepingServer server(2s);
+  const auto deadline = rs::util::make_deadline(300ms);
+  DelayedTrustDirectory trust(server, deadline + 200ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_ca_locations("", trust.directory());
+  auto connected = transport.connect("localhost", server.port(), deadline);
+  ASSERT_TRUE(connected.has_error()) << "a verdict after the deadline must not publish TLS";
+  EXPECT_EQ(connected.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout))
+      << connected.error_message();
+  EXPECT_EQ(connected.error_message(), "TLS handshake timeout");
+  EXPECT_FALSE(transport.peer_identity_verified());
+  EXPECT_GE(std::chrono::steady_clock::now(), deadline + 200ms)
+      << "the verdict must have been produced by the delayed verification";
+  EXPECT_TRUE(trust.finish()) << "verification must have consumed the delayed root";
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+}
+
+TEST(AsyncTLSTransportDeadlineTest, DelayedTrustDirectoryControlVerifiesBeforeDeadline) {
+  TLSSleepingServer server(1s);
+  DelayedTrustDirectory trust(server, std::chrono::steady_clock::now());
+  rs::core::transport::AsyncTlsTransport transport(
+      std::make_unique<rs::core::transport::ThreadPoolTransport>(2, 16));
+  transport.set_ca_locations("", trust.directory());
+  auto connected = transport.connect("localhost", server.port(), rs::util::make_deadline(5s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  EXPECT_TRUE(transport.peer_identity_verified());
+  EXPECT_TRUE(trust.finish());
+}
+
+TEST(AsyncTLSTransportDeadlineTest, LateSuccessfulVerificationIsTimeoutAndNeverPublished) {
+  TLSSleepingServer server(2s);
+  const auto deadline = rs::util::make_deadline(300ms);
+  DelayedTrustDirectory trust(server, deadline + 200ms);
+  rs::core::transport::AsyncTlsTransport transport(
+      std::make_unique<rs::core::transport::ThreadPoolTransport>(2, 16));
+  transport.set_ca_locations("", trust.directory());
+  auto connected = transport.connect("localhost", server.port(), deadline);
+  ASSERT_TRUE(connected.has_error()) << "a verdict after the deadline must not publish TLS";
+  EXPECT_EQ(connected.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout))
+      << connected.error_message();
+  // Rejected by the handshake's own post-verification check, before any late
+  // client Finished is flushed (the flush would fail with a socket deadline).
+  EXPECT_EQ(connected.error_message(), "TLS handshake deadline expired");
+  EXPECT_FALSE(transport.peer_identity_verified());
+  EXPECT_GE(std::chrono::steady_clock::now(), deadline + 200ms)
+      << "the verdict must have been produced by the delayed verification";
+  EXPECT_TRUE(trust.finish()) << "verification must have consumed the delayed root";
+  constexpr std::string_view plaintext = "ping";
+  EXPECT_TRUE(transport.send(
+      std::as_bytes(std::span<const char>(plaintext.data(), plaintext.size())),
+      rs::util::make_deadline(100ms)).has_error());
+}
+#endif
 
 TEST(TLSTransportDeadlineTest, RejectsInvalidMinimumTlsVersion) {
   SleepingServer server(100ms);

@@ -148,15 +148,18 @@ engine (`HCCE_CURRENT_USER`) with requested usage server authentication, then
 
 - The current-user engine's Root/CA logical stores include LocalMachine,
   enterprise and Group Policy roots plus CurrentUser roots, and honor the
-  `Disallowed` store and CTL/AuthRoot auto-update. Services running under a
+  `Disallowed` store and locally installed CTLs. Services running under a
   service account see that account's user store plus machine roots.
 - Explicit distrust, missing server-auth EKU, non-CA intermediates, expiry
   and untrusted roots fail. Revocation is not requested.
-- Root auto-update/AIA fetches may use the network. `dwUrlRetrievalTimeout`
-  bounds each URL fetch, so it is set to a quarter of the remaining connection
-  deadline (at most 3.75 s), and below one second the engine uses cached data
-  only. A chain build with several fetches can still exceed a very short
-  remaining deadline; the transport reports the deadline after the handshake.
+- No network retrieval: `CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL`,
+  `CERT_CHAIN_DISABLE_AIA` and `CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE`.
+  CryptoAPI only bounds URL fetches per URL (`dwUrlRetrievalTimeout`), never in
+  aggregate, so fetching could not honor the connection deadline. As on macOS,
+  the server must send its intermediates, and the root must already be installed
+  or cached locally (Windows ships most roots in crypt32 and prefetches CTLs
+  through the cryptographic services). A root that only automatic root update
+  would download fails closed. Install it, or use `SSLCAFILE`.
 
 ### macOS (Security framework)
 
@@ -165,9 +168,8 @@ The same verify callback builds `SecCertificateRef`s from DER, evaluates
 `SecTrustEvaluateWithError` (macOS 10.14+). This honors system roots, System
 and login keychain anchors, admin/user trust settings (including purpose
 restrictions and explicit "Never Trust") and Apple's distrust lists. Network
-fetching is disabled (`SecTrustSetNetworkFetchAllowed(false)`) so evaluation
-cannot outlive the deadline; servers must send intermediates, as Redshift
-does. No keychain is modified and no anchor is imported into OpenSSL.
+fetching is disabled (`SecTrustSetNetworkFetchAllowed(false)`); servers must
+send intermediates, as Redshift does. No keychain is modified and no anchor is imported into OpenSSL.
 
 ### Linux and other Unix (distro bundles)
 
@@ -220,6 +222,15 @@ administrator distrust is respected through the distro tooling.
   settings: CA files are re-read and the OS store is consulted live, so
   rotation applies to the next connection. Established sessions are never
   re-verified.
+- Deadlines: native evaluation is a synchronous OS call that cannot be
+  preempted. Without network retrieval it depends only on local data, but its
+  duration is not guaranteed. The verifier therefore rejects a trusted verdict
+  that arrives at or after the caller's original deadline. Both the sync and
+  async transports convert a handshake success, or a TLS verification failure,
+  observed after that deadline into a timeout (`TLS handshake timeout` /
+  `TLS handshake deadline expired`) and never publish late TLS. The same
+  post-handshake check covers custom/Linux OpenSSL verification, including
+  hashed-directory lookups.
 - The cancel-request sibling (`verified_sibling`) snapshots custom/Linux
   store objects already loaded; in Windows/macOS system mode it re-evaluates
   against the live OS store and fails closed if trust was removed meanwhile.
@@ -238,7 +249,7 @@ administrator distrust is respected through the distro tooling.
 | Connection option input | `sdk/include/odbcpp/database/backend_provider.h` | Normalized option passed by adapters | none new | `test_tls_trust_resolution.cpp` |
 | TLS client trust modes | `sdk/src/security/openssl_tls_client.cpp`, `sdk/internal/odbcpp/security/tls_client.h` | Single private provider adapter (OpenSSL API, AWS-LC compatible calls) | OpenSSL, platform adapter | `test_tls_trust_store.cpp`, `test_tls_client.cpp`, `tests/security/test_verified_tls.py` |
 | OS trust adapters | `sdk/internal/odbcpp/security/platform_trust.h`, `sdk/src/security/platform_trust.cpp` | Private; OS APIs never cross the security boundary | Security.framework/CoreFoundation, crypt32 | `test_platform_trust.cpp` |
-| Transport deadline hand-off | `sdk/src/transport/tls_transport.cpp`, `async_tls_transport.cpp` | Shared transports | security contract | existing `test_transport_deadlines.cpp`, `test_async_tls_transport.cpp` |
+| Transport deadline hand-off and late-verdict rejection | `sdk/src/transport/tls_transport.cpp`, `async_tls_transport.cpp` | Shared transports | security contract | `test_transport_deadlines.cpp` (delayed-verdict FIFO controls), `test_async_tls_transport.cpp` |
 | PostgreSQL/Redshift resolution | `core/database/postgres/pg_backend_provider.cpp` | Backend owns defaults/messages | SDK resolver | `test_tls_trust_resolution.cpp`, `test_backend_provider.cpp` |
 | Session validation | `core/database/generic_database_connection.cpp` | Backend session | SDK resolver | `test_transport_deadlines.cpp` |
 | ODBC keyword parsing and `trust_source` log field | `odbc/odbc_handles.cpp` | Adapter only | SDK options | `test_api_validation.cpp` |

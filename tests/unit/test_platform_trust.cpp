@@ -133,7 +133,6 @@ class NativeChainEvaluationTest : public ::testing::Test {
 
   static platform::EvaluationOptions anchored(const pki::Identity& root) {
     platform::EvaluationOptions options;
-    options.network_timeout = std::chrono::milliseconds::zero();
     options.test_anchors.push_back(pki::der(root.cert.get()));
     return options;
   }
@@ -151,7 +150,6 @@ class NativeChainEvaluationTest : public ::testing::Test {
 
 TEST_F(NativeChainEvaluationTest, OperatingSystemStoreRejectsPrivateHierarchy) {
   platform::EvaluationOptions options;
-  options.network_timeout = std::chrono::milliseconds::zero();
   const auto result = platform::evaluate_server_chain(
       {pki::der(hierarchy.leaf.cert.get()), pki::der(hierarchy.intermediate.cert.get())}, options);
   EXPECT_FALSE(result.trusted);

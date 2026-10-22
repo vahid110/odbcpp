@@ -319,6 +319,61 @@ TEST_F(NativeVerifierHandshakeTest, RejectsUnrelatedAnchorAndWrongPurpose) {
   }
 }
 
+// In-memory handshake with an explicit verification deadline, set immediately
+// before the handshake so that it elapses while the OS evaluates the chain.
+TlsStep handshake_with_deadline(TlsClient& client, const pki::Identity& leaf,
+                                const pki::Identity& intermediate,
+                                std::chrono::nanoseconds budget) {
+  SSL_CTX* context = ::SSL_CTX_new(::TLS_server_method());
+  ::SSL_CTX_use_certificate(context, leaf.cert.get());
+  ::SSL_CTX_use_PrivateKey(context, leaf.key.get());
+  ::SSL_CTX_add1_chain_cert(context, intermediate.cert.get());
+  SSL* server = ::SSL_new(context);
+  BIO* input = ::BIO_new(::BIO_s_mem());
+  BIO* output = ::BIO_new(::BIO_s_mem());
+  ::SSL_set_bio(server, input, output);
+  ::SSL_set_accept_state(server);
+  TlsStep step{TlsStepState::TlsError, 0, 0, "handshake did not converge"};
+  if (client.begin_memory("db.example.test").state == TlsStepState::Complete) {
+    client.set_verification_deadline(std::chrono::steady_clock::now() + budget);
+    std::array<std::byte, 16384> buffer{};
+    for (int round = 0; round < 64; ++round) {
+      step = client.handshake();
+      for (;;) {
+        const auto drained = client.drain_ciphertext(buffer);
+        if (drained.state != TlsStepState::Complete || drained.processed == 0) break;
+        ::BIO_write(input, buffer.data(), static_cast<int>(drained.processed));
+      }
+      if (step.state != TlsStepState::WantRead && step.state != TlsStepState::WantWrite) break;
+      (void)::SSL_do_handshake(server);
+      for (int count = 0; (count = ::BIO_read(output, buffer.data(), static_cast<int>(buffer.size()))) > 0;) {
+        client.provide_ciphertext(std::span<const std::byte>(buffer.data(), static_cast<std::size_t>(count)));
+      }
+    }
+  }
+  ::SSL_free(server);
+  ::SSL_CTX_free(context);
+  return step;
+}
+
+TEST_F(NativeVerifierHandshakeTest, TrustedVerdictAfterDeadlineIsRejected) {
+  TlsClient control;
+  anchor_client(control, hierarchy.root);
+  const auto accepted = handshake_with_deadline(control, hierarchy.leaf, hierarchy.intermediate,
+                                                std::chrono::seconds(10));
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(control.peer_identity_verified());
+
+  TlsClient late;
+  anchor_client(late, hierarchy.root);
+  const auto rejected = handshake_with_deadline(late, hierarchy.leaf, hierarchy.intermediate,
+                                                std::chrono::nanoseconds(1));
+  EXPECT_EQ(rejected.state, TlsStepState::TlsError);
+  EXPECT_TRUE(contains(rejected, "verification completed after the connection deadline"))
+      << rejected.message;
+  EXPECT_FALSE(late.peer_identity_verified());
+}
+
 TEST_F(NativeVerifierHandshakeTest, MissingIntermediateIsNotFetched) {
   TlsClient client;
   anchor_client(client, hierarchy.root);

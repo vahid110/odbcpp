@@ -135,6 +135,13 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
       throw TimeoutError("TLS handshake timeout");
     }
     const auto step = provider_->client->handshake();
+    // Certificate verification runs inside handshake() and cannot be
+    // preempted; never publish a success, or misreport a failure, that only
+    // arrived after the caller's original deadline.
+    if ((step.state == TlsStepState::Complete || step.state == TlsStepState::TlsError) &&
+        deadline_expired(deadline)) {
+      throw TimeoutError("TLS handshake timeout");
+    }
     if (step.state == TlsStepState::Complete) break;
     if (step.state == TlsStepState::WantRead ||
         step.state == TlsStepState::WantWrite) {

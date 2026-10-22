@@ -1,13 +1,14 @@
 #include "odbcpp/security/platform_trust.h"
 
 #if defined(_WIN32)
-// Expose CERT_CHAIN_PARA's URL-retrieval timeout field.
-#define CERT_CHAIN_PARA_HAS_EXTRA_FIELDS
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <wincrypt.h>
+#ifndef CERT_CHAIN_DISABLE_AIA
+#define CERT_CHAIN_DISABLE_AIA 0x00002000  // documented value; older SDK headers lack it
+#endif
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
@@ -200,14 +201,14 @@ ChainEvaluation evaluate_server_chain(const std::vector<DerCertificate>& chain,
   parameters.RequestedUsage.dwType = USAGE_MATCH_TYPE_AND;
   parameters.RequestedUsage.Usage.cUsageIdentifier = 1;
   parameters.RequestedUsage.Usage.rgpszUsageIdentifier = server_usage;
-  // dwUrlRetrievalTimeout bounds each URL fetch, not the whole chain build, so
-  // allow a quarter of the remaining budget per fetch and use the cache only
-  // when less than one second remains.
-  auto timeout = std::min(options.network_timeout, max_network_retrieval) / 4;
-  if (timeout < std::chrono::milliseconds(250)) timeout = std::chrono::milliseconds::zero();
-  parameters.dwUrlRetrievalTimeout = static_cast<DWORD>(timeout.count());
-  // Revocation is not requested; see docs/trust-store-design.md section 6.
-  const DWORD flags = timeout.count() == 0 ? CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL : 0;
+  // No network retrieval: CryptoAPI bounds URL fetches only per URL, never in
+  // aggregate, so a chain build with fetching could outlive the connection
+  // deadline. Use peer-supplied and locally cached data only: no AIA issuer
+  // download and no third-party root auto-update. Revocation is not requested;
+  // see docs/trust-store-design.md section 6.
+  const DWORD flags = CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL |
+                      CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE |
+                      CERT_CHAIN_DISABLE_AIA;
   PCCERT_CHAIN_CONTEXT chain_context = nullptr;
   // HCCE_CURRENT_USER: CurrentUser and LocalMachine roots, enterprise/Group
   // Policy trust and the Disallowed store, as seen by this process's user.
