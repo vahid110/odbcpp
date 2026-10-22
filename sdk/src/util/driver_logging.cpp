@@ -39,20 +39,6 @@ std::string trim(std::string_view value) {
   return std::string(value.substr(first, last - first + 1));
 }
 
-bool parse_bool(std::string_view name, const std::string& value) {
-  const auto normalized = uppercase(trim(value));
-  if (normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
-      normalized == "ON") {
-    return true;
-  }
-  if (normalized == "0" || normalized == "FALSE" || normalized == "NO" ||
-      normalized == "OFF") {
-    return false;
-  }
-  throw std::invalid_argument(std::string(name) +
-                              " must be true or false");
-}
-
 std::size_t parse_positive_size(std::string_view name,
                                 const std::string& value) {
   if (value.empty() || value.front() == '-') {
@@ -139,9 +125,9 @@ void apply(LoggingOptions& options,
     } else if (key == "LOGMAXFILES") {
       options.max_files = parse_positive_size("LogMaxFiles", value);
     } else if (key == "LOGASYNC") {
-      options.asynchronous = parse_bool("LogAsync", value);
+      options.asynchronous = parse_flag("LogAsync", value);
     } else if (key == "LOGQUERIES") {
-      options.log_queries = parse_bool("LogQueries", value);
+      options.log_queries = parse_flag("LogQueries", value);
     }
   }
 }
@@ -245,6 +231,20 @@ std::string backend_key(const LoggingOptions& options) {
 }
 
 } // namespace
+
+bool parse_flag(std::string_view name, std::string_view value) {
+  const auto normalized = uppercase(trim(value));
+  if (normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
+      normalized == "ON") {
+    return true;
+  }
+  if (normalized == "0" || normalized == "FALSE" || normalized == "NO" ||
+      normalized == "OFF") {
+    return false;
+  }
+  throw std::invalid_argument(std::string(name) +
+                              " must be true or false");
+}
 
 class DriverLogger::Impl {
 public:
@@ -369,6 +369,13 @@ bool DriverLogger::logs_queries() const noexcept {
 void DriverLogger::log(LogLevel level, std::string_view event,
                        std::string_view message,
                        std::initializer_list<LogField> fields) const noexcept {
+  log(level, event, message,
+      std::span<const LogField>(fields.begin(), fields.size()));
+}
+
+void DriverLogger::log(LogLevel level, std::string_view event,
+                       std::string_view message,
+                       std::span<const LogField> fields) const noexcept {
   if (!enabled(level)) return;
   try {
     const bool json = options_.format == LogFormat::Json;
@@ -393,7 +400,8 @@ void DriverLogger::log(LogLevel level, std::string_view event,
       if (field.sensitivity == FieldSensitivity::Secret) continue;
       if (field.sensitivity == FieldSensitivity::QueryText && !logs_queries()) continue;
       if (count == max_log_fields) { truncated = true; break; }
-      const auto value = field.sensitivity == FieldSensitivity::Sensitive ?
+      const auto value =
+          field.sensitivity == FieldSensitivity::Sensitive && !options_.log_sensitive ?
           std::string_view("[redacted]") : std::string_view(field.value);
       const auto key = escape(bounded_component(field.key, max_log_key_bytes));
       const auto encoded = json ? ",\"" + key + "\":\"" + escape(value) + "\"" :

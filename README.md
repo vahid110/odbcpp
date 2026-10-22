@@ -288,6 +288,49 @@ SQL text is never logged unless both `LogLevel=Debug|Trace` and
 `LogQueries=true` are set. Parameter values and passwords are never logged.
 JSON output escapes control characters and is suitable for log processors.
 
+### ODBC API trace
+
+The ODBC trace writes one `odbc_trace_enter` and one `odbc_trace_exit` record
+for every application call of an exported ODBC function, including calls made
+before a connection exists. Exit records carry the return code, elapsed time,
+the first SQLSTATE on errors/warnings and the output values the driver wrote.
+It is independent of the per-connection log and is configured only from
+trusted process sources: the driver section (`odbcinst.ini` or the Windows
+driver registration), overridden by environment variables. DSNs and
+connection strings cannot enable it or choose its path.
+
+```ini
+[ODBCPP Redshift]
+ODBCTrace=1
+ODBCTraceFile=/var/log/odbcpp/trace.log
+ODBCTraceFormat=Text
+ODBCTraceQueries=false
+ODBCTraceSensitive=false
+ODBCTraceMaxSize=10485760
+ODBCTraceMaxFiles=5
+```
+
+| Driver key | Environment override |
+| --- | --- |
+| `ODBCTrace` | `ODBCPP_TRACE` |
+| `ODBCTraceFile` | `ODBCPP_TRACE_FILE` |
+| `ODBCTraceFormat` | `ODBCPP_TRACE_FORMAT` |
+| `ODBCTraceQueries` | `ODBCPP_TRACE_QUERIES` |
+| `ODBCTraceSensitive` | `ODBCPP_TRACE_SENSITIVE` |
+| `ODBCTraceMaxSize` | `ODBCPP_TRACE_MAX_SIZE` |
+| `ODBCTraceMaxFiles` | `ODBCPP_TRACE_MAX_FILES` |
+
+Without `ODBCTraceFile` the trace goes to stderr. Trace output is synchronous
+and flushed after every exit record; use a file distinct from `LogFile`.
+Passwords (`SQLConnect` authentication and `PWD`/`PASSWORD`/secret/token
+connection-string values) are never written. Identifiers, connection strings,
+diagnostic messages and other text values appear as `[redacted]` unless
+`ODBCTraceSensitive=true`; SQL text additionally requires
+`ODBCTraceQueries=true`; with the sensitive opt-in, diagnostic message text can
+still echo SQL. Data buffers are shown only as addresses. An invalid
+trace configuration disables tracing and never fails an ODBC call. See
+[docs/ODBC_TRACE.md](docs/ODBC_TRACE.md) for the design.
+
 ### Driver-manager Unicode ABI
 
 `SQLWCHAR` is not the same size in every ODBC environment. Windows and a

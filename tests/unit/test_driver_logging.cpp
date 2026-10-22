@@ -524,6 +524,39 @@ TEST(DriverLoggerTest, SensitivityIsIndependentOfTraceAndQueryOptIn) {
   }
 }
 
+TEST(DriverLoggerTest, SensitiveOptInRevealsOnlySensitiveFieldsFromSpans) {
+  using rs::core::logging::FieldSensitivity;
+  using rs::core::logging::LogField;
+  const auto directory = temporary_directory("odbcpp-sensitive-opt-in-log");
+  const auto path = directory / "driver.log";
+  LoggingOptions options;
+  options.level = LogLevel::Trace;
+  options.sinks = {LogSink::File};
+  options.file = path.string();
+  options.asynchronous = false;
+  options.log_sensitive = true;
+  auto logger = DriverLogger::create(options, 7);
+  const std::vector<LogField> fields{
+      {"sensitive", "sensitive-value", FieldSensitivity::Sensitive},
+      {"secret-key", "secret-value", FieldSensitivity::Secret},
+      {"sql", "query-literal", FieldSensitivity::QueryText}};
+  logger->log(LogLevel::Trace, "sensitivity", "Opt-in", fields);
+  logger->flush();
+  logger.reset();
+  const auto contents = read_file(path);
+  EXPECT_NE(std::string::npos, contents.find("sensitive=\"sensitive-value\""));
+  EXPECT_EQ(std::string::npos, contents.find("[redacted]"));
+  EXPECT_EQ(std::string::npos, contents.find("secret"));
+  EXPECT_EQ(std::string::npos, contents.find("query-literal"));
+  std::filesystem::remove_all(directory);
+}
+
+TEST(DriverLoggingOptionsTest, SensitiveOptInIsNeverReadFromConfigurationLayers) {
+  const std::map<std::string, std::string> layer{
+      {"LogLevel", "Trace"}, {"LogSensitive", "true"}};
+  EXPECT_FALSE(LoggingOptions::resolve(layer, layer, layer).log_sensitive);
+}
+
 TEST(DriverLoggerTest, EncodedRecordBudgetKeepsJsonCompleteAndDropsExcessFields) {
   using rs::core::logging::FieldSensitivity;
   for (const auto format : {LogFormat::Text, LogFormat::Json}) {

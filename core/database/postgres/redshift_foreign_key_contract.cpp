@@ -148,6 +148,7 @@ namespace {
 BackendError current_fk_invalid(const char* reason, SessionSnapshot snapshot) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
       std::string("Invalid current-database foreign-key metadata: ") + reason};
+  error.public_reason = std::string("foreign-key.") + reason;
   error.error_class = BackendErrorClass::InvalidMetadata;
   error.operation = BackendOperation::ExecuteCatalog;
   error.session_state = snapshot.state;

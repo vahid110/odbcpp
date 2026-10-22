@@ -909,54 +909,17 @@ std::string native_error_sqlstate_for_log(const rs::core::database::BackendError
   return *error.native_state;
 }
 
-// Logging adaptation only: publish labels drawn from closed local-validator
-// vocabularies. A server/backend message may contain SQL or private identifiers;
-// neither a recognized prefix alone nor an arbitrary suffix permits its release.
+// Logging adaptation only: the backend owns its closed public-label vocabulary
+// and never derives it from server text. Keep a shape check so a malformed label
+// cannot carry SQL or identifiers into logs; the message is never inspected.
 std::string catalog_error_reason_for_log(const rs::core::database::BackendError& error) {
-  struct Family { std::string_view prefix; std::string_view label; };
-  static constexpr Family families[]{
-      {"Invalid Redshift schema metadata: ", "schema"},
-      {"Invalid Redshift table metadata: ", "table"},
-      {"Invalid Redshift column metadata: ", "column"},
-      {"Invalid Redshift routine metadata: ", "routine"},
-      {"Invalid current-database primary-key metadata: ", "primary-key"},
-      {"Invalid current-database foreign-key metadata: ", "foreign-key"},
-  };
-  static constexpr std::string_view reasons[]{
-      "allocation-model", "columns", "completion", "constraint",
-      "databases-duplicate", "databases-identifier", "databases-layout", "databases-snapshot",
-      "databases-structure", "databases-type", "dimensions", "discovery-columns",
-      "discovery-count", "discovery-duplicate", "discovery-foreign", "discovery-identity",
-      "discovery-layout", "discovery-structure", "discovery-text", "discovery-type",
-      "duplicate", "foreign", "foreign-identity", "identity",
-      "layout", "lookup-columns", "lookup-completion", "lookup-identifier",
-      "lookup-name", "lookup-rows", "lookup-snapshot", "lookup-structure",
-      "lookup-type", "nullable", "parameter-columns", "parameter-dimensions",
-      "parameter-foreign", "parameter-identity", "parameter-layout", "parameter-name",
-      "parameter-signature-count", "parameter-structure", "parameter-text", "parameter-type",
-      "pattern", "reference", "remarks", "row-identity",
-      "row-text", "rows", "schema-completion", "schema-duplicate",
-      "schema-identity", "schema-layout", "schema-type", "schemas-duplicate",
-      "schemas-identity", "schemas-identity-type", "schemas-layout", "schemas-request",
-      "schemas-structure", "sequence", "sequence-gap", "show-columns",
-      "show-completion", "show-database", "show-duplicate", "show-foreign-database",
-      "show-identifier", "show-layout", "show-null-identity", "show-rows",
-      "show-structure", "show-type", "signature", "signature-count",
-      "snapshot", "structure", "table-completion", "table-database-completion",
-      "table-database-duplicate", "table-database-identity", "table-database-layout", "table-database-lookup",
-      "table-database-type", "table-duplicate", "table-foreign", "table-identity",
-      "table-kind", "table-layout", "table-projection", "table-remarks",
-      "table-text", "table-type", "target", "type",
-  };
-  const std::string_view message{error.message};
-  for (const auto& family : families) {
-    if (!message.starts_with(family.prefix)) continue;
-    const auto suffix = message.substr(family.prefix.size());
-    for (const auto reason : reasons) {
-      if (suffix == reason) return std::string(family.label) + "." + std::string(reason);
-    }
-  }
-  return "unclassified";
+  const std::string_view reason{error.public_reason};
+  const bool valid = !reason.empty() && reason.size() <= 64 &&
+      std::all_of(reason.begin(), reason.end(), [](char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+            ch == '.' || ch == '-';
+      });
+  return valid ? std::string(reason) : "unclassified";
 }
 
 std::string query_failure_sqlstate(

@@ -3,6 +3,7 @@
 #include "c_api_guard.h"
 #include "connection_string.h"
 #include "odbc_handles.h"
+#include "odbc_trace.h"
 #include "odbcpp/database/sql_translation.h"
 #include "unicode.h"
 #include "resource_limits.h"
@@ -3136,113 +3137,136 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
 
 } // extern "C"
 
+// Every exported entry point is intercepted once, outside its handle guard, so
+// the trace sees the application's arguments and the final ODBC return code.
+#define ODBCPP_TRACE_ARGS(...) __VA_ARGS__
+#define ODBCPP_TRACE(name, diagnostic, args, ...)                          \
+  rs::odbc::trace::traced_call(                                           \
+      #name, diagnostic, rs::odbc::detail::api_call_depth == 0,           \
+      [&]() noexcept { return __VA_ARGS__; }, ODBCPP_TRACE_ARGS args)
+
 #define ODBCPP_API_1(name, diagnostic, T1)                                \
   extern "C" SQLRETURN SQL_API name(T1 a1) {                            \
-    return rs::odbc::detail::invoke_c_api(                                \
-        diagnostic, #name, [&] { return name##_impl(a1); });              \
+    return ODBCPP_TRACE(name, diagnostic, (a1), \
+        rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, #name, [&] { return name##_impl(a1); }));              \
   }
 #define ODBCPP_API_2(name, diagnostic, T1, T2)                            \
   extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2) {                     \
-    return rs::odbc::detail::invoke_c_api(                                \
-        diagnostic, #name, [&] { return name##_impl(a1, a2); });          \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2), \
+        rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, #name, [&] { return name##_impl(a1, a2); }));          \
   }
 #define ODBCPP_API_2_TWO_HANDLES(name, diagnostic, T1, T2)                \
   extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2) {                     \
-    return rs::odbc::detail::invoke_c_api_with_handles(                   \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2), \
+        rs::odbc::detail::invoke_c_api_with_handles(                   \
         diagnostic, {a1, a2}, #name,                                     \
-        [&] { return name##_impl(a1, a2); });                             \
+        [&] { return name##_impl(a1, a2); }));                             \
   }
 #define ODBCPP_API_3(name, diagnostic, T1, T2, T3)                        \
   extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3) {              \
-    return rs::odbc::detail::invoke_c_api(                                \
-        diagnostic, #name, [&] { return name##_impl(a1, a2, a3); });      \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3), \
+        rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, #name, [&] { return name##_impl(a1, a2, a3); }));      \
   }
 #define ODBCPP_API_4(name, diagnostic, T1, T2, T3, T4)                    \
   extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3, T4 a4) {       \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
-        [&] { return name##_impl(a1, a2, a3, a4); });                     \
+        [&] { return name##_impl(a1, a2, a3, a4); }));                     \
   }
 #define ODBCPP_API_5(name, diagnostic, T1, T2, T3, T4, T5)                \
   extern "C" SQLRETURN SQL_API name(                                    \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5) {                              \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
-        [&] { return name##_impl(a1, a2, a3, a4, a5); });                 \
+        [&] { return name##_impl(a1, a2, a3, a4, a5); }));                 \
   }
 #define ODBCPP_API_6(name, diagnostic, T1, T2, T3, T4, T5, T6)            \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6) {                        \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
-        [&] { return name##_impl(a1, a2, a3, a4, a5, a6); });             \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6); }));             \
   }
 #define ODBCPP_API_7(name, diagnostic, T1, T2, T3, T4, T5, T6, T7)        \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7) {                 \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6, a7), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
-        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7); });         \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7); }));         \
   }
 #define ODBCPP_API_8(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8)    \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8) {          \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6, a7, a8), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
-        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7, a8); });     \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7, a8); }));     \
   }
 #define ODBCPP_API_9(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,   \
                      T9)                                                   \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9) {   \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6, a7, a8, a9), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(                      \
-                        a1, a2, a3, a4, a5, a6, a7, a8, a9); });           \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9); }));           \
   }
 #define ODBCPP_API_10(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
                       T9, T10)                                             \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
       T10 a10) {                                                           \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(                      \
-                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); });      \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); }));      \
   }
 #define ODBCPP_API_11(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
                       T9, T10, T11)                                        \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
       T10 a10, T11 a11) {                                                  \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(                      \
-                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11); }); \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11); })); \
   }
 #define ODBCPP_API_13(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
                       T9, T10, T11, T12, T13)                              \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
       T10 a10, T11 a11, T12 a12, T13 a13) {                               \
-    return rs::odbc::detail::invoke_c_api(                                \
+    return ODBCPP_TRACE(name, diagnostic, (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13), \
+        rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(                      \
                         a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11,     \
-                        a12, a13); });                                     \
+                        a12, a13); }));                                     \
   }
 
 #define ODBCPP_DIAG_API_7(name, logging, T1, T2, T3, T4, T5, T6, T7)      \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7) {                \
-    return rs::odbc::detail::invoke_c_api_with_handles(                   \
+    return ODBCPP_TRACE(name, SQL_NULL_HANDLE, (a1, a2, a3, a4, a5, a6, a7), \
+        rs::odbc::detail::invoke_c_api_with_handles(                   \
         SQL_NULL_HANDLE, {}, #name,                                       \
         [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7); },          \
-        logging);                                                         \
+        logging));                                                         \
   }
 #define ODBCPP_DIAG_API_8(name, logging, T1, T2, T3, T4, T5, T6, T7, T8) \
   extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8) {         \
-    return rs::odbc::detail::invoke_c_api_with_handles(                   \
+    return ODBCPP_TRACE(name, SQL_NULL_HANDLE, (a1, a2, a3, a4, a5, a6, a7, a8), \
+        rs::odbc::detail::invoke_c_api_with_handles(                   \
         SQL_NULL_HANDLE, {}, #name,                                       \
         [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7, a8); },      \
-        logging);                                                         \
+        logging));                                                         \
   }
 
 ODBCPP_API_3(SQLAllocHandle, a2, SQLSMALLINT, SQLHANDLE, SQLHANDLE*)
@@ -3411,6 +3435,8 @@ ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 #undef ODBCPP_API_13
 #undef ODBCPP_DIAG_API_7
 #undef ODBCPP_DIAG_API_8
+#undef ODBCPP_TRACE
+#undef ODBCPP_TRACE_ARGS
 
 // Cancellation deliberately bypasses the ordinary handle operation lease.
 // The registry retains the statement while its independent endpoint is used;
@@ -3425,11 +3451,15 @@ static SQLRETURN SQLCancel_impl(SQLHSTMT statement_handle) {
 }
 
 extern "C" SQLRETURN SQLCancel(SQLHSTMT statement_handle) {
-  return SQLCancel_impl(statement_handle);
+  // Traced without a handle lease. Statement diagnostics belong to the
+  // executing operation, so the cancel record never reports them as its own.
+  return rs::odbc::trace::traced_call(
+      "SQLCancel", SQL_NULL_HANDLE, rs::odbc::detail::api_call_depth == 0,
+      [&]() noexcept { return SQLCancel_impl(statement_handle); },
+      statement_handle);
 }
 
-// Statement cancellation must bypass the ordinary executing operation lease.
-extern "C" SQLRETURN SQL_API SQLCancelHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
+static SQLRETURN SQLCancelHandle_impl(SQLSMALLINT handle_type, SQLHANDLE handle) {
   if (handle_type == SQL_HANDLE_STMT) return SQLCancel_impl(handle);
   if (handle_type != SQL_HANDLE_DBC && handle_type != SQL_HANDLE_ENV &&
       handle_type != SQL_HANDLE_DESC) return SQL_INVALID_HANDLE;
@@ -3449,4 +3479,14 @@ extern "C" SQLRETURN SQL_API SQLCancelHandle(SQLSMALLINT handle_type, SQLHANDLE 
     retained->set_last_return_code(SQL_ERROR);
     return SQL_ERROR;
   } catch (...) { return SQL_ERROR; }
+}
+
+// Statement cancellation must bypass the ordinary executing operation lease.
+extern "C" SQLRETURN SQL_API SQLCancelHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
+  return rs::odbc::trace::traced_call(
+      "SQLCancelHandle",
+      handle_type == SQL_HANDLE_STMT ? SQL_NULL_HANDLE : handle,
+      rs::odbc::detail::api_call_depth == 0,
+      [&]() noexcept { return SQLCancelHandle_impl(handle_type, handle); },
+      handle_type, handle);
 }

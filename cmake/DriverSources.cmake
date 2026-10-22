@@ -68,6 +68,8 @@ list(APPEND CORE_SOURCES
   "${_root}/odbc/odbc_handles.cpp"
   "${_root}/odbc/odbc_api.h"
   "${_root}/odbc/c_api_guard.h"
+  "${_root}/odbc/odbc_trace.h"
+  "${_root}/odbc/odbc_trace.cpp"
   "${_root}/odbc/odbc_api.cpp"
   "${_root}/odbc/connection_string.h"
   "${_root}/odbc/connection_string.cpp"

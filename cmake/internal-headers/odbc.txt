@@ -34,6 +34,7 @@ odbc/c_api_guard.h
 odbc/connection_string.h
 odbc/odbc_api.h
 odbc/odbc_handles.h
+odbc/odbc_trace.h
 odbc/odbc_types.h
 odbc/redshift/redshift_data_converter.h
 odbc/redshift/redshift_types.h

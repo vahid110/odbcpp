@@ -123,6 +123,7 @@ namespace {
 BackendError current_pk_invalid(const char* reason,SessionSnapshot snapshot) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
       std::string("Invalid current-database primary-key metadata: ")+reason};
+  error.public_reason=std::string("primary-key.")+reason;
   error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;
   error.session_state=snapshot.state;error.disposition=SessionDisposition::Retire;return error;
 }

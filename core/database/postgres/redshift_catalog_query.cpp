@@ -45,6 +45,7 @@ namespace {
 BackendError invalid_schema_metadata(const char* fixed_reason) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
       std::string("Invalid Redshift schema metadata: ") + fixed_reason};
+  error.public_reason = std::string("schema.") + fixed_reason;
   error.error_class = BackendErrorClass::InvalidMetadata;
   error.operation = BackendOperation::ExecuteCatalog;
   return error;
@@ -503,6 +504,7 @@ namespace {
 BackendError invalid_table_metadata(const char* reason) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
       std::string("Invalid Redshift table metadata: ") + reason};
+  error.public_reason = std::string("table.") + reason;
   error.error_class = BackendErrorClass::InvalidMetadata;
   error.operation = BackendOperation::ExecuteCatalog;
   return error;
@@ -663,6 +665,7 @@ std::string column_literal_name(std::string_view pattern) {
 BackendError invalid_column_metadata(const char* reason) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
       std::string("Invalid Redshift column metadata: ")+reason};
+  error.public_reason=std::string("column.")+reason;
   error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;return error;
 }
 }
@@ -852,6 +855,7 @@ BackendError routine_timeout() {
 BackendError invalid_routine_metadata(const char* reason) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
       std::string("Invalid Redshift routine metadata: ") + reason};
+  error.public_reason = std::string("routine.") + reason;
   error.error_class=BackendErrorClass::InvalidMetadata;
   error.operation=BackendOperation::ExecuteCatalog;
   return error;

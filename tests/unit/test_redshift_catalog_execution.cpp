@@ -994,6 +994,7 @@ QueryResult schema_lookup_fixture() {
 template<class T> void expect_schema_reason(const BackendResult<T>& result,std::string_view reason) {
   ASSERT_FALSE(result);
   EXPECT_EQ(std::string("Invalid Redshift schema metadata: ")+std::string(reason),result.error_message());
+  EXPECT_EQ(std::string("schema.")+std::string(reason),result.backend_error().public_reason);
   EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
   EXPECT_EQ(BackendOperation::ExecuteCatalog,result.backend_error().operation);
   EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);

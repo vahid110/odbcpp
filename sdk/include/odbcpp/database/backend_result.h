@@ -65,6 +65,10 @@ struct BackendError {
   SessionState session_state{SessionState::Unknown};
   SessionDisposition disposition{SessionDisposition::Retire};
   std::optional<bool> retry_safe;
+  // Optional backend-owned public label from a closed vocabulary of fixed local
+  // literals, such as "schema.show-rows". Never derived from server text, SQL,
+  // identifiers or credentials; consumers may publish it in logs unchanged.
+  std::string public_reason;
 
   // Public fixed text only: never includes message, native state/code, SQL,
   // identifiers, provider diagnostics or credential material. Detailed message

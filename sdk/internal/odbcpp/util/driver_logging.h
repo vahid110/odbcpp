@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +33,9 @@ struct LoggingOptions {
   std::size_t max_files{5};
   bool asynchronous{true};
   bool log_queries{false};
+  // Reveals Sensitive field values. Only trusted process configuration sets
+  // this; resolve() never reads it from driver, DSN or connection parameters.
+  bool log_sensitive{false};
 
   static LoggingOptions resolve(
       const std::map<std::string, std::string>& driver_parameters,
@@ -58,6 +62,8 @@ public:
   bool logs_queries() const noexcept;
   void log(LogLevel level, std::string_view event, std::string_view message,
            std::initializer_list<LogField> fields = {}) const noexcept;
+  void log(LogLevel level, std::string_view event, std::string_view message,
+           std::span<const LogField> fields) const noexcept;
   void flush() const noexcept;
 
 private:
@@ -69,6 +75,9 @@ private:
   std::uint64_t connection_id_{};
   std::shared_ptr<Impl> impl_;
 };
+
+// Shared true/false vocabulary for logging configuration keys.
+bool parse_flag(std::string_view name, std::string_view value);
 
 std::string_view to_string(LogLevel level) noexcept;
 std::string_view to_string(LogFormat format) noexcept;
