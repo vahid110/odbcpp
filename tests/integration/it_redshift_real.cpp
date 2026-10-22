@@ -11103,20 +11103,27 @@ TEST_F(RedshiftRealTest, SpatialCatalogTypeClassificationWide) {
 class RedshiftSpecialTypesRealTest : public RedshiftRealTest {
 protected:
   void SetUp() override {
-    const char* admission = std::getenv("ODBCPP_REDSHIFT_SPECIAL_TYPES_ADMISSION");
-    if (admission == nullptr) {
+    const auto admission = odbcpp::test::live_package_inputs::fixture_environment(
+        "ODBCPP_REDSHIFT_SPECIAL_TYPES_ADMISSION");
+    if (!admission) {
       GTEST_SKIP() << "Special-type constant-query scope is not admitted";
     }
-    ASSERT_TRUE(std::string_view(admission) == "special-types-v1")
+    ASSERT_EQ(*admission, "special-types-v1")
         << "Invalid special-type scope marker";
     RedshiftRealTest::SetUp();
   }
   std::string text_cell(SQLUSMALLINT column, SQLLEN& length) {
     std::array<char, 512> buffer{};
     length = -7;
-    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, buffer.data(), buffer.size(), &length))
-        << get_error(SQL_HANDLE_STMT, hstmt_);
-    if (length < 0) {
+    const auto result = SQLGetData(
+        hstmt_, column, SQL_C_CHAR, buffer.data(), buffer.size(), &length);
+    EXPECT_EQ(SQL_SUCCESS, result) << get_error(SQL_HANDLE_STMT, hstmt_);
+    if (result != SQL_SUCCESS || length == SQL_NULL_DATA) {
+      return {};
+    }
+    EXPECT_GE(length, 0);
+    EXPECT_LT(length, static_cast<SQLLEN>(buffer.size()));
+    if (length < 0 || length >= static_cast<SQLLEN>(buffer.size())) {
       return {};
     }
     return std::string(buffer.data(), static_cast<std::size_t>(length));

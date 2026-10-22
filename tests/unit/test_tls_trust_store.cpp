@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -34,6 +35,14 @@ TlsClientConfig custom_directory(const std::filesystem::path& directory) {
 
 bool contains(const TlsStep& step, const std::string& text) {
   return step.message.find(text) != std::string::npos;
+}
+
+std::filesystem::path hash_entry(const std::filesystem::path& directory,
+                                unsigned long hash, std::size_t suffix,
+                                const char* kind = "") {
+  std::array<char, 32> name{};
+  std::snprintf(name.data(), name.size(), "%08lx.%s%zu", hash, kind, suffix);
+  return directory / name.data();
 }
 
 class TlsTrustStoreTest : public ::testing::Test {
@@ -211,6 +220,190 @@ TEST_F(TlsTrustStoreTest, DirectoryWithoutMatchingHashRejectsPeer) {
   EXPECT_EQ(step.state, TlsStepState::TlsError);
   EXPECT_FALSE(client.peer_identity_verified());
 }
+
+TEST_F(TlsTrustStoreTest, HashedDirectorySupportsNonAcpUnicodePath) {
+  const auto directory = temp.path() / pki::utf8("hash \xE8\xA1\xA8 \xF0\x9F\x8C\x90");
+  std::filesystem::create_directories(directory);
+  pki::write_hashed(directory, hierarchy.root.cert.get());
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  const auto step = connect(client);
+  EXPECT_EQ(step.state, TlsStepState::Complete) << step.message;
+  EXPECT_TRUE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryLoadsContiguousSubjectCollisions) {
+  const auto directory = temp.path() / "collisions";
+  std::filesystem::create_directories(directory);
+  const auto collision = pki::issue({"ODBCPP Test Root", true, {}, {}, ""}, nullptr);
+  ASSERT_EQ(::X509_NAME_cmp(::X509_get_subject_name(collision.cert.get()),
+                             ::X509_get_subject_name(hierarchy.root.cert.get())), 0);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  ASSERT_EQ(hash, ::X509_subject_name_hash(collision.cert.get()));
+  pki::write_file(hash_entry(directory, hash, 0), pki::pem(collision.cert.get()));
+  {
+    TlsClient wrong_key;
+    wrong_key.configure(custom_directory(directory));
+    EXPECT_EQ(connect(wrong_key).state, TlsStepState::TlsError);
+    EXPECT_FALSE(wrong_key.peer_identity_verified());
+  }
+  pki::write_file(hash_entry(directory, hash, 1), pki::pem(hierarchy.root.cert.get()));
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  const auto step = connect(client);
+  EXPECT_EQ(step.state, TlsStepState::Complete) << step.message;
+  EXPECT_TRUE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryStopsAtGapAndRetriesMissingEntryLazily) {
+  const auto directory = temp.path() / "gap";
+  std::filesystem::create_directories(directory);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  pki::write_file(hash_entry(directory, hash, 1), pki::pem(hierarchy.root.cert.get()));
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.peer_identity_verified());
+  client.reset_session();
+  std::filesystem::rename(hash_entry(directory, hash, 1), hash_entry(directory, hash, 0));
+  const auto accepted = connect(client);
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryIgnoresWrongHashAndCrlSuffixForCertificates) {
+  const auto directory = temp.path() / "wrong names";
+  std::filesystem::create_directories(directory);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  const auto pem = pki::pem(hierarchy.root.cert.get());
+  pki::write_file(hash_entry(directory, hash ^ 1UL, 0), pem);
+  pki::write_file(hash_entry(directory, hash, 0, "r"), pem);
+  pki::write_file(directory / "root.pem", pem);
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryStopsAtMalformedEntry) {
+  const auto directory = temp.path() / "malformed prefix";
+  std::filesystem::create_directories(directory);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  pki::write_file(hash_entry(directory, hash, 0), "not a certificate\n");
+  pki::write_file(hash_entry(directory, hash, 1), pki::pem(hierarchy.root.cert.get()));
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryStopsAfterValidCollisionWithMalformedTail) {
+  const auto directory = temp.path() / "malformed tail";
+  std::filesystem::create_directories(directory);
+  const auto collision = pki::issue({"ODBCPP Test Root", true, {}, {}, ""}, nullptr);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  ASSERT_EQ(hash, ::X509_subject_name_hash(collision.cert.get()));
+  const auto malformed = pki::pem(collision.cert.get()) +
+      "-----BEGIN CERTIFICATE-----\nnot valid base64!\n-----END CERTIFICATE-----\n";
+  pki::write_file(hash_entry(directory, hash, 0), malformed);
+  pki::write_file(hash_entry(directory, hash, 1), pki::pem(hierarchy.root.cert.get()));
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.peer_identity_verified());
+  // A fresh context with a well-formed prefix can load the next suffix;
+  // do not require OpenSSL to invalidate a previously cached subject.
+  pki::write_file(hash_entry(directory, hash, 0), pki::pem(collision.cert.get()));
+  TlsClient repaired;
+  repaired.configure(custom_directory(directory));
+  const auto accepted = connect(repaired);
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(repaired.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryReadsNewFileAfterContextCreation) {
+  const auto directory = temp.path() / "late issuer";
+  std::filesystem::create_directories(directory);
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  ASSERT_EQ(client.begin_memory("db.example.test").state, TlsStepState::Complete);
+  pki::write_hashed(directory, hierarchy.root.cert.get());
+  const auto accepted = connect(client);
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectorySiblingCopiesOnlyLoadedTrust) {
+  const auto directory = temp.path() / "snapshot only used issuer";
+  std::filesystem::create_directories(directory);
+  pki::write_hashed(directory, hierarchy.root.cert.get());
+  pki::write_hashed(directory, unrelated_root.cert.get());
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  ASSERT_EQ(connect(client).state, TlsStepState::Complete);
+  auto sibling = client.verified_sibling();
+  ASSERT_NE(sibling, nullptr);
+  EXPECT_TRUE(sibling->frozen_context());
+  std::filesystem::remove_all(directory);
+  const auto accepted = connect(*sibling);
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(sibling->peer_identity_verified());
+  sibling->reset_session();
+  pki::MemoryServer unrelated(
+      pki::issue({"db.example.test", false, {"db.example.test"}, {}}, &unrelated_root), {});
+  const auto rejected = unrelated.connect(*sibling, "db.example.test");
+  EXPECT_EQ(rejected.state, TlsStepState::TlsError);
+  EXPECT_FALSE(sibling->peer_identity_verified());
+}
+
+#if defined(_WIN32)
+TEST_F(TlsTrustStoreTest, HashedDirectoryEntryLimitCannotBeBypassedByCachedCertificate) {
+  const auto directory = temp.path() / "bounded suffixes";
+  std::filesystem::create_directories(directory);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  const auto pem = pki::pem(hierarchy.root.cert.get());
+  for (std::size_t suffix = 0; suffix <= 256; ++suffix) {
+    pki::write_file(hash_entry(directory, hash, suffix), pem);
+  }
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  const auto rejected = connect(client);
+  EXPECT_EQ(rejected.state, TlsStepState::TlsError);
+  EXPECT_TRUE(contains(rejected, "CA directory lookup")) << rejected.message;
+  EXPECT_FALSE(client.peer_identity_verified());
+  client.reset_session();
+  ASSERT_TRUE(std::filesystem::remove(hash_entry(directory, hash, 256)));
+  EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.peer_identity_verified());
+  // An explicit new context can use the now-valid bounded sequence.
+  client.configure(custom_directory(directory));
+  const auto accepted = connect(client);
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(client.peer_identity_verified());
+}
+
+TEST_F(TlsTrustStoreTest, HashedDirectoryReadBudgetCannotBeBypassedByCachedCertificate) {
+  const auto directory = temp.path() / "bounded input";
+  std::filesystem::create_directories(directory);
+  const auto hash = ::X509_subject_name_hash(hierarchy.root.cert.get());
+  pki::write_file(hash_entry(directory, hash, 0), pki::pem(hierarchy.root.cert.get()));
+  pki::write_file(hash_entry(directory, hash, 1), std::string(16 * 1024 * 1024, ' '));
+  TlsClient client;
+  client.configure(custom_directory(directory));
+  const auto rejected = connect(client);
+  EXPECT_EQ(rejected.state, TlsStepState::TlsError);
+  EXPECT_TRUE(contains(rejected, "CA directory lookup")) << rejected.message;
+  EXPECT_FALSE(client.peer_identity_verified());
+  client.reset_session();
+  ASSERT_TRUE(std::filesystem::remove(hash_entry(directory, hash, 1)));
+  EXPECT_EQ(connect(client).state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.peer_identity_verified());
+  client.configure(custom_directory(directory));
+  const auto accepted = connect(client);
+  EXPECT_EQ(accepted.state, TlsStepState::Complete) << accepted.message;
+  EXPECT_TRUE(client.peer_identity_verified());
+}
+#endif
 
 TEST_F(TlsTrustStoreTest, FileAndDirectoryTogetherAreRejected) {
   TlsClientConfig config = custom_file(root_file);

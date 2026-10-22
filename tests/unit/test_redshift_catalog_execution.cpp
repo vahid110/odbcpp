@@ -5670,7 +5670,18 @@ void current_schema_quoted_replies(RoutineExecutionSession& session, const std::
 }  // namespace
 
 TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCommandRelease) {
-  const std::string database(300, '"'); // Exact native identity: every quote doubles in the command.
+  const auto projection_storage = [](std::size_t rows) {
+    const auto set_bytes = sizeof(std::set<std::string>) +
+        rows * (sizeof(std::string) + 4 * sizeof(void*) + 2 * (1 + 1));
+    const auto output_bytes = sizeof(QueryResult) + 5 * sizeof(ResultColumnMetadata) +
+        rows * (sizeof(ResultRow) + 5 * sizeof(ResultCell) + 2 * (1 + 1)) +
+        2 * ((9 + 1) + (11 + 1) + (10 + 1) + (10 + 1) + (7 + 1));
+    return std::pair{set_bytes, output_bytes};
+  };
+  const auto [max_set_bytes, max_output_bytes] = projection_storage(1);
+  // Quoting doubles the identity and command accounting reserves twice its size.
+  // Size the fixture to keep that command dominant on each STL/metadata ABI.
+  const std::string database((max_set_bytes + max_output_bytes) / 4 + 64, '"');
   const auto database_bytes = sizeof(std::string) + 2 * (database.size() + 1);
   const auto command_bytes = sizeof(std::string) +
       2 * (2 * database.size() + std::string_view("SHOW SCHEMAS FROM DATABASE \"\";").size() + 1);
@@ -5678,11 +5689,7 @@ TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCom
     auto show = schemas_response(database);
     show.rows.resize(empty ? 0 : 1);
     const auto raw_bytes = current_schema_literal_raw_bytes(show);
-    const auto set_bytes = sizeof(std::set<std::string>) +
-        show.rows.size() * (sizeof(std::string) + 4 * sizeof(void*) + 2 * (1 + 1));
-    const auto output_bytes = sizeof(QueryResult) + 5 * sizeof(ResultColumnMetadata) +
-        show.rows.size() * (sizeof(ResultRow) + 5 * sizeof(ResultCell) + 2 * (1 + 1)) +
-        2 * ((9 + 1) + (11 + 1) + (10 + 1) + (10 + 1) + (7 + 1));
+    const auto [set_bytes, output_bytes] = projection_storage(show.rows.size());
     ASSERT_GT(command_bytes, set_bytes + output_bytes);
     ASSERT_GT(raw_bytes + set_bytes + output_bytes, command_bytes); // Double raw would fail the exact boundary.
     const auto omitted_overlap_cap = std::max(database_bytes + command_bytes,
@@ -5710,7 +5717,8 @@ TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCom
         EXPECT_EQ(5u, result->columns.size());
       }
       ASSERT_EQ(2u, session.commands.size());
-      EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"" + std::string(600, '"') + "\";", session.commands[1]);
+      EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"" + std::string(2 * database.size(), '"') + "\";",
+                session.commands[1]);
     }
   }
 }
