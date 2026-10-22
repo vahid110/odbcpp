@@ -846,7 +846,8 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
             /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev \
+            pkg-config libjitterentropy3-dev zlib1g-dev libzstd-dev
 
       - name: Configure PostgreSQL verified-TLS fixture
         run: |
@@ -879,72 +880,10 @@ jobs:
 
       - name: Prepare controlled static OpenSSL prefix
         run: |
-          root="$RUNNER_TEMP/openssl-static"
-          mkdir -p "$root/include" "$root/lib"
-          cp -aL /usr/include/openssl "$root/include/"
-          multiarch="$(gcc -print-multiarch)"
-          if [[ -d "/usr/include/$multiarch/openssl" ]]; then
-            cp -aL "/usr/include/$multiarch/openssl/." "$root/include/openssl/"
-          fi
-          ssl_archive="/usr/lib/$multiarch/libssl.a"
-          crypto_archive="/usr/lib/$multiarch/libcrypto.a"
-          shared_ssl="$(realpath -e "/usr/lib/$multiarch/libssl.so.3")"
-          shared_crypto="$(realpath -e "/usr/lib/$multiarch/libcrypto.so.3")"
-          test -f "$ssl_archive"
-          test -f "$crypto_archive"
-          test -f "$shared_ssl"
-          test -f "$shared_crypto"
-          test "$(dirname "$(realpath -e "$ssl_archive")")" = \
-            "$(dirname "$(realpath -e "$crypto_archive")")"
-          package_files="$RUNNER_TEMP/libssl-dev-files"
-          dpkg-query -L libssl-dev > "$package_files"
-          grep -Fx "$ssl_archive" "$package_files"
-          grep -Fx "$crypto_archive" "$package_files"
-          package_version="$(dpkg-query -W -f='${Version}' libssl-dev)"
-          ssl_runtime_package="$(dpkg-query -S "$shared_ssl" | cut -d: -f1)"
-          crypto_runtime_package="$(dpkg-query -S "$shared_crypto" | cut -d: -f1)"
-          test "$ssl_runtime_package" = "$crypto_runtime_package"
-          runtime_package_version="$(dpkg-query -W -f='${Version}' "$ssl_runtime_package")"
-          test "$runtime_package_version" = "$package_version"
-          cp -L "$ssl_archive" "$crypto_archive" "$root/lib/"
-          test -z "$(find "$root" -type l -print -quit)"
-          python3 - "$package_version" "$ssl_runtime_package" \
-            "$runtime_package_version" "$multiarch" "$shared_ssl" \
-            "$shared_crypto" "$ssl_archive" "$crypto_archive" <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-          import sys
-          (package_version, runtime_package, runtime_package_version, multiarch,
-           shared_ssl, shared_crypto, *archives) = sys.argv[1:]
-          evidence = {
-              "package": "libssl-dev",
-              "packageVersion": package_version,
-              "runtimePackage": runtime_package,
-              "runtimePackageVersion": runtime_package_version,
-              "multiarch": multiarch,
-              "cohabitationLibraries": {
-                  Path(path).name: {
-                      "path": str(Path(path).resolve(strict=True)),
-                      "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
-                  }
-                  for path in (shared_ssl, shared_crypto)
-              },
-              "sourceArchives": {
-                  Path(path).name: {
-                      "path": str(Path(path).resolve(strict=True)),
-                      "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
-                  }
-                  for path in archives
-              },
-          }
-          Path("openssl-static-source-evidence.json").write_text(
-              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
-          )
-          PY
-          echo "ODBCPP_STATIC_OPENSSL_ROOT=$root" >> "$GITHUB_ENV"
-          echo "ODBCPP_COHABITATION_SSL_LIBRARY=$shared_ssl" >> "$GITHUB_ENV"
-          echo "ODBCPP_COHABITATION_CRYPTO_LIBRARY=$shared_crypto" >> "$GITHUB_ENV"
+          python3 tools/ci/test_openssl_static_inputs.py
+          python3 tools/ci/prepare-openssl-static-inputs.py \
+            --root "$RUNNER_TEMP/openssl-static" \
+            --evidence openssl-static-source-evidence.json
 
       - name: Configure controlled static profile
         run: >-
@@ -1068,6 +1007,14 @@ jobs:
             source["sourceArchives"]["libssl.a"]["sha256"]
           assert evidence["cryptoLinkInputSha256"] == \
             source["sourceArchives"]["libcrypto.a"]["sha256"]
+          auxiliary = evidence["auxiliaryStaticLinkInputs"]
+          assert {Path(item["path"]).name for item in auxiliary} == set(source["auxiliaryArchives"])
+          for item in auxiliary:
+            original = source["sourceArchives"][Path(item["path"]).name]
+            assert item["path"] == original["controlledPath"]
+            assert item["sha256"] == original["sha256"]
+            assert item["linkMapLoadVerified"] is True
+            assert type(item["archiveMembersObserved"]) is bool
           retained_driver = Path("openssl-static-driver.so")
           shutil.copyfile(root / "libodbcpp.so", retained_driver)
           assert hashlib.sha256(retained_driver.read_bytes()).hexdigest() == \
@@ -1078,8 +1025,7 @@ jobs:
             sed 's/@.*$//' | \
             sort -u > "$RUNNER_TEMP/driver-undefined-symbols"
           nm -g --defined-only --format=posix \
-            "$ODBCPP_STATIC_OPENSSL_ROOT/lib/libssl.a" \
-            "$ODBCPP_STATIC_OPENSSL_ROOT/lib/libcrypto.a" | \
+            "$ODBCPP_STATIC_OPENSSL_ROOT"/lib/*.a | \
             awk '$2 ~ /^[A-Z]$/ {print $1}' | sort -u \
             > "$RUNNER_TEMP/provider-defined-symbols"
           comm -12 "$RUNNER_TEMP/driver-undefined-symbols" \
@@ -1104,6 +1050,7 @@ jobs:
           --output build-openssl-static/odbcpp-crypto-unit-qualification.json
 
       - name: Preserve static-profile evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: linux-openssl-static-evidence
@@ -1118,6 +1065,9 @@ jobs:
             build-openssl-static/odbcpp-crypto-static-link.map
             openssl-static-driver.so
             openssl-static-source-evidence.json
+            ${{ runner.temp }}/openssl-static/source-metadata
+            ${{ runner.temp }}/openssl-static/lib/pkgconfig
+            ${{ runner.temp }}/openssl-static/source-notices
             openssl-static-live-evidence.json
             openssl-static-cohabitation.xml
             openssl-static-live.xml

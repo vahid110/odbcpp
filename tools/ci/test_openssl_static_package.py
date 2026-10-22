@@ -36,12 +36,13 @@ class StaticPackageTests(unittest.TestCase):
                          'staticLinkMapVerified': True, 'staticArchiveMemberEvidenceVerified': True,
                          'sslLinkInputSha256': 'ssl', 'cryptoLinkInputSha256': 'crypto',
                          'artifactSha256': p.sha(self.build / 'libodbcpp.so')}
-        (self.root / 'openssl-static-source-evidence.json').write_text(json.dumps({
+        self.source = {
             'package': 'libssl-dev', 'packageVersion': 'fixture',
-            'sourceArchives': {'libssl.a': {'sha256': 'ssl'}, 'libcrypto.a': {'sha256': 'crypto'}}}))
+            'sourceArchives': {'libssl.a': {'sha256': 'ssl'}, 'libcrypto.a': {'sha256': 'crypto'}}}
         self.write_inputs()
 
     def write_inputs(self):
+        (self.root / 'openssl-static-source-evidence.json').write_text(json.dumps(self.source))
         for name, value in (('manifest', self.manifest), ('artifact-evidence', self.artifact)):
             (self.build / f'odbcpp-crypto-{name}.json').write_text(json.dumps(value))
 
@@ -109,6 +110,54 @@ class StaticPackageTests(unittest.TestCase):
     def test_archive_root_cannot_escape(self):
         with self.assertRaisesRegex(RuntimeError, 'simple directory'):
             p.archive_checks.extract_verified(self.root / 'missing.tar.gz', self.root / 'extracted', {}, '../escape')
+
+    def add_auxiliary(self):
+        notice = self.root / 'jitterentropy-copyright'
+        notice.write_text('Jitterentropy distribution notice')
+        entry = {'path': '/controlled/lib/libjitterentropy.a', 'sha256': 'fixture-aux'}
+        self.manifest['auxiliaryStaticLinkInputs'] = [entry]
+        self.artifact['auxiliaryStaticLinkInputs'] = [dict(entry, linkMapLoadVerified=True,
+                                                          archiveMembersObserved=True)]
+        self.source['auxiliaryArchives'] = ['libjitterentropy.a']
+        self.source['sourceArchives']['libjitterentropy.a'] = dict(
+            entry, controlledPath=entry['path'], licensePath=str(notice), licenseSha256=p.sha(notice),
+            package='libjitterentropy3-dev:fixture', packageVersion='fixture')
+        self.write_inputs()
+        return notice
+
+    def test_embedded_auxiliary_notice_inventory_and_tamper(self):
+        self.add_auxiliary()
+        manifest = self.stage()
+        self.assertEqual(set(manifest['licenseFiles']), p.LICENSES | {'licenses/jitterentropy/copyright'})
+        notice = self.package / 'licenses/jitterentropy/copyright'
+        notice.write_bytes(b'changed notice')
+        with self.assertRaisesRegex(RuntimeError, 'hash mismatch'):
+            p.validate(self.package)
+
+    def test_missing_changed_or_empty_auxiliary_notice_refused(self):
+        notice = self.add_auxiliary()
+        notice.write_bytes(b'changed notice')
+        with self.assertRaisesRegex(RuntimeError, 'license changed'):
+            self.stage()
+        notice.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.stage()
+        notice.write_bytes(b'')
+        self.source['sourceArchives']['libjitterentropy.a']['licenseSha256'] = p.sha(notice)
+        self.write_inputs()
+        with self.assertRaisesRegex(RuntimeError, 'empty'):
+            self.stage()
+
+    def test_auxiliary_binding_or_omitted_inventory_refused(self):
+        self.add_auxiliary()
+        self.artifact['auxiliaryStaticLinkInputs'][0]['sha256'] = 'different'
+        self.write_inputs()
+        with self.assertRaisesRegex(RuntimeError, 'binding mismatch'):
+            self.stage()
+        self.source['auxiliaryArchives'] = []
+        self.write_inputs()
+        with self.assertRaisesRegex(RuntimeError, 'inventory mismatch'):
+            self.stage()
 
 
 if __name__ == '__main__':
