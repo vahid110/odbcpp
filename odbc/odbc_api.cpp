@@ -853,9 +853,17 @@ static SQLRETURN SQLDriverConnect_impl(
   const auto connect_result = conn->connect(connection_string);
   if (connect_result != SQL_SUCCESS) return connect_result;
   const auto unknown = first_unknown_connection_keyword(connection_string);
-  const auto output_result = write_narrow_output(
+  auto output_result = write_narrow_output(
       conn.get(), connection_string, connection_string_out, buffer_length,
       string_length2, "Output connection string was truncated");
+  // A requested zero-capacity buffer cannot hold the terminator; NULL remains
+  // the distinct length-only query.
+  if (output_result == SQL_SUCCESS && connection_string_out &&
+      buffer_length == 0 && !connection_string.empty()) {
+    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Output connection string was truncated");
+    output_result = SQL_SUCCESS_WITH_INFO;
+  }
   if (unknown) {
     const auto message = "Unsupported connection string keyword: " + *unknown;
     if (output_result == SQL_SUCCESS_WITH_INFO) {
@@ -911,10 +919,16 @@ static SQLRETURN SQLDriverConnectW_impl(
   const auto connect_result = conn->connect(*connection_string);
   if (connect_result != SQL_SUCCESS) return connect_result;
   const auto unknown = first_unknown_connection_keyword(*connection_string);
-  const auto output_result = write_wide_output(
+  auto output_result = write_wide_output(
       conn, *connection_string, connection_string_out, buffer_length,
       string_length2,
       "Output connection string was truncated");
+  if (output_result == SQL_SUCCESS && connection_string_out &&
+      buffer_length == 0 && !connection_string->empty()) {
+    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Output connection string was truncated");
+    output_result = SQL_SUCCESS_WITH_INFO;
+  }
   if (unknown) {
     const auto message = "Unsupported connection string keyword: " + *unknown;
     if (output_result == SQL_SUCCESS_WITH_INFO) {
@@ -1612,7 +1626,12 @@ static SQLRETURN SQLErrorW_impl(
   const auto result = SQLGetDiagRecW_impl(
       handle_type, handle, *record_number, sqlstate, native_error,
       message_text, buffer_length, text_length);
-  if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
+  // With a valid BufferLength, SQL_ERROR means this record's stored text cannot
+  // convert and every retry fails identically. Consume it so legacy loops still
+  // reach later records and SQL_NO_DATA; caller argument errors stay retryable.
+  const bool unconvertible_record = result == SQL_ERROR && buffer_length >= 0;
+  if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO ||
+      unconvertible_record) {
     obj->advance_legacy_diagnostic_record();
   }
   return result;
@@ -2793,22 +2812,21 @@ static SQLRETURN SQLDescribeColW_impl(
     return SQL_ERROR;
   }
 
-  SQLSMALLINT utf8_length = 0;
-  const auto metadata_result = stmt->describe_col(
-      column_number, nullptr, 0, &utf8_length, data_type, column_size,
-      decimal_digits, nullable);
+  // Convert the full UTF-8 name; a SQLSMALLINT byte length cannot carry it.
+  std::string name;
+  const auto metadata_result = stmt->describe_col_name(
+      column_number, name, data_type, column_size, decimal_digits, nullable);
   if (metadata_result != SQL_SUCCESS) return metadata_result;
-  std::vector<SQLCHAR> utf8(static_cast<std::size_t>(utf8_length) + 1);
-  const auto name_result = stmt->describe_col(
-      column_number, utf8.data(), static_cast<SQLSMALLINT>(utf8.size()),
-      nullptr, nullptr, nullptr, nullptr, nullptr);
-  if (name_result != SQL_SUCCESS) return name_result;
-  return write_wide_output(
-      stmt,
-      std::string_view(reinterpret_cast<const char*>(utf8.data()),
-                       static_cast<std::size_t>(utf8_length)),
-      column_name, column_name ? name_buffer_length : 0, name_length,
-      "Column name was truncated");
+  const auto result = write_wide_output(
+      stmt, name, column_name, column_name ? name_buffer_length : 0,
+      name_length, "Column name was truncated");
+  // Zero capacity cannot hold the terminator; empty names are not truncated.
+  if (result == SQL_SUCCESS && column_name && name_buffer_length == 0 &&
+      !name.empty()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED, "Column name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return result;
 }
 
 static SQLRETURN SQLColAttribute_impl(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
@@ -2847,20 +2865,21 @@ static SQLRETURN SQLColAttributeW_impl(
                                string_length, numeric_attribute);
   }
 
-  SQLSMALLINT utf8_length = 0;
-  const auto length_result = stmt->col_attribute(
-      column_number, field_identifier, nullptr, 0, &utf8_length,
-      numeric_attribute);
-  if (length_result != SQL_SUCCESS) return length_result;
-  std::vector<char> utf8(static_cast<std::size_t>(utf8_length) + 1);
-  const auto value_result = stmt->col_attribute(
-      column_number, field_identifier, utf8.data(),
-      static_cast<SQLSMALLINT>(utf8.size()), nullptr, nullptr);
-  if (value_result != SQL_SUCCESS) return value_result;
-  return write_wide_bytes_output(
-      stmt, std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
-      static_cast<SQLWCHAR*>(character_attribute), character_attribute ? buffer_length : 0,
-      string_length, "Column attribute was truncated");
+  std::string text;
+  const auto text_result =
+      stmt->col_attribute_text(column_number, field_identifier, text);
+  if (text_result != SQL_SUCCESS) return text_result;
+  const auto result = write_wide_bytes_output(
+      stmt, text, static_cast<SQLWCHAR*>(character_attribute),
+      character_attribute ? buffer_length : 0, string_length,
+      "Column attribute was truncated");
+  if (result == SQL_SUCCESS && character_attribute && buffer_length == 0 &&
+      !text.empty()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Column attribute was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return result;
 }
 
 static SQLRETURN SQLPrepare_impl(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {

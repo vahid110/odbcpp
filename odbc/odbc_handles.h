@@ -600,7 +600,13 @@ public:
   SQLRETURN col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length, SQLLEN* numeric_attribute);
-  
+  // Full UTF-8 text for wide adapters; lengths are clamped only at the API.
+  SQLRETURN describe_col_name(SQLUSMALLINT column_number, std::string& name,
+                              SQLSMALLINT* data_type, SQLULEN* column_size,
+                              SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
+  SQLRETURN col_attribute_text(SQLUSMALLINT column_number,
+                               SQLUSMALLINT field_identifier, std::string& text);
+
   // Parameter metadata (IPD)
   SQLRETURN describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
@@ -613,6 +619,15 @@ private:
   friend struct detail::ODBCBackendTestAccess;
 #endif
   SQLRETURN fetch_impl(SQLSMALLINT orientation, SQLLEN offset);
+  SQLRETURN describe_col_impl(SQLUSMALLINT column_number, SQLCHAR* column_name,
+                              SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+                              SQLSMALLINT* data_type, SQLULEN* column_size,
+                              SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable,
+                              std::string* name_out);
+  SQLRETURN col_attribute_impl(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                               SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
+                               SQLSMALLINT* string_length, SQLLEN* numeric_attribute,
+                               std::string* text_out);
   enum class StaticPosition { BeforeStart, OnRowset, AfterEnd };
   StaticPosition static_position_ = StaticPosition::BeforeStart;
   SQLULEN cursor_type_ = SQL_CURSOR_FORWARD_ONLY;
