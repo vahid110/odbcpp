@@ -707,6 +707,9 @@ if(UNIX OR WIN32)
 endif()
 
 if(WIN32)
+  add_test(NAME test_windows_backend_observer
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_windows_backend_observer.py")
+  set_tests_properties(test_windows_backend_observer PROPERTIES LABELS "unit;windows" TIMEOUT 60)
   add_executable(test_setup_dialog tests/windows/test_setup_dialog.cpp
     odbc/setup/setup_dialog.cpp odbc/setup/setup.rc)
   target_include_directories(test_setup_dialog PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/odbc/setup")

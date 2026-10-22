@@ -16,8 +16,38 @@ $settings=[Xml.XmlReaderSettings]::new();$settings.DtdProcessing=[Xml.DtdProcess
 $settings.XmlResolver=$null;$settings.MaxCharactersInDocument=16777216
 $reader=[Xml.XmlReader]::Create($original,$settings)
 try { $xml=[Xml.XmlDocument]::new();$xml.XmlResolver=$null;$xml.Load($reader) } finally { $reader.Dispose() }
-$backend=@($xml.SelectNodes('//testcase') | Where-Object { $_.GetAttribute('name') -ceq 'test_backend_contract' })
-if ($backend.Count -ne 1 -or $backend[0].SelectNodes('failure').Count -ne 1) { throw 'original_backend_failure_unbound' }
+function Test-BackendDiagnosticEligibility([Xml.XmlDocument]$Report) {
+  # CTest's original suite remains failed. Only decide whether this specific
+  # backend diagnostic applies; never rerun it for an unrelated GUI failure.
+  $root=$Report.DocumentElement
+  if ($null -eq $root -or $root.Name -cne 'testsuite') { throw 'original_suite_shape_refused' }
+  $cases=@($root.SelectNodes('testcase'))
+  if ($cases.Count -eq 0 -or $cases.Count -ne $Report.SelectNodes('//testcase').Count -or
+      $root.GetAttribute('tests') -cnotmatch '^[1-9][0-9]*$' -or
+      $root.GetAttribute('tests') -cne [string]$cases.Count) { throw 'original_case_inventory_refused' }
+  $names=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  $failed=0
+  foreach ($case in $cases) {
+    $name=$case.GetAttribute('name')
+    if ($name -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*$' -or !$names.Add($name)) { throw 'original_case_name_refused' }
+    $failures=$case.SelectNodes('failure').Count
+    $skips=$case.SelectNodes('skipped').Count
+    $status=$case.GetAttribute('status')
+    if ($failures -gt 1 -or $skips -gt 1 -or $case.SelectNodes('error').Count -ne 0 -or
+        ($failures -eq 1 -and ($skips -ne 0 -or $status -cne 'fail')) -or
+        ($failures -eq 0 -and $skips -eq 0 -and $status -cne 'run') -or
+        ($skips -eq 1 -and $status -cne 'notrun')) { throw 'original_case_result_refused' }
+    $failed+=$failures
+  }
+  if ($failed -eq 0 -or $root.GetAttribute('failures') -cne [string]$failed) { throw 'original_failure_count_refused' }
+  $backend=@($cases | Where-Object { $_.GetAttribute('name') -ceq 'test_backend_contract' })
+  if ($backend.Count -ne 1 -or $backend[0].SelectNodes('skipped').Count -ne 0) { throw 'original_backend_failure_unbound' }
+  return $backend[0].SelectNodes('failure').Count -eq 1
+}
+if (!(Test-BackendDiagnosticEligibility $xml)) {
+  Write-Output 'backend_diagnostic_not_applicable: original suite failed; test_backend_contract passed; no child started'
+  exit 1
+}
 $outdir=Join-Path $build 'windows-backend-direct-exit009'
 if (Test-Path -LiteralPath $outdir) { throw 'duplicate_diagnostic_refused' }
 $null=New-Item -ItemType Directory -Path $outdir

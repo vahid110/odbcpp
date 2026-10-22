@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -19,18 +20,45 @@ namespace {
 using namespace rs::odbc::setup;
 using Clock = std::chrono::steady_clock;
 
+struct SendFailure {
+  UINT message;
+  DWORD error;
+  long long elapsed_ms;
+};
+thread_local std::optional<SendFailure> last_send_failure;
+
 struct Observations {
   std::vector<std::string> failures;
   void check(bool condition, const char* description) {
-    if (!condition) failures.emplace_back(description);
+    if (!condition) {
+      std::string detail = description;
+      if (last_send_failure) {
+        // Only numeric dispatch metadata: never record control text or payloads.
+        detail += " [Win32 message=" + std::to_string(last_send_failure->message) +
+            " error=" + std::to_string(last_send_failure->error) +
+            " elapsed_ms=" + std::to_string(last_send_failure->elapsed_ms) +
+            " timeout_ms=1000]";
+      }
+      failures.push_back(std::move(detail));
+    }
+    last_send_failure.reset();
   }
 };
 
 bool send(HWND window, UINT message, WPARAM wp = 0, LPARAM lp = 0,
           DWORD_PTR* result = nullptr) {
   DWORD_PTR ignored = 0;
-  return SendMessageTimeoutW(window, message, wp, lp, SMTO_ABORTIFHUNG,
-                            1000, result ? result : &ignored) != 0;
+  last_send_failure.reset();
+  const auto started = Clock::now();
+  SetLastError(ERROR_SUCCESS);
+  const bool succeeded = SendMessageTimeoutW(window, message, wp, lp, SMTO_ABORTIFHUNG,
+                                            1000, result ? result : &ignored) != 0;
+  const auto error = GetLastError();
+  if (!succeeded) {
+    last_send_failure = SendFailure{message, error,
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count()};
+  }
+  return succeeded;
 }
 bool click(HWND window, int id) {
   return send(window, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED),
@@ -223,6 +251,28 @@ struct BoundedFake {
   }
   ~BoundedFake() { secure_clear(observed_password); }
 };
+
+TEST(SetupDialog, FailedDispatchReportsImmediateWin32ErrorWithoutMessagePayload) {
+  constexpr UINT message = WM_APP + 1;
+  const wchar_t payload[] = L"do-not-log-control-payload";
+  SetLastError(ERROR_ACCESS_DENIED);
+  const bool succeeded = send(nullptr, message, 0, reinterpret_cast<LPARAM>(payload));
+  ASSERT_FALSE(succeeded);
+  ASSERT_TRUE(last_send_failure.has_value());
+  EXPECT_EQ(ERROR_INVALID_WINDOW_HANDLE, last_send_failure->error);
+  EXPECT_EQ(message, last_send_failure->message);
+  EXPECT_GE(last_send_failure->elapsed_ms, 0);
+  Observations observations;
+  observations.check(succeeded, "Controlled dispatch failure");
+  ASSERT_EQ(1u, observations.failures.size());
+  EXPECT_NE(std::string::npos, observations.failures.front().find("error=1400"));
+  EXPECT_NE(std::string::npos, observations.failures.front().find("timeout_ms=1000"));
+  EXPECT_EQ(std::string::npos, observations.failures.front().find("do-not-log-control-payload"));
+  EXPECT_FALSE(last_send_failure.has_value());
+  observations.check(false, "Unrelated observation");
+  ASSERT_EQ(2u, observations.failures.size());
+  EXPECT_EQ("Unrelated observation", observations.failures.back());
+}
 
 TEST(SetupDialog, NativePagesDraftTestingAndSaveRemainResponsiveWithoutNetwork) {
   auto fields = initial_fields();
