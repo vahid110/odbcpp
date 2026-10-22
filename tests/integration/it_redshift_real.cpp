@@ -11265,3 +11265,44 @@ TEST_F(RedshiftSpecialTypesRealTest, SpatialInputUsesExplicitEwkbFunction) {
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 }
 
+// Audit V7: raw SQL_C_BINARY -> VARBYTE parameter (6551, binary format).
+TEST_F(RedshiftSpecialTypesRealTest, RawBinaryVarbyteParameterRoundTrip) {
+  ASSERT_TRUE(connect());
+  SQLCHAR query[] = "SELECT TO_HEX(?) AS hex";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  unsigned char bytes[] = {0x00, 0x41, 0xff};
+  const std::pair<SQLLEN, const char*> cases[]{{3, "0041ff"}, {0, ""}, {SQL_NULL_DATA, nullptr}};
+  for (const auto& [input_length_value, expected] : cases) {
+    SCOPED_TRACE(input_length_value);
+    SQLLEN input_length = input_length_value;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_LONGVARBINARY,
+        3, 0, bytes, sizeof(bytes), &input_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(checkpoint_statement(hstmt_))) << get_error(SQL_HANDLE_STMT, hstmt_);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+    SQLLEN length = 0;
+    const auto hex = text_cell(1, length);
+    if (expected == nullptr) {
+      EXPECT_EQ(SQL_NULL_DATA, length);
+    } else {
+      EXPECT_EQ(expected, hex);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  }
+}
+
+// Audit N10: whether DOUBLE text results reproduce the stored IEEE value.
+TEST_F(RedshiftSpecialTypesRealTest, DoubleResultRoundTripsStoredValue) {
+  ASSERT_TRUE(connect());
+  SQLCHAR query[] = "SELECT 0.1::FLOAT8 + 0.2::FLOAT8 AS sum, 1.7976931348623157e308::FLOAT8 AS max, "
+                    "(0.1::FLOAT8 + 0.2::FLOAT8)::VARCHAR AS text";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLLEN length = 0;
+  RecordProperty("double_sum_server_text", text_cell(3, length));
+  double sum = 0, max = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_DOUBLE, &sum, sizeof(sum), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_DOUBLE, &max, sizeof(max), &length));
+  EXPECT_EQ(0.1 + 0.2, sum);
+  EXPECT_EQ(std::numeric_limits<double>::max(), max);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
