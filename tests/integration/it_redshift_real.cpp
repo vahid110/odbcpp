@@ -421,6 +421,105 @@ TEST_F(RedshiftRealTest, PreparedScalarAndNull) {
   EXPECT_EQ(SQL_NULL_DATA, indicator);
 }
 
+// Real scalar data-at-execution proof, distinct from the scripted backend tests.
+// Only constant SELECTs; no DDL, new principal or fixture authority. Indicator,
+// token and input/output buffers remain alive through fatal fixture teardown.
+class RedshiftDeferredInputRealTest : public RedshiftRealTest {
+protected:
+  SQLLEN deferred_length_ = SQL_DATA_AT_EXEC;
+  char token_identity_ = 0;
+  SQLPOINTER returned_token_ = nullptr;
+  std::array<char, 64> piece_{};
+  std::array<char, 64> output_{};
+  SQLLEN output_length_ = -7;
+
+  void TearDown() override {
+    if (hstmt_) {
+      EXPECT_EQ(SQL_SUCCESS, SQLCancel(hstmt_));
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_RESET_PARAMS));
+    }
+    RedshiftRealTest::TearDown();
+  }
+
+  void prepare_deferred() {
+    SQLCHAR query[] = "SELECT CAST(? AS VARCHAR(64)) AS streamed_value";
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(checkpoint_statement(hstmt_), query, SQL_NTS))
+        << get_error(SQL_HANDLE_STMT, hstmt_);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 64, 0,
+        &token_identity_, 0, &deferred_length_));
+  }
+
+  void request_deferred() {
+    // Preserve the inherited original forty-second case and five-second
+    // operation budgets; do not renew either while SQL_NEED_DATA is active.
+    ASSERT_EQ(SQL_NEED_DATA, SQLExecute(checkpoint_statement(hstmt_)))
+        << get_error(SQL_HANDLE_STMT, hstmt_);
+    returned_token_ = nullptr;
+    ASSERT_EQ(SQL_NEED_DATA, SQLParamData(hstmt_, &returned_token_));
+    EXPECT_EQ(static_cast<SQLPOINTER>(&token_identity_), returned_token_);
+  }
+
+  void expect_deferred_value(const char* expected) {
+    ASSERT_EQ(SQL_SUCCESS, SQLParamData(hstmt_, &returned_token_))
+        << get_error(SQL_HANDLE_STMT, hstmt_);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+    output_.fill('!');
+    output_length_ = -7;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_CHAR, output_.data(),
+        static_cast<SQLLEN>(output_.size()), &output_length_));
+    if (expected == nullptr) {
+      EXPECT_EQ(SQL_NULL_DATA, output_length_);
+    } else {
+      const auto expected_length = std::strlen(expected);
+      ASSERT_LT(expected_length, output_.size());
+      ASSERT_EQ(static_cast<SQLLEN>(expected_length), output_length_);
+      EXPECT_EQ(0, std::memcmp(expected, output_.data(), expected_length));
+      EXPECT_EQ('\0', output_[expected_length]);
+    }
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  }
+};
+
+TEST_F(RedshiftDeferredInputRealTest, ChunkedUnicodeOwnsPiecesAndReturnsServerValue) {
+  ASSERT_TRUE(connect());
+  ASSERT_NO_FATAL_FAILURE(prepare_deferred());
+  constexpr char expected[] = "Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82";
+  constexpr std::size_t first_piece = 3;  // Split the UTF-8 sequence for U+00FC.
+  deferred_length_ = SQL_LEN_DATA_AT_EXEC(static_cast<SQLLEN>(sizeof(expected) - 1));
+  ASSERT_NO_FATAL_FAILURE(request_deferred());
+  std::memcpy(piece_.data(), expected, first_piece);
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(hstmt_, piece_.data(), static_cast<SQLLEN>(first_piece)));
+  piece_.fill('X');  // SQLPutData must own the preceding piece before returning.
+  constexpr auto rest = sizeof(expected) - 1 - first_piece;
+  std::memcpy(piece_.data(), expected + first_piece, rest);
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(hstmt_, piece_.data(), static_cast<SQLLEN>(rest)));
+  piece_.fill('Y');
+  ASSERT_NO_FATAL_FAILURE(expect_deferred_value(expected));
+  RecordProperty("native_scope", "constant verified-TLS Redshift SELECT; chunked UTF-8 input; no DDL");
+}
+
+TEST_F(RedshiftDeferredInputRealTest, NullEmptyAndReboundLengthReusePreparedStatement) {
+  ASSERT_TRUE(connect());
+  ASSERT_NO_FATAL_FAILURE(prepare_deferred());
+  ASSERT_NO_FATAL_FAILURE(request_deferred());
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(hstmt_, nullptr, SQL_NULL_DATA));
+  ASSERT_NO_FATAL_FAILURE(expect_deferred_value(nullptr));
+
+  ASSERT_NO_FATAL_FAILURE(request_deferred());
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(hstmt_, nullptr, 0));
+  ASSERT_NO_FATAL_FAILURE(expect_deferred_value(""));
+
+  deferred_length_ = SQL_LEN_DATA_AT_EXEC(5);
+  ASSERT_NO_FATAL_FAILURE(request_deferred());
+  std::memcpy(piece_.data(), "again", 5);
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(hstmt_, piece_.data(), 5));
+  piece_.fill('Z');
+  ASSERT_NO_FATAL_FAILURE(expect_deferred_value("again"));
+  RecordProperty("native_scope", "constant verified-TLS Redshift SELECT; NULL/empty/re-execution; no DDL");
+}
+
 // Prepared proof inventory only: these cases are not admitted by a paid runner.
 TEST_F(RedshiftRealTest, RowVersionEmptyDescriptorContract) {
   const auto schema_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_SCHEMA");
