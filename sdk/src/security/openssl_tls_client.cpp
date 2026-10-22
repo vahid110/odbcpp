@@ -1,14 +1,27 @@
 #include "odbcpp/security/tls_client.h"
 
+#include "odbcpp/security/platform_trust.h"
 #include "odbcpp/util/platform.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
+#include <vector>
+
+#if defined(_WIN32)
+#include <atomic>
+#include <map>
+#include <mutex>
+#endif
 
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -87,6 +100,271 @@ bool host_uses_sni(std::string_view host) {
   return false;
 }
 
+constexpr std::uintmax_t max_ca_file_bytes = 16 * 1024 * 1024;
+
+std::filesystem::path utf8_path(const std::string& path) {
+  // Connection inputs are UTF-8; Windows needs the wide spelling, not ANSI.
+  return std::filesystem::path(std::u8string(
+      reinterpret_cast<const char8_t*>(path.data()), path.size()));
+}
+
+// Loads every PEM certificate/CRL (including TRUSTED CERTIFICATE blocks) from
+// one file into a per-context store. Returns an empty string or the reason.
+// The provider opens the file so its UTF-8 path handling and error detail are
+// preserved; an existing non-regular path is rejected before opening.
+extern "C" int odbcpp_trust_no_password(char*, int, int, void*) noexcept {
+  return 0;
+}
+
+// AWS-LC exposes the X509_LU_* values without OpenSSL's lookup-type typedef.
+// This private parser only discriminates those values; callbacks retain their
+// provider-declared signatures.
+std::string load_pem_file(X509_STORE* store, const std::string& path,
+                          int type = X509_LU_NONE,
+                          std::uintmax_t* remaining_bytes = nullptr) {
+  std::error_code error;
+  std::filesystem::file_status status;
+  try {
+    status = std::filesystem::status(utf8_path(path), error);
+  } catch (const std::exception&) {
+    return "invalid path encoding";
+  }
+  if (std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) {
+    return "not a regular file";
+  }
+  ::ERR_clear_error();
+  BIO* file = ::BIO_new_file(path.c_str(), "rb");
+  if (!file) return error_text("cannot open file");
+  std::string contents;
+  std::array<char, 16384> chunk{};
+  for (;;) {
+    const int count = ::BIO_read(file, chunk.data(), static_cast<int>(chunk.size()));
+    if (count == 0) break;
+    if (count < 0) {
+      ::BIO_free(file);
+      return error_text("cannot read file");
+    }
+    if (remaining_bytes) {
+      if (static_cast<std::uintmax_t>(count) > *remaining_bytes) {
+        ::BIO_free(file);
+        return "directory exceeds 16 MiB";
+      }
+      *remaining_bytes -= static_cast<std::uintmax_t>(count);
+    }
+    contents.append(chunk.data(), static_cast<std::size_t>(count));
+    if (contents.size() > max_ca_file_bytes) {
+      ::BIO_free(file);
+      return "file exceeds 16 MiB";
+    }
+  }
+  ::BIO_free(file);
+  if (contents.empty()) return "file is empty";
+  ::ERR_clear_error();
+  BIO* bio = ::BIO_new_mem_buf(contents.data(), static_cast<int>(contents.size()));
+  if (!bio) return error_text("BIO_new_mem_buf");
+  // A hashed certificate/CRL entry loads only that object type, as by_dir does.
+  // In particular, unrelated private-key blocks never add trust or cause an
+  // interactive password request. AUX preserves TRUSTED CERTIFICATE metadata.
+  if (type != X509_LU_NONE) {
+    std::size_t loaded = 0;
+    std::string reason;
+    for (;;) {
+      if (type == X509_LU_X509) {
+        auto* certificate = ::PEM_read_bio_X509_AUX(bio, nullptr, &odbcpp_trust_no_password, nullptr);
+        if (!certificate) {
+          if (loaded == 0 || ERR_GET_REASON(::ERR_peek_last_error()) != PEM_R_NO_START_LINE) {
+            reason = error_text("malformed PEM certificate");
+          }
+          break;
+        }
+        const int added = ::X509_STORE_add_cert(store, certificate);
+        ::X509_free(certificate);
+        if (added != 1) {
+          reason = error_text("X509_STORE_add_cert");
+          break;
+        }
+      } else {
+        auto* crl = ::PEM_read_bio_X509_CRL(bio, nullptr, &odbcpp_trust_no_password, nullptr);
+        if (!crl) {
+          if (loaded == 0 || ERR_GET_REASON(::ERR_peek_last_error()) != PEM_R_NO_START_LINE) {
+            reason = error_text("malformed PEM CRL");
+          }
+          break;
+        }
+        const int added = ::X509_STORE_add_crl(store, crl);
+        ::X509_CRL_free(crl);
+        if (added != 1) {
+          reason = error_text("X509_STORE_add_crl");
+          break;
+        }
+      }
+      ++loaded;
+    }
+    ::BIO_free(bio);
+    ::ERR_clear_error();
+    if (!reason.empty()) return reason;
+    return loaded > 0 ? std::string{} : "no matching PEM objects found";
+  }
+  STACK_OF(X509_INFO)* entries = ::PEM_X509_INFO_read_bio(bio, nullptr, nullptr, nullptr);
+  ::BIO_free(bio);
+  if (!entries) return error_text("malformed PEM data");
+  std::size_t certificates = 0;
+  std::string failure;
+  for (decltype(sk_X509_INFO_num(entries)) i = 0; i < sk_X509_INFO_num(entries); ++i) {
+    const auto* entry = sk_X509_INFO_value(entries, i);
+    if (entry->x509) {
+      if (::X509_STORE_add_cert(store, entry->x509) != 1) {
+        failure = error_text("X509_STORE_add_cert");
+        break;
+      }
+      ++certificates;
+    }
+    if (entry->crl && ::X509_STORE_add_crl(store, entry->crl) != 1) {
+      failure = error_text("X509_STORE_add_crl");
+      break;
+    }
+  }
+  sk_X509_INFO_pop_free(entries, ::X509_INFO_free);
+  ::ERR_clear_error();
+  if (!failure.empty()) return failure;
+  if (certificates == 0) return "no PEM certificates found";
+  return {};
+}
+
+std::string check_directory(const std::string& path) {
+  std::error_code error;
+  try {
+    if (!std::filesystem::is_directory(utf8_path(path), error)) {
+      return "not an existing directory";
+    }
+  } catch (const std::exception&) {
+    return "invalid path encoding";
+  }
+  return {};
+}
+
+#if defined(_WIN32)
+extern "C" int odbcpp_windows_hash_directory_subject(
+    X509_LOOKUP* lookup, X509_LOOKUP_TYPE type, const X509_NAME* name,
+    X509_OBJECT* result) noexcept;
+
+// OpenSSL3 by_dir.c uses narrow _stat before its UTF-8-aware BIO reader. Own
+// only the per-context directory lookup: no provider/default-store replacement,
+// directory enumeration or eagerly imported trust. Non-Windows keeps by_dir.
+class WindowsHashDirectoryLookup {
+public:
+  explicit WindowsHashDirectoryLookup(const std::string& path)
+      : directory_(utf8_path(path)) {}
+
+  bool attach(X509_STORE* store) {
+    method_.reset(::X509_LOOKUP_meth_new("ODBCPP UTF-8 hashed CA directory"));
+    if (!method_ || ::X509_LOOKUP_meth_set_get_by_subject(
+                        method_.get(), &odbcpp_windows_hash_directory_subject) != 1) {
+      return false;
+    }
+    auto* lookup = ::X509_STORE_add_lookup(store, method_.get());
+    return lookup && ::X509_LOOKUP_set_method_data(lookup, this) == 1;
+  }
+
+  bool failed() const noexcept { return failed_.load(); }
+  void fail() noexcept { failed_.store(true); }
+
+  int find(X509_LOOKUP* lookup, X509_LOOKUP_TYPE type, const X509_NAME* name,
+           X509_OBJECT* result) {
+    if (!name || !result || (type != X509_LU_X509 && type != X509_LU_CRL)) return 0;
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (failed()) return 0;
+    int hash_ok = 0;
+    const auto hash = ::X509_NAME_hash_ex(name, nullptr, nullptr, &hash_ok);
+    if (!hash_ok) return 0;
+    auto* store = ::X509_LOOKUP_get_store(lookup);
+    if (!store) return 0;
+    std::size_t suffix = 0;
+    if (type == X509_LU_CRL) {
+      const auto previous = crl_suffixes_.find(hash);
+      if (previous != crl_suffixes_.end()) suffix = previous->second;
+    }
+    std::uintmax_t remaining_bytes = max_ca_file_bytes;
+    for (; suffix < max_hash_entries; ++suffix) {
+      const auto file = entry_path(hash, type, suffix);
+      std::error_code error;
+      // std::filesystem takes the native wide path on Windows. A gap, malformed
+      // file or non-file terminates this hash's sequence, as with by_dir.
+      if (!std::filesystem::is_regular_file(file, error)) break;
+      const auto spelling = file.u8string();
+      const std::string path(reinterpret_cast<const char*>(spelling.data()), spelling.size());
+      const auto reason = load_pem_file(store, path, type, &remaining_bytes);
+      if (reason == "directory exceeds 16 MiB") {
+        fail();
+        return 0;
+      }
+      if (!reason.empty()) break;
+    }
+    if (suffix == max_hash_entries) {
+      std::error_code error;
+      if (std::filesystem::exists(entry_path(hash, type, suffix), error)) {
+        fail();
+        return 0;
+      }
+    }
+    if (type == X509_LU_CRL && suffix > 0) crl_suffixes_[hash] = suffix;
+    if (::X509_STORE_lock(store) != 1) return 0;
+    auto* objects = ::X509_STORE_get0_objects(store);
+    sk_X509_OBJECT_sort(objects);
+    auto* cached = ::X509_OBJECT_retrieve_by_subject(objects, type, name);
+    int found = 0;
+    if (cached && type == X509_LU_X509) {
+      auto* certificate = ::X509_OBJECT_get0_X509(cached);
+      found = ::X509_OBJECT_set1_X509(result, certificate);
+      // Lookup returns a borrowed cache object; STORE_CTX adds its own ref.
+      // Balance set1's ref, like OpenSSL's public-API by_store callback.
+      if (found) ::X509_free(certificate);
+    } else if (cached && type == X509_LU_CRL) {
+      auto* crl = ::X509_OBJECT_get0_X509_CRL(cached);
+      found = ::X509_OBJECT_set1_X509_CRL(result, crl);
+      if (found) ::X509_CRL_free(crl);
+    }
+    ::X509_STORE_unlock(store);
+    if (found) ::ERR_clear_error();
+    return found;
+  }
+
+private:
+  std::filesystem::path entry_path(unsigned long hash, X509_LOOKUP_TYPE type,
+                                    std::size_t suffix) const {
+    std::array<char, 32> name{};
+    std::snprintf(name.data(), name.size(), "%08lx.%s%zu", hash,
+                  type == X509_LU_CRL ? "r" : "", suffix);
+    return directory_ / name.data();
+  }
+
+  static constexpr std::size_t max_hash_entries = 256;
+  std::filesystem::path directory_;
+  std::unique_ptr<X509_LOOKUP_METHOD, decltype(&::X509_LOOKUP_meth_free)>
+      method_{nullptr, &::X509_LOOKUP_meth_free};
+  std::mutex mutex_;
+  std::map<unsigned long, std::size_t> crl_suffixes_;
+  std::atomic<bool> failed_{false};
+};
+
+extern "C" int odbcpp_windows_hash_directory_subject(
+    X509_LOOKUP* lookup, X509_LOOKUP_TYPE type, const X509_NAME* name,
+    X509_OBJECT* result) noexcept {
+  auto* directory = static_cast<WindowsHashDirectoryLookup*>(
+      ::X509_LOOKUP_get_method_data(lookup));
+  if (!directory) return 0;
+  try {
+    return directory->find(lookup, type, name, result);
+  } catch (...) {
+    // No C++ exception crosses OpenSSL's C frames, including path conversion,
+    // allocation and locking failures. Cached partial loads cannot bypass this.
+    directory->fail();
+    ERR_raise(ERR_LIB_X509, ERR_R_INTERNAL_ERROR);
+    return 0;
+  }
+}
+#endif
+
 bool certificate_matches_host(X509* certificate, std::string_view host) {
   if (host.find('\0') != std::string_view::npos) return false;
   const std::string name(host);
@@ -151,7 +429,15 @@ public:
       ScopedSigpipeBlock block;
       result = ::SSL_connect(session_);
     }
+#if defined(_WIN32)
+    if (directory_lookup_ && directory_lookup_->failed()) {
+      return tls_error("TLS CA directory lookup failed or exceeded safety limits");
+    }
+#endif
     auto status = classify(result, "SSL_connect");
+    if (status.state == TlsStepState::TlsError && !platform_failure_.empty()) {
+      status.message += " (operating system trust store: " + platform_failure_ + ")";
+    }
     if (status.state != TlsStepState::Complete) return status;
     return verify_peer();
   }
@@ -252,6 +538,9 @@ public:
     // reopened by this sibling after the original verification established trust.
     sibling->config_.ca_file.clear(); sibling->config_.ca_directory.clear();
     sibling->context_config_ = sibling->config_;
+    // Native OS trust is evaluated live; it cannot be snapshotted into a store.
+    sibling->platform_test_anchors_ = platform_test_anchors_;
+    if (platform_verification_) sibling->enable_platform_verification();
     sibling->frozen_ = true;
     return sibling;
   }
@@ -259,8 +548,17 @@ public:
   bool active() const noexcept { return session_ != nullptr; }
   bool peer_identity_verified() const noexcept { return peer_verified_; }
 
+  void set_verification_deadline(std::chrono::steady_clock::time_point deadline) noexcept {
+    verification_deadline_ = deadline;
+  }
+
+  void replace_platform_anchors_for_testing(std::vector<std::vector<unsigned char>> anchors) {
+    platform_test_anchors_ = std::move(anchors);
+  }
+
   void reset_session() noexcept {
     peer_verified_ = false;
+    platform_failure_.clear();
     if (session_) ::SSL_free(session_);
     session_ = nullptr;
     read_bio_ = nullptr;
@@ -272,6 +570,9 @@ public:
     if (frozen_ || session_ || !context_) return;
     ::SSL_CTX_free(context_);
     context_ = nullptr;
+#if defined(_WIN32)
+    directory_lookup_.reset();
+#endif
   }
 
 private:
@@ -280,6 +581,7 @@ private:
       return tls_error("TLS host contains an embedded NUL byte");
     }
     reset_session();
+    verification_deadline_ = std::chrono::steady_clock::time_point::max();
     auto context = ensure_context();
     if (context.state != TlsStepState::Complete) return context;
     session_ = ::SSL_new(context_);
@@ -296,14 +598,25 @@ private:
   }
 
   TlsStep ensure_context() {
-    if (context_) return {};
+    if (context_) {
+#if defined(_WIN32)
+      if (directory_lookup_ && directory_lookup_->failed()) {
+        return tls_error("TLS CA directory lookup failed or exceeded safety limits");
+      }
+#endif
+      return {};
+    }
     context_config_ = config_;
+    platform_verification_ = false;
     context_ = ::SSL_CTX_new(::TLS_client_method());
     if (!context_) return failure("SSL_CTX_new");
     const auto fail_context = [this](std::string operation) {
       auto failed = failure(std::move(operation));
       ::SSL_CTX_free(context_);
       context_ = nullptr;
+#if defined(_WIN32)
+      directory_lookup_.reset();
+#endif
       return failed;
     };
     if (::SSL_CTX_set_min_proto_version(
@@ -319,27 +632,145 @@ private:
         context_, config_.verify_peer ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
         nullptr);
     if (!config_.verify_peer) return {};
-    int loaded = 0;
-    if (!config_.ca_file.empty()) {
-      loaded = ::SSL_CTX_load_verify_locations(
-          context_, config_.ca_file.c_str(), nullptr);
-    } else if (!config_.ca_directory.empty()) {
-      loaded = ::SSL_CTX_load_verify_locations(
-          context_, nullptr, config_.ca_directory.c_str());
-    } else {
-      loaded = ::SSL_CTX_set_default_verify_paths(context_);
+    const auto fail_trust = [this](std::string message) {
+      ::SSL_CTX_free(context_);
+      context_ = nullptr;
+#if defined(_WIN32)
+      directory_lookup_.reset();
+#endif
+      return tls_error(std::move(message));
+    };
+    if (!config_.ca_file.empty() && !config_.ca_directory.empty()) {
+      return fail_trust("TLS CA file and directory cannot both be specified");
     }
-    if (loaded != 1) {
-      if (!config_.ca_file.empty()) {
-        return fail_context("Failed to load CA file: " + config_.ca_file);
+    X509_STORE* store = ::SSL_CTX_get_cert_store(context_);
+    if (!store) return fail_context("SSL_CTX_get_cert_store");
+    // Custom sources replace system trust; failure never falls back.
+    if (!config_.ca_file.empty()) {
+      auto reason = load_pem_file(store, config_.ca_file);
+      if (!reason.empty()) {
+        return fail_trust("Failed to load CA file: " + config_.ca_file + ": " + reason);
       }
-      if (!config_.ca_directory.empty()) {
-        return fail_context(
-            "Failed to load CA directory: " + config_.ca_directory);
+      return {};
+    }
+    if (!config_.ca_directory.empty()) {
+      auto reason = check_directory(config_.ca_directory);
+#if defined(_WIN32)
+      if (reason.empty()) {
+        try {
+          directory_lookup_ = std::make_unique<WindowsHashDirectoryLookup>(config_.ca_directory);
+          if (!directory_lookup_->attach(store)) reason = error_text("lookup setup failed");
+        } catch (...) {
+          reason = "lookup setup failed";
+        }
       }
-      return fail_context("Failed to load default CA paths");
+#else
+      if (reason.empty() &&
+          ::SSL_CTX_load_verify_locations(context_, nullptr, config_.ca_directory.c_str()) != 1) {
+        reason = error_text("lookup setup failed");
+      }
+#endif
+      if (!reason.empty()) {
+        return fail_trust("Failed to load CA directory: " + config_.ca_directory + ": " + reason);
+      }
+      return {};
+    }
+    return load_system_trust(fail_trust);
+  }
+
+  template <class Fail>
+  TlsStep load_system_trust(const Fail& fail_trust) {
+    if (platform::native_verifier_available()) {
+      enable_platform_verification();
+      return {};
+    }
+    const auto locations =
+        platform::select_unix_trust_locations(platform::default_unix_trust_probe());
+    if (locations.empty()) {
+      return fail_trust("No operating system trust store found");
+    }
+    X509_STORE* store = ::SSL_CTX_get_cert_store(context_);
+    for (const auto& location : locations) {
+      std::string reason;
+      if (location.kind == platform::UnixTrustLocation::Kind::File) {
+        reason = load_pem_file(store, location.path);
+      } else {
+        reason = check_directory(location.path);
+        if (reason.empty() &&
+            ::SSL_CTX_load_verify_locations(context_, nullptr, location.path.c_str()) != 1) {
+          reason = error_text("lookup setup failed");
+        }
+      }
+      if (!reason.empty()) {
+        return fail_trust("Failed to load operating system trust store " +
+                          location.path + ": " + reason);
+      }
     }
     return {};
+  }
+
+  void enable_platform_verification() noexcept {
+    platform_verification_ = true;
+    ::SSL_CTX_set_cert_verify_callback(context_, &Impl::platform_verify, this);
+  }
+
+  // Replaces OpenSSL path building with the OS verifier for the peer chain.
+  // No exception may cross the provider's C frames.
+  static int platform_verify(X509_STORE_CTX* store_context, void* argument) noexcept {
+    auto* self = static_cast<Impl*>(argument);
+    try {
+      return platform_verify_chain(store_context, self);
+    } catch (...) {
+      self->platform_failure_.clear();
+      ::X509_STORE_CTX_set_error(store_context, X509_V_ERR_CERT_UNTRUSTED);
+      return 0;
+    }
+  }
+
+  static int platform_verify_chain(X509_STORE_CTX* store_context, Impl* self) {
+    const auto reject = [&](std::string reason) {
+      self->platform_failure_ = std::move(reason);
+      ::X509_STORE_CTX_set_error(store_context, X509_V_ERR_CERT_UNTRUSTED);
+      return 0;
+    };
+    X509* leaf = ::X509_STORE_CTX_get0_cert(store_context);
+    if (!leaf) return reject("peer certificate missing");
+    std::vector<platform::DerCertificate> chain;
+    const auto append = [&](X509* certificate) {
+      const int size = ::i2d_X509(certificate, nullptr);
+      if (size <= 0 || static_cast<std::size_t>(size) > platform::max_peer_certificate_bytes) {
+        return false;
+      }
+      platform::DerCertificate der(static_cast<std::size_t>(size));
+      unsigned char* cursor = der.data();
+      if (::i2d_X509(certificate, &cursor) != size) return false;
+      chain.push_back(std::move(der));
+      return true;
+    };
+    if (!append(leaf)) return reject("peer certificate could not be encoded");
+    auto* untrusted = ::X509_STORE_CTX_get0_untrusted(store_context);
+    for (decltype(sk_X509_num(untrusted)) i = 0; untrusted && i < sk_X509_num(untrusted); ++i) {
+      X509* certificate = sk_X509_value(untrusted, i);
+      if (::X509_cmp(certificate, leaf) == 0) continue;
+      if (chain.size() >= platform::max_peer_chain_certificates) {
+        return reject("peer certificate chain is too long");
+      }
+      if (!append(certificate)) return reject("peer certificate could not be encoded");
+    }
+    platform::EvaluationOptions options;
+    options.test_anchors = self->platform_test_anchors_;
+    auto evaluation = platform::evaluate_server_chain(chain, options);
+    if (!evaluation.trusted) {
+      return reject(evaluation.reason.empty() ? "certificate is not trusted"
+                                              : std::move(evaluation.reason));
+    }
+    // A verdict that arrives after the caller's original deadline never
+    // publishes trust; the transport reports the expired deadline.
+    if (std::chrono::steady_clock::now() >= self->verification_deadline_) {
+      return reject("verification completed after the connection deadline");
+    }
+    ::X509_STORE_CTX_set_error(store_context, X509_V_OK);
+    return 1;
   }
 
   TlsStep verify_peer() {
@@ -397,6 +828,16 @@ private:
   TlsClientConfig config_;
   TlsClientConfig context_config_;
   bool frozen_{false};
+  bool platform_verification_{false};
+  std::string platform_failure_;
+  std::vector<std::vector<unsigned char>> platform_test_anchors_;
+  std::chrono::steady_clock::time_point verification_deadline_{
+      std::chrono::steady_clock::time_point::max()};
+#if defined(_WIN32)
+  // Descriptor/state outlive the context/store lookup that borrows them.
+  // Every context-release path frees SSL_CTX before resetting this owner.
+  std::unique_ptr<WindowsHashDirectoryLookup> directory_lookup_;
+#endif
   SSL_CTX* context_{nullptr};
   SSL* session_{nullptr};
   BIO* read_bio_{nullptr};
@@ -445,6 +886,14 @@ bool TlsClient::peer_identity_verified() const noexcept {
   return impl_->peer_identity_verified();
 }
 void TlsClient::reset_session() noexcept { impl_->reset_session(); }
+void TlsClient::replace_platform_anchors_for_testing(
+    std::vector<std::vector<unsigned char>> anchors) {
+  impl_->replace_platform_anchors_for_testing(std::move(anchors));
+}
+void TlsClient::set_verification_deadline(
+    std::chrono::steady_clock::time_point deadline) noexcept {
+  impl_->set_verification_deadline(deadline);
+}
 void TlsClient::reset_context_if_inactive() noexcept {
   impl_->reset_context_if_inactive();
 }

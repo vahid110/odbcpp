@@ -41,6 +41,11 @@ PgBackendProvider::PgBackendProvider(
           : pg_backend_capabilities(identity_.display_name)),
       reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
+ConnectionOptionSupport PgBackendProvider::supported_connection_options() const noexcept {
+  if (catalog_profile_ != PgCatalogProfile::Redshift) return {};
+  return {true, true, true, true, true, true};
+}
+
 std::span<const TypeDefinition> PgBackendProvider::type_catalog(std::string_view server_version) const noexcept {
   return catalog_profile_ == PgCatalogProfile::Redshift
       ? redshift_type_catalog() : pg_type_catalog(server_version);
@@ -139,14 +144,27 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
     return {rs::util::DbErrorCode::ResourceLimit, "Database connection input limit exceeded"};
   }
 
-  if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {
-    return {rs::util::DbErrorCode::InvalidParameter,
-            "SSLCAFILE and SSLCADIR cannot both be specified"};
-  }
-  if (!settings.use_ssl &&
-      (!settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty())) {
-    return {rs::util::DbErrorCode::InvalidParameter,
-            "SSLCAFILE and SSLCADIR require SSL=true"};
+  const auto trust = select_tls_trust_source(
+      settings.use_ssl, options.ssl_use_system_trust_store,
+      settings.ssl_ca_file, settings.ssl_ca_dir);
+  switch (trust.conflict) {
+    case TlsTrustConflict::None: break;
+    case TlsTrustConflict::FileAndDirectory:
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "SSLCAFILE and SSLCADIR cannot both be specified"};
+    case TlsTrustConflict::SettingsWithoutTls:
+      return {rs::util::DbErrorCode::InvalidParameter,
+              !options.ssl_use_system_trust_store
+                  ? "SSLCAFILE and SSLCADIR require SSL=true"
+                  : settings.ssl_ca_file.empty() && settings.ssl_ca_dir.empty()
+                  ? "UseSystemTrustStore requires SSL=true"
+                  : "UseSystemTrustStore, SSLCAFILE and SSLCADIR require SSL=true"};
+    case TlsTrustConflict::SystemWithCustom:
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "UseSystemTrustStore=1 cannot be combined with SSLCAFILE or SSLCADIR"};
+    case TlsTrustConflict::CustomWithoutLocation:
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "UseSystemTrustStore=0 requires SSLCAFILE or SSLCADIR"};
   }
   return settings;
 }

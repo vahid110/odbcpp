@@ -1,3 +1,4 @@
+#include "../test_live_package_inputs.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
@@ -16,6 +17,7 @@
 #include <vector>
 
 namespace {
+using odbcpp::test::live_package_inputs::fixture_smallint_length;
 // Compile-time fixture admission witnesses; none dispatch SQL or create objects.
 constexpr std::uintptr_t remaining_seconds(std::chrono::milliseconds remaining) {
   const auto seconds=std::chrono::duration_cast<std::chrono::seconds>(remaining).count();
@@ -117,7 +119,8 @@ class RoutineSchemaNative : public testing::TestWithParam<bool> {
   void SetUp() override {
     // This runtime switch is an execution guard, never live/paid authority.
     // The protected checkpoint must separately admit this exact fixture batch.
-    const auto* enabled=std::getenv("ODBCPP_REDSHIFT_ROUTINE_SCHEMA_NATIVE");
+    const auto enabled_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_ROUTINE_SCHEMA_NATIVE");
+    const char* enabled = enabled_environment ? enabled_environment->c_str() : nullptr;
     if (!enabled || std::string(enabled)!="1") {
       GTEST_SKIP()<<"Separately admitted real Redshift test";
     }
@@ -133,7 +136,7 @@ class RoutineSchemaNative : public testing::TestWithParam<bool> {
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&stmt));
     ASSERT_TRUE(cap());
     std::array<char,1025> db{};SQLSMALLINT length=0;
-    ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_DATABASE_NAME,db.data(),db.size(),&length));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_DATABASE_NAME,db.data(),fixture_smallint_length(db.size()),&length));
     ASSERT_GT(length,0);ASSERT_LT(static_cast<std::size_t>(length),db.size());
     database.assign(db.data(),static_cast<std::size_t>(length));
     ASSERT_TRUE(database=="odbcpp_pilot");
@@ -229,20 +232,20 @@ class RoutineSchemaNative : public testing::TestWithParam<bool> {
     const auto proc=metadata_id?procedure:pattern_literal(procedure);
     const std::string column=metadata_id?"out_y":"out\\_y";
     if(!GetParam()) {
-      return observe(columns?SQLProcedureColumns(stmt,chars(database),database.size(),schema?chars(*schema):nullptr,
-          schema?static_cast<SQLSMALLINT>(schema->size()):0,chars(proc),proc.size(),chars(column),column.size()):
-          SQLProcedures(stmt,chars(database),database.size(),schema?chars(*schema):nullptr,
-          schema?static_cast<SQLSMALLINT>(schema->size()):0,chars(proc),proc.size()));
+      return observe(columns?SQLProcedureColumns(stmt,chars(database),fixture_smallint_length(database.size()),schema?chars(*schema):nullptr,
+          schema?static_cast<SQLSMALLINT>(schema->size()):0,chars(proc),fixture_smallint_length(proc.size()),chars(column),fixture_smallint_length(column.size())):
+          SQLProcedures(stmt,chars(database),fixture_smallint_length(database.size()),schema?chars(*schema):nullptr,
+          schema?static_cast<SQLSMALLINT>(schema->size()):0,chars(proc),fixture_smallint_length(proc.size())));
     }
     auto db=rs::odbc::utf8_to_wide(database),p=rs::odbc::utf8_to_wide(proc),c=rs::odbc::utf8_to_wide(column);
     auto s=rs::odbc::utf8_to_wide(schema.value_or(""));
     if(!db || !p || !c || !s)return SQL_ERROR;
     SQLWCHAR empty_schema=0;
     auto* schema_data=schema?(s->empty()?&empty_schema:s->data()):nullptr;
-    return observe(columns?SQLProcedureColumnsW(stmt,db->data(),db->size(),schema_data,
-        schema?static_cast<SQLSMALLINT>(s->size()):0,p->data(),p->size(),c->data(),c->size()):
-        SQLProceduresW(stmt,db->data(),db->size(),schema_data,
-        schema?static_cast<SQLSMALLINT>(s->size()):0,p->data(),p->size()));
+    return observe(columns?SQLProcedureColumnsW(stmt,db->data(),fixture_smallint_length(db->size()),schema_data,
+        schema?static_cast<SQLSMALLINT>(s->size()):0,p->data(),fixture_smallint_length(p->size()),c->data(),fixture_smallint_length(c->size())):
+        SQLProceduresW(stmt,db->data(),fixture_smallint_length(db->size()),schema_data,
+        schema?static_cast<SQLSMALLINT>(s->size()):0,p->data(),fixture_smallint_length(p->size())));
   }
   std::string text(SQLUSMALLINT column) {
     std::array<char,4096> data{};SQLLEN indicator=0;

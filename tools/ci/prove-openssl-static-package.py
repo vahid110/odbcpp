@@ -20,6 +20,15 @@ archive_checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(archive_checks)
 ROOT_NAME = 'odbcpp-openssl-static-proof'
 LICENSES = {'licenses/openssl/copyright', 'licenses/spdlog/LICENSE', 'licenses/fmt/LICENSE'}
+AUXILIARY_LICENSES = {'libjitterentropy.a': 'licenses/jitterentropy/copyright',
+                      'libz.a': 'licenses/zlib/copyright',
+                      'libzstd.a': 'licenses/zstd/copyright'}
+
+
+def auxiliary_licenses(names):
+    if len(names) != len(set(names)) or not set(names).issubset(AUXILIARY_LICENSES):
+        raise RuntimeError('Unknown or duplicate static auxiliary dependency')
+    return {AUXILIARY_LICENSES[name] for name in names}
 
 
 def sha(path):
@@ -58,6 +67,30 @@ def stage(build, destination, openssl_license):
         'licenses/spdlog/LICENSE': (spdlog / 'LICENSE').read_bytes(),
         'licenses/fmt/LICENSE': (fmt_header[:license_end + 2] + '\n').encode(),
     }
+    auxiliaries = source.get('auxiliaryArchives', [])
+    auxiliary_licenses(auxiliaries)
+    if set(source['sourceArchives']) != {'libssl.a', 'libcrypto.a'} | set(auxiliaries):
+        raise RuntimeError('Static source archive/license inventory mismatch')
+    configured_aux = {Path(entry['path']).name: entry
+                      for entry in manifest.get('auxiliaryStaticLinkInputs', [])}
+    inspected_aux = {Path(entry['path']).name: entry
+                     for entry in artifact.get('auxiliaryStaticLinkInputs', [])}
+    if (len(configured_aux) != len(manifest.get('auxiliaryStaticLinkInputs', [])) or
+            len(inspected_aux) != len(artifact.get('auxiliaryStaticLinkInputs', [])) or
+            set(configured_aux) != set(auxiliaries) or set(inspected_aux) != set(auxiliaries)):
+        raise RuntimeError('Static auxiliary dependency inventory mismatch')
+    for name in auxiliaries:
+        entry, configured, inspected = source['sourceArchives'][name], configured_aux[name], inspected_aux[name]
+        if (configured['sha256'] != entry['sha256'] or inspected['sha256'] != entry['sha256'] or
+                inspected['path'] != configured['path'] or
+                configured['path'] != entry['controlledPath'] or
+                inspected['linkMapLoadVerified'] is not True or
+                type(inspected['archiveMembersObserved']) is not bool):
+            raise RuntimeError('Static auxiliary dependency binding mismatch')
+        notice = Path(entry['licensePath'])
+        if sha(notice) != entry['licenseSha256']:
+            raise RuntimeError('Static auxiliary dependency license changed')
+        sources[AUXILIARY_LICENSES[name]] = notice.read_bytes()
     if any(not content.strip() for content in sources.values()):
         raise RuntimeError('Dependency license is empty')
     (destination / 'lib').mkdir(parents=True)
@@ -75,8 +108,16 @@ def stage(build, destination, openssl_license):
         'artifactEvidenceSha256': sha(artifact_path),
         'sourceEvidenceSha256': sha(source_path),
         'declaredOpenSslRecipe': {'package': source['package'], 'version': source['packageVersion'],
-            'archiveHashes': {name: entry['sha256'] for name, entry in source['sourceArchives'].items()}},
-        'licenseFiles': {name: sha(destination / name) for name in sorted(LICENSES)},
+            'archiveHashes': {name: source['sourceArchives'][name]['sha256']
+                              for name in ('libssl.a', 'libcrypto.a')}},
+        'declaredAuxiliaryRecipes': {name: {
+            'package': source['sourceArchives'][name]['package'],
+            'version': source['sourceArchives'][name]['packageVersion'],
+            'archiveSha256': source['sourceArchives'][name]['sha256'],
+            'licenseSha256': source['sourceArchives'][name]['licenseSha256']}
+            for name in auxiliaries},
+        'auxiliaryArchives': auxiliaries,
+        'licenseFiles': {name: sha(destination / name) for name in sorted(sources)},
         'loggingRecipeSha256': sha(REPO / 'cmake/FindLogging.cmake'),
         'fmtVersionNumber': int(version[1]),
         'scope': 'Internal driver-only runtime archive; distro source recipe and licenses, not full source attestation',
@@ -91,9 +132,12 @@ def validate(package):
             or manifest['fipsClaimed'] is not False or manifest['qualificationClaimed'] is not False
             or manifest['sourceProvenanceVerified'] is not False):
         raise RuntimeError('Unsupported static package claim')
-    expected = LICENSES | {'lib/libodbcpp.so', 'package-manifest.json'}
+    licenses = LICENSES | auxiliary_licenses(manifest.get('auxiliaryArchives', []))
+    if set(manifest.get('declaredAuxiliaryRecipes', {})) != set(manifest.get('auxiliaryArchives', [])):
+        raise RuntimeError('Static auxiliary recipe inventory mismatch')
+    expected = licenses | {'lib/libodbcpp.so', 'package-manifest.json'}
     actual = archive_checks.inventory(package)
-    if set(actual) != expected or set(manifest['licenseFiles']) != LICENSES:
+    if set(actual) != {str(Path(name)) for name in expected} or set(manifest['licenseFiles']) != licenses:
         raise RuntimeError('Driver-only file/license inventory mismatch')
     if manifest['driverSha256'] != sha(package / 'lib/libodbcpp.so'):
         raise RuntimeError('Packaged driver hash mismatch')
@@ -126,16 +170,18 @@ def main():
         package = archive_checks.extract_verified(archive, output / 'extracted', expected, ROOT_NAME)
     validate(package)
     driver = (package / 'lib/libodbcpp.so').resolve(strict=True)
-    # A fresh ctypes host uses the runtime archive, with no provider preload.
-    code = '''import ctypes,json,pathlib,sys
-ctypes.CDLL(sys.argv[1])
-lines=pathlib.Path('/proc/self/maps').read_text().splitlines()
-providers=[line for line in lines if '/libssl' in line or '/libcrypto' in line]
-if providers: raise RuntimeError('Static driver mapped a shared crypto provider: '+repr(providers))
-if not any(sys.argv[1] in line for line in lines): raise RuntimeError('Extracted driver was not mapped')
-print('Extracted static driver load and no shared crypto mappings: PASS')
-'''
-    subprocess.run([sys.executable, '-c', code, str(driver)], check=True, env=env, timeout=20)
+    # Python itself may already map zlib. Bind actual before/after identities;
+    # the preceding artifact/map/undefined-symbol gates still forbid borrowing
+    # a preexisting shared dependency instead of the controlled static inputs.
+    load_report = output / 'static-load-observation.json'
+    subprocess.run([sys.executable, str(Path(__file__).with_name('static_load_probe.py')),
+                    '--driver', str(driver), '--sha256', manifest['driverSha256'],
+                    '--output', str(load_report)], check=True, env=env, timeout=20)
+    load = json.loads(load_report.read_text())
+    if (load['validationPassed'] is not True or load['qualificationClaimed'] is not False
+            or load['driver'] != str(driver) or load['driverPin']['sha256'] != manifest['driverSha256']
+            or load['sharedCryptoMapped'] is not False or load['noNewSharedAuxiliaryMappings'] is not True):
+        raise RuntimeError('Static driver load observation is not bound to this archive')
     base = (f'DRIVER={{{driver}}};SERVER=127.0.0.1;PORT={env.get("PGPORT", "5432")};'
             'DATABASE=postgres;UID=postgres;PWD=postgres;SSL=1;')
     env.update({
@@ -157,7 +203,11 @@ print('Extracted static driver load and no shared crypto mappings: PASS')
     evidence = {
         'schemaVersion': 1, 'profile': 'OPENSSL/BUNDLED_STATIC/Linux',
         'qualificationClaimed': False, 'runtimeOnlyArchiveVerified': True,
-        'sharedCryptoMapped': False, 'verifiedTlsScramQuery': True,
+        'sharedCryptoMapped': False, 'noNewSharedAuxiliaryMappings': True,
+        'baselineAuxiliaryMappings': load['baselineAuxiliaryMappings'],
+        'afterAuxiliaryMappings': load['afterAuxiliaryMappings'],
+        'newSharedAuxiliaryMappings': load['newSharedAuxiliaryMappings'],
+        'loadObservationSha256': sha(load_report), 'verifiedTlsScramQuery': True,
         'trustAndHostnameRejectionsVerified': True,
         'archiveSha256': sha(archive), 'packageManifestSha256': sha(package / 'package-manifest.json'),
         'driverSha256': manifest['driverSha256'], 'licenseFiles': manifest['licenseFiles'],

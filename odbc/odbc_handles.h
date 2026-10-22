@@ -24,6 +24,10 @@ namespace rs::odbc {
 
 class HandleRegistry;
 namespace detail { struct ODBCBackendTestAccess; struct MetadataEpochIdentity; struct PendingInputSessionIdentity; }
+namespace detail {
+// Public catalog_reason log field: the backend-owned label, or "unclassified".
+std::string catalog_error_reason_for_log(const rs::core::database::BackendError& error);
+}
 
 // Diagnostic record for ODBC error handling
 struct DiagnosticRecord {

@@ -1,4 +1,5 @@
 odbcpp/security/crypto.h
+odbcpp/security/platform_trust.h
 odbcpp/security/tls_client.h
 odbcpp/transport/async_tls_transport.h
 odbcpp/transport/async_transport.h

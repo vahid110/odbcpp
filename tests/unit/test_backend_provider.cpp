@@ -6,6 +6,7 @@
 #include "core/database/postgres/pg_database_connection.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <limits>
@@ -53,6 +54,51 @@ TEST(BackendProviderTest, StaticProfileMatchesNewSessionWithoutConnecting) {
   ASSERT_EQ(provider.type_catalog().size(), provider.type_catalog(session->server_version()).size());
   EXPECT_EQ(provider.type_catalog().front().name,
             provider.type_catalog(session->server_version()).front().name);
+}
+
+TEST(BackendProviderTest, OptionalConnectionSupportUsesExplicitProfileRatherThanIdentity) {
+  postgres::PgBackendProvider labelled_pg{
+      {"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      {"host", 5439, "db", true}};
+  postgres::PgBackendProvider renamed_redshift{
+      {"custom", "Custom Database", "Custom Driver"},
+      {"host", 5439, "db", true}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  const auto pg = labelled_pg.supported_connection_options();
+  EXPECT_FALSE(pg.read_only);
+  EXPECT_FALSE(pg.character_metadata);
+  EXPECT_FALSE(pg.boolean_as_character);
+  EXPECT_FALSE(pg.detailed_table_types);
+  EXPECT_FALSE(pg.catalog_database_scope);
+  EXPECT_FALSE(pg.catalog_mode);
+  const auto rs = renamed_redshift.supported_connection_options();
+  EXPECT_TRUE(rs.read_only);
+  EXPECT_TRUE(rs.character_metadata);
+  EXPECT_TRUE(rs.boolean_as_character);
+  EXPECT_TRUE(rs.detailed_table_types);
+  EXPECT_TRUE(rs.catalog_database_scope);
+  EXPECT_TRUE(rs.catalog_mode);
+}
+
+TEST(BackendProviderTest, AdvertisedOptionalPoliciesMatchProviderValidationBeforeConnecting) {
+  postgres::PgBackendProvider pg{{"custom", "Custom", "Custom Driver"},
+      {"host", 5432, "db", true}};
+  postgres::PgBackendProvider redshift{{"custom", "Custom", "Custom Driver"},
+      {"host", 5439, "db", true}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  std::array<ConnectionOptions, 7> choices;
+  choices[0].read_only = true;
+  choices[1].varchar_threshold = 255;
+  choices[2].long_varchar_size = 65535;
+  choices[3].boolean_as_character = true;
+  choices[4].detailed_table_types = false;
+  choices[5].catalog_database_scope = CatalogDatabaseScope::VisibleDatabases;
+  choices[6].redshift_catalog_mode = "LEGACY";
+  for (std::size_t index = 0; index < choices.size(); ++index) {
+    SCOPED_TRACE(index);
+    EXPECT_TRUE(redshift.resolve_connection_options(choices[index]));
+    EXPECT_FALSE(pg.resolve_connection_options(choices[index]));
+  }
+  EXPECT_TRUE(pg.resolve_connection_options({}));
+  EXPECT_TRUE(redshift.resolve_connection_options({}));
 }
 
 TEST(BackendProviderTest, PostgreSqlFamilyProfilesStayIndependent) {
@@ -376,7 +422,7 @@ TEST(CharacterMetadataPolicyTest, DisabledUnknownZeroAndOtherFamiliesPreserveAct
       EXPECT_EQ(type, selected.type); EXPECT_EQ(65535u, selected.column_size);
     }
   }
-  for (const auto native : {NativeTypeInfo{ScalarType::VarChar, 65535, 0, false},
+  for (const auto& native : {NativeTypeInfo{ScalarType::VarChar, 65535, 0, false},
                             NativeTypeInfo{ScalarType::VarChar, 0, 0, true}}) {
     const auto selected = apply_character_metadata_policy(native, {1, 7});
     EXPECT_EQ(native.type, selected.type); EXPECT_EQ(native.column_size, selected.column_size);

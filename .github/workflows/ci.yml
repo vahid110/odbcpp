@@ -486,6 +486,7 @@ jobs:
           name: openssl-system-shared-tls-proof
           path: |
             build/openssl-system-shared-unit.xml
+            build/odbcpp-trace-reload-gtest.xml
             openssl-system-shared-live.xml
             build/tests/crypto_tls_probe
             build/tests/crypto_identity_probe
@@ -612,7 +613,7 @@ jobs:
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $expectedReports = @(
             Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_auth_pg_material_tls.cpp', 'it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_redshift_routine_schema_patterns.cpp', 'it_redshift_columns_omitted_table.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
+              Where-Object { $_.Name -notin @('it_auth_pg_material_tls.cpp', 'it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_redshift_routine_schema_patterns.cpp', 'it_redshift_columns_omitted_table.cpp', 'it_redshift_powerbi_relationship.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
           ).Count
           if ($reports.Count -ne $expectedReports) {
             throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
@@ -653,6 +654,7 @@ jobs:
             build-windows/package/payload-1.0.0/inventory.json
             windows-crypto-profile-live.xml
             build-windows/windows-openssl-unit.xml
+            build-windows/odbcpp-trace-reload-gtest.xml
             build-windows/odbcpp-crypto-unit-qualification.json
             build-windows/tests/Release/crypto_identity_probe.exe
             build-windows/tests/Release/crypto_tls_probe.exe
@@ -698,7 +700,7 @@ jobs:
 
   windows-package:
     if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
     env:
@@ -713,9 +715,15 @@ jobs:
         with:
           name: windows-package-acceptance-inputs
           path: package-artifacts
-      - name: Validate fresh-runner package lifecycle
+      - name: Qualify both product MSIs and installed setup suites unattended
         shell: pwsh
-        run: ./tools/ci/windows-package.ps1
+        run: ./tools/ci/windows-product-packages.ps1
+      - name: Validate fresh-runner package lifecycle
+        if: always()
+        shell: pwsh
+        run: |
+          ./tools/ci/windows-product-packages.ps1 -VerifyCleanup
+          ./tools/ci/windows-package.ps1
       - name: Preserve package acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -723,6 +731,10 @@ jobs:
           name: windows-package-evidence
           path: |
             ${{ runner.temp }}/package-logs
+            ${{ runner.temp }}/dual-product-package-evidence
+            build-package-redshift/package/*.msi
+            build-package-redshift/package/*.sha256
+            build-package-redshift/package/payload-*/inventory.json
             ${{ runner.temp }}/odbcpp-administrator-*.png
             ${{ runner.temp }}/odbcpp-setup-*.bmp
             ${{ runner.temp }}/odbcpp-postgres.log
@@ -836,7 +848,8 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
             /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev \
+            pkg-config libjitterentropy3-dev zlib1g-dev libzstd-dev
 
       - name: Configure PostgreSQL verified-TLS fixture
         run: |
@@ -869,72 +882,10 @@ jobs:
 
       - name: Prepare controlled static OpenSSL prefix
         run: |
-          root="$RUNNER_TEMP/openssl-static"
-          mkdir -p "$root/include" "$root/lib"
-          cp -aL /usr/include/openssl "$root/include/"
-          multiarch="$(gcc -print-multiarch)"
-          if [[ -d "/usr/include/$multiarch/openssl" ]]; then
-            cp -aL "/usr/include/$multiarch/openssl/." "$root/include/openssl/"
-          fi
-          ssl_archive="/usr/lib/$multiarch/libssl.a"
-          crypto_archive="/usr/lib/$multiarch/libcrypto.a"
-          shared_ssl="$(realpath -e "/usr/lib/$multiarch/libssl.so.3")"
-          shared_crypto="$(realpath -e "/usr/lib/$multiarch/libcrypto.so.3")"
-          test -f "$ssl_archive"
-          test -f "$crypto_archive"
-          test -f "$shared_ssl"
-          test -f "$shared_crypto"
-          test "$(dirname "$(realpath -e "$ssl_archive")")" = \
-            "$(dirname "$(realpath -e "$crypto_archive")")"
-          package_files="$RUNNER_TEMP/libssl-dev-files"
-          dpkg-query -L libssl-dev > "$package_files"
-          grep -Fx "$ssl_archive" "$package_files"
-          grep -Fx "$crypto_archive" "$package_files"
-          package_version="$(dpkg-query -W -f='${Version}' libssl-dev)"
-          ssl_runtime_package="$(dpkg-query -S "$shared_ssl" | cut -d: -f1)"
-          crypto_runtime_package="$(dpkg-query -S "$shared_crypto" | cut -d: -f1)"
-          test "$ssl_runtime_package" = "$crypto_runtime_package"
-          runtime_package_version="$(dpkg-query -W -f='${Version}' "$ssl_runtime_package")"
-          test "$runtime_package_version" = "$package_version"
-          cp -L "$ssl_archive" "$crypto_archive" "$root/lib/"
-          test -z "$(find "$root" -type l -print -quit)"
-          python3 - "$package_version" "$ssl_runtime_package" \
-            "$runtime_package_version" "$multiarch" "$shared_ssl" \
-            "$shared_crypto" "$ssl_archive" "$crypto_archive" <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-          import sys
-          (package_version, runtime_package, runtime_package_version, multiarch,
-           shared_ssl, shared_crypto, *archives) = sys.argv[1:]
-          evidence = {
-              "package": "libssl-dev",
-              "packageVersion": package_version,
-              "runtimePackage": runtime_package,
-              "runtimePackageVersion": runtime_package_version,
-              "multiarch": multiarch,
-              "cohabitationLibraries": {
-                  Path(path).name: {
-                      "path": str(Path(path).resolve(strict=True)),
-                      "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
-                  }
-                  for path in (shared_ssl, shared_crypto)
-              },
-              "sourceArchives": {
-                  Path(path).name: {
-                      "path": str(Path(path).resolve(strict=True)),
-                      "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
-                  }
-                  for path in archives
-              },
-          }
-          Path("openssl-static-source-evidence.json").write_text(
-              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
-          )
-          PY
-          echo "ODBCPP_STATIC_OPENSSL_ROOT=$root" >> "$GITHUB_ENV"
-          echo "ODBCPP_COHABITATION_SSL_LIBRARY=$shared_ssl" >> "$GITHUB_ENV"
-          echo "ODBCPP_COHABITATION_CRYPTO_LIBRARY=$shared_crypto" >> "$GITHUB_ENV"
+          python3 tools/ci/test_openssl_static_inputs.py
+          python3 tools/ci/prepare-openssl-static-inputs.py \
+            --root "$RUNNER_TEMP/openssl-static" \
+            --evidence openssl-static-source-evidence.json
 
       - name: Configure controlled static profile
         run: >-
@@ -1058,6 +1009,14 @@ jobs:
             source["sourceArchives"]["libssl.a"]["sha256"]
           assert evidence["cryptoLinkInputSha256"] == \
             source["sourceArchives"]["libcrypto.a"]["sha256"]
+          auxiliary = evidence["auxiliaryStaticLinkInputs"]
+          assert {Path(item["path"]).name for item in auxiliary} == set(source["auxiliaryArchives"])
+          for item in auxiliary:
+            original = source["sourceArchives"][Path(item["path"]).name]
+            assert item["path"] == original["controlledPath"]
+            assert item["sha256"] == original["sha256"]
+            assert item["linkMapLoadVerified"] is True
+            assert type(item["archiveMembersObserved"]) is bool
           retained_driver = Path("openssl-static-driver.so")
           shutil.copyfile(root / "libodbcpp.so", retained_driver)
           assert hashlib.sha256(retained_driver.read_bytes()).hexdigest() == \
@@ -1068,8 +1027,7 @@ jobs:
             sed 's/@.*$//' | \
             sort -u > "$RUNNER_TEMP/driver-undefined-symbols"
           nm -g --defined-only --format=posix \
-            "$ODBCPP_STATIC_OPENSSL_ROOT/lib/libssl.a" \
-            "$ODBCPP_STATIC_OPENSSL_ROOT/lib/libcrypto.a" | \
+            "$ODBCPP_STATIC_OPENSSL_ROOT"/lib/*.a | \
             awk '$2 ~ /^[A-Z]$/ {print $1}' | sort -u \
             > "$RUNNER_TEMP/provider-defined-symbols"
           comm -12 "$RUNNER_TEMP/driver-undefined-symbols" \
@@ -1094,6 +1052,7 @@ jobs:
           --output build-openssl-static/odbcpp-crypto-unit-qualification.json
 
       - name: Preserve static-profile evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: linux-openssl-static-evidence
@@ -1103,16 +1062,21 @@ jobs:
             build-openssl-static/odbcpp-crypto-identity-evidence.json
             build-openssl-static/odbcpp-crypto-unit-qualification.json
             build-openssl-static/openssl-static-unit.xml
+            build-openssl-static/odbcpp-trace-reload-gtest.xml
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
             build-openssl-static/odbcpp-crypto-static-link.map
             openssl-static-driver.so
             openssl-static-source-evidence.json
+            ${{ runner.temp }}/openssl-static/source-metadata
+            ${{ runner.temp }}/openssl-static/lib/pkgconfig
+            ${{ runner.temp }}/openssl-static/source-notices
             openssl-static-live-evidence.json
             openssl-static-cohabitation.xml
             openssl-static-live.xml
             openssl-static-package-proof/driver-only.tar.gz
             openssl-static-package-proof/package-evidence.json
+            openssl-static-package-proof/static-load-observation.json
             openssl-static-package-proof/extracted-driver-live.xml
             openssl-static-package-proof/extracted/odbcpp-openssl-static-proof/package-manifest.json
           if-no-files-found: error
@@ -1199,6 +1163,7 @@ jobs:
     runs-on: macos-latest
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - driver_headers: unixodbc
@@ -1311,6 +1276,7 @@ jobs:
           name: macos-openssl-${{ matrix.driver_unicode_type }}-tls-proof
           path: |
             build-iodbc/macos-openssl-unit.xml
+            build-iodbc/odbcpp-trace-reload-gtest.xml
             macos-openssl-live.xml
             build-iodbc/tests/crypto_tls_probe
             build-iodbc/tests/crypto_identity_probe

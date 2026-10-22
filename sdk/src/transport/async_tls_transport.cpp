@@ -542,6 +542,7 @@ private:
     if (created.state != rs::core::security::TlsStepState::Complete) {
       return {rs::util::DbErrorCode::TLSError, created.message};
     }
+    tls_.set_verification_deadline(deadline);
 
     for (;;) {
       if (rs::util::remaining(deadline) <=
@@ -552,6 +553,16 @@ private:
       }
 
       const auto status = tls_.handshake();
+      // Verification inside handshake() cannot be preempted: a success or
+      // verification failure that arrives after the original deadline is a
+      // timeout, and no late TLS success is published.
+      if ((status.state == rs::core::security::TlsStepState::Complete ||
+           status.state == rs::core::security::TlsStepState::TlsError) &&
+          rs::util::remaining(deadline) <= std::chrono::milliseconds::zero()) {
+        reset_ssl_locked();
+        return {rs::util::DbErrorCode::Timeout,
+                "TLS handshake deadline expired"};
+      }
       auto flushed = flush_ciphertext_locked(deadline);
       if (flushed.has_error()) {
         reset_ssl_locked();

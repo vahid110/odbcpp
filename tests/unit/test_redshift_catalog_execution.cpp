@@ -6,6 +6,7 @@
 #include "core/database/postgres/redshift_catalog_query.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
 #include "core/database/postgres/redshift_foreign_key_contract.h"
+#include "odbcpp/util/driver_logging.h"
 
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
@@ -994,6 +995,7 @@ QueryResult schema_lookup_fixture() {
 template<class T> void expect_schema_reason(const BackendResult<T>& result,std::string_view reason) {
   ASSERT_FALSE(result);
   EXPECT_EQ(std::string("Invalid Redshift schema metadata: ")+std::string(reason),result.error_message());
+  EXPECT_EQ(std::string("schema.")+std::string(reason),result.backend_error().public_reason);
   EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
   EXPECT_EQ(BackendOperation::ExecuteCatalog,result.backend_error().operation);
   EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
@@ -5668,7 +5670,18 @@ void current_schema_quoted_replies(RoutineExecutionSession& session, const std::
 }  // namespace
 
 TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCommandRelease) {
-  const std::string database(300, '"'); // Exact native identity: every quote doubles in the command.
+  const auto projection_storage = [](std::size_t rows) {
+    const auto set_bytes = sizeof(std::set<std::string>) +
+        rows * (sizeof(std::string) + 4 * sizeof(void*) + 2 * (1 + 1));
+    const auto output_bytes = sizeof(QueryResult) + 5 * sizeof(ResultColumnMetadata) +
+        rows * (sizeof(ResultRow) + 5 * sizeof(ResultCell) + 2 * (1 + 1)) +
+        2 * ((9 + 1) + (11 + 1) + (10 + 1) + (10 + 1) + (7 + 1));
+    return std::pair{set_bytes, output_bytes};
+  };
+  const auto [max_set_bytes, max_output_bytes] = projection_storage(1);
+  // Quoting doubles the identity and command accounting reserves twice its size.
+  // Size the fixture to keep that command dominant on each STL/metadata ABI.
+  const std::string database((max_set_bytes + max_output_bytes) / 4 + 64, '"');
   const auto database_bytes = sizeof(std::string) + 2 * (database.size() + 1);
   const auto command_bytes = sizeof(std::string) +
       2 * (2 * database.size() + std::string_view("SHOW SCHEMAS FROM DATABASE \"\";").size() + 1);
@@ -5676,11 +5689,7 @@ TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCom
     auto show = schemas_response(database);
     show.rows.resize(empty ? 0 : 1);
     const auto raw_bytes = current_schema_literal_raw_bytes(show);
-    const auto set_bytes = sizeof(std::set<std::string>) +
-        show.rows.size() * (sizeof(std::string) + 4 * sizeof(void*) + 2 * (1 + 1));
-    const auto output_bytes = sizeof(QueryResult) + 5 * sizeof(ResultColumnMetadata) +
-        show.rows.size() * (sizeof(ResultRow) + 5 * sizeof(ResultCell) + 2 * (1 + 1)) +
-        2 * ((9 + 1) + (11 + 1) + (10 + 1) + (10 + 1) + (7 + 1));
+    const auto [set_bytes, output_bytes] = projection_storage(show.rows.size());
     ASSERT_GT(command_bytes, set_bytes + output_bytes);
     ASSERT_GT(raw_bytes + set_bytes + output_bytes, command_bytes); // Double raw would fail the exact boundary.
     const auto omitted_overlap_cap = std::max(database_bytes + command_bytes,
@@ -5708,7 +5717,8 @@ TEST(RedshiftCurrentSchemaStorage, QuotedCommandAndRawResponseExactPeakBeforeCom
         EXPECT_EQ(5u, result->columns.size());
       }
       ASSERT_EQ(2u, session.commands.size());
-      EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"" + std::string(600, '"') + "\";", session.commands[1]);
+      EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"" + std::string(2 * database.size(), '"') + "\";",
+                session.commands[1]);
     }
   }
 }
@@ -6261,4 +6271,95 @@ TEST(RedshiftSessionTemporarySchemas, MockRejectsNonliteralDatabaseAndAppendedCo
     EXPECT_EQ(1u, session.commands.size());
     EXPECT_EQ(invalid, session.commands.front());
   }
+}
+
+namespace {
+// Each backend-owned public label is exactly the fixed reason literal of its
+// family; the ODBC adapter publishes the label and never parses the message.
+void expect_family_label(const BackendError& error, std::string_view family) {
+  struct Family { std::string_view prefix; std::string_view label; };
+  static constexpr Family families[]{
+      {"Invalid Redshift schema metadata: ", "schema"},
+      {"Invalid Redshift table metadata: ", "table"},
+      {"Invalid Redshift column metadata: ", "column"},
+      {"Invalid Redshift routine metadata: ", "routine"},
+      {"Invalid current-database primary-key metadata: ", "primary-key"},
+      {"Invalid current-database foreign-key metadata: ", "foreign-key"}};
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, error.error_class);
+  const auto match = std::find_if(std::begin(families), std::end(families),
+      [&](const Family& candidate) { return candidate.label == family; });
+  ASSERT_NE(std::end(families), match);
+  const std::string_view message{error.message};
+  ASSERT_TRUE(message.starts_with(match->prefix)) << message;
+  const auto reason = message.substr(match->prefix.size());
+  EXPECT_EQ(std::string(family) + "." + std::string(reason), error.public_reason);
+  EXPECT_TRUE(rs::core::logging::is_public_label(error.public_reason)) << error.public_reason;
+}
+}  // namespace
+
+TEST(RedshiftBackendErrorLabels, EveryInvalidMetadataFamilyPublishesItsFixedReasonLabel) {
+  const SessionSnapshot reusable{SessionState::Idle, SessionDisposition::Reusable};
+  {
+    auto value = schema_lookup_fixture();
+    value.rows.clear();
+    const auto result = redshift_schema_database(BackendResult<QueryResult>{std::move(value), reusable});
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "schema");
+    EXPECT_EQ("schema.lookup-rows", result.backend_error().public_reason);
+  }
+  {
+    auto source = tables_response();
+    source.affected_rows = 3;
+    const auto result = normalize_redshift_tables("selected", "fixture", table_request(),
+        BackendResult<QueryResult>{std::move(source), reusable});
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "table");
+  }
+  {
+    auto value = columns_response();
+    value.affected_rows = 3;
+    const auto result = normalize_redshift_columns("selected", "fixture", "rows", column_request(),
+        BackendResult<QueryResult>{std::move(value), reusable});
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "column");
+  }
+  {
+    RoutineExecutionSession session;
+    session.discovery({{"foreign", "s", "p", "1", "integer", std::nullopt, "same"}});
+    const auto result = session.execute_catalog(
+        ProcedureColumnsCatalogRequest{std::nullopt, "s", std::nullopt, std::nullopt},
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "routine");
+  }
+  {
+    auto raw = routine_identity();
+    raw.columns[0].name = "wrong";
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    const auto result = redshift_primary_key_database({std::move(raw), reusable}, budget,
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "primary-key");
+    EXPECT_EQ("primary-key.identity", result.backend_error().public_reason);
+  }
+  {
+    auto raw = routine_identity();
+    raw.columns[0].name = "wrong";
+    RedshiftRoutineBudget budget{ResponseLimits{}, ResultLimits{}};
+    const auto result = redshift_foreign_key_database({std::move(raw), reusable}, budget,
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    expect_family_label(result.backend_error(), "foreign-key");
+    EXPECT_EQ("foreign-key.identity", result.backend_error().public_reason);
+  }
+}
+
+TEST(RedshiftBackendErrorLabels, TimeoutErrorsCarryNoPublicLabel) {
+  RoutineExecutionSession expired;
+  const auto timeout = expired.execute_catalog(
+      ProceduresCatalogRequest{std::nullopt, "s", std::nullopt},
+      rs::util::Clock::now() - std::chrono::seconds{1});
+  ASSERT_FALSE(timeout);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), timeout.error());
+  EXPECT_TRUE(timeout.backend_error().public_reason.empty());
 }

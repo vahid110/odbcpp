@@ -41,17 +41,52 @@ class QualificationTests(unittest.TestCase):
             case = ET.SubElement(self.xml, 'testcase', name=name, status='run')
             if name == 'verified_crypto_tls_interop':
                 ET.SubElement(case, 'system-out').text = '\n'.join(sorted(q.TLS_MARKERS))
+        self.reload_case = ET.SubElement(self.xml, 'testcase', name=q.RELOAD_TEST, status='run')
+        ET.SubElement(self.reload_case, 'system-out').text = self.reload_marker()
+        self.reload_xml = ET.Element('testsuites', tests='2', failures='0', errors='0', disabled='0',
+                                     odbcpp_trace_reload_run='123-456')
+        self.reload_suite = ET.SubElement(self.reload_xml, 'testsuite', name='OdbcTraceReload',
+                                          tests='2', failures='0', errors='0', disabled='0', skipped='0')
+        for full_name in sorted(q.RELOAD_CASES):
+            classname, name = full_name.split('.')
+            ET.SubElement(self.reload_suite, 'testcase', classname=classname, name=name,
+                          status='run', result='completed')
         host = ET.SubElement(self.xml, 'testcase', name='test_shared_crypto_cohabitation', status='run')
         ET.SubElement(host, 'system-out').text = '\n'.join(sorted(q.COHABITATION_MARKERS))
 
     def write(self, kind, data):
         (self.root / f'odbcpp-crypto-{kind}.json').write_text(json.dumps(data))
 
-    def collect(self, live_report=None):
+    @staticmethod
+    def reload_marker(skipped=0):
+        return (f'{q.RELOAD_PREFIX}run=123-456 selected=2 passed={2-skipped} skipped={skipped} '
+                f'failed=0 disabled=0 result=0 exit={77 if skipped else 0}')
+
+    def darwin_boundary(self):
+        self.artifact['platform'] = 'Darwin'
+        self.xml.set('skipped', '1')
+        self.reload_case.set('status', 'notrun')
+        ET.SubElement(self.reload_case, 'skipped', message='SKIP_RETURN_CODE=77')
+        self.reload_case.find('system-out').text = self.reload_marker(2)
+        self.reload_suite.set('skipped', '2')
+        for case in self.reload_suite:
+            case.set('result', 'skipped')
+            full_name = case.get('classname') + '.' + case.get('name')
+            reason = '/fixture/tests/unit/test_odbc_trace_reload.cpp:203\n' + q.RELOAD_CASES[full_name]
+            if 'DisabledTracing' in full_name:
+                reason += '\nGoogle Test trace:\n/fixture/tests/unit/test_odbc_trace_reload.cpp:191: 0'
+            ET.SubElement(case, 'skipped', message=reason).text = reason
+            properties = ET.SubElement(case, 'properties')
+            ET.SubElement(properties, 'property', name='odbcpp_trace_reload_boundary',
+                          value='driver_image_retained')
+
+    def collect(self, live_report=None, platform='Linux', reload_report=None, write_reload=True):
         self.write('identity-evidence', self.identity)
         self.write('artifact-evidence', self.artifact)
         ET.ElementTree(self.xml).write(self.report)
-        return q.collect(self.root, self.driver, self.probe, self.report, 'Linux', live_report)
+        if write_reload:
+            ET.ElementTree(self.reload_xml).write(self.root / q.RELOAD_REPORT)
+        return q.collect(self.root, self.driver, self.probe, self.report, platform, live_report, reload_report)
 
     def test_valid_record_has_bound_inputs_and_no_qualification_claim(self):
         result = self.collect()
@@ -59,6 +94,160 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(result['liveDriverPackageCoexistenceAcceptanceEvaluated'])
         self.assertEqual(result['inputs']['driver'], q.sha(self.driver))
         self.assertEqual(result['inputs']['unitReport'], q.sha(self.report))
+        self.assertEqual(result['inputs']['nativeReloadReport'], q.sha(self.root / q.RELOAD_REPORT))
+        self.assertTrue(result['traceReload']['unloadClosureObserved'])
+        self.assertEqual(result['traceReload']['passed'], 2)
+        self.assertEqual(result['nonMandatoryLoaderBoundaries'], [])
+
+    def test_exact_darwin_loader_boundary_is_not_an_unload_pass(self):
+        self.darwin_boundary()
+        result = self.collect(platform='Darwin')
+        boundary, = result['nonMandatoryLoaderBoundaries']
+        self.assertEqual(boundary['status'], 'UNAVAILABLE_LOADER_BOUNDARY')
+        self.assertFalse(boundary['unloadClosureObserved'])
+        self.assertEqual((boundary['passed'], boundary['skipped'], boundary['failed']), (0, 2, 0))
+        self.assertEqual({case['name'] for case in boundary['nativeCases']}, set(q.RELOAD_CASES))
+        self.assertEqual(result['unitReportCounts']['skipped'], 1)
+        self.assertFalse(result['qualificationClaimed'])
+        self.assertFalse(result['liveDriverTlsAcceptanceEvaluated'])
+
+    def test_boundary_rejected_on_other_platform_or_historical_regex(self):
+        self.darwin_boundary()
+        self.artifact['platform'] = 'Linux'
+        with self.assertRaisesRegex(RuntimeError, 'Unapproved platform'):
+            self.collect()
+        self.artifact['platform'] = 'Darwin'
+        for message in ('SKIP_REGULAR_EXPRESSION_MATCHED', 'SKIP_RETURN_CODE', 'SKIP_RETURN_CODE=78'):
+            self.reload_case.find('skipped').set('message', message)
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, 'historical reload skip'):
+                self.collect(platform='Darwin')
+
+    def test_unknown_and_mandatory_skips_still_rejected_on_darwin(self):
+        self.darwin_boundary()
+        for name in sorted(q.REQUIRED_TESTS | {'test_shared_crypto_cohabitation', 'unknown_case'}):
+            with self.subTest(name=name):
+                case = next((item for item in self.xml if item.get('name') == name), None)
+                added = case is None
+                if added:
+                    case = ET.SubElement(self.xml, 'testcase', name=name, status='run')
+                case.set('status', 'notrun')
+                skip = ET.SubElement(case, 'skipped', message='SKIP_RETURN_CODE=77')
+                self.xml.set('skipped', '2')
+                with self.assertRaises(RuntimeError):
+                    self.collect(platform='Darwin')
+                case.remove(skip)
+                case.set('status', 'run')
+                if added:
+                    self.xml.remove(case)
+                self.xml.set('skipped', '1')
+
+    def test_boundary_failures_anywhere_are_not_hidden_by_skip(self):
+        self.darwin_boundary()
+        for owner in (self.xml, self.reload_xml, self.reload_suite[0]):
+            for tag in ('failure', 'error'):
+                with self.subTest(tag=tag, owner=owner.tag):
+                    element = ET.SubElement(owner, tag)
+                    with self.assertRaises(RuntimeError):
+                        self.collect(platform='Darwin')
+                    owner.remove(element)
+
+    def test_reload_missing_duplicate_wrapper_and_native_inventory_rejected(self):
+        self.xml.remove(self.reload_case)
+        with self.assertRaisesRegex(RuntimeError, 'Reload unit case missing'):
+            self.collect()
+        self.xml.append(self.reload_case)
+        self.xml.append(self.reload_case)
+        with self.assertRaisesRegex(RuntimeError, 'Reload unit case missing or duplicate'):
+            self.collect()
+        self.xml.remove(self.reload_case)
+        case = self.reload_suite[0]
+        self.reload_suite.remove(case)
+        with self.assertRaises(RuntimeError):
+            self.collect()
+        self.reload_suite.append(case)
+        self.reload_suite.append(case)
+        with self.assertRaises(RuntimeError):
+            self.collect()
+
+    def test_filtered_suppressed_disabled_and_inconsistent_native_reports_rejected(self):
+        case = self.reload_suite[0]
+        for field, value in (('status', 'notrun'), ('result', 'suppressed'), ('name', 'OtherCase')):
+            original = case.get(field)
+            case.set(field, value)
+            with self.assertRaises(RuntimeError):
+                self.collect()
+            case.set(field, original)
+        for node in (self.reload_xml, self.reload_suite):
+            for field, value in (('tests', '1'), ('failures', '1'), ('disabled', '1'),
+                                 ('errors', '1'), ('skipped', '1'), ('tests', '-2'), ('tests', '999999999999999')):
+                original = node.get(field)
+                node.set(field, value)
+                with self.assertRaises(RuntimeError):
+                    self.collect()
+                if original is None:
+                    del node.attrib[field]
+                else:
+                    node.set(field, original)
+
+    def test_unknown_skip_reason_property_and_extra_context_rejected(self):
+        self.darwin_boundary()
+        case = self.reload_suite[0]
+        skip = case.find('skipped')
+        original = skip.get('message')
+        for reason in ('unknown loader reason', original + '\nunapproved extra context'):
+            skip.set('message', reason)
+            skip.text = reason
+            with self.assertRaises(RuntimeError):
+                self.collect(platform='Darwin')
+        skip.set('message', original)
+        skip.text = original
+        case.find('properties/property').set('value', 'unknown_boundary')
+        with self.assertRaisesRegex(RuntimeError, 'Unknown native loader boundary'):
+            self.collect(platform='Darwin')
+
+    def test_missing_duplicate_stale_and_inconsistent_stdout_binding_rejected(self):
+        output = self.reload_case.find('system-out')
+        original = output.text
+        for changed in ('', original + '\n' + original, original.replace('123-456', '123-457'),
+                        original.replace('selected=2', 'selected=1'), original.replace('result=0', 'result=1'),
+                        original.replace('failed=0', 'failed=1'), original.replace('disabled=0', 'disabled=1'),
+                        original.replace('passed=2 skipped=0', 'passed=1 skipped=1')):
+            output.text = changed
+            with self.assertRaises(RuntimeError):
+                self.collect()
+        output.text = original
+        self.reload_xml.set('odbcpp_trace_reload_run', 'another-invocation')
+        with self.assertRaisesRegex(RuntimeError, 'Stale'):
+            self.collect()
+
+    def test_missing_malformed_oversized_or_alternate_native_xml(self):
+        path = self.root / q.RELOAD_REPORT
+        with self.assertRaises(FileNotFoundError):
+            self.collect(write_reload=False)
+        path.write_text('<malformed')
+        with self.assertRaises(ET.ParseError):
+            self.collect(write_reload=False)
+        path.write_bytes(b'x' * (2 * 1024 * 1024 + 1))
+        with self.assertRaisesRegex(RuntimeError, 'Oversized'):
+            self.collect(write_reload=False)
+        alternate = self.root / 'owned-external-gtest-output.xml'
+        ET.ElementTree(self.reload_xml).write(alternate)
+        result = self.collect(reload_report=alternate, write_reload=False)
+        self.assertEqual(result['inputs']['nativeReloadReport'], q.sha(alternate))
+
+    def test_wrapper_native_status_and_skip_counts_must_agree(self):
+        self.darwin_boundary()
+        self.xml.set('skipped', '0')
+        with self.assertRaises(RuntimeError):
+            self.collect(platform='Darwin')
+        self.xml.set('skipped', '1')
+        self.reload_case.set('status', 'run')
+        with self.assertRaises(RuntimeError):
+            self.collect(platform='Darwin')
+        self.reload_case.set('status', 'notrun')
+        self.reload_case.find('system-out').text = self.reload_marker(0)
+        with self.assertRaises(RuntimeError):
+            self.collect(platform='Darwin')
 
     def test_substituted_driver_probe_and_manifest_rejected(self):
         for path in (self.driver, self.probe, self.root / 'odbcpp-crypto-manifest.json'):

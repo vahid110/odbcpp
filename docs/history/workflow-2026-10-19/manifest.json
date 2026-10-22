@@ -1,0 +1,25 @@
+{
+  "baseline": "0b330e4214b415565a45d1529024c7f9ad35d92d",
+  "files": {
+    "AGENTS.md": {
+      "sha256": "c7faea6fb90b398aa1b4f5c94450900e905165bd42c285ddde52c22491b1f2a2",
+      "archive": "docs/history/workflow-2026-10-19/AGENTS.md.snapshot"
+    },
+    "DEVELOPMENT_WORKFLOW.md": {
+      "sha256": "aef057aa37c3ed27fe2f391d4224240f35864d99c200b0348895f304ad551cc6",
+      "archive": "docs/history/workflow-2026-10-19/DEVELOPMENT_WORKFLOW.md.snapshot"
+    },
+    "PARALLEL_WORKFLOW.md": {
+      "sha256": "27a09e09a3936eb85be7708bb25ad6d76d1989e4c0fd6221111aeec0d5a064ef",
+      "archive": "docs/history/workflow-2026-10-19/PARALLEL_WORKFLOW.md.snapshot"
+    },
+    ".agents/skills/odbcpp-development-batch/SKILL.md": {
+      "sha256": "48018fdf04bceb5a27b6c381da78b3998888caf70967c361bcb442284ec15e2e",
+      "archive": "docs/history/workflow-2026-10-19/.agents/skills/odbcpp-development-batch/SKILL.md.snapshot"
+    },
+    "CMakePresets.json": {
+      "sha256": "839b35ddfa5e6c42bd336851150ae4a016a8938d9c0a7f2384adf4e49a7c1cb1",
+      "archive": "docs/history/workflow-2026-10-19/CMakePresets.json.snapshot"
+    }
+  }
+}

@@ -524,6 +524,69 @@ TEST(DriverLoggerTest, SensitivityIsIndependentOfTraceAndQueryOptIn) {
   }
 }
 
+TEST(DriverLoggerTest, SensitiveOptInRevealsOnlySensitiveFieldsFromSpans) {
+  using rs::core::logging::FieldSensitivity;
+  using rs::core::logging::LogField;
+  const auto directory = temporary_directory("odbcpp-sensitive-opt-in-log");
+  const auto path = directory / "driver.log";
+  LoggingOptions options;
+  options.level = LogLevel::Trace;
+  options.sinks = {LogSink::File};
+  options.file = path.string();
+  options.asynchronous = false;
+  options.log_sensitive = true;
+  auto logger = DriverLogger::create(options, 7);
+  const std::vector<LogField> fields{
+      {"sensitive", "sensitive-value", FieldSensitivity::Sensitive},
+      {"secret-key", "secret-value", FieldSensitivity::Secret},
+      {"sql", "query-literal", FieldSensitivity::QueryText}};
+  logger->log(LogLevel::Trace, "sensitivity", "Opt-in", fields);
+  logger->flush();
+  logger.reset();
+  const auto contents = read_file(path);
+  EXPECT_NE(std::string::npos, contents.find("sensitive=\"sensitive-value\""));
+  EXPECT_EQ(std::string::npos, contents.find("[redacted]"));
+  EXPECT_EQ(std::string::npos, contents.find("secret"));
+  EXPECT_EQ(std::string::npos, contents.find("query-literal"));
+  std::filesystem::remove_all(directory);
+}
+
+TEST(DriverLoggingOptionsTest, PublicLabelsAreBoundedClosedVocabularyOnly) {
+  using rs::core::logging::is_public_label;
+  EXPECT_TRUE(is_public_label("schema.show-rows"));
+  EXPECT_TRUE(is_public_label("primary-key.identity"));
+  EXPECT_TRUE(is_public_label(std::string(64, 'a')));
+  EXPECT_FALSE(is_public_label(""));
+  EXPECT_FALSE(is_public_label(std::string(65, 'a')));
+  EXPECT_FALSE(is_public_label("schema.Show"));
+  EXPECT_FALSE(is_public_label("schema show"));
+  EXPECT_FALSE(is_public_label("table.'secret'"));
+  EXPECT_FALSE(is_public_label("table;drop"));
+  EXPECT_FALSE(is_public_label(std::string("ok\0x", 4)));
+}
+
+TEST(DriverLoggingOptionsTest, CatalogReasonPublishesOnlyWellFormedBackendLabels) {
+  using rs::odbc::detail::catalog_error_reason_for_log;
+  rs::core::database::BackendError labelled{
+      rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      "Invalid Redshift table metadata: completion"};
+  labelled.public_reason = "table.completion";
+  EXPECT_EQ("table.completion", catalog_error_reason_for_log(labelled));
+  // The message is never parsed, even when it has a recognizable shape.
+  rs::core::database::BackendError unlabelled{
+      rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      "Invalid Redshift table metadata: completion"};
+  EXPECT_EQ("unclassified", catalog_error_reason_for_log(unlabelled));
+  unlabelled.public_reason = "table.'private_table'";
+  EXPECT_EQ("unclassified", catalog_error_reason_for_log(unlabelled));
+}
+
+TEST(DriverLoggingOptionsTest, SensitiveOptInIsNeverReadFromConfigurationLayers) {
+  const std::map<std::string, std::string> layer{
+      {"LogLevel", "Trace"}, {"LogSensitive", "true"}};
+  EXPECT_FALSE(LoggingOptions::resolve(layer, layer, layer).log_sensitive);
+}
+
 TEST(DriverLoggerTest, EncodedRecordBudgetKeepsJsonCompleteAndDropsExcessFields) {
   using rs::core::logging::FieldSensitivity;
   for (const auto format : {LogFormat::Text, LogFormat::Json}) {

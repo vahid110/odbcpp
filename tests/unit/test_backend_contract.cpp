@@ -4507,13 +4507,43 @@ TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelected
     for(const SQLUSMALLINT field:{SQLUSMALLINT{10},SQLUSMALLINT{14},SQLUSMALLINT{15},SQLUSMALLINT{18}}) {
       SQLINTEGER value=71;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(SQL_NULL_DATA,indicator);EXPECT_EQ(71,value);
     }
+    if(item.type==SQL_LONGVARBINARY) {
+      // Changed oracle (docs/redshift-special-types.md): spatial rows follow VARBYTE.
+      for(const char* spatial:{"geometry","geography"}) {
+        ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLCHAR spatial_name[32]{};SQLLEN spatial_length=-1;
+        ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,spatial_name,sizeof(spatial_name),&spatial_length));EXPECT_STREQ(spatial,reinterpret_cast<char*>(spatial_name));
+        for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLINTEGER>{2,SQL_LONGVARBINARY},{3,1048447},{8,SQL_FALSE},{16,SQL_LONGVARBINARY}}) {
+          SQLINTEGER value=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&spatial_length));EXPECT_EQ(expected,value);
+        }
+        for(const SQLUSMALLINT field:{SQLUSMALLINT{4},SQLUSMALLINT{5},SQLUSMALLINT{6}}) {
+          SQLCHAR text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_CHAR,text,sizeof(text),&spatial_length));EXPECT_EQ(SQL_NULL_DATA,spatial_length);
+        }
+      }
+    }
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
     EXPECT_EQ(0,std::memcmp(name,item.name,std::strlen(item.name)+1));
   }
-  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
+  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY}}) {
     ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,removed));SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(19,count);
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   }
+  // Changed oracle (docs/redshift-special-types.md): PostgreSQL text stays
+  // absent, but SQLColumns' SUPER family is now advertised as its only
+  // LONGVARCHAR row (ODBC SQLGetTypeInfo; AWS ODBC rscatalog.cpp:3152-3180).
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_LONGVARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  {
+    SQLCHAR name[32]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,name,sizeof(name),&indicator));
+    ASSERT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(name,"super",6));
+    // Policy oracle: SEARCHABLE follows the adapter's character-family rule; live
+    // SUPER predicate support remains pending (docs/redshift-special-types.md).
+    for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLINTEGER>{2,SQL_LONGVARCHAR},{3,16777216},{8,SQL_TRUE},{9,SQL_SEARCHABLE},{16,SQL_LONGVARCHAR}}) {
+      SQLINTEGER value=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(expected,value);
+    }
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{4},SQLUSMALLINT{5},SQLUSMALLINT{6}}) {
+      SQLCHAR text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_CHAR,text,sizeof(text),&indicator));EXPECT_EQ(SQL_NULL_DATA,indicator);
+    }
+  }
+  EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_ALL_TYPES));std::size_t selected[3]{};
   for(SQLRETURN rc=SQLFetch(stmt);rc!=SQL_NO_DATA;rc=SQLFetch(stmt)) {
     ASSERT_EQ(SQL_SUCCESS,rc);SQLCHAR name[64]{};SQLLEN length=-1;
@@ -4601,9 +4631,14 @@ TEST_F(BackendContractTest, ResultDefinitionsPreserveFamilyMetadataWhileRedshift
   }
   SQLHSTMT metadata_stmt=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&metadata_stmt));
   struct StatementCleanup {SQLHSTMT handle;~StatementCleanup(){SQLFreeHandle(SQL_HANDLE_STMT,handle);}} cleanup{metadata_stmt};
-  for(const SQLSMALLINT type:{SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
-    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,type));EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,SQL_VARBINARY));EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
+  // Changed oracle (docs/redshift-special-types.md): the result family "text"
+  // stays a result-only name; DDL LONGVARCHAR advertises only SUPER.
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,SQL_LONGVARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(metadata_stmt));
+  {
+    char advertised[16]{};SQLLEN advertised_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(metadata_stmt,1,SQL_C_CHAR,advertised,sizeof(advertised),&advertised_length));EXPECT_STREQ("super",advertised);
   }
+  EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLCHAR binary[4]{'x','x','x','x'};SQLLEN indicator=-1;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_BINARY,binary,3,&indicator));EXPECT_EQ(3,indicator);const SQLCHAR expected_binary[]{0,'A','B'};EXPECT_EQ(0,std::memcmp(binary,expected_binary,sizeof(expected_binary)));EXPECT_EQ('x',binary[3]);
   char text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,text,sizeof(text),&indicator));EXPECT_EQ(4,indicator);EXPECT_EQ(0,std::memcmp(text,"Text",5));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
@@ -7227,8 +7262,14 @@ TEST_F(RetrieveDataTest, ExplicitUnboundScalarGetDataKeepsUnicodeNullAndMultirow
   EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,2,SQL_C_CHAR,chunk,sizeof(chunk),&chunk_length));EXPECT_EQ("HY010",state());
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,3*sizeof(SQLWCHAR),&chunk_length));
   EXPECT_EQ((sizeof(SQLWCHAR)==2?2:1)*sizeof(SQLWCHAR),chunk_length);
-  if(sizeof(SQLWCHAR)==2){EXPECT_EQ(0xd83d,chunk[0]);EXPECT_EQ(0xde00,chunk[1]);EXPECT_EQ(0,chunk[2]);}
-  else{EXPECT_EQ(0x1f600,chunk[0]);EXPECT_EQ(0,chunk[1]);}
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    EXPECT_EQ(0xd83d,chunk[0]);
+    EXPECT_EQ(0xde00,chunk[1]);
+    EXPECT_EQ(0,chunk[2]);
+  } else {
+    EXPECT_EQ(0x1f600,chunk[0]);
+    EXPECT_EQ(0,chunk[1]);
+  }
   EXPECT_EQ(0x7777,chunk[3]);ASSERT_EQ(SQL_NO_DATA,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk)-sizeof(SQLWCHAR),&chunk_length));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));chunk_length=73;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk)-sizeof(SQLWCHAR),&chunk_length));EXPECT_EQ(SQL_NULL_DATA,chunk_length);
@@ -7433,8 +7474,14 @@ TEST_F(ParameterBindingOffsetTest, ShiftedWideNumericSplitNullFieldsRetainPrecis
   ASSERT_NO_FATAL_FAILURE(prepare("numeric ?, unicode ?", {{ScalarType::Numeric,0,0,true},{ScalarType::VarChar,0,0,true}}));
   pages[1].numeric.precision=5;pages[1].numeric.scale=2;pages[1].numeric.sign=1;pages[1].numeric.val[0]=0x39;pages[1].numeric.val[1]=0x30;
   pages[1].wide[0]=0x00e9;
-  if(sizeof(SQLWCHAR)==2){pages[1].wide[1]=0xd83d;pages[1].wide[2]=0xde00;pages[1].wide_length=3*sizeof(SQLWCHAR);}
-  else{pages[1].wide[1]=static_cast<SQLWCHAR>(0x1f600);pages[1].wide_length=2*sizeof(SQLWCHAR);}
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    pages[1].wide[1]=0xd83d;
+    pages[1].wide[2]=0xde00;
+    pages[1].wide_length=3*sizeof(SQLWCHAR);
+  } else {
+    pages[1].wide[1]=static_cast<SQLWCHAR>(0x1f600);
+    pages[1].wide_length=2*sizeof(SQLWCHAR);
+  }
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_NUMERIC,5,2,&pages[0].numeric,0,&pages[0].numeric_length));
   // C numeric representation uses APD dimensions; bind arguments set SQL/IPD hints.
   ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_PRECISION,number(5),0));
@@ -12030,6 +12077,23 @@ TEST_F(LoginTimeoutOptionsTest, RecognizedKeysKeepUnknownWarningAndTruncationAft
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login("SERVER=fake;SSL=0;LT=2;UnrelatedUnknown=1", true));
   EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
   ASSERT_NO_FATAL_FAILURE(readback(2));
+}
+
+TEST_F(LoginTimeoutOptionsTest, TrustStoreKeywordsResolveWithoutUnknownKeywordWarnings) {
+  seen->validate_redshift_mode = true;
+  for (bool wide : {false, true}) {
+    ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;UseSystemTrustStore=1", wide));
+    EXPECT_TRUE(seen->settings.use_ssl);
+    EXPECT_TRUE(seen->settings.ssl_ca_file.empty());
+    EXPECT_TRUE(seen->settings.ssl_ca_dir.empty());
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;usesystemtruststore=no;SSLCAFILE={/opt/odbc roots/ca.pem}", wide));
+    EXPECT_EQ("/opt/odbc roots/ca.pem", seen->settings.ssl_ca_file);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    const auto created = seen->created;
+    EXPECT_EQ(SQL_ERROR, login("SERVER=fake;UseSystemTrustStore=1;SSLCADIR=/certs", wide));
+    EXPECT_EQ(created, seen->created) << "a conflicting trust selection must fail before any session";
+  }
 }
 
 TEST_F(LoginTimeoutOptionsTest, ConnectAAndWShareResolvedTimeoutWithoutKeywordWarnings) {

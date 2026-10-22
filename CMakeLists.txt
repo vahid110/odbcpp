@@ -259,12 +259,25 @@ if(WIN32)
   target_link_libraries(${PROJECT_NAME}_core PRIVATE ws2_32 crypt32 advapi32)
   target_link_libraries(${PROJECT_NAME}_driver PRIVATE ws2_32 crypt32 advapi32)
 endif()
+if(APPLE)
+  # Operating-system trust evaluation inside the private security adapter.
+  foreach(_target IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)
+    target_link_libraries(${_target} PRIVATE "-framework Security" "-framework CoreFoundation")
+  endforeach()
+endif()
 
 if(WIN32)
   enable_language(RC)
   add_library(odbcpp_setup SHARED odbc/setup/setup.cpp odbc/setup/setup_dialog.cpp odbc/setup/setup.rc odbc/setup/setup.def)
-  target_link_libraries(odbcpp_setup PRIVATE odbccp32 odbc32 user32 comctl32)
+  target_include_directories(odbcpp_setup PRIVATE "${ODBCPP_INTERNAL_INCLUDE_odbc}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/odbc/setup")
+  target_compile_definitions(odbcpp_setup PRIVATE UNICODE _UNICODE)
+  apply_compiler_settings(odbcpp_setup)
+  target_link_libraries(odbcpp_setup PRIVATE odbccp32 odbc32 user32 comctl32
+    gdi32 ole32 shell32 ${PROJECT_NAME}::core)
   if(MSVC)
+    # Preserve the explicit DLL activation-context resource for common controls v6.
+    target_link_options(odbcpp_setup PRIVATE /MANIFEST:NO)
     # Windows SDK installer thunks reference legacy CRT formatting symbols.
     target_link_libraries(odbcpp_setup PRIVATE legacy_stdio_definitions)
   endif()

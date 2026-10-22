@@ -1674,3 +1674,30 @@ TEST_F(RedshiftDataConverterTest, DecimalBinaryPairLayoutAndRawNumericFoundation
     EXPECT_EQ(0xa5,bytes.front());
     EXPECT_EQ(0xa5,bytes.back());
 }
+
+// Audit T6 (docs/redshift-conversion-coverage.md): out-of-structure years are
+// refused without publishing a struct. The SQLSTATE class (currently the
+// invalid-format issue rather than datetime overflow) is a recorded gap and is
+// deliberately not asserted here.
+TEST_F(RedshiftDataConverterTest, BcAndFiveDigitYearsRefuseWithoutPublishing) {
+    for (const char* value : {"0044-03-15 BC", "10000-01-01", "0044-03-15 12:00:00 BC",
+                              "10000-01-01 00:00:00"}) {
+        SCOPED_TRACE(value);
+        for (const SQLSMALLINT target : {SQLSMALLINT{SQL_C_TYPE_DATE}, SQLSMALLINT{SQL_C_TYPE_TIMESTAMP}}) {
+            std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT)> output{};
+            output.fill(0x5a);
+            SQLLEN length = 73;
+            EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+                value, target, output.data(), static_cast<SQLLEN>(output.size()), &length));
+            EXPECT_EQ(73, length);
+            EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](unsigned char byte) { return byte == 0x5a; }));
+        }
+    }
+    // The last representable four-digit year still converts exactly.
+    SQL_DATE_STRUCT date{};
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "9999-12-31", SQL_C_TYPE_DATE, &date, sizeof(date), &indicator));
+    EXPECT_EQ(9999, date.year);
+    EXPECT_EQ(12, date.month);
+    EXPECT_EQ(31, date.day);
+}

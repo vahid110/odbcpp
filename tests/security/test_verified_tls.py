@@ -122,6 +122,10 @@ def main():
                                        ("localhost", other, "trust")):
                 run_case(args.probe, context, ca, host, expected)
                 print(f"{version.name}: {host}: {expected} passed", flush=True)
+            # The operating-system store (Windows CryptoAPI, macOS Security
+            # framework, Linux distribution bundle) must not trust a private CA.
+            run_case(args.probe, context, "--system-trust", "localhost", "trust")
+            print(f"{version.name}: localhost: system trust store rejection passed", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,78 +1,536 @@
 {
   "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
   "configurePresets": [
     {
-      "name": "default",
-      "displayName": "Default (All Databases)",
-      "description": "Build with all database support enabled",
-      "binaryDir": "build",
+      "name": "_base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build-${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "ENABLE_POSTGRESQL": "ON",
-        "ENABLE_REDSHIFT": "ON",
-        "ENABLE_MYSQL": "OFF",
-        "ENABLE_SQLSERVER": "OFF"
-      }
-    },
-    {
-      "name": "redshift",
-      "displayName": "Redshift ODBC Driver",
-      "description": "Build ODBC driver for Redshift",
-      "binaryDir": "build-redshift",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "TARGET_DATABASE": "REDSHIFT"
+        "TARGET_DATABASE": "POSTGRESQL",
+        "BUILD_TESTING": "ON",
+        "BUILD_EXAMPLES": "OFF",
+        "ODBCPP_CRYPTO_PROVIDER": "OPENSSL"
       }
     },
     {
       "name": "postgresql",
-      "displayName": "PostgreSQL ODBC Driver",
-      "description": "Build ODBC driver for PostgreSQL",
-      "binaryDir": "build-postgresql",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "TARGET_DATABASE": "POSTGRESQL"
-      }
+      "inherits": "_base",
+      "displayName": "PostgreSQL (host defaults)"
     },
     {
-      "name": "mysql",
-      "displayName": "MySQL ODBC Driver",
-      "description": "Build ODBC driver for MySQL",
-      "binaryDir": "build-mysql",
+      "name": "default",
+      "inherits": "postgresql"
+    },
+    {
+      "name": "redshift",
+      "inherits": "_base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "TARGET_DATABASE": "MYSQL"
+        "TARGET_DATABASE": "REDSHIFT"
       }
     },
     {
       "name": "minimal",
-      "displayName": "Minimal Redshift Driver",
-      "description": "Minimal Redshift driver (no examples/tests)",
-      "binaryDir": "build-minimal",
+      "inherits": "redshift",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "TARGET_DATABASE": "REDSHIFT",
-        "BUILD_EXAMPLES": "OFF",
         "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "windows-pg",
+      "inherits": "_base",
+      "generator": "Visual Studio 17 2022",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "POSTGRESQL",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "2",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "2",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "AUTO",
+        "ODBCPP_CRYPTO_LINKAGE": "BUNDLED_SHARED"
+      },
+      "architecture": "x64"
+    },
+    {
+      "name": "windows-redshift",
+      "inherits": "_base",
+      "generator": "Visual Studio 17 2022",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "REDSHIFT",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "2",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "2",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "AUTO",
+        "ODBCPP_CRYPTO_LINKAGE": "BUNDLED_SHARED"
+      },
+      "architecture": "x64"
+    },
+    {
+      "name": "unixodbc-pg",
+      "inherits": "_base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "inList",
+        "string": "${hostSystemName}",
+        "list": [
+          "Linux",
+          "Darwin"
+        ]
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "POSTGRESQL",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "2",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "2",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "UNIXODBC",
+        "ODBCPP_CRYPTO_LINKAGE": "SYSTEM_SHARED"
+      }
+    },
+    {
+      "name": "unixodbc-redshift",
+      "inherits": "_base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "inList",
+        "string": "${hostSystemName}",
+        "list": [
+          "Linux",
+          "Darwin"
+        ]
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "REDSHIFT",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "2",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "2",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "UNIXODBC",
+        "ODBCPP_CRYPTO_LINKAGE": "SYSTEM_SHARED"
+      }
+    },
+    {
+      "name": "linux-iodbc-pg",
+      "inherits": "_base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "POSTGRESQL",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "4",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "4",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "IODBC",
+        "ODBCPP_CRYPTO_LINKAGE": "SYSTEM_SHARED",
+        "ODBC_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_LIBRARY": "$penv{ODBCPP_IODBC_ROOT}/lib/libiodbc.so"
+      }
+    },
+    {
+      "name": "linux-iodbc-redshift",
+      "inherits": "_base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "REDSHIFT",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "4",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "4",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "IODBC",
+        "ODBCPP_CRYPTO_LINKAGE": "SYSTEM_SHARED",
+        "ODBC_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_LIBRARY": "$penv{ODBCPP_IODBC_ROOT}/lib/libiodbc.so"
+      }
+    },
+    {
+      "name": "macos-iodbc-pg",
+      "inherits": "_base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "POSTGRESQL",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "4",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "4",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "IODBC",
+        "ODBCPP_CRYPTO_LINKAGE": "SYSTEM_SHARED",
+        "ODBC_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_LIBRARY": "$penv{ODBCPP_IODBC_ROOT}/lib/libiodbc.dylib"
+      }
+    },
+    {
+      "name": "macos-iodbc-redshift",
+      "inherits": "_base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "TARGET_DATABASE": "REDSHIFT",
+        "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE": "4",
+        "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE": "4",
+        "ODBC_DRIVER_MANAGER_FLAVOR": "IODBC",
+        "ODBCPP_CRYPTO_LINKAGE": "SYSTEM_SHARED",
+        "ODBC_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_INCLUDE_DIR": "$penv{ODBCPP_IODBC_ROOT}/include",
+        "ODBC_DRIVER_MANAGER_LIBRARY": "$penv{ODBCPP_IODBC_ROOT}/lib/libiodbc.dylib"
       }
     }
   ],
   "buildPresets": [
     {
+      "name": "postgresql",
+      "configurePreset": "postgresql",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
       "name": "redshift",
-      "configurePreset": "redshift"
-    },
-    {
-      "name": "postgresql", 
-      "configurePreset": "postgresql"
-    },
-    {
-      "name": "mysql",
-      "configurePreset": "mysql"
+      "configurePreset": "redshift",
+      "configuration": "Release",
+      "jobs": 2
     },
     {
       "name": "minimal",
-      "configurePreset": "minimal"
+      "configurePreset": "minimal",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "windows-pg",
+      "configurePreset": "windows-pg",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "windows-redshift",
+      "configurePreset": "windows-redshift",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "unixodbc-pg",
+      "configurePreset": "unixodbc-pg",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "unixodbc-redshift",
+      "configurePreset": "unixodbc-redshift",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "linux-iodbc-pg",
+      "configurePreset": "linux-iodbc-pg",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "linux-iodbc-redshift",
+      "configurePreset": "linux-iodbc-redshift",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "macos-iodbc-pg",
+      "configurePreset": "macos-iodbc-pg",
+      "configuration": "Release",
+      "jobs": 2
+    },
+    {
+      "name": "macos-iodbc-redshift",
+      "configurePreset": "macos-iodbc-redshift",
+      "configuration": "Release",
+      "jobs": 2
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-pg",
+      "configurePreset": "windows-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "windows-pg-offline",
+      "configurePreset": "windows-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "windows-redshift",
+      "configurePreset": "windows-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "windows-redshift-offline",
+      "configurePreset": "windows-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "unixodbc-pg",
+      "configurePreset": "unixodbc-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "unixodbc-pg-offline",
+      "configurePreset": "unixodbc-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "unixodbc-redshift",
+      "configurePreset": "unixodbc-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "unixodbc-redshift-offline",
+      "configurePreset": "unixodbc-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "linux-iodbc-pg",
+      "configurePreset": "linux-iodbc-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "linux-iodbc-pg-offline",
+      "configurePreset": "linux-iodbc-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "linux-iodbc-redshift",
+      "configurePreset": "linux-iodbc-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "linux-iodbc-redshift-offline",
+      "configurePreset": "linux-iodbc-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "macos-iodbc-pg",
+      "configurePreset": "macos-iodbc-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "macos-iodbc-pg-offline",
+      "configurePreset": "macos-iodbc-pg",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
+    },
+    {
+      "name": "macos-iodbc-redshift",
+      "configurePreset": "macos-iodbc-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      }
+    },
+    {
+      "name": "macos-iodbc-redshift-offline",
+      "configurePreset": "macos-iodbc-redshift",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "stopOnFailure": false,
+        "noTestsAction": "error",
+        "timeout": 1500
+      },
+      "filter": {
+        "exclude": {
+          "label": "integration"
+        }
+      }
     }
   ]
 }

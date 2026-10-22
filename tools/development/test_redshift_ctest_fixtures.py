@@ -9,8 +9,7 @@ import redshift_ctest_fixtures as fixtures
 import redshift_ctest_lifecycle as lifecycle
 
 
-FACTORY = Path('/private/tmp/odbcpp-current44-combined-live001/source074/'
-               'factory-proposed003.py')
+FACTORY = Path(__file__).with_name('redshift_fixture_factory.py')
 
 
 def load_factory():

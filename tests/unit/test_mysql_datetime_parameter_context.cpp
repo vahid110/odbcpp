@@ -83,11 +83,13 @@ TEST(MySqlDatetimeParameterContextTest, AllPrefixesAndMalformedTailKeepEveryOutp
     const auto bytes=definition(12,104,qualified?6:3,qualified?45:0);
     for (std::size_t n=0;n<bytes.size();++n) { unchanged_failure(std::span(bytes).first(n),DbErrorCode::ProtocolError); }
     for (unsigned fault=0;fault<4;++fault) {
-      auto bad=bytes;
+      Bytes bad(bytes.size()+(fault==2?1:0),std::byte{0});
+      for (std::size_t i=0;i<bytes.size();++i) {
+        bad[i]=bytes[i];
+      }
       if (fault==0) { bad[bad.size()-13]=std::byte{11}; }
       else if (fault==1) { bad.back()=std::byte{1}; }
-      else if (fault==2) { bad.push_back(std::byte{0}); }
-      else { bad[1]=std::byte{'x'}; }
+      else if (fault==3) { bad[1]=std::byte{'x'}; }
       unchanged_failure(bad,DbErrorCode::ProtocolError);
     }
     unchanged_failure(definition(12,104,qualified?6:3,qualified?45:0,0,std::string_view("a\0b",3)),DbErrorCode::ProtocolError);

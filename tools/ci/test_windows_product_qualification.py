@@ -1113,9 +1113,10 @@ class WorkflowSafety(unittest.TestCase):
             self.assert_compatible_workflow(ci.replace(selector, selector.replace('default: false', 'default: true')))
 
     def assert_compatible_workflow(self, ci):
-        # CI56's independently reviewed producer exclusions are the current full-job contract.
+        # Reviewed qualification009 includes trace evidence, dual-product package
+        # acceptance, static provider closure and exact producer exclusions.
         # FIRST_PRODUCT remains the unchanged numeric-product sentinel in the helper.
-        reference = '40d1f2038b94a7336bf63702db470dbebeeb61df'
+        reference = '3c267078b8e80198cc72cde1464c307406e63ea7'
         old = subprocess.check_output(['git', '-C', str(ROOT), 'show', reference + ':.github/workflows/ci.yml'], text=True)
         jobs = ('build-and-test', 'redshift-build', 'windows-live', 'windows-package',
                 'windows-linked-server', 'linux-sanitizers', 'linux-openssl-static',

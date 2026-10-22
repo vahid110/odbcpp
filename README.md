@@ -288,6 +288,49 @@ SQL text is never logged unless both `LogLevel=Debug|Trace` and
 `LogQueries=true` are set. Parameter values and passwords are never logged.
 JSON output escapes control characters and is suitable for log processors.
 
+### ODBC API trace
+
+The ODBC trace writes one `odbc_trace_enter` and one `odbc_trace_exit` record
+for every application call of an exported ODBC function, including calls made
+before a connection exists. Exit records carry the return code, elapsed time,
+the first SQLSTATE on errors/warnings and the output values the driver wrote.
+It is independent of the per-connection log and is configured only from
+trusted process sources: the driver section (`odbcinst.ini` or the Windows
+driver registration), overridden by environment variables. DSNs and
+connection strings cannot enable it or choose its path.
+
+```ini
+[ODBCPP Redshift]
+ODBCTrace=1
+ODBCTraceFile=/var/log/odbcpp/trace.log
+ODBCTraceFormat=Text
+ODBCTraceQueries=false
+ODBCTraceSensitive=false
+ODBCTraceMaxSize=10485760
+ODBCTraceMaxFiles=5
+```
+
+| Driver key | Environment override |
+| --- | --- |
+| `ODBCTrace` | `ODBCPP_TRACE` |
+| `ODBCTraceFile` | `ODBCPP_TRACE_FILE` |
+| `ODBCTraceFormat` | `ODBCPP_TRACE_FORMAT` |
+| `ODBCTraceQueries` | `ODBCPP_TRACE_QUERIES` |
+| `ODBCTraceSensitive` | `ODBCPP_TRACE_SENSITIVE` |
+| `ODBCTraceMaxSize` | `ODBCPP_TRACE_MAX_SIZE` |
+| `ODBCTraceMaxFiles` | `ODBCPP_TRACE_MAX_FILES` |
+
+Without `ODBCTraceFile` the trace goes to stderr. Trace output is synchronous
+and flushed after every exit record; use a file distinct from `LogFile`.
+Passwords (`SQLConnect` authentication and `PWD`/`PASSWORD`/secret/token
+connection-string values) are never written. Identifiers, connection strings,
+diagnostic messages and other text values appear as `[redacted]` unless
+`ODBCTraceSensitive=true`; SQL text additionally requires
+`ODBCTraceQueries=true`; with the sensitive opt-in, diagnostic message text can
+still echo SQL. Data buffers are shown only as addresses. An invalid
+trace configuration disables tracing and never fails an ODBC call. See
+[docs/ODBC_TRACE.md](docs/ODBC_TRACE.md) for the design.
+
 ### Driver-manager Unicode ABI
 
 `SQLWCHAR` is not the same size in every ODBC environment. Windows and a
@@ -343,7 +386,9 @@ cmake --install build-redshift --prefix /path/to/private-prefix \
 This component installs the loadable driver (and its versioned symlinks where
 applicable) plus `share/odbcpp/odbcpp-crypto-manifest.json`, using the configured
 GNU installation directories. It does not register drivers or DSNs, install a
-Driver Manager, or bundle external crypto libraries or a CA trust store. Select
+Driver Manager, or bundle external crypto libraries or a CA trust store
+(connections use the operating-system trust store unless `SSLCAFILE`/`SSLCADIR`
+is set). Select
 the application's actual architecture and Unicode ABI before using the package;
 retain its verified TLS configuration and required runtime dependencies.
 The default full SDK installation remains available without `--component`.
@@ -468,9 +513,22 @@ current platform; `Auto` does not silently substitute synchronous transport.
 Omitting `SSL` enables TLS with peer certificate and hostname verification.
 `SSL=false` is the explicit plaintext opt-out; empty and invalid values are
 rejected.
-`SSLCAFILE` or `SSLCADIR` selects one custom trust source and requires TLS.
-They follow normal driver, DSN, and connection-string precedence and cannot be
-set together.
+Verified TLS trusts the operating-system trust store by default: the Windows
+certificate store (current user plus local machine, enterprise and Group Policy
+roots, honoring `Disallowed`), macOS Keychain trust settings via the Security
+framework, or the Linux/Unix distribution CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR`
+override it there). `SSLCAFILE` (PEM bundle) or `SSLCADIR` (OpenSSL hashed
+directory) instead selects one custom trust source, which replaces system trust
+and requires TLS. `UseSystemTrustStore=1` requires that neither is set;
+`UseSystemTrustStore=0` requires one of them. They follow normal driver, DSN, and
+connection-string precedence; an empty value clears an inherited setting.
+`SSLCAFILE` and `SSLCADIR` cannot be set together, and a missing, empty or
+malformed custom CA fails the connection instead of falling back. Hostname/IP
+verification is always enforced. Native Windows/macOS verification uses no
+network (no intermediate download or automatic root update): servers must send
+their intermediates, Windows roots must already be installed locally, and a
+verdict after the login deadline is a timeout. See
+[docs/trust-store-design.md](docs/trust-store-design.md) for platform details.
 Requested TLS never falls back to plaintext.
 PostgreSQL sessions request UTF-8 client encoding and ISO/YMD DateStyle at
 startup, so Unicode and date/time results remain decodable when database

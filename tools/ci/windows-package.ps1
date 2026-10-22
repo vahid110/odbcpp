@@ -1,5 +1,9 @@
 param([string]$Artifacts = 'package-artifacts')
 $ErrorActionPreference = 'Stop'
+$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Unattended package acceptance requires an already elevated disposable CI session. Use tools/development/test_windows_dsn_gui.ps1 for local GUI checks. No elevation was requested.'
+}
 $PSNativeCommandUseErrorActionPreference = $true
 $artifactsPath = (Resolve-Path $Artifacts).Path
 $logs = Join-Path $env:RUNNER_TEMP 'package-logs'
@@ -12,7 +16,7 @@ function Assert([bool]$Condition, [string]$Message) { if (!$Condition) { throw $
 function Msi([string]$Version, [string]$Action, [string]$Label, [int]$Expected = 0) {
     $path = Join-Path $artifactsPath "odbcpp-postgresql-$Version-x64.msi"
     $log = Join-Path $logs "$Label.log"
-    $process = Start-Process msiexec.exe -ArgumentList @($Action, "`"$path`"", '/qn', '/norestart', '/l*v', "`"$log`"") -Wait -PassThru
+    $process = Start-Process msiexec.exe -WindowStyle Hidden -ArgumentList @($Action, "`"$path`"", '/qn', '/norestart', '/l*v', "`"$log`"") -Wait -PassThru
     if ($process.ExitCode -ne $Expected) {
         Get-Content $log -Tail 70
         throw "$Label returned $($process.ExitCode), expected $Expected"

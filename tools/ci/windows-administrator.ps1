@@ -1,5 +1,9 @@
 # Enter the installed setup DLL through the actual 64-bit ODBC Administrator.
 $ErrorActionPreference = 'Stop'
+$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Unattended Administrator acceptance requires an already elevated disposable CI session. Use tools/development/test_windows_dsn_gui.ps1 for local GUI checks. No elevation was requested.'
+}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Drawing
@@ -147,10 +151,10 @@ try {
     [SetupUiMessages]::SelectDriver([IntPtr]$create.Current.NativeWindowHandle,'ODBCPP PostgreSQL')
     Invoke-Button $create 'Finish'
     $setup = Wait-Named $root 'ODBCPP PostgreSQL Setup'
-    if ([SetupUiMessages]::TabCount([IntPtr]$setup.Current.NativeWindowHandle) -ne 2) { throw 'Installed setup tabs are missing' }
+    if ([SetupUiMessages]::TabCount([IntPtr]$setup.Current.NativeWindowHandle) -ne 4) { throw 'Installed setup sections are missing' }
     [void](Wait-Named $setup 'Data source name')
     Invoke-Button $setup 'Cancel'
-    Write-Host 'Installed setup opened through 64-bit ODBC Administrator; both tabs found and Add canceled.'
+    Write-Host 'Installed setup opened through 64-bit ODBC Administrator; all four sections found and Add canceled.'
 } finally {
     if (!$process.HasExited) {
         [void]$process.CloseMainWindow()

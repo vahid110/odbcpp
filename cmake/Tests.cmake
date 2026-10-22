@@ -34,6 +34,10 @@ function(add_test_executable test_name test_file)
   if(test_name STREQUAL "test_pg_staged_refusal_observer")
     target_sources(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/pg_staged_refusal_observer.cpp")
   endif()
+  if(test_name STREQUAL "test_odbc_trace")
+    target_compile_definitions(${test_name} PRIVATE
+      ODBCPP_EXPORTS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
+  endif()
   if(test_name MATCHES "^(test_response_operation|test_session_cancellation)$")
     target_link_libraries(${test_name} PRIVATE Threads::Threads)
   endif()
@@ -47,6 +51,7 @@ function(add_test_executable test_name test_file)
   )
 endfunction()
 
+option(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS "Build/register separately admitted single-key relationship DM assertions" OFF)
 option(ODBCPP_REDSHIFT_PACKAGE_LIVE_TESTS "Build separately admitted installed Redshift Driver Manager tests" OFF)
 option(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS "Build separately admitted installed Redshift import/refresh tests" OFF)
 option(ODBCPP_REDSHIFT_OFFICIAL_IMPORT_LIVE_TESTS "Build separately admitted official Redshift import comparison tests" OFF)
@@ -162,12 +167,41 @@ endif()
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime)$")
-    continue() # Optional SDK consumers are explicitly registered below.
+  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_odbc_trace_reload)$")
+    continue() # Optional SDK consumers and dynamic-load tests are explicitly registered below.
   endif()
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
+# Loads the real driver library like a Driver Manager; it must not link the
+# static core, so unload runs the driver image's own shutdown path.
+add_executable(test_odbc_trace_reload tests/unit/test_odbc_trace_reload.cpp)
+target_include_directories(test_odbc_trace_reload PRIVATE ${ODBC_INCLUDE_DIR})
+target_link_libraries(test_odbc_trace_reload PRIVATE GTest::gtest ${CMAKE_DL_LIBS})
+target_compile_definitions(test_odbc_trace_reload PRIVATE
+  ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:${PROJECT_NAME}_driver>")
+apply_compiler_settings(test_odbc_trace_reload)
+add_dependencies(test_odbc_trace_reload ${PROJECT_NAME}_driver)
+set_target_properties(test_odbc_trace_reload PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_odbc_trace_reload COMMAND test_odbc_trace_reload)
+set_tests_properties(test_odbc_trace_reload PROPERTIES LABELS "unit" TIMEOUT 60
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" SKIP_RETURN_CODE 77)
+# The same native main with isolated synthetic assertions proves failure/skip
+# precedence through actual GoogleTest and CTest, without loading the driver.
+find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+add_executable(trace_reload_exit_policy_control tests/unit/test_odbc_trace_reload.cpp)
+target_include_directories(trace_reload_exit_policy_control PRIVATE ${ODBC_INCLUDE_DIR})
+target_compile_definitions(trace_reload_exit_policy_control PRIVATE ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL=1)
+target_link_libraries(trace_reload_exit_policy_control PRIVATE GTest::gtest)
+apply_compiler_settings(trace_reload_exit_policy_control)
+set_target_properties(trace_reload_exit_policy_control PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_trace_reload_exit_policy COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/security/test_trace_reload_exit_policy.py"
+  --binary $<TARGET_FILE:trace_reload_exit_policy_control>
+  --ctest "${CMAKE_CTEST_COMMAND}" --work-root "${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties(test_trace_reload_exit_policy PROPERTIES LABELS "unit;architecture" TIMEOUT 120)
 # The backend contract suite exceeds the standard COFF section limit on MSVC.
 if(MSVC)
   target_compile_options(test_backend_contract PRIVATE /bigobj)
@@ -280,9 +314,16 @@ add_test(
 set_tests_properties(test_crypto_manifest PROPERTIES LABELS "unit;architecture")
 
 if(WIN32)
-  get_filename_component(_linker_directory "${CMAKE_LINKER}" DIRECTORY)
-  find_program(ODBCPP_CRYPTO_INSPECTOR dumpbin
-    HINTS "${_linker_directory}")
+  add_test(
+    NAME test_crypto_inspector_without_tests
+    COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            "-DLINKER=${CMAKE_LINKER}"
+            "-DGENERATOR=${CMAKE_GENERATOR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoInspectorConfiguration.cmake)
+  set_tests_properties(test_crypto_inspector_without_tests
+    PROPERTIES LABELS "unit;architecture")
 elseif(APPLE)
   find_program(ODBCPP_CRYPTO_INSPECTOR otool)
 elseif(UNIX)
@@ -396,7 +437,7 @@ endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table")
+  if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table" OR test_name STREQUAL "it_redshift_powerbi_relationship")
     continue() # Explicit opt-in native registration above.
   endif()
   if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
@@ -466,6 +507,39 @@ if(UNIX OR WIN32)
     find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
   endif()
   if(ODBC_DRIVER_MANAGER_LIBRARY)
+    # Optional relationship partition; no core link and no PostgreSQL registration.
+    if(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS)
+      if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
+         NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux|Windows)$" OR
+         NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE MATCHES "^(2|4)$" OR
+         NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+        message(FATAL_ERROR "Relationship live tests require Redshift and an explicit matched supported DM/driver width pair")
+      endif()
+      if((WIN32 AND (NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO" OR NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2")) OR
+         (NOT WIN32 AND NOT ((ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" AND ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2") OR
+                              (ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "4"))))
+        message(FATAL_ERROR "Relationship live tests require native Windows ODBC2, unixODBC2, or iODBC4 owning profiles")
+      endif()
+      add_executable(it_redshift_powerbi_relationship
+        tests/integration/it_redshift_powerbi_relationship.cpp)
+      if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+        target_include_directories(it_redshift_powerbi_relationship PRIVATE ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      endif()
+      target_link_libraries(it_redshift_powerbi_relationship PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(it_redshift_powerbi_relationship PRIVATE advapi32)
+      endif()
+      target_compile_definitions(it_redshift_powerbi_relationship PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE}
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+      apply_compiler_settings(it_redshift_powerbi_relationship)
+      set_target_properties(it_redshift_powerbi_relationship PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      add_test(NAME it_redshift_powerbi_relationship COMMAND it_redshift_powerbi_relationship)
+      set_tests_properties(it_redshift_powerbi_relationship PROPERTIES
+        LABELS "integration;redshift;powerbi;relationship" TIMEOUT 90)
+    endif()
     add_executable(it_driver_manager tests/driver_manager/it_driver_manager.cpp)
     if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
       target_include_directories(it_driver_manager PRIVATE
@@ -487,14 +561,19 @@ if(UNIX OR WIN32)
 
     # This consumer exercises the installed driver through the actual manager.
     # Default-off: it never joins the ordinary PostgreSQL integration graph.
+    set(_redshift_package_narrow_manager FALSE)
+    if((WIN32 AND ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO") OR
+       (NOT WIN32 AND ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC"))
+      set(_redshift_package_narrow_manager TRUE)
+    endif()
     if(ODBCPP_REDSHIFT_PACKAGE_LIVE_TESTS)
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
-         NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
-         NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" OR
+         NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux|Windows)$" OR
+         NOT _redshift_package_narrow_manager OR
          NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" OR
          NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2")
         message(FATAL_ERROR
-          "Installed Redshift live tests require Darwin, UNIXODBC and explicit matched SQLWCHAR size 2")
+          "Installed Redshift live tests require a supported OS, Windows ODBC or unixODBC, and explicit matched SQLWCHAR size 2")
       endif()
       add_executable(it_redshift_package_live
         tests/driver_manager/it_redshift_package_live.cpp)
@@ -502,6 +581,9 @@ if(UNIX OR WIN32)
         ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
       target_link_libraries(it_redshift_package_live PRIVATE
         GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(it_redshift_package_live PRIVATE advapi32)
+      endif()
       target_compile_definitions(it_redshift_package_live PRIVATE
         ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2)
@@ -516,19 +598,19 @@ if(UNIX OR WIN32)
       # Bound buffers require matching application and driver wide-code units.
       # These explicit pairs are package candidates, not an Excel ABI observation.
       set(_redshift_import_matched_pair FALSE)
-      if((ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" AND
+      if((_redshift_package_narrow_manager AND
           ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" AND
           ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2") OR
-         (ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND
+         (NOT WIN32 AND ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND
           ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "4" AND
           ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "4"))
         set(_redshift_import_matched_pair TRUE)
       endif()
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
-         NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+         NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux|Windows)$" OR
          NOT _redshift_import_matched_pair)
         message(FATAL_ERROR
-          "Installed Redshift import live tests require Darwin and explicit UNIXODBC 2/2 or IODBC 4/4")
+          "Installed Redshift import live tests require a supported OS and explicit Windows ODBC/unixODBC 2/2 or iODBC 4/4")
       endif()
       add_executable(it_redshift_package_import_live
         tests/driver_manager/it_redshift_package_import_live.cpp)
@@ -536,6 +618,9 @@ if(UNIX OR WIN32)
         ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
       target_link_libraries(it_redshift_package_import_live PRIVATE
         GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(it_redshift_package_import_live PRIVATE advapi32)
+      endif()
       target_compile_definitions(it_redshift_package_import_live PRIVATE
         ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE}
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
@@ -622,6 +707,23 @@ if(UNIX OR WIN32)
 endif()
 
 if(WIN32)
+  add_test(NAME test_windows_backend_observer
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_windows_backend_observer.py")
+  set_tests_properties(test_windows_backend_observer PROPERTIES LABELS "unit;windows" TIMEOUT 60)
+  add_executable(test_setup_dialog tests/windows/test_setup_dialog.cpp
+    odbc/setup/setup_dialog.cpp odbc/setup/setup.rc)
+  target_include_directories(test_setup_dialog PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/odbc/setup")
+  target_compile_definitions(test_setup_dialog PRIVATE UNICODE _UNICODE)
+  target_link_libraries(test_setup_dialog PRIVATE odbccp32 odbc32 user32 comctl32
+    gdi32 ole32 shell32 ${PROJECT_NAME}::core GTest::gtest_main)
+  if(MSVC)
+    target_link_libraries(test_setup_dialog PRIVATE legacy_stdio_definitions)
+  endif()
+  apply_compiler_settings(test_setup_dialog)
+  set_target_properties(test_setup_dialog PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  add_test(NAME test_setup_dialog COMMAND test_setup_dialog)
+  set_tests_properties(test_setup_dialog PROPERTIES LABELS "unit;windows;gui" TIMEOUT 30)
+
   add_executable(it_setup tests/windows/it_setup.cpp)
   target_link_libraries(it_setup PRIVATE odbccp32 user32 comctl32 gdi32)
   if(MSVC)
@@ -634,6 +736,22 @@ if(WIN32)
 endif()
 
 if(WIN32)
+  # Explicit installed-package fixture; never join an unprovisioned local suite.
+  option(ODBCPP_INSTALLED_SETUP_TESTS "Register tests requiring the matching installed Windows MSI" OFF)
+  add_executable(it_setup_registration EXCLUDE_FROM_ALL tests/windows/it_setup_registration.cpp)
+  target_link_libraries(it_setup_registration PRIVATE odbccp32 advapi32 GTest::gtest_main)
+  if(MSVC)
+    target_link_libraries(it_setup_registration PRIVATE legacy_stdio_definitions)
+  endif()
+  if(TARGET_DATABASE STREQUAL "REDSHIFT")
+    target_compile_definitions(it_setup_registration PRIVATE ODBCPP_TEST_REDSHIFT_PACKAGE=1)
+  endif()
+  apply_compiler_settings(it_setup_registration)
+  set_target_properties(it_setup_registration PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  if(ODBCPP_INSTALLED_SETUP_TESTS)
+    add_test(NAME it_setup_registration COMMAND it_setup_registration)
+    set_tests_properties(it_setup_registration PROPERTIES LABELS "integration;windows;package" TIMEOUT 30)
+  endif()
   add_executable(it_package_load tests/windows/it_package_load.cpp)
   # The probe must not preload the system's C++ runtime before inspecting the DLLs.
   set_property(TARGET it_package_load PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

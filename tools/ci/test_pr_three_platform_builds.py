@@ -18,21 +18,22 @@ FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-packag
              'iodbc-unicode')
 FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
-# Exact 526b job bodies, excluding only their top-level event condition.
+# Reviewed job bodies, excluding only their top-level event condition. Preserve
+# 526b with reviewed packaging and complete-checkpoint repairs (2026-10-22).
 BODY_SHA256 = {
     'sanitizer-only': 'fbc8b8a9ef873d8d1b13f429b3110338f360adf941936543f1a0df31e71909b7',
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
     'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
     'windows-product-qualification': '6bffeb8c5f8356015036a032d0f37128180fbf8c011084bbfd208ce1a40e80e6',
-    'build-and-test': 'a5f64cdc03b610e37ca827a9c189430effc5d21655f5b4d5fc7e13790dc77c3f',
+    'build-and-test': 'b32c7d9de760bb69e3d2bcfe0c67f069b9a8d365f0ba24767bd89ff0641969c4',
     'redshift-build': '83dd943e7dad86a66e4c44124163bbd612194b914c19abba7fd702d218787048',
-    'windows-live': '79bb1a40d5fa0a94938f1b4fa4a4165326919139b7d88387df0e15f35cca0517',
-    'windows-package': '265b46a0c7fcd047c3ac7e5b93a23485fef66d7afb6f637411eb158a459571e3',
+    'windows-live': '5a29e36575588fc11bb84eb04dde40bfdab303a57951770d427b1ae01cde100f',
+    'windows-package': 'd3191013a82d6c6a45fe352f17c7d8888f12996877775fcd53991a99620842d8',
     'windows-linked-server': 'f7f15d6261db38ead9993bb28ea275523b1af5835780e1c28ed075844f536c0d',
     'linux-sanitizers': 'e302e94886a90342a0abf1b386d46afb5b36d13ea49c6802034ffbc12188d2ab',
-    'linux-openssl-static': '04a0418d777e90f5fd04e9a1fcca6fdec7c4731630d11c765825ab29abd1d930',
+    'linux-openssl-static': 'd378c269986bf275a2dbe9402a4feccc143c8b38ad6e337f206252af6c202028',
     'awslc-adapter-proof': '19230fd79ff37164624bd764631ad194679a7ef63c3aaf3594d5d4826970969d',
-    'iodbc-unicode': '6ea54a59df2efc5a4002e8ddf9b9b0f68f4216fdd60b94f0cb3867dac3a21a37',
+    'iodbc-unicode': '6e631a1796a3658177c740bec25ba93fdf484ca82fc9c899d735bbe46cf1f726',
 }
 
 
@@ -150,10 +151,25 @@ class ThreePlatformScheduling(unittest.TestCase):
             with self.subTest(flags=f):
                 self.assertEqual(active, expected)
 
-    def test_existing_checkpoint_and_focused_job_bodies_byte_preserved(self):
+    def test_checkpoint_and_focused_job_bodies_match_reviewed_pins(self):
         for name, expected in BODY_SHA256.items():
             body = re.sub(r'^    if: .*\n', '', self.blocks[name], flags=re.M).strip()
             self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), expected, name)
+
+    def test_installer_gate_runs_in_existing_elevated_CI_before_legacy_fixtures(self):
+        block = self.blocks['windows-package']
+        self.assertIn('needs: windows-live', block)
+        self.assertLess(block.index('windows-product-packages.ps1'),
+                        block.index('./tools/ci/windows-package.ps1'))
+        self.assertIn('- name: Validate fresh-runner package lifecycle\n        if: always()', block)
+        self.assertIn('./tools/ci/windows-product-packages.ps1 -VerifyCleanup', block)
+        self.assertIn('${{ runner.temp }}/dual-product-package-evidence', block)
+        script = (ROOT/'tools/ci/windows-product-packages.ps1').read_text()
+        self.assertIn('WindowsBuiltInRole]::Administrator', script)
+        self.assertIn('-PostgreSqlSetupBuild $setupPg -RedshiftSetupBuild $setupRs', script)
+        self.assertIn('packaging/windows/test-product-lifecycle.ps1', script)
+        self.assertNotIn('-Verb RunAs', script)
+        self.assertNotIn('Register-ScheduledTask', script)
 
     def test_macOS_primary_retains_actual_default_ALL_build(self):
         block = jobs(self.primary)['macos-iodbc-ucs4']
@@ -167,6 +183,14 @@ class ThreePlatformScheduling(unittest.TestCase):
         for name, platform in zip(PR_JOBS, ['Ubuntu','Windows']):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
+
+    def test_primary_PR_and_explicit_checkpoint_without_duplicate_push(self):
+        unrestricted_pr_trigger(self.primary)
+        triggers = self.primary.split('\npermissions:', 1)[0]
+        self.assertIn('  workflow_dispatch:', triggers)
+        self.assertNotRegex(triggers, r'(?m)^  push:')
+        # Job names/builds and required PR checks remain unchanged. This does
+        # not grant cross-run artifact reuse or bypass a branch-required check.
 
     def test_mutated_PR_event_filters_are_refused(self):
         for filter_line in ['branches-ignore: [main]', 'paths: ["**.cpp"]',

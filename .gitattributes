@@ -1,0 +1,7 @@
+# Historical policy snapshots preserve their original Windows bytes.
+docs/history/workflow-2026-10-19/*.snapshot -text -diff
+docs/history/workflow-2026-10-19/.agents/** -text -diff
+# This offline CTest fixture is executed directly through its POSIX shebang.
+tests/development/live_suite/fixture.py text eol=lf
+# Canonical public fixture-data hash is identical on Windows and POSIX.
+tools/development/redshift_fixture_data.json text eol=lf

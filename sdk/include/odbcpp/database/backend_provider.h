@@ -33,6 +33,17 @@ struct BackendConnectionDefaults {
   bool use_ssl;
 };
 
+// Static support for optional connection policies. This describes accepted
+// provider configuration, not live server capabilities or presentation details.
+struct ConnectionOptionSupport {
+  bool read_only = false;
+  bool character_metadata = false;
+  bool boolean_as_character = false;
+  bool detailed_table_types = false;
+  bool catalog_database_scope = false;
+  bool catalog_mode = false;
+};
+
 struct ConnectionOptions {
   std::optional<std::string> host;
   std::optional<std::uint16_t> port;
@@ -42,6 +53,9 @@ struct ConnectionOptions {
   std::optional<bool> use_ssl;
   std::optional<std::string> ssl_ca_file;
   std::optional<std::string> ssl_ca_dir;
+  // Absent derives the trust source from the CA locations; true selects the
+  // operating-system store and false requires a custom CA location.
+  std::optional<bool> ssl_use_system_trust_store;
   std::chrono::milliseconds timeout{15000};
   ResponseLimits response_limits;
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
@@ -68,6 +82,9 @@ class IBackendProvider {
 
   virtual const BackendIdentity& identity() const noexcept = 0;
   virtual const BackendConnectionDefaults& connection_defaults() const noexcept = 0;
+  virtual ConnectionOptionSupport supported_connection_options() const noexcept {
+    return {};
+  }
   virtual const ISqlDialect& sql_dialect() const noexcept = 0;
   virtual BackendCapabilities capabilities() const noexcept = 0;
   // Pure diagnostic policy, no I/O or retained inputs. Return an owning

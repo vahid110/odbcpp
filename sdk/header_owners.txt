@@ -39,6 +39,7 @@ odbcpp/database/transaction.h|sdk/include/odbcpp/database/transaction.h
 odbcpp/database/transaction_session.h|sdk/include/odbcpp/database/transaction_session.h
 odbcpp/database/type_definition.h|sdk/include/odbcpp/database/type_definition.h
 odbcpp/security/crypto.h|sdk/internal/odbcpp/security/crypto.h
+odbcpp/security/platform_trust.h|sdk/internal/odbcpp/security/platform_trust.h
 odbcpp/security/tls_client.h|sdk/internal/odbcpp/security/tls_client.h
 odbcpp/transport/async_tls_transport.h|sdk/internal/odbcpp/transport/async_tls_transport.h
 odbcpp/transport/async_transport.h|sdk/internal/odbcpp/transport/async_transport.h
