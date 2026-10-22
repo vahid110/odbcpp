@@ -210,7 +210,7 @@ std::string load_pem_file(X509_STORE* store, const std::string& path,
   if (!entries) return error_text("malformed PEM data");
   std::size_t certificates = 0;
   std::string failure;
-  for (int i = 0; i < sk_X509_INFO_num(entries); ++i) {
+  for (decltype(sk_X509_INFO_num(entries)) i = 0; i < sk_X509_INFO_num(entries); ++i) {
     const auto* entry = sk_X509_INFO_value(entries, i);
     if (entry->x509) {
       if (::X509_STORE_add_cert(store, entry->x509) != 1) {
@@ -749,7 +749,7 @@ private:
     };
     if (!append(leaf)) return reject("peer certificate could not be encoded");
     auto* untrusted = ::X509_STORE_CTX_get0_untrusted(store_context);
-    for (int i = 0; untrusted && i < sk_X509_num(untrusted); ++i) {
+    for (decltype(sk_X509_num(untrusted)) i = 0; untrusted && i < sk_X509_num(untrusted); ++i) {
       X509* certificate = sk_X509_value(untrusted, i);
       if (::X509_cmp(certificate, leaf) == 0) continue;
       if (chain.size() >= platform::max_peer_chain_certificates) {
