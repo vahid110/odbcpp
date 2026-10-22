@@ -53,8 +53,9 @@ public:
   bool frozen_context() const noexcept;
   TlsStep begin_socket(std::intptr_t socket, std::string_view host);
   TlsStep begin_memory(std::string_view host);
-  // Bounds OS verifier network retrieval for the active session's handshake.
-  // Call after begin_*; a new session starts without a deadline.
+  // The caller's original deadline for the active session's handshake: an
+  // OS-verifier verdict reached at or after it is rejected (native verifiers
+  // use no network). Call after begin_*; a new session starts without one.
   void set_verification_deadline(std::chrono::steady_clock::time_point deadline) noexcept;
   // Test-only seam: in operating-system trust mode on macOS, evaluate peers
   // against exactly these DER roots instead of the OS anchors (OS policy and
