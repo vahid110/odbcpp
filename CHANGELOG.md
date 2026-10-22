@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Operating-system TLS trust stores: Windows CryptoAPI chain policy, macOS Security framework evaluation and Linux/Unix distribution CA bundles, selected by default or with `UseSystemTrustStore=1`; custom `SSLCAFILE`/`SSLCADIR` trust fails closed on missing, empty or malformed input and never falls back. The Windows DSN Security page distinguishes inherited driver defaults from an explicit operating-system trust-store selection.
 - Indicator-only and row-wise result bindings, checked row and single-set parameter-binding offsets, and SQL_ATTR_RETRIEVE_DATA suppression with reset/rebind recovery
 - Expanded SQLGetInfo/SQLGetInfoW identity, naming, catalog, schema, cursor, and SQLGetData capability reporting
 - Explicit descriptor-handle allocation, SQLGetDescField/SQLSetDescField storage, and SQLCopyDesc cloning
@@ -63,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development roadmap and changelog
 
 ### Changed
+- Verified TLS without `SSLCAFILE`/`SSLCADIR` now uses the operating-system trust store instead of the crypto provider's compiled default verify paths
 - Installation now includes the shared ODBC driver library
 - ODBC login and query timeouts now drive transport deadlines and report HYT01/HYT00
 - Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream

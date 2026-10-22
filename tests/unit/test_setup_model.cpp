@@ -236,4 +236,90 @@ TEST(SetupModel, ConvertsValidUtf8AndRejectsMalformedText) {
   secure_clear(secret);
   EXPECT_TRUE(secret.empty());
 }
+TEST(SetupModel, DefaultTrustInheritsWithoutPersistingTrustKeys) {
+  auto f = valid();
+  const auto a = persisted(f);
+  EXPECT_EQ(a.count(L"USESYSTEMTRUSTSTORE"), 0u);
+  EXPECT_EQ(a.count(L"SSLCAFILE"), 0u);
+  EXPECT_EQ(a.count(L"SSLCADIR"), 0u);
+  overlay(f, {{L"UseSystemTrustStore", L"0"}, {L"SSLCAFILE", L"old.pem"}});
+  select_trust(f, TrustChoice::DriverDefault);
+  EXPECT_NO_THROW(validate(f));
+  const auto reset = persisted(f);
+  for (const auto* key : {L"USESYSTEMTRUSTSTORE", L"SSLCAFILE", L"SSLCADIR"}) {
+    EXPECT_EQ(reset.count(key), 0u);
+    EXPECT_EQ(f.removed.count(key), 1u);
+  }
+}
+TEST(SetupModel, ExplicitSystemTrustOverridesInheritedCustomLocations) {
+  auto f = valid();
+  overlay(f, {{L"UseSystemTrustStore", L"0"}, {L"SSLCAFILE", L"driver-ca.pem"}});
+  select_trust(f, TrustChoice::SystemStore);
+  const auto a = persisted(f);
+  EXPECT_EQ(a.at(L"USESYSTEMTRUSTSTORE"), L"1");
+  EXPECT_EQ(a.at(L"SSLCAFILE"), L"");
+  EXPECT_EQ(a.at(L"SSLCADIR"), L"");
+  EXPECT_NE(connection_string(f).find(L"SSLCAFILE={};"), std::wstring::npos);
+  EXPECT_EQ(f.removed.count(L"USESYSTEMTRUSTSTORE"), 0u);
+}
+TEST(SetupModel, CustomCaFileOrDirectoryUsesExclusiveExplicitTrust) {
+  auto f = valid();
+  overlay(f, {{L"UseSystemTrustStore", L"1"}});
+  const std::wstring path = L"C:\\Program Files\\Roots \u00e9\\ca.pem";
+  select_trust(f, TrustChoice::CertificateFile, path);
+  auto a = persisted(f);
+  EXPECT_EQ(a.at(L"USESYSTEMTRUSTSTORE"), L"0");
+  EXPECT_EQ(a.at(L"SSLCAFILE"), path);
+  EXPECT_EQ(a.at(L"SSLCADIR"), L"");
+  EXPECT_NE(connection_string(f).find(L"SSLCAFILE={" + path + L"};"), std::wstring::npos);
+  select_trust(f, TrustChoice::CertificateDirectory, L"C:\\certs");
+  a = persisted(f);
+  EXPECT_EQ(a.at(L"SSLCAFILE"), L"");
+  EXPECT_EQ(a.at(L"SSLCADIR"), L"C:\\certs");
+}
+TEST(SetupModel, RejectsConflictingMissingOrMalformedTrustChoices) {
+  auto f = valid();
+  overlay(f, {{L"UseSystemTrustStore", L"1"}, {L"SSLCAFILE", L"ca.pem"}});
+  EXPECT_THROW(validate(f), std::invalid_argument);
+  select_trust(f, TrustChoice::CertificateFile);
+  EXPECT_THROW(validate(f), std::invalid_argument);
+  select_trust(f, TrustChoice::CertificateDirectory, L"bad\npath");
+  EXPECT_THROW(validate(f), std::invalid_argument);
+  select_trust(f, TrustChoice::SystemStore);
+  f.advanced[L"USESYSTEMTRUSTSTORE"] = L"invalid";
+  EXPECT_THROW(validate(f), std::invalid_argument);
+  f.advanced[L"USESYSTEMTRUSTSTORE"] = L"0";
+  f.advanced[L"SSLCAFILE"] = L"a.pem";
+  f.advanced[L"SSLCADIR"] = L"directory";
+  EXPECT_THROW(validate(f), std::invalid_argument);
+}
+TEST(SetupModel, PlaintextRequiresExplicitlyRemovingTrustOverrides) {
+  auto f = valid();
+  f.ssl = false;
+  EXPECT_NO_THROW(validate(f));
+  select_trust(f, TrustChoice::SystemStore);
+  EXPECT_THROW(persisted(f), std::invalid_argument);
+  select_trust(f, TrustChoice::CertificateFile, L"ca.pem");
+  EXPECT_THROW(persisted(f), std::invalid_argument);
+  select_trust(f, TrustChoice::DriverDefault);
+  const auto a = persisted(f);
+  EXPECT_EQ(a.at(L"SSL"), L"0");
+  for (const auto* key : {L"USESYSTEMTRUSTSTORE", L"SSLCAFILE", L"SSLCADIR"}) {
+    EXPECT_EQ(a.count(key), 0u);
+    EXPECT_EQ(f.removed.count(key), 1u);
+  }
+}
+TEST(SetupModel, TrustSelectionClearsCanonicalizedStaleKeysAndPreservesOtherOverrides) {
+  auto f = valid();
+  f.advanced = {{L"sslCAfile", L"stale.pem"}, {L"UseSystemTrustStore", L"0"},
+      {L"APPLICATIONNAME", L"test-app"}, {L"LOGINTIMEOUT", L"5"}};
+  select_trust(f, TrustChoice::SystemStore);
+  const auto a = persisted(f);
+  EXPECT_EQ(a.count(L"sslCAfile"), 0u);
+  EXPECT_EQ(a.count(L"UseSystemTrustStore"), 0u);
+  EXPECT_EQ(a.at(L"USESYSTEMTRUSTSTORE"), L"1");
+  EXPECT_EQ(a.at(L"SSLCAFILE"), L"");
+  EXPECT_EQ(a.at(L"APPLICATIONNAME"), L"test-app");
+  EXPECT_EQ(a.at(L"LOGINTIMEOUT"), L"5");
+}
 }

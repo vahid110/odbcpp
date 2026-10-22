@@ -542,6 +542,7 @@ private:
     if (created.state != rs::core::security::TlsStepState::Complete) {
       return {rs::util::DbErrorCode::TLSError, created.message};
     }
+    tls_.set_verification_deadline(deadline);
 
     for (;;) {
       if (rs::util::remaining(deadline) <=

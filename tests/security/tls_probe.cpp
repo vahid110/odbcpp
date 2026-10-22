@@ -53,7 +53,8 @@ int main(int argc, char** argv) {
       throw std::runtime_error("loopback connect failed");
     TlsClient client;
     TlsClientConfig config;
-    config.ca_file = argv[3];
+    // "--system-trust" selects the operating-system trust store (no CA path).
+    if (std::string(argv[3]) != "--system-trust") config.ca_file = argv[3];
     client.configure(config);
     auto step = client.begin_socket(static_cast<std::intptr_t>(fd), argv[2]);
     if (step.state != TlsStepState::Complete)

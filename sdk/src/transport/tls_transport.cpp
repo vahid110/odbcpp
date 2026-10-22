@@ -128,6 +128,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
   if (started.state != TlsStepState::Complete) {
     throw_tls_step(started, "setup");
   }
+  provider_->client->set_verification_deadline(deadline);
 
   for (;;) {
     if (deadline_expired(deadline)) {

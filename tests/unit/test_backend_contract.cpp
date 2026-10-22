@@ -12079,6 +12079,23 @@ TEST_F(LoginTimeoutOptionsTest, RecognizedKeysKeepUnknownWarningAndTruncationAft
   ASSERT_NO_FATAL_FAILURE(readback(2));
 }
 
+TEST_F(LoginTimeoutOptionsTest, TrustStoreKeywordsResolveWithoutUnknownKeywordWarnings) {
+  seen->validate_redshift_mode = true;
+  for (bool wide : {false, true}) {
+    ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;UseSystemTrustStore=1", wide));
+    EXPECT_TRUE(seen->settings.use_ssl);
+    EXPECT_TRUE(seen->settings.ssl_ca_file.empty());
+    EXPECT_TRUE(seen->settings.ssl_ca_dir.empty());
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;usesystemtruststore=no;SSLCAFILE={/opt/odbc roots/ca.pem}", wide));
+    EXPECT_EQ("/opt/odbc roots/ca.pem", seen->settings.ssl_ca_file);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    const auto created = seen->created;
+    EXPECT_EQ(SQL_ERROR, login("SERVER=fake;UseSystemTrustStore=1;SSLCADIR=/certs", wide));
+    EXPECT_EQ(created, seen->created) << "a conflicting trust selection must fail before any session";
+  }
+}
+
 TEST_F(LoginTimeoutOptionsTest, ConnectAAndWShareResolvedTimeoutWithoutKeywordWarnings) {
   SQLCHAR input[] = "SERVER=fake;SSL=0;LT=2";
   ASSERT_EQ(SQL_SUCCESS, SQLConnect(dbc, input, SQL_NTS, nullptr, 0, nullptr, 0));

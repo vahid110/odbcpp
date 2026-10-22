@@ -343,7 +343,9 @@ cmake --install build-redshift --prefix /path/to/private-prefix \
 This component installs the loadable driver (and its versioned symlinks where
 applicable) plus `share/odbcpp/odbcpp-crypto-manifest.json`, using the configured
 GNU installation directories. It does not register drivers or DSNs, install a
-Driver Manager, or bundle external crypto libraries or a CA trust store. Select
+Driver Manager, or bundle external crypto libraries or a CA trust store
+(connections use the operating-system trust store unless `SSLCAFILE`/`SSLCADIR`
+is set). Select
 the application's actual architecture and Unicode ABI before using the package;
 retain its verified TLS configuration and required runtime dependencies.
 The default full SDK installation remains available without `--component`.
@@ -468,9 +470,19 @@ current platform; `Auto` does not silently substitute synchronous transport.
 Omitting `SSL` enables TLS with peer certificate and hostname verification.
 `SSL=false` is the explicit plaintext opt-out; empty and invalid values are
 rejected.
-`SSLCAFILE` or `SSLCADIR` selects one custom trust source and requires TLS.
-They follow normal driver, DSN, and connection-string precedence and cannot be
-set together.
+Verified TLS trusts the operating-system trust store by default: the Windows
+certificate store (current user plus local machine, enterprise and Group Policy
+roots, honoring `Disallowed`), macOS Keychain trust settings via the Security
+framework, or the Linux/Unix distribution CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR`
+override it there). `SSLCAFILE` (PEM bundle) or `SSLCADIR` (OpenSSL hashed
+directory) instead selects one custom trust source, which replaces system trust
+and requires TLS. `UseSystemTrustStore=1` requires that neither is set;
+`UseSystemTrustStore=0` requires one of them. They follow normal driver, DSN, and
+connection-string precedence; an empty value clears an inherited setting.
+`SSLCAFILE` and `SSLCADIR` cannot be set together, and a missing, empty or
+malformed custom CA fails the connection instead of falling back. Hostname/IP
+verification is always enforced. See
+[docs/trust-store-design.md](docs/trust-store-design.md) for platform details.
 Requested TLS never falls back to plaintext.
 PostgreSQL sessions request UTF-8 client encoding and ISO/YMD DateStyle at
 startup, so Unicode and date/time results remain decodable when database

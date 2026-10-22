@@ -82,6 +82,58 @@ struct ConnectionSettings {
   CatalogDatabaseScope catalog_database_scope{CatalogDatabaseScope::CurrentDatabase};
 };
 
+// Certificate trust for verified TLS. ConnectionSettings carries the resolved
+// source as mutually exclusive paths: ssl_ca_file, ssl_ca_dir, or neither for
+// the operating-system trust store. Custom sources never fall back to system
+// trust. Option spellings and diagnostics remain backend-owned.
+enum class TlsTrustSource { System, CustomFile, CustomDirectory };
+
+enum class TlsTrustConflict {
+  None,
+  FileAndDirectory,        // both custom locations are set
+  SettingsWithoutTls,      // any trust setting while TLS is disabled
+  SystemWithCustom,        // system store requested with a custom location
+  CustomWithoutLocation,   // custom trust requested without a location
+};
+
+struct TlsTrustSelection {
+  TlsTrustSource source{TlsTrustSource::System};
+  TlsTrustConflict conflict{TlsTrustConflict::None};
+};
+
+// Shared selection after ODBC/DSN precedence merging. Empty paths are absent;
+// an absent system flag derives the source from the custom locations.
+constexpr TlsTrustSelection select_tls_trust_source(
+    bool use_tls, std::optional<bool> use_system_trust_store,
+    std::string_view ca_file, std::string_view ca_directory) noexcept {
+  const bool file = !ca_file.empty();
+  const bool directory = !ca_directory.empty();
+  if (!use_tls) {
+    return {TlsTrustSource::System,
+            file || directory || use_system_trust_store
+                ? TlsTrustConflict::SettingsWithoutTls : TlsTrustConflict::None};
+  }
+  if (file && directory) return {TlsTrustSource::System, TlsTrustConflict::FileAndDirectory};
+  if (use_system_trust_store == true && (file || directory)) {
+    return {TlsTrustSource::System, TlsTrustConflict::SystemWithCustom};
+  }
+  if (use_system_trust_store == false && !file && !directory) {
+    return {TlsTrustSource::System, TlsTrustConflict::CustomWithoutLocation};
+  }
+  if (file) return {TlsTrustSource::CustomFile, TlsTrustConflict::None};
+  if (directory) return {TlsTrustSource::CustomDirectory, TlsTrustConflict::None};
+  return {TlsTrustSource::System, TlsTrustConflict::None};
+}
+
+constexpr std::string_view to_string(TlsTrustSource source) noexcept {
+  switch (source) {
+    case TlsTrustSource::CustomFile: return "custom_file";
+    case TlsTrustSource::CustomDirectory: return "custom_directory";
+    case TlsTrustSource::System: break;
+  }
+  return "system";
+}
+
 // Shared validation for SDK callers and product option resolution.
 inline bool valid_resource_limits(const ConnectionSettings& settings) noexcept {
   const auto& input = settings.input_limits;

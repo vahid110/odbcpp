@@ -98,16 +98,10 @@ void collect(HWND w, Dialog& state) {
   }
   if (state.trust_touched) {
     const auto trust = SendDlgItemMessageW(w, IDC_TRUST, CB_GETCURSEL, 0, 0);
-    inherit(fields, L"SSLCAFILE");
-    inherit(fields, L"SSLCADIR");
-    if (trust == 1 || trust == 2) {
-      const auto key = trust == 1 ? L"SSLCAFILE" : L"SSLCADIR";
-      const auto other = trust == 1 ? L"SSLCADIR" : L"SSLCAFILE";
-      fields.advanced[key] = edit(w, IDC_CA_PATH);
-      fields.advanced[other] = L""; // Override an inherited alternative trust source.
-      fields.removed.erase(key);
-      fields.removed.erase(other);
-    }
+    const auto choice = trust == 1 ? TrustChoice::CertificateFile :
+        trust == 2 ? TrustChoice::CertificateDirectory :
+        trust == 3 ? TrustChoice::SystemStore : TrustChoice::DriverDefault;
+    select_trust(fields, choice, edit(w, IDC_CA_PATH));
   }
   validate(fields);
   if (!SQLValidDSNW(fields.dsn.c_str())) throw std::invalid_argument("Enter a valid DSN name.");
@@ -206,7 +200,8 @@ void enable_controls(HWND w, Dialog& state) {
   EnableWindow(GetDlgItem(w, IDC_TEST), !state.busy);
   EnableWindow(GetDlgItem(w, IDC_DSN), !state.busy && !state.fixed_name);
   EnableWindow(GetDlgItem(w, IDC_APP), !state.busy && !checked(w, IDC_APP_DEFAULT));
-  const bool custom = SendDlgItemMessageW(w, IDC_TRUST, CB_GETCURSEL, 0, 0) > 0;
+  const auto trust = SendDlgItemMessageW(w, IDC_TRUST, CB_GETCURSEL, 0, 0);
+  const bool custom = trust == 1 || trust == 2;
   EnableWindow(GetDlgItem(w, IDC_CA_PATH), !state.busy && custom);
   EnableWindow(GetDlgItem(w, IDC_CA_BROWSE), !state.busy && custom);
   EnableWindow(GetDlgItem(w, IDC_PROPERTY_VALUE), !state.busy && checked(w, IDC_PROPERTY_OVERRIDE));
@@ -343,14 +338,16 @@ void initialize(HWND w, Dialog& state) {
   const auto application = fields.advanced.find(L"APPLICATIONNAME");
   CheckDlgButton(w, IDC_APP_DEFAULT, application == fields.advanced.end() ? BST_CHECKED : BST_UNCHECKED);
   if (application != fields.advanced.end()) text(w, IDC_APP, application->second);
-  for (auto* value : {L"Driver default", L"CA certificate file", L"CA certificate directory"})
+  for (auto* value : {L"Driver default", L"CA certificate file", L"CA certificate directory", L"Operating-system trust store"})
     SendDlgItemMessageW(w, IDC_TRUST, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
   const auto file = fields.advanced.find(L"SSLCAFILE");
   const auto directory = fields.advanced.find(L"SSLCADIR");
+  const auto system = fields.advanced.find(L"USESYSTEMTRUSTSTORE");
+  const bool use_system = system != fields.advanced.end() && parse_ssl(system->second);
   const bool use_file = file != fields.advanced.end() &&
       (!file->second.empty() || directory == fields.advanced.end() || directory->second.empty());
   SendDlgItemMessageW(w, IDC_TRUST, CB_SETCURSEL,
-      use_file ? 1 : directory != fields.advanced.end() ? 2 : 0, 0);
+      use_system ? 3 : use_file ? 1 : directory != fields.advanced.end() ? 2 : 0, 0);
   if (use_file) text(w, IDC_CA_PATH, file->second);
   else if (directory != fields.advanced.end()) text(w, IDC_CA_PATH, directory->second);
   TCITEMW tab{};

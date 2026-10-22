@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -176,6 +177,24 @@ inline void overlay(Fields& fields, const Attributes& input) {
   const auto password = normalized.find(L"PWD");
   if (password != normalized.end()) secure_clear(password->second);
 }
+enum class TrustChoice { DriverDefault, CertificateFile, CertificateDirectory, SystemStore };
+inline void select_trust(Fields& fields, TrustChoice choice, const std::wstring& path = {}) {
+  for (auto it = fields.advanced.begin(); it != fields.advanced.end();) {
+    const auto key = canonical_key(it->first);
+    if (key == L"USESYSTEMTRUSTSTORE" || key == L"SSLCAFILE" || key == L"SSLCADIR")
+      it = fields.advanced.erase(it);
+    else ++it;
+  }
+  for (const auto* key : {L"USESYSTEMTRUSTSTORE", L"SSLCAFILE", L"SSLCADIR"}) {
+    fields.removed.insert(key);
+  }
+  if (choice == TrustChoice::DriverDefault) return;
+  // Explicit empty locations override a driver-level custom CA selection.
+  fields.advanced[L"USESYSTEMTRUSTSTORE"] = choice == TrustChoice::SystemStore ? L"1" : L"0";
+  fields.advanced[L"SSLCAFILE"] = choice == TrustChoice::CertificateFile ? path : L"";
+  fields.advanced[L"SSLCADIR"] = choice == TrustChoice::CertificateDirectory ? path : L"";
+  for (const auto* key : {L"USESYSTEMTRUSTSTORE", L"SSLCAFILE", L"SSLCADIR"}) fields.removed.erase(key);
+}
 inline void validate_name(const std::wstring& name) {
   if (name.empty() || name.size() > 32 ||
       name.find_first_of(L"[]{}(),;?*=!@\\/") != std::wstring::npos ||
@@ -240,10 +259,19 @@ inline void validate(const Fields& fields) {
   };
   const auto ca_file = has_trust(L"SSLCAFILE");
   const auto ca_directory = has_trust(L"SSLCADIR");
+  std::optional<bool> system_trust;
+  for (const auto& [key, value] : fields.advanced) {
+    if (canonical_key(key) == L"USESYSTEMTRUSTSTORE" && fields.removed.count(L"USESYSTEMTRUSTSTORE") == 0)
+      system_trust = parse_ssl(value);
+  }
   if (ca_file && ca_directory)
     throw std::invalid_argument("Choose either a CA certificate file or a CA certificate directory.");
-  if (!fields.ssl && (ca_file || ca_directory))
-    throw std::invalid_argument("Enable TLS to use a CA certificate file or directory.");
+  if (!fields.ssl && (ca_file || ca_directory || system_trust.has_value()))
+    throw std::invalid_argument("Enable TLS to configure a trust store.");
+  if (system_trust == true && (ca_file || ca_directory))
+    throw std::invalid_argument("The system trust store cannot be combined with a custom CA.");
+  if (system_trust == false && !ca_file && !ca_directory)
+    throw std::invalid_argument("Enter a CA file or directory, or use the system trust store.");
 }
 inline Attributes persisted(const Fields& fields) {
   validate(fields);

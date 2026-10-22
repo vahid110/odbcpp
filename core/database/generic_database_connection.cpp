@@ -152,12 +152,13 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
             "PostgreSQL authentication credential contains an "
             "embedded NUL byte"};
   }
-  if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {
+  const auto trust = select_tls_trust_source(
+      settings.use_ssl, std::nullopt, settings.ssl_ca_file, settings.ssl_ca_dir);
+  if (trust.conflict == TlsTrustConflict::FileAndDirectory) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "TLS CA file and directory cannot both be specified"};
   }
-  if (!settings.use_ssl &&
-      (!settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty())) {
+  if (trust.conflict != TlsTrustConflict::None) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "TLS CA settings require TLS"};
   }

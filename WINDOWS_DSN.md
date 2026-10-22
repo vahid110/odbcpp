@@ -224,6 +224,16 @@ settings include timeouts, TCP keepalive, logging and applicable backend metadat
 policies. Native file/folder pickers use the existing Windows SDK. New GUI code
 does not require a .NET, browser or external GUI framework runtime.
 
+The Security trust selector distinguishes **Driver default** from an explicit
+**Operating-system trust store** selection. The default removes DSN trust
+overrides; with no driver overrides, verified TLS uses the OS store. An explicit
+OS selection writes `UseSystemTrustStore=1` and empty custom CA locations so a
+driver-level custom CA cannot silently take precedence. File or directory
+selection writes `UseSystemTrustStore=0` with exactly one nonempty location and
+clears the alternative. Custom trust replaces system trust. Trust settings
+require TLS; conflicting or missing custom locations are rejected before writes.
+See [docs/trust-store-design.md](docs/trust-store-design.md).
+
 Testing runs on a worker owning a snapshot of the draft and its ODBC handles.
 The DSN-less W connection includes retained safe settings and explicit edits,
 while excluding DSN/driver/file-routing keys and legacy credentials. The selected

@@ -647,15 +647,17 @@ bool has_temporal_t_separator(const std::string& value) {
   return text.size() >= 19 && text[10] == 'T';
 }
 
-bool parse_ssl(const std::string& value) {
+bool parse_tls_boolean(const std::string& value, const char* keyword) {
   const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
   if (normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
       normalized == "ON") return true;
   if (normalized == "0" || normalized == "FALSE" ||
       normalized == "NO" || normalized == "OFF") return false;
   throw std::invalid_argument(
-      "SSL must be true or false (1/0, yes/no, on/off)");
+      std::string(keyword) + " must be true or false (1/0, yes/no, on/off)");
 }
+
+bool parse_ssl(const std::string& value) { return parse_tls_boolean(value, "SSL"); }
 
 bool parse_read_only(const std::string& value) {
   const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
@@ -2092,6 +2094,10 @@ SQLRETURN ODBCConnection::connect(
     if (params.count("SSL")) options.use_ssl = parse_ssl(params.at("SSL"));
     if (params.count("SSLCAFILE")) options.ssl_ca_file = params.at("SSLCAFILE");
     if (params.count("SSLCADIR")) options.ssl_ca_dir = params.at("SSLCADIR");
+    if (params.count("USESYSTEMTRUSTSTORE")) {
+      options.ssl_use_system_trust_store = parse_tls_boolean(
+          params.at("USESYSTEMTRUSTSTORE"), "UseSystemTrustStore");
+    }
     if (params.count("REDSHIFTCATALOGMODE")) options.redshift_catalog_mode = params.at("REDSHIFTCATALOGMODE");
     // Parse only the effective choice; an explicit application value, including
     // zero, must not evaluate a shadowed malformed keyword.
@@ -2120,6 +2126,10 @@ SQLRETURN ODBCConnection::connect(
          {"port", std::to_string(settings.port), rs::core::logging::FieldSensitivity::Public},
          {"database", settings.database},
          {"tls", settings.use_ssl ? "true" : "false", rs::core::logging::FieldSensitivity::Public},
+         {"trust_source", settings.use_ssl
+              ? std::string(rs::core::database::to_string(rs::core::database::select_tls_trust_source(
+                    true, std::nullopt, settings.ssl_ca_file, settings.ssl_ca_dir).source))
+              : std::string("none"), rs::core::logging::FieldSensitivity::Public},
          {"transport_mode", std::string(rs::core::transport::to_string(
                                 rs::core::transport::TransportFactory::resolve_mode(
                                     transport_options))), rs::core::logging::FieldSensitivity::Public},

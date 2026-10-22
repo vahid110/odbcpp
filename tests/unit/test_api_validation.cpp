@@ -484,7 +484,14 @@ TEST_F(ApiValidationTest, RejectsInvalidConnectionOptionsWithoutConnecting) {
            InvalidOption{"SSL", "{false;TransportMode=Sync}"},
            InvalidOption{"SSLCAFILE", "/test/ca.pem;SSL=0"},
            InvalidOption{"SSLCADIR", "/test/certs;SSL=off"},
-           InvalidOption{"SSLCAFILE", "/test/ca.pem;SSLCADIR=/test/certs"}}) {
+           InvalidOption{"SSLCAFILE", "/test/ca.pem;SSLCADIR=/test/certs"},
+           InvalidOption{"UseSystemTrustStore", ""},
+           InvalidOption{"UseSystemTrustStore", "maybe"},
+           InvalidOption{"UseSystemTrustStore", "1;SSLCAFILE=/test/ca.pem"},
+           InvalidOption{"UseSystemTrustStore", "yes;SSLCADIR=/test/certs"},
+           InvalidOption{"UseSystemTrustStore", "0"},
+           InvalidOption{"UseSystemTrustStore", "off;SSLCAFILE="},
+           InvalidOption{"UseSystemTrustStore", "1;SSL=0"}}) {
     std::string input = std::string("SERVER=127.0.0.1;") +
         option.keyword + "=" + option.value;
     auto* narrow = reinterpret_cast<SQLCHAR*>(input.data());

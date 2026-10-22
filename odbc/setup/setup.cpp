@@ -38,7 +38,7 @@ std::wstring upper(std::wstring value) {
 bool input_key(const std::wstring& key) {
   if (key == L"DSN" || key == L"SERVER" || key == L"HOST" || key == L"PORT" ||
       key == L"DATABASE" || key == L"DB" || key == L"UID" || key == L"USER" ||
-      key == L"PWD" || key == L"PASSWORD" || key == L"SSL" ||
+      key == L"PWD" || key == L"PASSWORD" || key == L"SSL" || key == L"USESYSTEMTRUSTSTORE" ||
       key == L"LT" || key == L"QT") return true;
   for (const auto& property : properties()) {
     if (property.key == key) return true;
@@ -110,6 +110,7 @@ bool save(const Fields& fields, bool add) {
   const auto values = persisted(fields);
   std::vector<std::wstring> owned{L"Server", L"Port", L"Database", L"UID", L"SSL"};
   for (const auto& property : properties()) owned.push_back(property.key);
+  owned.emplace_back(L"USESYSTEMTRUSTSTORE");
   for (const auto key : {L"LT", L"QT", L"PWD", L"PASSWORD"}) owned.emplace_back(key);
   std::map<std::wstring, std::optional<std::wstring>> before;
   struct WipeSnapshot {

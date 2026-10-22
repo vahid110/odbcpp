@@ -259,6 +259,12 @@ if(WIN32)
   target_link_libraries(${PROJECT_NAME}_core PRIVATE ws2_32 crypt32 advapi32)
   target_link_libraries(${PROJECT_NAME}_driver PRIVATE ws2_32 crypt32 advapi32)
 endif()
+if(APPLE)
+  # Operating-system trust evaluation inside the private security adapter.
+  foreach(_target IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)
+    target_link_libraries(${_target} PRIVATE "-framework Security" "-framework CoreFoundation")
+  endforeach()
+endif()
 
 if(WIN32)
   enable_language(RC)

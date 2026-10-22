@@ -339,6 +339,51 @@ TEST(SetupDialog, SelectingTrustDirectoryClearsInheritedFileWithExplicitEmptyOve
   EXPECT_EQ(L"C:\\test-trust", fields.advanced.at(L"SSLCADIR"));
 }
 
+TEST(SetupDialog, ExplicitSystemTrustClearsCustomLocationsAndDisablesPathControls) {
+  auto fields = initial_fields();
+  fields.advanced[L"SSLCAFILE"] = L"C:\\old-ca.pem";
+  fields.advanced[L"USESYSTEMTRUSTSTORE"] = L"0";
+  const auto result = run_dialog(fields, false, {}, [](HWND window, Observations& checks) {
+    checks.check(select_page(window, 1), "Select Security page");
+    checks.check(send(GetDlgItem(window, IDC_TRUST), CB_SETCURSEL, 3), "Choose explicit operating-system trust");
+    checks.check(send(window, WM_COMMAND, MAKEWPARAM(IDC_TRUST, CBN_SELCHANGE),
+                       reinterpret_cast<LPARAM>(GetDlgItem(window, IDC_TRUST))), "Notify trust selection");
+    checks.check(!IsWindowEnabled(GetDlgItem(window, IDC_CA_PATH)), "System trust must disable custom path");
+    checks.check(!IsWindowEnabled(GetDlgItem(window, IDC_CA_BROWSE)), "System trust must disable browsing");
+    checks.check(click(window, IDOK), "Save explicit system trust");
+  });
+  EXPECT_TRUE(result.accepted);
+  for (const auto& failure : result.failures) {
+    ADD_FAILURE() << failure;
+  }
+  EXPECT_EQ(L"1", fields.advanced.at(L"USESYSTEMTRUSTSTORE"));
+  EXPECT_EQ(L"", fields.advanced.at(L"SSLCAFILE"));
+  EXPECT_EQ(L"", fields.advanced.at(L"SSLCADIR"));
+}
+
+TEST(SetupDialog, DriverDefaultRemovesExplicitSystemTrustOverride) {
+  auto fields = initial_fields();
+  select_trust(fields, TrustChoice::SystemStore);
+  const auto result = run_dialog(fields, false, {}, [](HWND window, Observations& checks) {
+    checks.check(select_page(window, 1), "Select Security page");
+    DWORD_PTR selected = 0;
+    checks.check(send(GetDlgItem(window, IDC_TRUST), CB_GETCURSEL, 0, 0, &selected) && selected == 3,
+                 "Load explicit system trust selection");
+    checks.check(send(GetDlgItem(window, IDC_TRUST), CB_SETCURSEL, 0), "Choose inherited driver trust");
+    checks.check(send(window, WM_COMMAND, MAKEWPARAM(IDC_TRUST, CBN_SELCHANGE),
+                       reinterpret_cast<LPARAM>(GetDlgItem(window, IDC_TRUST))), "Notify default selection");
+    checks.check(click(window, IDOK), "Save driver-default trust");
+  });
+  EXPECT_TRUE(result.accepted);
+  for (const auto& failure : result.failures) {
+    ADD_FAILURE() << failure;
+  }
+  for (const auto* key : {L"USESYSTEMTRUSTSTORE", L"SSLCAFILE", L"SSLCADIR"}) {
+    EXPECT_EQ(0u, fields.advanced.count(key));
+    EXPECT_EQ(1u, fields.removed.count(key));
+  }
+}
+
 TEST(SetupDialog, CloseDuringFailedTestDefersUntilWorkerFinishesAndDoesNotSave) {
   auto fields = initial_fields();
   fields.advanced[L"APPLICATIONNAME"] = L"original-app";
