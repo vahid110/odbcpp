@@ -66,7 +66,7 @@ class QualificationTests(unittest.TestCase):
         self.artifact['platform'] = 'Darwin'
         self.xml.set('skipped', '1')
         self.reload_case.set('status', 'notrun')
-        ET.SubElement(self.reload_case, 'skipped', message='SKIP_RETURN_CODE')
+        ET.SubElement(self.reload_case, 'skipped', message='SKIP_RETURN_CODE=77')
         self.reload_case.find('system-out').text = self.reload_marker(2)
         self.reload_suite.set('skipped', '2')
         for case in self.reload_suite:
@@ -117,9 +117,10 @@ class QualificationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Unapproved platform'):
             self.collect()
         self.artifact['platform'] = 'Darwin'
-        self.reload_case.find('skipped').set('message', 'SKIP_REGULAR_EXPRESSION_MATCHED')
-        with self.assertRaisesRegex(RuntimeError, 'historical reload skip'):
-            self.collect(platform='Darwin')
+        for message in ('SKIP_REGULAR_EXPRESSION_MATCHED', 'SKIP_RETURN_CODE', 'SKIP_RETURN_CODE=78'):
+            self.reload_case.find('skipped').set('message', message)
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, 'historical reload skip'):
+                self.collect(platform='Darwin')
 
     def test_unknown_and_mandatory_skips_still_rejected_on_darwin(self):
         self.darwin_boundary()
@@ -130,7 +131,7 @@ class QualificationTests(unittest.TestCase):
                 if added:
                     case = ET.SubElement(self.xml, 'testcase', name=name, status='run')
                 case.set('status', 'notrun')
-                skip = ET.SubElement(case, 'skipped', message='SKIP_RETURN_CODE')
+                skip = ET.SubElement(case, 'skipped', message='SKIP_RETURN_CODE=77')
                 self.xml.set('skipped', '2')
                 with self.assertRaises(RuntimeError):
                     self.collect(platform='Darwin')

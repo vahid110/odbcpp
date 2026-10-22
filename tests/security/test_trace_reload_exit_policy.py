@@ -71,7 +71,7 @@ def main():
             raise RuntimeError('Wrong actual native policy result: ' + name)
         if expected == 77:
             skip = case.find('skipped')
-            if (skip is None or skip.get('message') != 'SKIP_RETURN_CODE'
+            if (skip is None or skip.get('message') != 'SKIP_RETURN_CODE=77'
                     or case.find('failure') is not None):
                 raise RuntimeError('All-skip policy did not become an actual return-code skip')
         elif expected == 0:

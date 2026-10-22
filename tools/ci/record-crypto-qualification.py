@@ -115,7 +115,7 @@ def validate_reload_report(case, report, platform, linkage):
     wrapper_skips = case.findall('skipped')
     if skipped:
         if ((platform, linkage) != ('Darwin', 'SYSTEM_SHARED') or case.get('status') != 'notrun'
-                or len(wrapper_skips) != 1 or wrapper_skips[0].get('message') != 'SKIP_RETURN_CODE'):
+                or len(wrapper_skips) != 1 or wrapper_skips[0].get('message') != 'SKIP_RETURN_CODE=77'):
             raise RuntimeError('Unapproved platform or historical reload skip producer')
     elif case.get('status') != 'run' or wrapper_skips:
         raise RuntimeError('Unexpected passing reload wrapper status')

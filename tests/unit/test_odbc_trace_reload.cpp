@@ -241,14 +241,16 @@ TEST(OdbcTraceReload, DisabledTracingAlsoRetiresStorageAcrossImageReloads) {
 #endif
 
 int main(int argc, char** argv) {
+  // InitGoogleTest installs its XML listener once. Set the empty-output
+  // fallback first; explicit command-line output still takes precedence.
+  if (GTEST_FLAG_GET(output).empty()) {
+    GTEST_FLAG_SET(output, "xml:odbcpp-trace-reload-gtest.xml");
+  }
   ::testing::InitGoogleTest(&argc, argv);
   // Listing is inventory only. It emits no result marker and cannot qualify a
   // run; preserve the standard interface used by native inventory collectors.
   if (GTEST_FLAG_GET(list_tests)) {
     return RUN_ALL_TESTS();
-  }
-  if (GTEST_FLAG_GET(output).empty()) {
-    GTEST_FLAG_SET(output, "xml:odbcpp-trace-reload-gtest.xml");
   }
 #ifdef _WIN32
   const auto process = _getpid();
