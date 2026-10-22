@@ -10,12 +10,33 @@
 #include <sql.h>
 
 #include <cstdlib>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <string_view>
 
+#ifdef ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL
+// Compile-time isolated controls exercise the same main/CTest policy below.
+// These names can never satisfy the real loader evidence inventory.
+TEST(TraceReloadExitPolicyControl, Pass) { SUCCEED(); }
+TEST(TraceReloadExitPolicyControl, SkipA) { GTEST_SKIP() << "synthetic skip A"; }
+TEST(TraceReloadExitPolicyControl, SkipB) { GTEST_SKIP() << "synthetic skip B"; }
+TEST(TraceReloadExitPolicyControl, Failure) { ADD_FAILURE() << "synthetic failure"; }
+TEST(TraceReloadExitPolicyControl, FailureThenSkip) {
+  ADD_FAILURE() << "synthetic failure before skip";
+  GTEST_SKIP() << "must not hide the failure";
+}
+TEST(TraceReloadExitPolicyControl, AdHocFailureAndSkip) {
+  GTEST_SKIP() << "must not hide an out-of-test failure";
+}
+TEST(TraceReloadExitPolicyControl, SkipTextFailure) {
+  ADD_FAILURE() << "[  SKIPPED ] this text must not override failure";
+}
+#else
 // Loads the real driver library the way a Driver Manager does, without linking
 // the driver's static core, so unload runs the library's own shutdown path.
 namespace {
@@ -173,6 +194,7 @@ TEST(OdbcTraceReload, UnloadClosesTheTraceFileAndReloadStartsFresh) {
   }
 
   if (stayed_resident) {
+    RecordProperty("odbcpp_trace_reload_boundary", "driver_image_retained");
     GTEST_SKIP() << "The platform loader kept the driver image resident after "
                     "unload; unload-time sink closure was not observable.";
   }
@@ -200,6 +222,7 @@ TEST(OdbcTraceReload, DisabledTracingAlsoRetiresStorageAcrossImageReloads) {
     EXPECT_EQ(SQL_SUCCESS, release(SQL_HANDLE_ENV, odbc_environment));
     ASSERT_TRUE(driver.unload());
     if (DriverLibrary::resident()) {
+      RecordProperty("odbcpp_trace_reload_boundary", "driver_image_retained");
       GTEST_SKIP() << "The loader retained the image; disabled unload cleanup was not observable.";
     }
     EXPECT_FALSE(std::filesystem::exists(environment.directory / "trace.log"));
@@ -207,3 +230,53 @@ TEST(OdbcTraceReload, DisabledTracingAlsoRetiresStorageAcrossImageReloads) {
 }
 
 }  // namespace
+#endif
+
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  // Listing is inventory only. It emits no result marker and cannot qualify a
+  // run; preserve the standard interface used by native inventory collectors.
+  if (GTEST_FLAG_GET(list_tests)) return RUN_ALL_TESTS();
+  if (GTEST_FLAG_GET(output).empty()) {
+    GTEST_FLAG_SET(output, "xml:odbcpp-trace-reload-gtest.xml");
+  }
+#ifdef _WIN32
+  const auto process = _getpid();
+#else
+  const auto process = getpid();
+#endif
+  const auto ticks = static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  const auto run = std::to_string(process) + "-" + std::to_string(ticks);
+  // Standard GoogleTest XML records this root property. Match it to the one
+  // post-run marker in CTest's hashed stdout, refusing a stale separate XML.
+  ::testing::Test::RecordProperty("odbcpp_trace_reload_run", run);
+#ifdef ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL
+  if (GTEST_FLAG_GET(filter) == "TraceReloadExitPolicyControl.AdHocFailureAndSkip") {
+    ADD_FAILURE() << "synthetic out-of-test failure before RUN_ALL_TESTS";
+  }
+#endif
+  // Do not let a repeated or zero-iteration invocation advertise the same
+  // complete inventory as one real selected execution.
+  const int native_result = GTEST_FLAG_GET(repeat) == 1 ? RUN_ALL_TESTS() : 1;
+  const auto& unit = *::testing::UnitTest::GetInstance();
+  const auto selected = unit.test_to_run_count();
+  const auto passed = unit.successful_test_count();
+  const auto skipped = unit.skipped_test_count();
+  const auto failed = unit.failed_test_count();
+  const auto disabled = unit.disabled_test_count();
+  int result = native_result;
+  if (result == 0) {
+    if (selected == 0 || disabled != 0 || passed + skipped + failed != selected) {
+      result = 1;
+    } else if (skipped == selected && failed == 0) {
+      result = 77;
+    } else if (skipped != 0 || failed != 0) {
+      result = 1; // A partial skip is neither a complete pass nor all-skipped.
+    }
+  }
+  std::printf("ODBCPP_TRACE_RELOAD_RESULT_V1 run=%s selected=%d passed=%d skipped=%d "
+              "failed=%d disabled=%d result=%d exit=%d\n",
+              run.c_str(), selected, passed, skipped, failed, disabled, native_result, result);
+  return result;
+}

@@ -177,7 +177,7 @@ endforeach()
 # static core, so unload runs the driver image's own shutdown path.
 add_executable(test_odbc_trace_reload tests/unit/test_odbc_trace_reload.cpp)
 target_include_directories(test_odbc_trace_reload PRIVATE ${ODBC_INCLUDE_DIR})
-target_link_libraries(test_odbc_trace_reload PRIVATE GTest::gtest_main ${CMAKE_DL_LIBS})
+target_link_libraries(test_odbc_trace_reload PRIVATE GTest::gtest ${CMAKE_DL_LIBS})
 target_compile_definitions(test_odbc_trace_reload PRIVATE
   ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:${PROJECT_NAME}_driver>")
 apply_compiler_settings(test_odbc_trace_reload)
@@ -186,7 +186,22 @@ set_target_properties(test_odbc_trace_reload PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 add_test(NAME test_odbc_trace_reload COMMAND test_odbc_trace_reload)
 set_tests_properties(test_odbc_trace_reload PROPERTIES LABELS "unit" TIMEOUT 60
-  SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]")
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" SKIP_RETURN_CODE 77)
+# The same native main with isolated synthetic assertions proves failure/skip
+# precedence through actual GoogleTest and CTest, without loading the driver.
+find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+add_executable(trace_reload_exit_policy_control tests/unit/test_odbc_trace_reload.cpp)
+target_include_directories(trace_reload_exit_policy_control PRIVATE ${ODBC_INCLUDE_DIR})
+target_compile_definitions(trace_reload_exit_policy_control PRIVATE ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL=1)
+target_link_libraries(trace_reload_exit_policy_control PRIVATE GTest::gtest)
+apply_compiler_settings(trace_reload_exit_policy_control)
+set_target_properties(trace_reload_exit_policy_control PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_trace_reload_exit_policy COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/security/test_trace_reload_exit_policy.py"
+  --binary $<TARGET_FILE:trace_reload_exit_policy_control>
+  --ctest "${CMAKE_CTEST_COMMAND}" --work-root "${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties(test_trace_reload_exit_policy PROPERTIES LABELS "unit;architecture" TIMEOUT 120)
 # The backend contract suite exceeds the standard COFF section limit on MSVC.
 if(MSVC)
   target_compile_options(test_backend_contract PRIVATE /bigobj)
