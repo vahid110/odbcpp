@@ -19,7 +19,7 @@ FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-packag
 FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
 # Reviewed job bodies, excluding only their top-level event condition. Preserve
-# 526b except the human-requested unattended Windows package extension (2026-10-20).
+# 526b with reviewed packaging and complete-checkpoint repairs (2026-10-22).
 BODY_SHA256 = {
     'sanitizer-only': 'fbc8b8a9ef873d8d1b13f429b3110338f360adf941936543f1a0df31e71909b7',
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
@@ -27,13 +27,13 @@ BODY_SHA256 = {
     'windows-product-qualification': '6bffeb8c5f8356015036a032d0f37128180fbf8c011084bbfd208ce1a40e80e6',
     'build-and-test': 'a5f64cdc03b610e37ca827a9c189430effc5d21655f5b4d5fc7e13790dc77c3f',
     'redshift-build': '83dd943e7dad86a66e4c44124163bbd612194b914c19abba7fd702d218787048',
-    'windows-live': '79bb1a40d5fa0a94938f1b4fa4a4165326919139b7d88387df0e15f35cca0517',
+    'windows-live': '8714a575d2b692824ed35ea23c541104c599b1cc8f995cb8b8797981f9ce5f66',
     'windows-package': 'd3191013a82d6c6a45fe352f17c7d8888f12996877775fcd53991a99620842d8',
     'windows-linked-server': 'f7f15d6261db38ead9993bb28ea275523b1af5835780e1c28ed075844f536c0d',
     'linux-sanitizers': 'e302e94886a90342a0abf1b386d46afb5b36d13ea49c6802034ffbc12188d2ab',
-    'linux-openssl-static': '04a0418d777e90f5fd04e9a1fcca6fdec7c4731630d11c765825ab29abd1d930',
+    'linux-openssl-static': '7ef4d2df1bbdac2b9180e14a4213d365b7be8e4da5915ec82fb7472976ea609c',
     'awslc-adapter-proof': '19230fd79ff37164624bd764631ad194679a7ef63c3aaf3594d5d4826970969d',
-    'iodbc-unicode': '6ea54a59df2efc5a4002e8ddf9b9b0f68f4216fdd60b94f0cb3867dac3a21a37',
+    'iodbc-unicode': 'fe0c513fb3a0a89f5a2436fd77184b3f571378a0bf3cac7f54d2663ab22b1d62',
 }
 
 
