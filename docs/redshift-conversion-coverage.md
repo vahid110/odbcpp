@@ -77,7 +77,7 @@ Status: **C** covered, **P** partial, **G** gap (no test), **D** demonstrated de
 | N7 | Non-finite to integer/NUMERIC/CHAR | 22003 (numeric), raw text for CHAR | Policies tested | F `Nonfinite*`, `CharacterNonfinite*` | C |
 | N8 | Signed zero | `-0` preserved for floats | Parameters: tested; results: PG only | U `FullLiteralWiresKeepExtremesSubnormalsAndSignedZero`; PG | P (no Redshift result case) |
 | N9 | Float underflow to zero on narrowing | 22003 | Rejects | PG `FloatingConversionRejectsUnderflowToZero` | C |
-| N10 | **DOUBLE result precision** | `SQL_C_DOUBLE` should equal the stored IEEE value | Results are server text. ODBCPP sets no `extra_float_digits`; the pinned AWS JDBC driver sets it to 3 or 2 at startup (`ConnectionFactoryImpl.java:425-428,910` @773fa16), which is reference evidence that default output is rounded. If the server emits 15 significant digits, `0.1::float8+0.2::float8` arrives as `0.3` and a rounded maximum can overflow. Not observed on Redshift. | — | **G (P1)**: author L case; decide on session `extra_float_digits` only after live proof |
+| N10 | **DOUBLE/REAL result precision** | `SQL_C_DOUBLE`/`SQL_C_FLOAT` equal the stored IEEE value | **Fixed (Redshift profile).** The startup sends `extra_float_digits=2`, the pinned AWS JDBC default for Redshift's 8.0.2 server version (`ConnectionFactoryImpl.java:425-428` @773fa16), so float8 text identifies the stored value. The backend re-emits each REAL/DOUBLE cell as the shortest exact decimal (`pg_value.cpp`), keeping the server's default `%g` notation threshold, so exactly representable values keep their previous spelling. Specials and unrecognised spellings stay unchanged; the PostgreSQL profile is unchanged. | U `RedshiftFloatingStartupTest`, `RedshiftFloatingCodecTest`; W `RedshiftFloatingResultsTest.*`; L `DoubleResultRoundTripsStoredValue` (unrun) | **C (U/W), live pending.** Residuals: float4 with 2 extra digits gives 8 significant digits, so a REAL may still differ by one ulp (9 needed; `=3` is unverified on Redshift). REAL to `SQL_C_DOUBLE` parses the decimal rather than widening the float (same as baseline). |
 | N11 | NUMERIC with no typmod | Unknown size 0 | `NUMERIC` size 0 | U `PreservesNumericAndTemporalModifiers` | C |
 
 ### Temporal
@@ -112,10 +112,10 @@ Status: **C** covered, **P** partial, **G** gap (no test), **D** demonstrated de
 
 ## Prioritised findings
 
-1. **P1 N10 — DOUBLE result precision.** Unknown whether Redshift text output
-   round-trips IEEE doubles. A live case is authored
-   (`RedshiftSpecialTypesRealTest.DoubleResultRoundTripsStoredValue`); no session
-   setting is changed without that evidence.
+1. **N10 — DOUBLE/REAL result precision: fixed** for the Redshift profile
+   (`extra_float_digits=2` at startup, plus the shortest exact re-emission). The live case
+   `DoubleResultRoundTripsStoredValue` must confirm the server accepts the startup
+   setting and emits 17 digits. Residuals: the REAL one-ulp edge and REAL to C_DOUBLE widening.
 2. **P1 V7 — raw binary VARBYTE parameters** lack live evidence; authored.
 3. **P2 T8 — INTERVAL families** are presented as untyped VARCHAR. Requires a
    design (SQL_INTERVAL_* metadata, struct conversion, parameters); out of scope.
@@ -125,5 +125,5 @@ Status: **C** covered, **P** partial, **G** gap (no test), **D** demonstrated de
 5. **P2 T5 — time-zone projection** to structs is silent; document or diagnose.
 6. **P3 T7 — `24:00:00`.**
 
-No numeric/temporal/VARBYTE code was changed in this batch; the only
-conversion-adjacent change is the special-type work.
+Conversion code changed only for N10 (Redshift REAL/DOUBLE result
+precision). The other findings are recorded for subsequent work.

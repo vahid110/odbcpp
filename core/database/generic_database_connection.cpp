@@ -952,7 +952,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
             continue;
           }
           if (type != ScalarType::Binary && type != ScalarType::LongVarBinary &&
-              type != ScalarType::Boolean) continue;
+              type != ScalarType::Boolean && type != ScalarType::Real &&
+              type != ScalarType::Double) continue;
           auto canonical = column < parsed.columns.size()
               ? normalize_native_result_value(parsed.columns[column].type_id, type, *cell)
               : normalize_result_value(type, *cell);

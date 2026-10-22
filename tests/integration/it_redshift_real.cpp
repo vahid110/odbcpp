@@ -11298,8 +11298,9 @@ TEST_F(RedshiftSpecialTypesRealTest, DoubleResultRoundTripsStoredValue) {
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
   SQLLEN length = 0;
-  // Server text is recorded first. Without extra_float_digits (AWS JDBC sets it;
-  // ODBCPP does not) a rounded maximum may overflow: EXPECT, not ASSERT.
+  // Server text is recorded first. The Redshift profile requests
+  // extra_float_digits=2 (audit N10); if the server ignored it, a rounded
+  // maximum could overflow, so these are EXPECT, not ASSERT.
   RecordProperty("double_sum_server_text", text_cell(3, length));
   double sum = 0, max = 0;
   EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_DOUBLE, &sum, sizeof(sum), &length))

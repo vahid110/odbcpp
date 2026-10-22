@@ -473,6 +473,9 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
   for (const auto& [key, value] : params) {
     add(key.size()); add(1); add(value.size()); add(1);
   }
+  const bool float_digits = profile_ == PgCatalogProfile::Redshift &&
+      !params.contains("extra_float_digits");
+  if (float_digits) add(std::string_view("extra_float_digits").size() + 1 + 2);
   if (bytes > std::numeric_limits<std::uint32_t>::max()) throw RequestWireLimitExceeded{};
   std::vector<std::pair<std::string, std::string>> kv;
   kv.push_back({"user", user});
@@ -480,6 +483,9 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
   for (const auto& p : params) {
     kv.push_back(p);
   }
+  // Redshift float text otherwise carries DBL_DIG/FLT_DIG digits and loses the
+  // stored value. 2 is the AWS JDBC default for Redshift (8.0.2) startups.
+  if (float_digits) kv.push_back({"extra_float_digits", "2"});
 
   for (const auto& [key, value] : kv) {
     if (key.find('\0') != std::string::npos ||
