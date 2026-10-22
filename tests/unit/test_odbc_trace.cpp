@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +26,25 @@
 #else
 #include <unistd.h>
 #endif
+
+namespace rs::odbc::trace {
+// Exercises the actual admission used by active/configure without introducing a
+// product callback, exported test hook or an illegal concurrent dlclose.
+struct TraceShutdownTestAccess {
+  static bool can_admit() {
+    Tracer::StorageUse use;
+    return static_cast<bool>(use);
+  }
+  static void hold_before_lock(std::atomic<bool>& entered, std::atomic<bool>& release) {
+    Tracer::StorageUse use;
+    entered.store(static_cast<bool>(use));
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!release.load() && std::chrono::steady_clock::now() < end) {
+      std::this_thread::yield();
+    }
+  }
+};
+}  // namespace rs::odbc::trace
 
 namespace {
 
@@ -155,6 +176,123 @@ protected:
   std::filesystem::path directory_;
   std::filesystem::path path_;
 };
+
+// GoogleTest runs DeathTest suites first. Each terminal transition is isolated
+// in a child, so ordinary tracing/configuration tests retain their real state.
+TEST(OdbcTraceShutdownDeathTest, NeverInitializedShutdownAllocatesNoStorage) {
+  ASSERT_EXIT(
+      {
+        if (Tracer::shutdown() != Tracer::ShutdownResult::Unused) {
+          std::exit(2);
+        }
+        Tracer::configure(TraceOptions{});
+        Tracer::configure(std::nullopt);
+        if (Tracer::active() || rs::odbc::trace::TraceShutdownTestAccess::can_admit()) {
+          std::exit(3);
+        }
+        if (Tracer::shutdown() != Tracer::ShutdownResult::AlreadyStopped) {
+          std::exit(4);
+        }
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(OdbcTraceShutdownDeathTest, QuiescentRetirementKeepsLateDestructorOdbcCallsSafe) {
+  ASSERT_EXIT(
+      {
+        // This really executes during static destruction; _Exit would bypass
+        // the destructor and fail the expected output check.
+        struct LateOdbcCall {
+          ~LateOdbcCall() {
+            SQLHENV environment = SQL_NULL_HENV;
+            if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment) != SQL_SUCCESS ||
+                SQLFreeHandle(SQL_HANDLE_ENV, environment) != SQL_SUCCESS) {
+              std::abort();
+            }
+            std::fputs("late ODBC destructor safe\n", stderr);
+          }
+        };
+        static LateOdbcCall late_call;
+        (void)late_call;
+        Tracer::configure(TraceOptions{}); // Allocate even though disabled.
+        if (Tracer::shutdown() != Tracer::ShutdownResult::Retired) {
+          std::exit(3);
+        }
+        TraceOptions enabled;
+        enabled.logging.level = rs::core::logging::LogLevel::Trace;
+        enabled.logging.asynchronous = false;
+        enabled.logging.sinks = {rs::core::logging::LogSink::Stderr};
+        Tracer::configure(enabled);
+        Tracer::configure(std::nullopt);
+        if (Tracer::active() || rs::odbc::trace::TraceShutdownTestAccess::can_admit()) {
+          std::exit(4);
+        }
+        if (Tracer::shutdown() != Tracer::ShutdownResult::AlreadyStopped) {
+          std::exit(5);
+        }
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0), "late ODBC destructor safe");
+}
+
+TEST(OdbcTraceShutdownDeathTest, AdmittedCallerBeforeMutexCausesExplicitBusyNotWait) {
+  ASSERT_EXIT(
+      {
+        Tracer::configure(TraceOptions{});
+        std::atomic<bool> entered{false};
+        std::atomic<bool> release{false};
+        std::thread delayed([&] {
+          rs::odbc::trace::TraceShutdownTestAccess::hold_before_lock(entered, release);
+        });
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (!entered.load() && std::chrono::steady_clock::now() < end) {
+          std::this_thread::yield();
+        }
+        const bool admitted = entered.load();
+        const auto result = Tracer::shutdown();
+        const bool denied = !rs::odbc::trace::TraceShutdownTestAccess::can_admit();
+        release.store(true);
+        delayed.join();
+        if (!admitted || result != Tracer::ShutdownResult::Busy || !denied) {
+          std::exit(2);
+        }
+        // Releasing a busy user must not silently turn terminal shutdown into
+        // a retry/cleaned claim or reopen configuration.
+        Tracer::configure(std::nullopt);
+        if (Tracer::active() || Tracer::shutdown() != Tracer::ShutdownResult::AlreadyStopped) {
+          std::exit(3);
+        }
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(OdbcTraceShutdownDeathTest, OutstandingTracerSnapshotIsExplicitBusyNotCleaned) {
+  ASSERT_EXIT(
+      {
+        TraceOptions enabled;
+        enabled.logging.level = rs::core::logging::LogLevel::Trace;
+        enabled.logging.asynchronous = false;
+        enabled.logging.sinks = {rs::core::logging::LogSink::Stderr};
+        Tracer::configure(enabled);
+        auto snapshot = Tracer::active();
+        if (!snapshot || Tracer::shutdown() != Tracer::ShutdownResult::Busy) {
+          std::exit(2);
+        }
+        Tracer::configure(TraceOptions{});
+        Tracer::configure(std::nullopt);
+        if (Tracer::active()) {
+          std::exit(3);
+        }
+        snapshot.reset();
+        if (Tracer::shutdown() != Tracer::ShutdownResult::AlreadyStopped) {
+          std::exit(4);
+        }
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
 
 TEST(OdbcTraceSignatureTest, CoversEveryExportedFunctionWithMatchingArity) {
   std::ifstream exports(ODBCPP_EXPORTS_FILE);
@@ -586,6 +724,26 @@ TEST_F(OdbcTraceTest, NestedCallsAndDisabledTracingWriteNothing) {
       "SQLFetch", SQL_NULL_HANDLE, true,
       []() noexcept -> SQLRETURN { return SQL_SUCCESS; }, statement));
   EXPECT_FALSE(contains(read_file(path_), "SQLFetch"));
+}
+
+TEST_F(OdbcTraceTest, InFlightSnapshotKeepsItsExitRecordAcrossConfigurationChange) {
+  Tracer::configure(trace_to(path_));
+  bool disabled_inside = false;
+  const auto result = traced_call("SQLFetch", SQL_NULL_HANDLE, true,
+      [&]() noexcept -> SQLRETURN {
+        Tracer::configure(TraceOptions{});
+        disabled_inside = !Tracer::active();
+        return SQL_NO_DATA;
+      }, SQL_NULL_HSTMT);
+  const auto contents = finish();
+  const auto events = lines_with(contents, "event=odbc_trace_");
+  EXPECT_TRUE(disabled_inside);
+  EXPECT_EQ(SQL_NO_DATA, result);
+  ASSERT_EQ(2u, events.size());
+  EXPECT_TRUE(contains(events[0], "event=odbc_trace_enter"));
+  EXPECT_TRUE(contains(events[1], "event=odbc_trace_exit"));
+  EXPECT_TRUE(contains(events[1], "return=\"SQL_NO_DATA\""));
+  EXPECT_EQ(field_value(events[0], "call"), field_value(events[1], "call"));
 }
 
 TEST_F(OdbcTraceTest, JsonRecordsCarryEventsAndCorrelatedCallIdentifiers) {

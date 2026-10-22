@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -364,22 +365,36 @@ std::map<std::string, std::string> trusted_driver_parameters() {
 enum : int { kUnresolved = 0, kDisabled = 1, kEnabled = 2 };
 std::atomic<int> tracer_state{kUnresolved};
 
-// Storage is never freed so ODBC calls from an application's static
-// destructors stay safe; the shutdown guard below still closes the sink.
-std::mutex& tracer_mutex() {
-  static auto* mutex = new std::mutex;
-  return *mutex;
-}
+// This gate has trivial static lifetime, including late application destructors.
+// Closing it and observing zero admitted users is one atomic operation: a caller
+// delayed before mutex acquisition cannot race storage reclamation.
+constexpr unsigned kStorageClosed = 1u << (std::numeric_limits<unsigned>::digits - 1);
+static_assert(std::atomic<unsigned>::is_always_lock_free);
+std::atomic<unsigned> storage_uses{0};
 
-std::shared_ptr<Tracer>& current_tracer() {
-  static auto* tracer = new std::shared_ptr<Tracer>;
-  return *tracer;
+struct TraceStorage {
+  std::mutex mutex;
+  std::shared_ptr<Tracer> tracer;
+};
+TraceStorage* allocated_storage = nullptr;
+
+// Only admitted callers may enter. Function-static initialization serializes
+// allocation; shutdown reads allocated_storage only after closing a zero-user
+// gate. Failed initialization leaves no allocation to retire. The cached pointer
+// is never accessed again after terminal closure, even from late configure().
+TraceStorage& tracer_storage() {
+  static auto* storage = [] {
+    auto* value = new TraceStorage;
+    allocated_storage = value;
+    return value;
+  }();
+  return *storage;
 }
 
 // Any failure, including an unopenable trace file, leaves tracing disabled
 // rather than unresolved so it is never retried on every call.
-void install_locked(const std::optional<TraceOptions>& options) {
-  auto& tracer = current_tracer();
+void install_locked(TraceStorage& storage, const std::optional<TraceOptions>& options) {
+  auto& tracer = storage.tracer;
   tracer.reset();
   tracer_state.store(kDisabled, std::memory_order_release);
   if (options && options->enabled()) {
@@ -390,18 +405,12 @@ void install_locked(const std::optional<TraceOptions>& options) {
 
 // Driver Managers unload and reload the driver library. Closing the sink at
 // unload/exit releases the file for rotation and the next load.
-// At ExitProcess other threads are already terminated; one may have held the
-// mutex. Never block there: Disabled is always published, the sink is closed
-// only when the mutex is free (the file is then released by process exit).
+// At ExitProcess a terminated thread may have owned storage or a tracer snapshot.
+// Gate/mutex admission never waits; Busy deliberately retains storage for OS
+// cleanup. A quiescent reset still has the existing SDK sink-flush/I/O latency
+// limits: a free tracer mutex alone is not a universal nonblocking sink guarantee.
 struct ShutdownGuard {
-  ~ShutdownGuard() {
-    tracer_state.store(kDisabled, std::memory_order_release);
-    try {
-      std::unique_lock lock(tracer_mutex(), std::try_to_lock);
-      if (lock.owns_lock()) current_tracer().reset();
-    } catch (...) {
-    }
-  }
+  ~ShutdownGuard() { (void)Tracer::shutdown(); }
 } shutdown_guard;
 
 // ---- Rendering -----------------------------------------------------------------
@@ -722,10 +731,54 @@ TraceOptions TraceOptions::resolve(
   return options;
 }
 
+Tracer::StorageUse::StorageUse() noexcept {
+  auto observed = storage_uses.load(std::memory_order_acquire);
+  while ((observed & kStorageClosed) == 0) {
+    // A saturated admission count must not wrap into the closed bit.
+    if (observed == kStorageClosed - 1) return;
+    if (storage_uses.compare_exchange_weak(observed, observed + 1,
+            std::memory_order_acq_rel, std::memory_order_acquire)) {
+      admitted_ = true;
+      return;
+    }
+  }
+}
+
+Tracer::StorageUse::~StorageUse() {
+  if (admitted_) storage_uses.fetch_sub(1, std::memory_order_release);
+}
+
+Tracer::ShutdownResult Tracer::shutdown() noexcept {
+  const auto previous = storage_uses.fetch_or(kStorageClosed, std::memory_order_acq_rel);
+  if ((previous & kStorageClosed) != 0) return ShutdownResult::AlreadyStopped;
+  // Never wait for an admitted caller (including one queued on the mutex).
+  // No later shutdown retries Busy: process termination owns this retained state.
+  if (previous != 0) return ShutdownResult::Busy;
+  try {
+    auto* storage = allocated_storage;
+    if (!storage) return ShutdownResult::Unused;
+    std::unique_lock lock(storage->mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return ShutdownResult::Busy;
+    // An in-flight traced_call owns its sink independently of the storage lock.
+    if (storage->tracer && storage->tracer.use_count() != 1) return ShutdownResult::Busy;
+    storage->tracer.reset();
+    lock.unlock();
+    (void)lock.release(); // Disarm before destroying the referenced mutex.
+    delete storage;
+    allocated_storage = nullptr;
+    return ShutdownResult::Retired;
+  } catch (...) {
+    return ShutdownResult::Busy;
+  }
+}
+
 std::shared_ptr<Tracer> Tracer::active() noexcept {
   if (tracer_state.load(std::memory_order_acquire) == kDisabled) return {};
+  StorageUse use;
+  if (!use) return {};
   try {
-    std::lock_guard lock(tracer_mutex());
+    auto& storage = tracer_storage();
+    std::lock_guard lock(storage.mutex);
     if (tracer_state.load(std::memory_order_relaxed) == kUnresolved) {
       std::optional<TraceOptions> options;
       try {
@@ -734,9 +787,9 @@ std::shared_ptr<Tracer> Tracer::active() noexcept {
       } catch (...) {
         // Invalid trace configuration disables tracing; it never fails a call.
       }
-      install_locked(options);
+      install_locked(storage, options);
     }
-    return current_tracer();
+    return storage.tracer;
   } catch (...) {
     // install_locked already recorded Disabled for an unusable sink.
     return {};
@@ -744,13 +797,16 @@ std::shared_ptr<Tracer> Tracer::active() noexcept {
 }
 
 void Tracer::configure(std::optional<TraceOptions> options) {
-  std::lock_guard lock(tracer_mutex());
+  StorageUse use;
+  if (!use) return;
+  auto& storage = tracer_storage();
+  std::lock_guard lock(storage.mutex);
   if (!options) {
-    current_tracer().reset();
+    storage.tracer.reset();
     tracer_state.store(kUnresolved, std::memory_order_release);
     return;
   }
-  install_locked(options);
+  install_locked(storage, options);
 }
 
 Tracer::Tracer(TraceOptions options)

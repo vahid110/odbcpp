@@ -120,10 +120,17 @@ ArgValue capture(T value) noexcept {
 // and connect itself) are traced.
 class Tracer {
 public:
-  // Null when tracing is disabled; the disabled fast path is one atomic load.
+  // Null when tracing is disabled or permanently stopped for image teardown.
   static std::shared_ptr<Tracer> active() noexcept;
   // Replaces process configuration. nullopt re-reads trusted sources lazily.
+  // Does nothing after terminal shutdown; it cannot resurrect retired storage.
   static void configure(std::optional<TraceOptions> options);
+
+  enum class ShutdownResult { Unused, Retired, Busy, AlreadyStopped };
+  // Adapter-private image teardown, not an exported ODBC function. Busy means
+  // storage was retained, not cleaned: never wait for a stopped thread at exit.
+  // Quiescent sink destruction still uses the SDK's existing synchronous flush.
+  static ShutdownResult shutdown() noexcept;
 
   explicit Tracer(TraceOptions options);
 
@@ -136,6 +143,20 @@ public:
   std::uint64_t next_call() noexcept { return next_call_.fetch_add(1) + 1; }
 
 private:
+  // Admission spans pointer lookup through mutex release. Kept private to this
+  // adapter; the friend exercises delayed/queued admission in subprocess tests.
+  class StorageUse {
+  public:
+    StorageUse() noexcept;
+    ~StorageUse();
+    explicit operator bool() const noexcept { return admitted_; }
+    StorageUse(const StorageUse&) = delete;
+    StorageUse& operator=(const StorageUse&) = delete;
+  private:
+    bool admitted_{false};
+  };
+  friend struct TraceShutdownTestAccess;
+
   TraceOptions options_;
   std::shared_ptr<rs::core::logging::DriverLogger> logger_;
   std::atomic<std::uint64_t> next_call_{0};

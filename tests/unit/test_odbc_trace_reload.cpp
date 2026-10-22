@@ -178,4 +178,32 @@ TEST(OdbcTraceReload, UnloadClosesTheTraceFileAndReloadStartsFresh) {
   }
 }
 
+TEST(OdbcTraceReload, DisabledTracingAlsoRetiresStorageAcrossImageReloads) {
+#ifdef _WIN32
+  const auto process = _getpid();
+#else
+  const auto process = getpid();
+#endif
+  const TraceEnvironment environment(std::filesystem::temp_directory_path() /
+      ("odbcpp-trace-disabled-reload-" + std::to_string(process)));
+  set_environment("ODBCPP_TRACE", "0");
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    SCOPED_TRACE(cycle);
+    DriverLibrary driver;
+    ASSERT_TRUE(driver.load()) << ODBCPP_DRIVER_LIBRARY_PATH;
+    const auto alloc = driver.symbol<AllocHandle>("SQLAllocHandle");
+    const auto release = driver.symbol<FreeHandle>("SQLFreeHandle");
+    ASSERT_NE(nullptr, alloc);
+    ASSERT_NE(nullptr, release);
+    SQLHANDLE odbc_environment = SQL_NULL_HANDLE;
+    ASSERT_EQ(SQL_SUCCESS, alloc(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &odbc_environment));
+    EXPECT_EQ(SQL_SUCCESS, release(SQL_HANDLE_ENV, odbc_environment));
+    ASSERT_TRUE(driver.unload());
+    if (DriverLibrary::resident()) {
+      GTEST_SKIP() << "The loader retained the image; disabled unload cleanup was not observable.";
+    }
+    EXPECT_FALSE(std::filesystem::exists(environment.directory / "trace.log"));
+  }
+}
+
 }  // namespace
