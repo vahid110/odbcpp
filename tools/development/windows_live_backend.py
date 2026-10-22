@@ -417,6 +417,7 @@ def public_model():
     return rows
 
 def validate_payload(payload, rows):
+    from tools.development import redshift_powerbi_partition as relationship_partition
     closed(payload, ('schema_version', 'source_head', 'run_id', 'config', 'case_variables'), 'payload_schema')
     need(payload['schema_version'] == 1 and payload['source_head'] == HEAD and (re.fullmatch('windows-live-[A-Za-z0-9_-]{1,60}', payload['run_id']) is not None), 'payload_identity')
     config = payload['config']
@@ -433,6 +434,13 @@ def validate_payload(payload, rows):
         if spec['case'] == 'RedshiftMetadataWorkflowRealTest.MetadataToPreparedQueryShowConfigured':
             expected.update(ODBCPP_REDSHIFT_TEST_SCHEMA='odbcpp_fixture', ODBCPP_REDSHIFT_TEST_TABLE='pilot_rows')
         dynamic = {name for name in expected if name in ('ODBCPP_REDSHIFT_TIMEOUT_SCHEMA', 'ODBCPP_REDSHIFT_TIMEOUT_TABLE', 'ODBCPP_REDSHIFT_TIMEOUT_OID')}
+        if spec['case'] in relationship_partition.CASES:
+            observed = {name: variables.get(name) for name in (
+                'ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP',
+                'ODBCPP_REDSHIFT_POWERBI_PARENT_OID', 'ODBCPP_REDSHIFT_POWERBI_FACT_OID')}
+            relationship_partition.profile_variables(profile, observed)
+            dynamic.update(('ODBCPP_REDSHIFT_POWERBI_PARENT_OID',
+                            'ODBCPP_REDSHIFT_POWERBI_FACT_OID'))
         if spec['case'] == 'RedshiftMetadataScopeShowRealTest.TwoVisibleDatabasesKeepCommonSchemaIdentityThroughWideFanoutAndSibling':
             dynamic.add('ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE')
             expected['ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE'] = ''
@@ -455,6 +463,7 @@ def build_inputs(payload, rows, factory, tree, run):
     expected = dict(schema_version=1, source_head=HEAD, cases=[])
     dsn_values = None
     package_files = {}
+    staged_environments = {}
     for entry, (row, spec, original) in zip(payload['case_variables'], rows):
         profile = copy.deepcopy(original)
         private = profile['private_input']
@@ -469,6 +478,10 @@ def build_inputs(payload, rows, factory, tree, run):
             values.update(DRIVER=str(DRIVER), **LOGGING)
             need(dsn_values is None or dsn_values == values, 'single_native_dsn_profile')
             dsn_values = values
+            from tools.development.redshift_powerbi_partition import CASES
+            if spec['case'] in CASES:
+                variables.update(ODBCPP_TEST_DSN='DSN=' + RegistryDsn.NAME + ';',
+                                 ODBCPP_REDSHIFT_PACKAGE_INSTALLED_DRIVER=str(DRIVER))
         else:
             if kind == 'OWN_DM_FILE':
                 fields = factory.profile_connection_fields(config, profile)
@@ -491,7 +504,13 @@ def build_inputs(payload, rows, factory, tree, run):
             variables.update(ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION=invalid, ODBCPP_REDSHIFT_AUTH_EXPECTED_USER=config['test_user'])
         need(all((re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', key) is not None and type(value) is str and (not any((c in value for c in '\x00\r\n'))) and ('$<' not in value) for key, value in variables.items())), 'literal_native_environment')
         selector = row['host_profile']
-        environment = tree.write(directory / (selector + '.json'), json_bytes({'environment': [name + '=' + value for name, value in variables.items()]}))
+        environment_body = json_bytes({'environment': [name + '=' + value for name, value in variables.items()]})
+        if selector in staged_environments:
+            previous_body, environment = staged_environments[selector]
+            need(environment_body == previous_body, 'shared_native_profile_environment_changed')
+        else:
+            environment = tree.write(directory / (selector + '.json'), environment_body)
+            staged_environments[selector] = (environment_body, environment)
         index['profiles'][selector] = {'environment_file': str(environment)}
         index['images'][row['origin_image']] = {'executable': row['executable'], 'sha256': row['sha256']}
         case = dict(id=row['origin_id'], image=row['origin_image'], profile=selector, gtest_filter=row['filter'], timeout_seconds=40)

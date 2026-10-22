@@ -62,6 +62,7 @@ def stage_case_environments(directory, blueprint, specs, profiles, connections,
     directory.mkdir(mode=0o700)
     result = dict(blueprint, profiles={}, state="PRIVATE_ENVIRONMENTS_STAGED")
     custody = []
+    staged_payloads = {}
     try:
         for case, spec in zip(blueprint["cases"], specs):
             if (case["id"] != spec["ctest_id"] or
@@ -91,13 +92,31 @@ def stage_case_environments(directory, blueprint, specs, profiles, connections,
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 raise ValueError("Invalid CTest profile identifier")
             path = directory / (name + ".json")
+            body = json.dumps({"environment": [key + "=" + value
+                                               for key, value in env.items()]}).encode('utf-8')
+            if name in staged_payloads:
+                previous, held = staged_payloads[name]
+                if body != previous:
+                    raise ValueError("Shared profile has different environment payloads")
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    info = os.fstat(fd)
+                    if ((info.st_dev, info.st_ino) != (held['device'], held['inode']) or
+                            os.read(fd, len(body) + 1) != body):
+                        raise RuntimeError("Shared environment file changed")
+                finally:
+                    os.close(fd)
+                continue
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             info = os.fstat(fd)
-            custody.append({"path": str(path), "device": info.st_dev, "inode": info.st_ino})
-            with os.fdopen(fd, "w") as stream:
-                json.dump({"environment": [key + "=" + value for key, value in env.items()]}, stream)
+            held = {"path": str(path), "device": info.st_dev, "inode": info.st_ino}
+            custody.append(held)
+            with os.fdopen(fd, "wb") as stream:
+                if stream.write(body) != len(body):
+                    raise OSError("Short private environment write")
                 stream.flush()
                 os.fsync(stream.fileno())
+            staged_payloads[name] = (body, held)
             result["profiles"][name] = {"environment_file": str(path)}
     except BaseException:
         # These files have no readers before this function returns.

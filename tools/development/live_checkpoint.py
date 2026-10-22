@@ -43,7 +43,8 @@ def prepare_plan(recipe_path, output):
         return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     plan = dict(recipe, schema_version=1, source_directory=str(ROOT),
                 source_head=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip())
-    for key in ('index','expected','profiles','specs','ci_receipt'):
+    for key in ('index','expected','profiles','specs','ci_receipt',
+                'checkpoint_expected','checkpoint_partitions'):
         if recipe.get(key):plan[key] = bind(recipe[key])
     plan['tools'] = {key:bind(path) for key,path in recipe['tools'].items()}
     plan['authority_receipts'] = {key:bind(path) for key,path in recipe['authority_receipts'].items()}
@@ -134,6 +135,14 @@ def read_plan(path, *, require_ci=False):
     fields = ('id','image','profile','gtest_filter')
     lifecycle.need([{k: row[k] for k in fields} for row in index['cases']] == expected['cases']
                    and bool(expected['cases']), 'complete_ordered_inventory')
+    partition_fields = {'partition', 'checkpoint_expected', 'checkpoint_partitions'}
+    if partition_fields.intersection(plan):
+        lifecycle.need(partition_fields <= set(plan), 'checkpoint_partition_bindings')
+        from tools.development.redshift_powerbi_partition import validate_partition
+        validate_partition(
+            json.loads(pinned(plan['checkpoint_partitions']).read_text(encoding='utf-8-sig')),
+            json.loads(pinned(plan['checkpoint_expected']).read_text(encoding='utf-8-sig')),
+            plan['source_head'], plan['partition'], expected)
     if 'native_windows' in plan:
         validate_native_plan(plan, index, expected)
     return plan
@@ -198,10 +207,17 @@ def execute(plan, plan_path, admission_path):
     lifecycle.need(admission.get('reviewed') is True
                    and admission['plan_sha256'] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
                    and admission['source_head'] == plan['source_head']
-                   and admission['inventory_scope'] == 'complete_applicable'
+                   and admission['inventory_scope'] == (
+                       'complete_checkpoint_partition' if 'partition' in plan
+                       else 'complete_applicable')
                    and admission['run_name'] == plan['run_name']
                    and re.fullmatch('[A-Za-z0-9_-]{16,128}', admission['nonce']) is not None,
                    'existing_fresh_operational_admission')
+    if 'partition' in plan:
+        lifecycle.need(admission.get('partition') == plan['partition'] and
+                       admission.get('checkpoint_sha256') ==
+                       plan['checkpoint_expected']['sha256'],
+                       'fresh_complete_checkpoint_partition_admission')
     bounds = lifecycle.Bounds(**admission['bounds']);bounds.validate()
     lifecycle.need(utc(admission['expires_utc']) > dt.datetime.now(dt.timezone.utc)
                    + dt.timedelta(seconds=bounds.owner), 'finite_authority_horizon')
@@ -213,6 +229,9 @@ def execute(plan, plan_path, admission_path):
     public_pins = {v['path']: v['sha256'] for v in plan['tools'].values()}
     for key in ('index','expected','profiles','specs','ci_receipt'):
         public_pins[plan[key]['path']] = plan[key]['sha256']
+    if 'partition' in plan:
+        for key in ('checkpoint_expected', 'checkpoint_partitions'):
+            public_pins[plan[key]['path']] = plan[key]['sha256']
     for path in list((ROOT/'tools/development').glob('redshift_*.py')) + [Path(__file__)] + [factory.__file__]:
         path = Path(path).resolve()
         public_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -231,6 +250,8 @@ def execute(plan, plan_path, admission_path):
     blueprint = json.loads(pinned(plan['index']).read_text(encoding='utf-8-sig'))
     ops_type = Operations
     extra = {}
+    if plan.get('partition') == 'powerbi_relationship':
+        extra['relationship_partition'] = True
     if 'native_windows' in plan:
         from tools.development.redshift_windows import WindowsOperations
         ops_type = WindowsOperations
@@ -249,6 +270,11 @@ def execute(plan, plan_path, admission_path):
         plan = staticmethod(ops.combined_fixture_plan)
         prepare = staticmethod(fixtures.prepare)
         cleanup = staticmethod(fixtures.cleanup)
+    if plan.get('partition') == 'powerbi_relationship':
+        from tools.development import redshift_powerbi_partition as partition
+        CompleteFixtures.plan = staticmethod(partition.plan)
+        CompleteFixtures.prepare = staticmethod(partition.prepare)
+        CompleteFixtures.cleanup = staticmethod(partition.cleanup)
     # Ignore a second interrupt only while mandatory cleanup is running.
     import signal
     def begin_cleanup():

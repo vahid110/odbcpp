@@ -22,6 +22,8 @@ from types import SimpleNamespace
 from tools.development import redshift_ctest_inputs as inputs
 from tools.development import redshift_ctest_fixtures as fixtures
 from tools.development import redshift_ctest_native_custody as native_custody
+from tools.development import redshift_powerbi_relationship as powerbi_relationship
+from tools.development import redshift_powerbi_partition as powerbi_partition
 from tools.development.redshift_ctest_lifecycle import BASE_ENV, Refused, need, record, verify_public_pin
 from tools.redshift.pilot_preflight import pilot_lock
 from tools.redshift.pilot_runtime import _stop_group
@@ -74,14 +76,15 @@ def combined_fixture_plan():
     return plan
 
 
-def termination_stage(targets):
+def termination_stage(targets, *, maximum=8):
     """Guard each captured session tuple and exclude SELF before termination.
 
     STV_SESSIONS.starttime is the actual connection birth timestamp. Every
     guard is a separate statement from pg_terminate_backend, preserving the
     existing Redshift leader/compute query separation.
     """
-    need(type(targets) is tuple and 1 <= len(targets) <= 8, 'termination_targets')
+    need(type(maximum) is int and maximum in (8, 16), 'termination_scope_bound')
+    need(type(targets) is tuple and 1 <= len(targets) <= maximum, 'termination_targets')
     queries = []
     for pid, principal, database, birth in targets:
         need(type(pid) is int and 1 <= pid <= 2147483647 and
@@ -104,7 +107,8 @@ class Operations:
     def __init__(self, *, native_source, native_sha256, approval, preparation_manifest,
                  profile_manifest, factory_source, factory_sha256, launcher_source,
                  launcher_sha256, profiles, specs, blueprint, authority_receipts,
-                 components=None, executables=None):
+                 components=None, executables=None, relationship_partition=False):
+        need(type(relationship_partition) is bool, 'relationship_partition_flag')
         if components is None:
             # Historical evidence/tests retain their original composition. New
             # live_checkpoint.py uses only fixed checked-in component imports.
@@ -132,6 +136,11 @@ class Operations:
         self.readers_known = True
         self.principals_quiescent = False
         self.fixture_state = None
+        self.relationship_partition = relationship_partition
+        self.powerbi_relationship_state = None
+        self.powerbi_relationship_sequence = 0
+        self.powerbi_relationship_armed = False
+        self.powerbi_relationship_verified = False
         self.events = 0
         self.proofs = {}
         self.selected_other_database = None
@@ -243,9 +252,25 @@ class Operations:
         record(self.directory / ('fixture-event-' + str(self.events) + '.json'), event)
 
     def _closed_stage(self, stage):
-        state = self.fixture_state
-        need(type(stage) is dict and state is not None, 'fixture_stage_without_state')
+        need(type(stage) is dict and type(stage.get('stage')) is str,
+             'fixture_stage_schema')
         name = stage['stage']
+        if name.startswith('powerbi_relationship_'):
+            need(self.relationship_partition is True and
+                 self.powerbi_relationship_armed is True,
+                 'relationship_dispatch_not_armed')
+            intent = self.powerbi_relationship_state
+            need(type(intent) is dict and type(intent.get('pending')) is dict,
+                 'relationship_intent_missing')
+            before = intent['pending']['before']
+            expected = powerbi_relationship.stage_for(
+                before, name.removeprefix('powerbi_relationship_'))
+            need(intent == powerbi_relationship.begin(before, expected),
+                 'relationship_intent_changed')
+            need(stage == expected, 'closed_fixture_SQL_changed')
+            return
+        state = self.fixture_state
+        need(state is not None, 'fixture_stage_without_state')
         if name == 'native_persistent_census':
             expected = native_custody.stage()
         elif name in ('inspect', 'create', 'ordinary', 'cleanup'):
@@ -281,10 +306,83 @@ class Operations:
 
     def sql(self, stage, deadline):
         self._closed_stage(stage)
+        if stage['stage'].startswith('powerbi_relationship_'):
+            # One durable intent admits one dispatch, including failed calls.
+            self.powerbi_relationship_armed = False
         raw, _ = self._sql(stage, deadline)
         if stage['stage'] == 'two_db_databases':
             self.selected_other_database = self.factory.two_db_select(raw)
         return raw
+
+    def powerbi_relationship_step(self, kind, deadline):
+        """Execute one fixed optional fixture stage, never a case or free SQL.
+
+        The partition composer must admit the complete inventory and its full
+        resource plan separately. This method neither resumes resources nor
+        increases any existing helper, statement, login or deadline bound.
+        """
+        need(self.relationship_partition is True, 'relationship_partition_disabled')
+        need(type(kind) is str and kind in powerbi_relationship.KINDS,
+             'relationship_stage_kind')
+        need(self.now() < deadline, 'relationship_original_deadline')
+        if kind.startswith('drop_'):
+            need(self.readers_known and self.principals_quiescent and
+                 self.native is not None and self.native.readers_known,
+                 'relationship_cleanup_not_quiescent')
+        before = self.powerbi_relationship_state
+        if before is None:
+            need(kind == 'inspect', 'relationship_inspection_required')
+            before = powerbi_relationship.new_state()
+        stage = powerbi_relationship.stage_for(before, kind)
+        intent = powerbi_relationship.begin(before, stage)
+        self.powerbi_relationship_sequence += 1
+        stem = 'powerbi-relationship-' + str(self.powerbi_relationship_sequence)
+        self.powerbi_relationship_state = intent
+        self.powerbi_relationship_verified = False
+        # record uses exclusive/no-follow creation, flush and fsync. Sync the
+        # new directory entry too, before any native SQL can be dispatched.
+        def publish(suffix, value):
+            record(self.directory / (stem + suffix), value)
+            descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+        publish('-intent.json', intent)
+        self.powerbi_relationship_armed = True
+        try:
+            raw = self.sql(stage, deadline)
+            need(self.now() < deadline, 'relationship_completion_deadline')
+            completed = powerbi_relationship.complete(intent, raw)
+            publish('-complete.json', completed)
+            need(self.now() < deadline, 'relationship_publication_deadline')
+            self.powerbi_relationship_state = completed
+            self.powerbi_relationship_verified = kind == 'verify'
+            return copy.deepcopy(completed)
+        finally:
+            # On native failure, malformed output or publication failure keep
+            # the original pending/unknown intent. Do not retry or adopt it.
+            self.powerbi_relationship_armed = False
+
+    def powerbi_relationship_variables(self):
+        need(self.relationship_partition is True and
+             self.powerbi_relationship_verified is True,
+             'relationship_not_verified')
+        state = self.powerbi_relationship_state
+        need(state is not None and state['pending'] is None and
+             all(state[key]['status'] == 'OWNED' for key in ('parent', 'fact')),
+             'relationship_not_owned')
+        return {'ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP': '1',
+                'ODBCPP_REDSHIFT_POWERBI_PARENT_OID': str(state['parent']['oid']),
+                'ODBCPP_REDSHIFT_POWERBI_FACT_OID': str(state['fact']['oid'])}
+
+    def relationship_profile_variables(self, profile):
+        need(self.relationship_partition is True, 'relationship_partition_disabled')
+        need({spec['case'] for spec in self.specs} == set(powerbi_partition.CASES),
+             'relationship_complete_partition_inventory')
+        return powerbi_partition.profile_variables(
+            profile, self.powerbi_relationship_variables())
 
     def _sql(self, stage, deadline):
         need(self.native is not None and self.readers_known and
@@ -374,9 +472,13 @@ class Operations:
         need(logging == inputs.LOG_OPTIONS and state['prepared'] is True, 'prepared_profiles_only')
         self.launcher.validate_profile_inputs(self.profile_inputs, deadline=end)
         profiles = copy.deepcopy(self.profiles)
-        actual = state['timeout_record']
+        if self.relationship_partition:
+            for profile in profiles.values():
+                profile['variables'] = self.relationship_profile_variables(profile)
+        actual = state.get('timeout_record') if self.relationship_partition else state['timeout_record']
         for profile in profiles.values():
             if 'ODBCPP_REDSHIFT_TIMEOUT_OID' in profile['variables']:
+                need(actual is not None, 'timeout_fixture_required')
                 profile['variables'].update(ODBCPP_REDSHIFT_TIMEOUT_SCHEMA=actual['schema'],
                     ODBCPP_REDSHIFT_TIMEOUT_TABLE=actual['table'],
                     ODBCPP_REDSHIFT_TIMEOUT_OID=str(actual['oid']))
@@ -384,6 +486,14 @@ class Operations:
             self.native.config, profile) for key, profile in profiles.items()}
         environments = {key: self.launcher.profile_private_environment(self.profile_inputs, key)
                         for key in profiles}
+        if self.relationship_partition:
+            for key, profile in profiles.items():
+                # The existing held private profile owns this exact DSN and
+                # pinned image. No secret or driver path comes from a caller.
+                environments[key].update(
+                    ODBCPP_TEST_DSN='DSN=RedshiftProd;',
+                    ODBCPP_REDSHIFT_PACKAGE_INSTALLED_DRIVER=
+                        profile['private_input']['driver']['path'])
         two = {spec['key']: {self.factory.TWO_DB_VARIABLE: state['substitutions']['second_database']}
                for spec in self.specs if spec['case'] == self.factory.TWO_DB_CASE}
         self.env_directory = self.directory / 'case-environments'
@@ -448,10 +558,15 @@ class Operations:
         return self.readers_known
 
     def cleanup_principals(self, deadline):
-        stage = {'query': PIDS, 'statements': 1, 'role': 'admin', 'stage': 'principal_pids'}
+        maximum = getattr(self, 'maximum_cleanup_targets', 8)
+        need(type(maximum) is int and maximum in (8, 16), 'principal_cleanup_scope')
+        need(maximum == 8 or getattr(self, 'powerbi_session_partition', False) is True,
+             'extended_cleanup_requires_app_partition')
+        query = PIDS if maximum == 8 else PIDS.replace('LIMIT 9;', 'LIMIT 17;')
+        stage = {'query': query, 'statements': 1, 'role': 'admin', 'stage': 'principal_pids'}
         raw, own = self._sql(stage, deadline)
         values = raw.strip().splitlines()
-        need(len(values) <= 8, 'exact_principal_PID_bound')
+        need(len(values) <= maximum, 'exact_principal_PID_bound')
         targets = []
         for value in values:
             columns = value.split('|')
@@ -463,7 +578,7 @@ class Operations:
         need(len(set(pids)) == len(pids) and all(p <= 2147483647 and p != own for p in pids),
              'exact_principal_PID_identity')
         if pids:
-            raw, own = self._sql(termination_stage(targets), deadline)
+            raw, own = self._sql(termination_stage(targets, maximum=maximum), deadline)
             try:
                 acks = raw.strip().splitlines()
                 self.record({'kind': 'exact_session_cleanup', 'captured': targets, 'guarded_ACK': acks})

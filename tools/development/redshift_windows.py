@@ -37,13 +37,16 @@ class WindowsOperations(opsmod.Operations):
         need(state['prepared'] is True and logging == opsmod.inputs.LOG_OPTIONS,
              'prepared_logged_native_scope')
         variables = []
-        actual = state['timeout_record']
+        actual = state.get('timeout_record') if self.relationship_partition else state['timeout_record']
         need(len(self.blueprint['cases']) == len(self.specs), 'complete_native_case_inputs')
         for case, spec in zip(self.blueprint['cases'], self.specs):
             need(case['id'] == spec['ctest_id'] and case['gtest_filter'] == spec['case'],
                  'native_case_order')
             values = copy.deepcopy(self.profiles[spec['profile']]['variables'])
+            if self.relationship_partition:
+                values = self.relationship_profile_variables(self.profiles[spec['profile']])
             if 'ODBCPP_REDSHIFT_TIMEOUT_OID' in values:
+                need(actual is not None, 'timeout_fixture_required')
                 values.update(ODBCPP_REDSHIFT_TIMEOUT_SCHEMA=actual['schema'],
                               ODBCPP_REDSHIFT_TIMEOUT_TABLE=actual['table'],
                               ODBCPP_REDSHIFT_TIMEOUT_OID=str(actual['oid']))

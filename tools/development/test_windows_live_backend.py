@@ -27,6 +27,75 @@ class NativeBackendTests(unittest.TestCase):
         backend.DESCRIPTION = 'ODBCPP Synthetic Workflow Probe'
         backend.current_identity()
 
+    def test_relationship_observed_IDs_and_exact_owned_DSN_are_staged(self):
+        from tools.development import redshift_fixture_factory as factory
+        from tools.development.redshift_powerbi_partition import CASES
+        from tools.development.redshift_ctest_lifecycle import Refused
+        with tempfile.TemporaryDirectory(prefix='odbcpp-relationship-native-input-') as temporary:
+            root = Path(temporary)
+            profile = dict(profile_name='relationship-offline',
+                limits=dict(factory.CANONICAL_LIMITS),
+                connection_environment=['ODBCPP_TEST_DSN'],uses_private_dsn=True,
+                variables=dict(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP='1',
+                    ODBCPP_REDSHIFT_POWERBI_PARENT_OID='1',
+                    ODBCPP_REDSHIFT_POWERBI_FACT_OID='2'),
+                review=dict(path=str(root/'review.json'),sha256='0'*64),
+                private_input=dict(kind='OWN_DSN',password_rejection=False,
+                    driver=dict(path=sys.executable,sha256='0'*64,wchar_bytes=2,kind='OWN')))
+            observed = dict(profile['variables'], ODBCPP_REDSHIFT_POWERBI_PARENT_OID='6001',
+                            ODBCPP_REDSHIFT_POWERBI_FACT_OID='6002')
+            rows = [(dict(origin_id='relationship'+str(i),origin_image='owner',host_profile='one',
+                          executable=sys.executable,sha256='0'*64,filter=case),
+                     dict(case=case,env=None,marker=None,profile='control'),profile)
+                    for i,case in enumerate(CASES)]
+            payload = dict(schema_version=1,source_head='a'*40,run_id='windows-live-offline',
+                config=dict(host='invented.invalid',port=5439,database='odbcpp_pilot',
+                            test_user='odbcpp_pilot_test',test_password='invented-only',
+                            ca=str(root/'invented-ca.pem')),
+                case_variables=[dict(id='relationship'+str(i),variables=observed)
+                                for i in range(2)])
+            with patch.object(backend,'HEAD','a'*40,create=True), \
+                 patch.object(backend,'APPLICABLE_COUNT',2,create=True), \
+                 patch.object(backend,'DRIVER',Path(sys.executable),create=True), \
+                 patch.object(backend,'DRIVER_SHA',
+                     hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),create=True):
+                backend.validate_payload(payload,rows)
+                observed['ODBCPP_REDSHIFT_POWERBI_FACT_OID']='6001'
+                with self.assertRaisesRegex(Refused,'distinct_OIDs'):
+                    backend.validate_payload(payload,rows)
+                observed['ODBCPP_REDSHIFT_POWERBI_FACT_OID']='6002'
+                for different in (False,True):
+                    tree=backend.PrivateTree()
+                    run=tree.mkdir(root/('different' if different else 'identical'))
+                    try:
+                        if different:
+                            payload['case_variables'][1]['variables']=dict(observed,
+                                ODBCPP_REDSHIFT_POWERBI_FACT_OID='6003')
+                            with self.assertRaisesRegex(RuntimeError,'shared_native_profile'):
+                                backend.build_inputs(payload,rows,factory,tree,run)
+                        else:
+                            index, expected, dsn = backend.build_inputs(payload,rows,factory,tree,run)
+                            self.assertEqual(len(expected['cases']),2)
+                            self.assertEqual(dsn['UID'],'odbcpp_pilot_test')
+                            self.assertEqual(len(index['profiles']),1)
+                        # The real native custody tree contains one held file,
+                        # never a duplicate handle/retirement for the selector.
+                        self.assertEqual(len(tree.files),1)
+                        values=json.loads(tree.files[0].read())['environment']
+                        self.assertIn('ODBCPP_TEST_DSN=DSN='+backend.RegistryDsn.NAME+';',values)
+                        self.assertIn('ODBCPP_REDSHIFT_POWERBI_PARENT_OID=6001',values)
+                        self.assertIn('ODBCPP_REDSHIFT_POWERBI_FACT_OID=6002',values)
+                        self.assertIn('ODBCPP_REDSHIFT_PACKAGE_INSTALLED_DRIVER='+sys.executable,values)
+                    finally:
+                        for held in reversed(tree.files):
+                            held.retire()
+                            self.assertFalse(held.path.exists())
+                        tree.files.clear()
+                        for path,handle in list(reversed(tree.directories)):
+                            tree.rmdir(path)
+                        tree.close_handles()
+                    self.assertFalse(run.exists())
+
     def test_private_file_exact_bytes_acl_and_retirement(self):
         parent = Path(tempfile.mkdtemp(prefix='odbcpp-native-workflow-'))
         root = parent/'owned';tree = backend.PrivateTree()

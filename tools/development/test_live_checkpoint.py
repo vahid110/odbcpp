@@ -60,6 +60,39 @@ class CheckpointTests(unittest.TestCase):
                 checkpoint.prepare_plan(recipe_path,plan_path)
             with self.assertRaises(checkpoint.lifecycle.Refused):
                 checkpoint.read_plan(plan_path,require_ci=True)
+            # A finite partition must retain a pinned, complete checkpoint
+            # union. It cannot re-label this smaller index as full coverage.
+            from tools.development.redshift_powerbi_partition import CASES
+            full_cases = records['expected']['cases'] + [
+                dict(id='relationship'+str(i), image='owner', profile='test',
+                     gtest_filter=name) for i, name in enumerate(CASES)]
+            full_path = root/'checkpoint-expected.json'
+            full_path.write_text(json.dumps(dict(schema_version=1,cases=full_cases)))
+            partitions_path = root/'checkpoint-partitions.json'
+            partitions_path.write_text(json.dumps(dict(schema_version=1,
+                source_head=plan['source_head'],partitions={
+                    'native':['synthetic'],
+                    'powerbi_relationship':['relationship0','relationship1']})))
+            partition_recipe = dict(recipe, partition='native',
+                checkpoint_expected=str(full_path),
+                checkpoint_partitions=str(partitions_path))
+            partition_recipe_path=root/'partition-recipe.json'
+            partition_recipe_path.write_text(json.dumps(partition_recipe))
+            partition_plan_path=root/'partition-plan.json'
+            checkpoint.prepare_plan(partition_recipe_path,partition_plan_path)
+            partition_plan=checkpoint.read_plan(partition_plan_path)
+            self.assertIn('sha256',partition_plan['checkpoint_expected'])
+            missing=json.loads(partition_plan_path.read_text())
+            missing.pop('checkpoint_partitions')
+            missing_path=root/'missing-partition.json'
+            missing_path.write_text(json.dumps(missing))
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused,
+                                        'checkpoint_partition_bindings'):
+                checkpoint.read_plan(missing_path)
+            full_path.write_text('{"cases":[]}')
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused,
+                                        'public_binding_changed'):
+                checkpoint.read_plan(partition_plan_path)
             result=checkpoint.preflight(checkpoint.pinned(plan['index']),
                 checkpoint.pinned(plan['expected']),root/'preflight',
                 str(checkpoint.pinned(plan['tools']['cmake'])))

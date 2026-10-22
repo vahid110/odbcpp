@@ -47,6 +47,7 @@ function(add_test_executable test_name test_file)
   )
 endfunction()
 
+option(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS "Build/register separately admitted single-key relationship DM assertions" OFF)
 option(ODBCPP_REDSHIFT_PACKAGE_LIVE_TESTS "Build separately admitted installed Redshift Driver Manager tests" OFF)
 option(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS "Build separately admitted installed Redshift import/refresh tests" OFF)
 option(ODBCPP_REDSHIFT_OFFICIAL_IMPORT_LIVE_TESTS "Build separately admitted official Redshift import comparison tests" OFF)
@@ -396,7 +397,7 @@ endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table")
+  if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table" OR test_name STREQUAL "it_redshift_powerbi_relationship")
     continue() # Explicit opt-in native registration above.
   endif()
   if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
@@ -466,6 +467,39 @@ if(UNIX OR WIN32)
     find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
   endif()
   if(ODBC_DRIVER_MANAGER_LIBRARY)
+    # Optional relationship partition; no core link and no PostgreSQL registration.
+    if(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS)
+      if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
+         NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux|Windows)$" OR
+         NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE MATCHES "^(2|4)$" OR
+         NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+        message(FATAL_ERROR "Relationship live tests require Redshift and an explicit matched supported DM/driver width pair")
+      endif()
+      if((WIN32 AND (NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO" OR NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2")) OR
+         (NOT WIN32 AND NOT ((ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" AND ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2") OR
+                              (ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "4"))))
+        message(FATAL_ERROR "Relationship live tests require native Windows ODBC2, unixODBC2, or iODBC4 owning profiles")
+      endif()
+      add_executable(it_redshift_powerbi_relationship
+        tests/integration/it_redshift_powerbi_relationship.cpp)
+      if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+        target_include_directories(it_redshift_powerbi_relationship PRIVATE ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      endif()
+      target_link_libraries(it_redshift_powerbi_relationship PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(it_redshift_powerbi_relationship PRIVATE advapi32)
+      endif()
+      target_compile_definitions(it_redshift_powerbi_relationship PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE}
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+      apply_compiler_settings(it_redshift_powerbi_relationship)
+      set_target_properties(it_redshift_powerbi_relationship PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      add_test(NAME it_redshift_powerbi_relationship COMMAND it_redshift_powerbi_relationship)
+      set_tests_properties(it_redshift_powerbi_relationship PROPERTIES
+        LABELS "integration;redshift;powerbi;relationship" TIMEOUT 90)
+    endif()
     add_executable(it_driver_manager tests/driver_manager/it_driver_manager.cpp)
     if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
       target_include_directories(it_driver_manager PRIVATE

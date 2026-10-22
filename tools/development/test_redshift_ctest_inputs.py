@@ -11,6 +11,32 @@ spec.loader.exec_module(inputs)
 
 
 class InputTests(unittest.TestCase):
+    def test_shared_two_case_profile_reuses_one_private_file_and_retires_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / 'private'
+            cases = [dict(id='R'+str(i), image='owner', profile='shared',
+                          gtest_filter='Relationship.Case'+str(i)) for i in range(2)]
+            specs = [dict(ctest_id=row['id'],ctest_profile='shared',image='owner',
+                          case=row['gtest_filter'],key=row['id'],profile='logical',
+                          env=None,marker=None) for row in cases]
+            profiles = {'logical':dict(private_input={'kind':'CORE_ENV'},
+                connection_environment=['ODBCPP_TEST_DSN'],variables={'MARKER':'1'})}
+            index, custody = inputs.stage_case_environments(directory, {'cases':cases},
+                specs, profiles, {'logical':'invented-only'}, {'logical':{}})
+            self.assertEqual(index['cases'],cases)
+            self.assertEqual(len(custody),1)
+            self.assertEqual(len(list(directory.iterdir())),1)
+            path=Path(index['profiles']['shared']['environment_file'])
+            self.assertIn('ODBCPP_TEST_DSN=invented-only',json.loads(path.read_text())['environment'])
+            inputs.close_case_environments(custody,directory)
+            self.assertFalse(directory.exists())
+            # The same selector cannot silently replace different case inputs.
+            specs[1].update(env='MARKER',marker='2')
+            with self.assertRaisesRegex(ValueError,'different environment'):
+                inputs.stage_case_environments(directory,{'cases':cases},specs,
+                    profiles,{'logical':'invented-only'},{'logical':{}})
+            self.assertFalse(directory.exists())
+
     def test_profile_secrets_stay_in_private_files_and_markers_remain_distinct(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "private"
