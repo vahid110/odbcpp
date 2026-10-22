@@ -20,7 +20,8 @@ function Test-BackendDiagnosticEligibility([Xml.XmlDocument]$Report) {
   # CTest's original suite remains failed. Only decide whether this specific
   # backend diagnostic applies; never rerun it for an unrelated GUI failure.
   $root=$Report.DocumentElement
-  if ($null -eq $root -or $root.Name -cne 'testsuite') { throw 'original_suite_shape_refused' }
+  # The XML adapter's .Name resolves CTest's name attribute, not the node name.
+  if ($null -eq $root -or $root.get_Name() -cne 'testsuite') { throw 'original_suite_shape_refused' }
   $cases=@($root.SelectNodes('testcase'))
   if ($cases.Count -eq 0 -or $cases.Count -ne $Report.SelectNodes('//testcase').Count -or
       $root.GetAttribute('tests') -cnotmatch '^[1-9][0-9]*$' -or

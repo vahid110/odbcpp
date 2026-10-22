@@ -43,7 +43,7 @@ exit $LASTEXITCODE
 
 def report(cases):
     """Small CTest-shaped original-suite fixture, including failed/skipped bodies."""
-    root = ET.Element('testsuite', tests=str(len(cases)),
+    root = ET.Element('testsuite', name='Win32-MSBuild', tests=str(len(cases)),
                       failures=str(sum(status == 'fail' for _, status in cases)))
     for name, status in cases:
         case = ET.SubElement(root, 'testcase', name=name, classname=name, status=status)
