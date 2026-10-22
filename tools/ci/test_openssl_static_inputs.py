@@ -136,7 +136,9 @@ file(WRITE "${{CMAKE_BINARY_DIR}}/bound.txt" "${{bound}}")
         (self.root / 'link.map').write_text(link_map)
         return subprocess.run([shutil.which('cmake'), '-DEXPECTED_PROVIDER=OPENSSL',
                                '-DEXPECTED_LINKAGE=BUNDLED_STATIC', '-DPLATFORM=Linux',
-                               '-DINSPECTION_OUTPUT=NEEDED ' + ('libjitterentropy.so.3' if mode == 'dynamic' else 'libc.so.6'),
+                               '-DINSPECTION_OUTPUT=NEEDED ' + {
+                                   'dynamic': 'libjitterentropy.so.3', 'dynamic-zlib': 'libz.so.1',
+                                   'dynamic-zstd': 'libzstd.so.1'}.get(mode, 'libc.so.6'),
                                '-DSTATIC_LINKER_IDENTITY=GNU ld (synthetic)',
                                '-DARTIFACT=' + artifact.as_posix(),
                                '-DCONFIG_MANIFEST=' + (self.root / 'manifest.json').as_posix(),
@@ -160,7 +162,10 @@ file(WRITE "${{CMAKE_BINARY_DIR}}/bound.txt" "${{bound}}")
         self.assertFalse(json.loads((self.root / 'artifact.json').read_text())['auxiliaryStaticLinkInputs'][0]['archiveMembersObserved'])
 
     def test_real_inspector_missing_load_tamper_outside_or_duplicate_refused(self):
-        for mode in ('missing-load', 'hash', 'outside', 'duplicate', 'dynamic'):
+        # Artifact rejection is unconditional, including when the Python load
+        # observer records an unchanged shared zlib in its own host baseline.
+        for mode in ('missing-load', 'hash', 'outside', 'duplicate', 'dynamic',
+                     'dynamic-zlib', 'dynamic-zstd'):
             with self.subTest(mode=mode):
                 result = self.inspect(mode)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)

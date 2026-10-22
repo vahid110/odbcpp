@@ -124,6 +124,7 @@ jobs:
           name: macos-openssl-UCS4-tls-proof
           path: |
             build-iodbc/macos-openssl-unit.xml
+            build-iodbc/odbcpp-trace-reload-gtest.xml
             macos-openssl-live.xml
             build-iodbc/tests/crypto_tls_probe
             build-iodbc/tests/crypto_identity_probe

@@ -170,17 +170,18 @@ def main():
         package = archive_checks.extract_verified(archive, output / 'extracted', expected, ROOT_NAME)
     validate(package)
     driver = (package / 'lib/libodbcpp.so').resolve(strict=True)
-    # A fresh ctypes host uses the runtime archive, with no provider preload.
-    code = '''import ctypes,json,pathlib,sys
-ctypes.CDLL(sys.argv[1])
-lines=pathlib.Path('/proc/self/maps').read_text().splitlines()
-providers=[line for line in lines if any(name in line for name in
-    ('/libssl', '/libcrypto', '/libjitterentropy', '/libz.so', '/libzstd.so'))]
-if providers: raise RuntimeError('Static driver mapped a shared crypto/auxiliary dependency: '+repr(providers))
-if not any(sys.argv[1] in line for line in lines): raise RuntimeError('Extracted driver was not mapped')
-print('Extracted static driver load and no shared crypto mappings: PASS')
-'''
-    subprocess.run([sys.executable, '-c', code, str(driver)], check=True, env=env, timeout=20)
+    # Python itself may already map zlib. Bind actual before/after identities;
+    # the preceding artifact/map/undefined-symbol gates still forbid borrowing
+    # a preexisting shared dependency instead of the controlled static inputs.
+    load_report = output / 'static-load-observation.json'
+    subprocess.run([sys.executable, str(Path(__file__).with_name('static_load_probe.py')),
+                    '--driver', str(driver), '--sha256', manifest['driverSha256'],
+                    '--output', str(load_report)], check=True, env=env, timeout=20)
+    load = json.loads(load_report.read_text())
+    if (load['validationPassed'] is not True or load['qualificationClaimed'] is not False
+            or load['driver'] != str(driver) or load['driverPin']['sha256'] != manifest['driverSha256']
+            or load['sharedCryptoMapped'] is not False or load['noNewSharedAuxiliaryMappings'] is not True):
+        raise RuntimeError('Static driver load observation is not bound to this archive')
     base = (f'DRIVER={{{driver}}};SERVER=127.0.0.1;PORT={env.get("PGPORT", "5432")};'
             'DATABASE=postgres;UID=postgres;PWD=postgres;SSL=1;')
     env.update({
@@ -202,7 +203,11 @@ print('Extracted static driver load and no shared crypto mappings: PASS')
     evidence = {
         'schemaVersion': 1, 'profile': 'OPENSSL/BUNDLED_STATIC/Linux',
         'qualificationClaimed': False, 'runtimeOnlyArchiveVerified': True,
-        'sharedCryptoMapped': False, 'sharedAuxiliaryMapped': False, 'verifiedTlsScramQuery': True,
+        'sharedCryptoMapped': False, 'noNewSharedAuxiliaryMappings': True,
+        'baselineAuxiliaryMappings': load['baselineAuxiliaryMappings'],
+        'afterAuxiliaryMappings': load['afterAuxiliaryMappings'],
+        'newSharedAuxiliaryMappings': load['newSharedAuxiliaryMappings'],
+        'loadObservationSha256': sha(load_report), 'verifiedTlsScramQuery': True,
         'trustAndHostnameRejectionsVerified': True,
         'archiveSha256': sha(archive), 'packageManifestSha256': sha(package / 'package-manifest.json'),
         'driverSha256': manifest['driverSha256'], 'licenseFiles': manifest['licenseFiles'],

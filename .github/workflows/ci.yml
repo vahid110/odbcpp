@@ -486,6 +486,7 @@ jobs:
           name: openssl-system-shared-tls-proof
           path: |
             build/openssl-system-shared-unit.xml
+            build/odbcpp-trace-reload-gtest.xml
             openssl-system-shared-live.xml
             build/tests/crypto_tls_probe
             build/tests/crypto_identity_probe
@@ -653,6 +654,7 @@ jobs:
             build-windows/package/payload-1.0.0/inventory.json
             windows-crypto-profile-live.xml
             build-windows/windows-openssl-unit.xml
+            build-windows/odbcpp-trace-reload-gtest.xml
             build-windows/odbcpp-crypto-unit-qualification.json
             build-windows/tests/Release/crypto_identity_probe.exe
             build-windows/tests/Release/crypto_tls_probe.exe
@@ -1060,6 +1062,7 @@ jobs:
             build-openssl-static/odbcpp-crypto-identity-evidence.json
             build-openssl-static/odbcpp-crypto-unit-qualification.json
             build-openssl-static/openssl-static-unit.xml
+            build-openssl-static/odbcpp-trace-reload-gtest.xml
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
             build-openssl-static/odbcpp-crypto-static-link.map
@@ -1073,6 +1076,7 @@ jobs:
             openssl-static-live.xml
             openssl-static-package-proof/driver-only.tar.gz
             openssl-static-package-proof/package-evidence.json
+            openssl-static-package-proof/static-load-observation.json
             openssl-static-package-proof/extracted-driver-live.xml
             openssl-static-package-proof/extracted/odbcpp-openssl-static-proof/package-manifest.json
           if-no-files-found: error
@@ -1272,6 +1276,7 @@ jobs:
           name: macos-openssl-${{ matrix.driver_unicode_type }}-tls-proof
           path: |
             build-iodbc/macos-openssl-unit.xml
+            build-iodbc/odbcpp-trace-reload-gtest.xml
             macos-openssl-live.xml
             build-iodbc/tests/crypto_tls_probe
             build-iodbc/tests/crypto_identity_probe

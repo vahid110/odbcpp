@@ -25,15 +25,15 @@ BODY_SHA256 = {
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
     'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
     'windows-product-qualification': '6bffeb8c5f8356015036a032d0f37128180fbf8c011084bbfd208ce1a40e80e6',
-    'build-and-test': 'a5f64cdc03b610e37ca827a9c189430effc5d21655f5b4d5fc7e13790dc77c3f',
+    'build-and-test': 'b32c7d9de760bb69e3d2bcfe0c67f069b9a8d365f0ba24767bd89ff0641969c4',
     'redshift-build': '83dd943e7dad86a66e4c44124163bbd612194b914c19abba7fd702d218787048',
-    'windows-live': '8714a575d2b692824ed35ea23c541104c599b1cc8f995cb8b8797981f9ce5f66',
+    'windows-live': '5a29e36575588fc11bb84eb04dde40bfdab303a57951770d427b1ae01cde100f',
     'windows-package': 'd3191013a82d6c6a45fe352f17c7d8888f12996877775fcd53991a99620842d8',
     'windows-linked-server': 'f7f15d6261db38ead9993bb28ea275523b1af5835780e1c28ed075844f536c0d',
     'linux-sanitizers': 'e302e94886a90342a0abf1b386d46afb5b36d13ea49c6802034ffbc12188d2ab',
-    'linux-openssl-static': '7ef4d2df1bbdac2b9180e14a4213d365b7be8e4da5915ec82fb7472976ea609c',
+    'linux-openssl-static': 'd378c269986bf275a2dbe9402a4feccc143c8b38ad6e337f206252af6c202028',
     'awslc-adapter-proof': '19230fd79ff37164624bd764631ad194679a7ef63c3aaf3594d5d4826970969d',
-    'iodbc-unicode': 'fe0c513fb3a0a89f5a2436fd77184b3f571378a0bf3cac7f54d2663ab22b1d62',
+    'iodbc-unicode': '6e631a1796a3658177c740bec25ba93fdf484ca82fc9c899d735bbe46cf1f726',
 }
 
 

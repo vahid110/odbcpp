@@ -43,10 +43,15 @@ odbcpp_stage_wrapper_includes("${ODBCPP_SOURCE}" "${ODBCPP_ADAPTER_INCLUDE}")
 add_library(adapter STATIC
   ${ODBCPP_SOURCE}/sdk/src/security/openssl_crypto.cpp
   ${ODBCPP_SOURCE}/sdk/src/security/openssl_tls_client.cpp
+  ${ODBCPP_SOURCE}/sdk/src/security/platform_trust.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/scram_sha256.cpp
   ${ODBCPP_SOURCE}/sdk/src/util/base64.cpp)
 target_include_directories(adapter PUBLIC "${ODBCPP_SOURCE}" "${ODBCPP_ADAPTER_INCLUDE}")
 target_link_libraries(adapter PRIVATE ssl crypto)
+if(APPLE)
+  # Match the native trust closure used by the production SDK target.
+  target_link_libraries(adapter PRIVATE "-framework Security" "-framework CoreFoundation")
+endif()
 enable_testing()
 foreach(test IN ITEMS test_crypto_primitives test_scram_sha256 test_tls_client)
   add_executable(${test} "${ODBCPP_SOURCE}/tests/unit/${test}.cpp")
