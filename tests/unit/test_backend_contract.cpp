@@ -4534,6 +4534,8 @@ TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelected
   {
     SQLCHAR name[32]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,name,sizeof(name),&indicator));
     ASSERT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(name,"super",6));
+    // Policy oracle: SEARCHABLE follows the adapter's character-family rule; live
+    // SUPER predicate support remains pending (docs/redshift-special-types.md).
     for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLINTEGER>{2,SQL_LONGVARCHAR},{3,16777216},{8,SQL_TRUE},{9,SQL_SEARCHABLE},{16,SQL_LONGVARCHAR}}) {
       SQLINTEGER value=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(expected,value);
     }
