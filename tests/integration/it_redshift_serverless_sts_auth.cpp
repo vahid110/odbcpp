@@ -6,6 +6,8 @@
 #include "odbcpp/auth/aws/sts_assume_role_owner.h"
 #include "odbcpp/auth/aws/serverless_credentials_owner.h"
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <chrono>
 #include <cstdlib>
 #include <limits>
@@ -131,6 +133,21 @@ std::optional<IssuedCredentials> issue_credentials(const Spec& spec,const std::s
   IssuedCredentials out{std::move(fields.value().user),std::move(fields.value().password)};
   return std::move(out);
 }
+a::SecretBytes secret(std::string value){
+  auto made=a::SecretBytes::create(std::as_bytes(std::span{value.data(),value.size()}));
+  if(!made)std::terminate();
+  return std::move(made).value();
+}
+std::string resolve_ip(const std::string& host){
+  struct addrinfo hints{},*res=nullptr;
+  hints.ai_family=AF_INET;hints.ai_socktype=SOCK_STREAM;
+  if(getaddrinfo(host.c_str(),nullptr,&hints,&res)!=0||!res)return {};
+  char buf[INET_ADDRSTRLEN]{};
+  const char* ok=inet_ntop(AF_INET,&reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr,buf,sizeof(buf));
+  std::string out=ok?buf:"";
+  freeaddrinfo(res);
+  return out;
+}
 TEST(ServerlessStsAuth, AssumeRoleGetCredentialsAndVerifiedTlsLogin){
   const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
   if(!marker||std::string_view(marker)!=admission){
@@ -189,5 +206,74 @@ TEST(ServerlessStsAuth, WrongWorkgroupIsRefusedAtGetCredentials){
   ASSERT_TRUE(sc.owner);auto fields=sc.owner->acquire();
   EXPECT_FALSE(fields);
   EXPECT_TRUE(sc.owner->close());
+}
+TEST(ServerlessStsAuth, BogusSourceKeysAreRefusedAtAssumeRole){
+  const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
+  if(!marker||std::string_view(marker)!=admission){
+    GTEST_SKIP()<<"Separate serverless STS admission required";
+  }
+  auto spec=read_spec();ASSERT_TRUE(spec.has_value());
+  auto cancel=std::make_shared<a::aws::provisioned_native::WorkerCancellation>();
+  a::StsAssumeRoleTarget target{a::StsAssumeRolePartition::Aws,spec->account,spec->region,
+      spec->role_name,spec->role_session_name,spec->duration_seconds};
+  auto assumed=sts::StsAssumeRoleOwner::create(std::move(target),
+      secret("ASIABOGUSBOGUSBOGUS"),secret("bogus-secret-key-that-is-wrong"),secret(""),
+      deadline_60s(),cancel);
+  ASSERT_TRUE(assumed.owner);
+  auto cred=assumed.owner->acquire();
+  EXPECT_FALSE(cred);
+  EXPECT_TRUE(assumed.owner->close());
+}
+TEST(ServerlessStsAuth, WrongPasswordIsRefusedAtLogin){
+  const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
+  if(!marker||std::string_view(marker)!=admission){
+    GTEST_SKIP()<<"Separate serverless STS admission required";
+  }
+  auto spec=read_spec();ASSERT_TRUE(spec.has_value());
+  auto issued=issue_credentials(*spec,spec->role_name);
+  ASSERT_TRUE(issued.has_value());
+  d::ConnectionSettings settings;
+  settings.host=spec->host;settings.port=5439;settings.database=spec->database;
+  settings.user=issued->user;settings.use_ssl=true;settings.ssl_ca_file=spec->ca;
+  settings.password="definitely-not-the-password";
+  auto transport=std::make_unique<rs::core::transport::TLSTransport>();
+  transport->set_verify(true);transport->set_hostname_verification(true);transport->set_ca_locations(spec->ca,"");
+  Pg connection{std::move(transport),std::nullopt,d::postgres::PgCatalogProfile::Redshift};
+  auto connected=connection.connect_until(settings,deadline_60s());
+  EXPECT_FALSE(connected.has_value());
+  connection.disconnect();
+}
+TEST(ServerlessStsAuth, WrongHostnameIsRefusedAtTls){
+  const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
+  if(!marker||std::string_view(marker)!=admission){
+    GTEST_SKIP()<<"Separate serverless STS admission required";
+  }
+  auto spec=read_spec();ASSERT_TRUE(spec.has_value());
+  auto issued=issue_credentials(*spec,spec->role_name);
+  ASSERT_TRUE(issued.has_value());
+  const std::string ip=resolve_ip(spec->host);
+  ASSERT_FALSE(ip.empty());
+  d::ConnectionSettings settings;
+  settings.host=ip;settings.port=5439;settings.database=spec->database;
+  settings.user=issued->user;settings.use_ssl=true;settings.ssl_ca_file=spec->ca;
+  issued->password.with_bytes([&](auto bytes){settings.password.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());});
+  auto transport=std::make_unique<rs::core::transport::TLSTransport>();
+  transport->set_verify(true);transport->set_hostname_verification(true);transport->set_ca_locations(spec->ca,"");
+  Pg connection{std::move(transport),std::nullopt,d::postgres::PgCatalogProfile::Redshift};
+  auto connected=connection.connect_until(settings,deadline_60s());
+  EXPECT_FALSE(connected.has_value());
+  connection.disconnect();
+}
+TEST(ServerlessStsAuth, TwoSequentialCredentialIssuancesSucceed){
+  const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
+  if(!marker||std::string_view(marker)!=admission){
+    GTEST_SKIP()<<"Separate serverless STS admission required";
+  }
+  auto spec=read_spec();ASSERT_TRUE(spec.has_value());
+  auto first=issue_credentials(*spec,spec->role_name);
+  ASSERT_TRUE(first.has_value());
+  auto second=issue_credentials(*spec,spec->role_name);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(first->user,second->user);
 }
 } // namespace
