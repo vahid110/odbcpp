@@ -35,11 +35,11 @@ foreach(_target odbcpp::core odbcpp_auth_core Threads::Threads GTest::gtest_main
     message(FATAL_ERROR "Native provisioned auth missing prerequisite target: ${_target}")
   endif()
 endforeach()
-if(TARGET aws-cpp-sdk-redshift OR TARGET aws-cpp-sdk-sts)
+if(TARGET aws-cpp-sdk-redshift OR TARGET aws-cpp-sdk-redshift-serverless OR TARGET aws-cpp-sdk-sts)
   message(FATAL_ERROR "Native provisioned auth refuses an already imported SDK target")
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/NativeAwsSdkImport.cmake")
-if(NOT TARGET aws-cpp-sdk-redshift OR NOT TARGET aws-cpp-sdk-sts OR NOT SDK_FIXTURE_INCLUDES)
+if(NOT TARGET aws-cpp-sdk-redshift OR NOT TARGET aws-cpp-sdk-redshift-serverless OR NOT TARGET aws-cpp-sdk-sts OR NOT SDK_FIXTURE_INCLUDES)
   message(FATAL_ERROR "Native provisioned auth incomplete SDK import closure")
 endif()
 foreach(_include IN LISTS SDK_FIXTURE_INCLUDES)
@@ -58,6 +58,7 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_assume_role_owner.h" "${_native_stage}/odbcpp/auth/aws/sts_assume_role_owner.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/serverless_credentials_owner.h" "${_native_stage}/odbcpp/auth/aws/serverless_credentials_owner.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_pg_connector.h" "${_native_stage}/odbcpp/auth/aws/provisioned_pg_connector.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
@@ -69,6 +70,7 @@ add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/native_body_capture.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/explicit_profile_source.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_assume_role_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/serverless_credentials_owner.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/provisioned_query_transport.cpp")
 target_compile_features(odbcpp_auth_aws_provisioned PRIVATE cxx_std_20)
 target_include_directories(odbcpp_auth_aws_provisioned PRIVATE
@@ -78,7 +80,7 @@ target_compile_definitions(odbcpp_auth_aws_provisioned PRIVATE
   AWS_SDK_USE_CRT_HTTP HAVE_H2_CLIENT PLATFORM_APPLE AWS_ENABLE_DISPATCH_QUEUE
   AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
 target_link_libraries(odbcpp_auth_aws_provisioned PRIVATE
-  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-sts)
+  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless aws-cpp-sdk-sts)
 apply_compiler_settings(odbcpp_auth_aws_provisioned)
 
 # Optional provider-to-session composition keeps driver dependencies out of
