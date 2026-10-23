@@ -83,6 +83,37 @@ std::vector<SQLWCHAR> without_terminator(std::vector<SQLWCHAR> terminated) {
   return terminated;
 }
 
+// SQLWCHAR units to UTF-8 for failure messages; unpaired surrogates become U+FFFD.
+std::string utf8(const std::vector<SQLWCHAR>& units) {
+  std::string output;
+  for (std::size_t index = 0; index < units.size(); ++index) {
+    auto code_point = static_cast<std::uint32_t>(units[index]);
+    if (sizeof(SQLWCHAR) == 2 && code_point >= 0xd800 && code_point <= 0xdfff) {
+      const bool paired = code_point <= 0xdbff && index + 1 < units.size() &&
+          units[index + 1] >= 0xdc00 && units[index + 1] <= 0xdfff;
+      code_point = paired ? 0x10000 + ((code_point - 0xd800) << 10) +
+                                (static_cast<std::uint32_t>(units[++index]) - 0xdc00)
+                          : 0xfffd;
+    }
+    if (code_point < 0x80) {
+      output.push_back(static_cast<char>(code_point));
+    } else if (code_point < 0x800) {
+      output.push_back(static_cast<char>(0xc0 | (code_point >> 6)));
+      output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+    } else if (code_point < 0x10000) {
+      output.push_back(static_cast<char>(0xe0 | (code_point >> 12)));
+      output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+    } else {
+      output.push_back(static_cast<char>(0xf0 | (code_point >> 18)));
+      output.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+    }
+  }
+  return output;
+}
+
 bool contains_units(const std::vector<SQLWCHAR>& haystack, const std::vector<SQLWCHAR>& needle) {
   return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) !=
          haystack.end();
@@ -188,10 +219,10 @@ class DriverManagerUnicodeTest : public ::testing::Test {
 
 // U+00E9, U+8868 and U+1F600: two, three and four UTF-8 bytes; the last is a
 // surrogate pair for 2-byte managers and a single unit for 4-byte managers.
-constexpr std::u32string_view kUnicodeName = U"é表\U0001F600";
+constexpr std::u32string_view kUnicodeName = U"\u00e9\u8868\U0001F600";
 
 TEST_F(DriverManagerUnicodeTest, WideDescribeColReturnsUnicodeNameAndReportsZeroCapacity) {
-  ASSERT_EQ(SQL_SUCCESS, execute_wide(U"SELECT 1 AS \"é表\U0001F600\""))
+  ASSERT_EQ(SQL_SUCCESS, execute_wide(U"SELECT 1 AS \"\u00e9\u8868\U0001F600\""))
       << first_state(SQL_HANDLE_STMT, statement_);
   const auto expected = wide_text(kUnicodeName);
   const auto units = unit_count(expected);
@@ -231,7 +262,7 @@ TEST_F(DriverManagerUnicodeTest, AnsiDescribeColReportsZeroCapacityTruncation) {
 }
 
 TEST_F(DriverManagerUnicodeTest, WideColAttributeAndDescRecAgreeOnUnicodeName) {
-  ASSERT_EQ(SQL_SUCCESS, execute_wide(U"SELECT 1 AS \"é表\U0001F600\""))
+  ASSERT_EQ(SQL_SUCCESS, execute_wide(U"SELECT 1 AS \"\u00e9\u8868\U0001F600\""))
       << first_state(SQL_HANDLE_STMT, statement_);
   const auto expected = wide_text(kUnicodeName);
   const auto units = unit_count(expected);
@@ -256,7 +287,7 @@ TEST_F(DriverManagerUnicodeTest, WideColAttributeAndDescRecAgreeOnUnicodeName) {
 
 // PostgreSQL's 63-byte identifier limit: 21 three-byte characters.
 TEST_F(DriverManagerUnicodeTest, WideDescribeColReturnsMaximumLengthMultibyteName) {
-  std::u32string name(21, U'表');
+  std::u32string name(21, U'\u8868');
   ASSERT_EQ(SQL_SUCCESS, execute_wide(U"SELECT 1 AS \"" + name + U"\""))
       << first_state(SQL_HANDLE_STMT, statement_);
   const auto expected = wide_text(name);
@@ -279,7 +310,7 @@ TEST_F(DriverManagerUnicodeTest, WideDescribeColReturnsMaximumLengthMultibyteNam
 }
 
 TEST_F(DriverManagerUnicodeTest, WideDiagnosticCarriesUnicodeServerText) {
-  ASSERT_EQ(SQL_ERROR, execute_wide(U"SELECT * FROM \"é表\U0001F600_missing\""));
+  ASSERT_EQ(SQL_ERROR, execute_wide(U"SELECT * FROM \"\u00e9\u8868\U0001F600_missing\""));
   SQLWCHAR state[6]{};
   SQLINTEGER native = 0;
   std::vector<SQLWCHAR> message(512, 0);
@@ -290,7 +321,8 @@ TEST_F(DriverManagerUnicodeTest, WideDiagnosticCarriesUnicodeServerText) {
   ASSERT_GT(length, 0);
   ASSERT_LT(length, static_cast<SQLSMALLINT>(message.size()));
   message.resize(static_cast<std::size_t>(length));
-  EXPECT_TRUE(contains_units(message, without_terminator(wide_text(kUnicodeName))));
+  EXPECT_TRUE(contains_units(message, without_terminator(wide_text(kUnicodeName))))
+      << "message: " << utf8(message);
 }
 
 TEST_F(DriverManagerUnicodeTest, LegacySqlErrorWDrainsRecordsThenReturnsNoData) {
