@@ -35,7 +35,7 @@ bool policy(std::span<const std::byte> bytes, std::string_view profile) noexcept
   for (unsigned char c : input) {
     if (c != '\n' && c != '\r' && c != '\t' && (c < 32 || c > 126)) return false;
   }
-  bool section = false; unsigned lines = 0; std::array<bool,3> seen{};
+  bool section = false; unsigned lines = 0; std::array<bool,4> seen{};
   while (!input.empty()) {
     if (++lines > 64) return false;
     const auto end = input.find('\n'); auto line = input.substr(0, end);
@@ -55,10 +55,14 @@ bool policy(std::span<const std::byte> bytes, std::string_view profile) noexcept
     if (key == "aws_access_key_id") index = 0;
     else if (key == "aws_secret_access_key") index = 1;
     else if (key == "aws_session_token") index = 2;
+    else if (key == "role_arn") index = 3;
     else return false;
     if (seen[index] || value.empty() || value.size() > 2048) return false;
     // Values are opaque visible ASCII; no comments, quoting or substitutions.
     for (unsigned char c : value) { if (c < 33 || c > 126 || c == '#' || c == ';') return false; }
+    // role_arn must look like an ARN; the SDK provider owns full ARN/role
+    // grammar and any resulting STS assumption.
+    if (key == "role_arn" && !value.starts_with("arn:")) return false;
     seen[index] = true;
   }
   return section && seen[0] && seen[1];

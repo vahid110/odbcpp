@@ -43,6 +43,12 @@ TEST(NamedProfileAcquisition, StrictPolicyRefusesBeforeInitialization){
  }
  Files files;Files::write(files.config,"[default]\n");EXPECT_ANY_THROW(stage(files));
 }
+TEST(NamedProfileAcquisition, RoleArnProfileAcceptedButForeignArnRefused){
+  Files files;Files::write(files.credential,"[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n");
+  EXPECT_NO_THROW({auto owned=stage(files);EXPECT_TRUE(owned->unchanged());});
+  Files::write(files.credential,valid+"role_arn=not-an-arn\n");
+  EXPECT_ANY_THROW(stage(files));
+}
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){
  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);Files files;
   if(kind==0)ASSERT_EQ(::chmod(files.dir.c_str(),0755),0);
