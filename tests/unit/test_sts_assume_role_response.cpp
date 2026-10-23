@@ -87,10 +87,15 @@ TEST(StsAssumeRoleResponseTest, TargetRejectsForeignComponentsAndLocalBounds) {
     if (field == 0) { t.account = "12345678901x"; }
     if (field == 1) { t.region = "us--east-1"; }
     if (field == 2) { t.role_name = ""; }
-    if (field == 3) { t.role_name = "a/b"; }
+    if (field == 3) { t.role_name = "a//b"; }
     if (field == 4) { t.role_session_name = "x"; }
     EXPECT_FALSE(StsAssumeRoleAcquisition::create(at(150), 6s, t));
   }
+}
+TEST(StsAssumeRoleResponseTest, RoleNameWithPathIsAccepted){
+  auto t = target();
+  t.role_name = "odbcpp-redshift-test/odbcpp-redshift-test-runtime";
+  EXPECT_TRUE(StsAssumeRoleAcquisition::create(at(150), 6s, t));
 }
 TEST(StsAssumeRoleResponseTest, DurationAndHeadroomBoundsAreClosed) {
   for (unsigned duration : {900u, 3600u}) {
