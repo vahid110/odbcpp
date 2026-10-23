@@ -5,18 +5,23 @@
 #include "odbcpp/transport/tls_transport.h"
 #include "odbcpp/auth/aws/sts_assume_role_owner.h"
 #include "odbcpp/auth/aws/serverless_credentials_owner.h"
+#include "odbcpp/auth/aws/profile_role_assumption.h"
 #include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <string>
+#include <sys/stat.h>
+#include <unistd.h>
 namespace {
 namespace a=rs::core::auth;
 namespace sts=a::aws::sts;
 namespace sl=a::aws::serverless;
+namespace pr=a::aws::profile_role;
 namespace d=rs::core::database;
 using Pg=d::postgres::PgDatabaseConnection;
 constexpr std::string_view admission="serverless-sts-auth001";
@@ -275,5 +280,40 @@ TEST(ServerlessStsAuth, TwoSequentialCredentialIssuancesSucceed){
   auto second=issue_credentials(*spec,spec->role_name);
   ASSERT_TRUE(second.has_value());
   EXPECT_EQ(first->user,second->user);
+}
+TEST(ServerlessStsAuth, ProfileChainRoleArnAssumesRoleViaResolver){
+  const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
+  if(!marker||std::string_view(marker)!=admission){
+    GTEST_SKIP()<<"Separate serverless STS admission required";
+  }
+  auto spec=read_spec();ASSERT_TRUE(spec.has_value());
+  auto keys=load_static_keys(*spec);ASSERT_TRUE(keys.has_value());
+  std::string ak,sk,tk;
+  keys->access.with_bytes([&](auto b){ak.assign(reinterpret_cast<const char*>(b.data()),b.size());});
+  keys->secret.with_bytes([&](auto b){sk.assign(reinterpret_cast<const char*>(b.data()),b.size());});
+  keys->token.with_bytes([&](auto b){tk.assign(reinterpret_cast<const char*>(b.data()),b.size());});
+  const std::string role_arn="arn:aws:iam::"+spec->account+":role/"+spec->role_name;
+  char pattern[]="/private/tmp/odbcpp_prole_XXXXXX";
+  char* dir=::mkdtemp(pattern);ASSERT_NE(dir,nullptr);
+  const std::string file=std::string(dir)+"/credentials";
+  std::string body="[role-profile]\nrole_arn="+role_arn+"\nsource_profile=base\n[base]\naws_access_key_id="+ak+"\naws_secret_access_key="+sk+"\n";
+  if(!tk.empty()){
+    body+="aws_session_token="+tk+"\n";
+  }
+  {std::ofstream out(file,std::ios::binary|std::ios::trunc);out.write(body.data(),static_cast<std::streamsize>(body.size()));}
+  ::chmod(file.c_str(),0600);
+  auto cancel=std::make_shared<a::aws::provisioned_native::WorkerCancellation>();
+  auto cred=pr::resolve_assumed_role_credentials(file,"role-profile",spec->region,spec->role_session_name,spec->duration_seconds,deadline_60s(),cancel);
+  ::unlink(file.c_str());::rmdir(dir);
+  ASSERT_TRUE(cred);
+  EXPECT_FALSE(cred.value().session_token.empty());
+  auto& c=cred.value();
+  sl::ServerlessTarget st{spec->region,spec->workgroup,spec->database,spec->duration_seconds};
+  auto sc=sl::ServerlessCredentialsOwner::create(std::move(st),std::move(c.access_key_id),std::move(c.secret_access_key),std::move(c.session_token),deadline_60s(),cancel);
+  ASSERT_TRUE(sc.owner);
+  auto fields=sc.owner->acquire();
+  ASSERT_TRUE(fields);
+  EXPECT_EQ(fields.value().user,"IAMR:odbcpp-redshift-test-runtime");
+  EXPECT_TRUE(sc.owner->close());
 }
 } // namespace

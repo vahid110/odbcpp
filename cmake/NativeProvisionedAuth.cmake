@@ -59,6 +59,7 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_c
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_assume_role_owner.h" "${_native_stage}/odbcpp/auth/aws/sts_assume_role_owner.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/serverless_credentials_owner.h" "${_native_stage}/odbcpp/auth/aws/serverless_credentials_owner.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/profile_role_assumption.h" "${_native_stage}/odbcpp/auth/aws/profile_role_assumption.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_pg_connector.h" "${_native_stage}/odbcpp/auth/aws/provisioned_pg_connector.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
@@ -71,6 +72,7 @@ add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/explicit_profile_source.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_assume_role_owner.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/serverless_credentials_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/profile_role_assumption.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/provisioned_query_transport.cpp")
 target_compile_features(odbcpp_auth_aws_provisioned PRIVATE cxx_std_20)
 target_include_directories(odbcpp_auth_aws_provisioned PRIVATE
