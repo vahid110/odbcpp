@@ -87,7 +87,7 @@ std::optional<SigningKeys> load_static_keys(const Spec& spec){
     if(!loader.Load())return {};
     const auto& profiles=loader.GetProfiles();
     const auto found=profiles.find(spec.profile.c_str());
-    if(found==profiles.end()||profiles.size()!=1)return {};
+    if(found==profiles.end())return {};
     const auto& value=found->second.GetCredentials();
     if(value.GetAWSAccessKeyId().empty()||value.GetAWSSecretKey().empty())return {};
     const auto secret=[](const Aws::String& bytes){return a::SecretBytes::create(
@@ -168,7 +168,7 @@ TEST(ServerlessStsAuth, ForeignRoleArnIsRefusedBeforeCredentialIssuance){
   auto issued=issue_credentials(*spec,"definitely-not-a-real-role/absent");
   EXPECT_FALSE(issued.has_value());
 }
-TEST(ServerlessStsAuth, WrongDatabaseIsRefusedAtGetCredentials){
+TEST(ServerlessStsAuth, WrongWorkgroupIsRefusedAtGetCredentials){
   const char* marker=std::getenv("ODBCPP_SERVERLESS_STS_ADMISSION");
   if(!marker||std::string_view(marker)!=admission){
     GTEST_SKIP()<<"Separate serverless STS admission required";
@@ -183,7 +183,7 @@ TEST(ServerlessStsAuth, WrongDatabaseIsRefusedAtGetCredentials){
   ASSERT_TRUE(assumed.owner);auto cred=assumed.owner->acquire();ASSERT_TRUE(cred);
   ASSERT_TRUE(assumed.owner->close());
   auto& c=cred.value();
-  sl::ServerlessTarget st{spec->region,spec->workgroup,"definitely-not-a-database",spec->duration_seconds};
+  sl::ServerlessTarget st{spec->region,"definitely-not-a-workgroup",spec->database,spec->duration_seconds};
   auto sc=sl::ServerlessCredentialsOwner::create(std::move(st),std::move(c.access_key_id),
       std::move(c.secret_access_key),std::move(c.session_token),deadline_60s(),cancel);
   ASSERT_TRUE(sc.owner);auto fields=sc.owner->acquire();
