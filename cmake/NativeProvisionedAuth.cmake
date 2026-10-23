@@ -102,6 +102,8 @@ apply_compiler_settings(odbcpp_auth_aws_provisioned_pg)
 # Explicit build-only consumers. Neither native nor SDK fake tests run through
 # ordinary CTest; fake runtime uses the separately selected network-denied path.
 add_executable(it_redshift_native_auth EXCLUDE_FROM_ALL "${_native_test}")
+add_executable(it_redshift_serverless_sts_auth EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/integration/it_redshift_serverless_sts_auth.cpp")
 add_executable(test_named_profile_acquisition EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_named_profile_acquisition.cpp")
 add_executable(test_provisioned_native_owner EXCLUDE_FROM_ALL
@@ -110,7 +112,7 @@ add_executable(test_provisioned_pg_connector EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_pg_connector.cpp")
 add_executable(test_provisioned_sdk_runtime EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_sdk_runtime.cpp")
-foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime)
+foreach(_consumer it_redshift_native_auth it_redshift_serverless_sts_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime)
   target_include_directories(${_consumer} PRIVATE
     "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
   target_include_directories(${_consumer} SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
@@ -126,6 +128,7 @@ target_include_directories(it_redshift_native_auth PRIVATE "${ODBCPP_PG_AUTH_CON
 target_include_directories(test_provisioned_pg_connector PRIVATE "${ODBCPP_INTERNAL_INCLUDE_backend}")
 target_link_libraries(test_provisioned_pg_connector PRIVATE odbcpp_auth_aws_provisioned_pg)
 target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core odbcpp_auth_pg_consumer odbcpp_auth_aws_provisioned_pg)
+target_link_libraries(it_redshift_serverless_sts_auth PRIVATE odbcpp::core)
 target_link_options(it_redshift_native_auth PRIVATE
   "LINKER:-map,${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-link.map")
 # No add_test/discovery/postbuild execution. A manually selected build is not

@@ -25,13 +25,17 @@ bool region_valid(std::string_view value) noexcept {
   }
   return true;
 }
-// Local IAM role-name grammar subset, not AWS-complete reserved-word validation.
+// Local IAM role-name grammar subset (including an optional path prefix), not
+// AWS-complete reserved-word validation.
 bool role_name_valid(std::string_view value) noexcept {
-  if (value.empty() || value.size() > 64) return false;
+  if (value.empty() || value.size() > 512 || value.front() == '/' || value.back() == '/') return false;
+  char previous = 0;
   for (char c : value) {
     const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-        c == '+' || c == '=' || c == ',' || c == '.' || c == '@' || c == '_' || c == '-';
+        c == '+' || c == '=' || c == ',' || c == '.' || c == '@' || c == '_' || c == '-' || c == '/';
     if (!ok) return false;
+    if (c == '/' && previous == '/') return false; // no empty path segment
+    previous = c;
   }
   return true;
 }
