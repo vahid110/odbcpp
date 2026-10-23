@@ -49,6 +49,21 @@ TEST(NamedProfileAcquisition, RoleArnProfileAcceptedButForeignArnRefused){
   Files::write(files.credential,valid+"role_arn=not-an-arn\n");
   EXPECT_ANY_THROW(stage(files));
 }
+TEST(NamedProfileAcquisition, SourceProfileMultiSectionAcceptedAndRefused){
+  Files files;
+  const std::string good="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n[base]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\n";
+  Files::write(files.credential,good);
+  EXPECT_NO_THROW({auto owned=stage(files);EXPECT_TRUE(owned->unchanged());});
+  const std::string missing="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n";
+  Files::write(files.credential,missing);
+  EXPECT_ANY_THROW(stage(files));
+  const std::string no_role="[pilot]\nsource_profile=base\n[base]\naws_access_key_id=x\naws_secret_access_key=y\n";
+  Files::write(files.credential,no_role);
+  EXPECT_ANY_THROW(stage(files));
+  const std::string cycle="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=pilot\n";
+  Files::write(files.credential,cycle);
+  EXPECT_ANY_THROW(stage(files));
+}
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){
  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);Files files;
   if(kind==0)ASSERT_EQ(::chmod(files.dir.c_str(),0755),0);
