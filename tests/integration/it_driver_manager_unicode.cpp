@@ -176,15 +176,21 @@ SQLRETURN allocate_environment(SQLHENV* environment) {
   return result;
 }
 
+std::vector<SQLWCHAR> wide_connection_string() {
+  const auto input = connection_string();
+  return wide_text(std::u32string(input.begin(), input.end()));
+}
+
 class DriverManagerUnicodeTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_EQ(SQL_SUCCESS, allocate_environment(&environment_));
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    auto input = connection_string();
-    const auto result = SQLDriverConnect(connection_, nullptr,
-        reinterpret_cast<SQLCHAR*>(input.data()), SQL_NTS, nullptr, 0, nullptr,
-        SQL_DRIVER_NOPROMPT);
+    // A Unicode application connects wide; unixODBC otherwise treats the
+    // connection as ANSI and widens driver diagnostics through the C locale.
+    auto input = wide_connection_string();
+    const auto result = SQLDriverConnectW(connection_, nullptr, input.data(), SQL_NTS, nullptr,
+                                          0, nullptr, SQL_DRIVER_NOPROMPT);
     ASSERT_TRUE(result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO)
         << "Driver-manager connect failed: " << first_state(SQL_HANDLE_DBC, connection_);
     connected_ = true;
@@ -351,30 +357,62 @@ TEST_F(DriverManagerUnicodeTest, LegacySqlErrorWDrainsRecordsThenReturnsNoData) 
   EXPECT_EQ(wide_text(U"42S02"), first_state);
 }
 
-TEST(DriverManagerUnicodeConnectTest, WideDriverConnectZeroCapacityOutputReportsTruncation) {
+// One wide driver connect with the given output capacity; disconnects on success.
+struct ConnectOutcome {
+  SQLRETURN result{SQL_ERROR};
+  SQLSMALLINT length{-1};
+  std::vector<SQLWCHAR> output;
+  std::vector<std::string> states;
+};
+
+ConnectOutcome wide_connect(SQLSMALLINT capacity) {
+  ConnectOutcome outcome;
   SQLHENV environment = SQL_NULL_HENV;
   SQLHDBC connection = SQL_NULL_HDBC;
-  ASSERT_EQ(SQL_SUCCESS, allocate_environment(&environment));
-  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  const auto input = connection_string();
-  std::u32string wide_input(input.begin(), input.end());
-  auto text = wide_text(wide_input);
-  std::vector<SQLWCHAR> output(8, SQLWCHAR('x'));
-  SQLSMALLINT length = -1;
-  const auto result = SQLDriverConnectW(connection, nullptr, text.data(), SQL_NTS,
-      output.data(), 0, &length, SQL_DRIVER_NOPROMPT);
-  const auto states = diagnostic_states(SQL_HANDLE_DBC, connection);
-  if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
-    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, result);
-    EXPECT_TRUE(has_state(states, "01004"));
-    EXPECT_GT(length, 0);
-    EXPECT_EQ(SQLWCHAR('x'), output[0]);
-    EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
-  } else {
-    ADD_FAILURE() << "SQLDriverConnectW failed: " << (states.empty() ? "none" : states.front());
+  if (allocate_environment(&environment) != SQL_SUCCESS ||
+      SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection) != SQL_SUCCESS) {
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return outcome;
   }
-  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
-  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+  auto input = wide_connection_string();
+  outcome.output.assign(1024, SQLWCHAR('x'));
+  outcome.result = SQLDriverConnectW(connection, nullptr, input.data(), SQL_NTS,
+      outcome.output.data(), capacity, &outcome.length, SQL_DRIVER_NOPROMPT);
+  outcome.states = diagnostic_states(SQL_HANDLE_DBC, connection);
+  if (outcome.result == SQL_SUCCESS || outcome.result == SQL_SUCCESS_WITH_INFO) {
+    SQLDisconnect(connection);
+  }
+  SQLFreeHandle(SQL_HANDLE_DBC, connection);
+  SQLFreeHandle(SQL_HANDLE_ENV, environment);
+  return outcome;
+}
+
+TEST(DriverManagerUnicodeConnectTest, WideDriverConnectTruncatedOutputReportsFullLength) {
+#ifdef ODBCPP_TEST_IODBC
+  // iODBC 3.52.16 (A and W) returns SQL_SUCCESS_WITH_INFO without the driver's
+  // 01004 and reports the copied length (capacity 8 -> 7) or a length scanned
+  // from the application's unterminated buffer (capacity 0); unixODBC and the
+  // directly linked driver report 01004 and the full length. Manager defect.
+  GTEST_SKIP() << "iODBC drops driver-connect truncation diagnostics and lengths";
+#endif
+  const auto full = wide_connect(1024);
+  ASSERT_EQ(SQL_SUCCESS, full.result) << joined(full.states);
+  ASSERT_GT(full.length, 8);
+
+  for (const SQLSMALLINT capacity : {SQLSMALLINT{8}, SQLSMALLINT{0}}) {
+    SCOPED_TRACE(capacity);
+    const auto truncated = wide_connect(capacity);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, truncated.result) << joined(truncated.states);
+    EXPECT_TRUE(has_state(truncated.states, "01004"));
+    EXPECT_EQ(full.length, truncated.length);
+    if (capacity == 0) {
+      EXPECT_EQ(SQLWCHAR('x'), truncated.output[0]);
+    } else {
+      EXPECT_TRUE(std::equal(full.output.begin(), full.output.begin() + capacity - 1,
+                             truncated.output.begin()));
+      EXPECT_EQ(SQLWCHAR(0), truncated.output[static_cast<std::size_t>(capacity - 1)]);
+    }
+  }
 }
 
 }  // namespace
