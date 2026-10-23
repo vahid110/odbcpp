@@ -4825,6 +4825,20 @@ TEST_F(BackendContractTest, AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateA
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, narrow_state, nullptr,
                                        narrow_message, sizeof(narrow_message),
                                        &narrow_length));
+#ifdef _WIN32
+  // Windows resolves DSNs through the registry, which rejects a non-UTF-8
+  // entry name before any echo, so the record stays valid UTF-8 for W readers.
+  EXPECT_STREQ("HY000", reinterpret_cast<char*>(narrow_state));
+  EXPECT_STREQ("Invalid UTF-8 ODBC registry entry name", reinterpret_cast<char*>(narrow_message));
+  SQLWCHAR wide_state[6]{};
+  SQLWCHAR message[64]{};
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_DBC, dbc, 1, wide_state, nullptr, message,
+                                        64, &length));
+  const SQLWCHAR expected_state[]{'H', 'Y', '0', '0', '0', 0};
+  EXPECT_EQ(0, std::memcmp(wide_state, expected_state, sizeof(expected_state)));
+  EXPECT_EQ(narrow_length, length);
+#else
   EXPECT_STREQ("08001", reinterpret_cast<char*>(narrow_state));
   EXPECT_STREQ("DSN 'caf\xe9' not found", reinterpret_cast<char*>(narrow_message));
 
@@ -4842,6 +4856,7 @@ TEST_F(BackendContractTest, AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateA
   EXPECT_EQ(0, native);
   EXPECT_EQ(-1, length);
   EXPECT_EQ(0x5a5a, message[0]);
+#endif
 }
 
 TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelectedDdlPolicy) {
