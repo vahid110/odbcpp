@@ -476,7 +476,8 @@ public:
                        SQLSMALLINT* string_length, SQLSMALLINT* type,
                        SQLSMALLINT* subtype, SQLLEN* length,
                        SQLSMALLINT* precision, SQLSMALLINT* scale,
-                       SQLSMALLINT* nullable);
+                       SQLSMALLINT* nullable,
+                       std::string* name_out = nullptr);
   SQLRETURN set_record(SQLSMALLINT record_number, SQLSMALLINT type,
                        SQLSMALLINT subtype, SQLLEN length,
                        SQLSMALLINT precision, SQLSMALLINT scale,

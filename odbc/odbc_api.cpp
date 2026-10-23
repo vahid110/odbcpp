@@ -3050,28 +3050,21 @@ static SQLRETURN SQLGetDescRecW_impl(
     return SQL_ERROR;
   }
 
-  SQLSMALLINT utf8_length = 0;
+  std::string record_name;
   SQLSMALLINT record_type = 0;
   SQLSMALLINT record_subtype = 0;
   SQLLEN record_length = 0;
   SQLSMALLINT record_precision = 0;
   SQLSMALLINT record_scale = 0;
   SQLSMALLINT record_nullable = 0;
+  // Convert the full UTF-8 name; a SQLSMALLINT byte length cannot carry it.
   const auto result = descriptor->get_record(
-      record_number, nullptr, 0, &utf8_length, &record_type,
+      record_number, nullptr, 0, nullptr, &record_type,
       &record_subtype, &record_length, &record_precision, &record_scale,
-      &record_nullable);
+      &record_nullable, &record_name);
   if (result != SQL_SUCCESS) return result;
-  std::vector<char> utf8(static_cast<std::size_t>(utf8_length) + 1);
-  const auto name_result = descriptor->get_record(
-      record_number, reinterpret_cast<SQLCHAR*>(utf8.data()),
-      static_cast<SQLSMALLINT>(utf8.size()), nullptr, nullptr, nullptr,
-      nullptr, nullptr, nullptr, nullptr);
-  if (name_result != SQL_SUCCESS) return name_result;
   const auto output_result = write_wide_output(
-      descriptor,
-      std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
-      name, buffer_length, string_length,
+      descriptor, record_name, name, buffer_length, string_length,
       "Descriptor record name was truncated");
   if (output_result == SQL_ERROR) return output_result;
   store_output_value(type, record_type);

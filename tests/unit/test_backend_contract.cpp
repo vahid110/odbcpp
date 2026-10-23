@@ -4580,6 +4580,20 @@ TEST_F(BackendContractTest, OversizedColumnNamesKeepWideContentAndClampReportedL
   ASSERT_EQ(SQL_SUCCESS,
             SQLColAttribute(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
   EXPECT_EQ(max_length, bytes);
+  SQLHDESC ird = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  ASSERT_NE(nullptr, ird);
+  std::fill(std::begin(prefix), std::end(prefix), SQLWCHAR('x'));
+  length = -1;
+  type = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetDescRecW(ird, 1, prefix, 64, &length, &type, nullptr, nullptr, nullptr,
+                           nullptr, nullptr));
+  EXPECT_EQ("01004", state(SQL_HANDLE_DESC, ird));
+  EXPECT_EQ(max_length, length);
+  EXPECT_EQ(SQL_VARCHAR, type);
+  EXPECT_EQ(SQLWCHAR('a'), prefix[62]);
+  EXPECT_EQ(0, prefix[63]);
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
 
   // Case B: 12000 euro signs are 36000 UTF-8 bytes but representable units.
@@ -4615,6 +4629,16 @@ TEST_F(BackendContractTest, OversizedColumnNamesKeepWideContentAndClampReportedL
   EXPECT_EQ(SQLWCHAR(0x20ac), attribute[0]);
   EXPECT_EQ(SQLWCHAR(0x20ac), attribute[2]);
   EXPECT_EQ(0, attribute[3]);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  std::fill(wide.begin(), wide.end(), SQLWCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDescRecW(ird, 1, wide.data(), static_cast<SQLSMALLINT>(wide.size()), &length,
+                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(12000, length);
+  EXPECT_TRUE(std::all_of(wide.begin(), wide.end() - 1,
+                          [](SQLWCHAR unit) { return unit == 0x20ac; }));
+  EXPECT_EQ(0, wide.back());
   length = -1;
   ASSERT_EQ(SQL_SUCCESS,
             SQLDescribeCol(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));

@@ -3161,7 +3161,7 @@ SQLRETURN ODBCDescriptor::get_record(
     SQLSMALLINT record_number, SQLCHAR* name, SQLSMALLINT buffer_length,
     SQLSMALLINT* string_length, SQLSMALLINT* type, SQLSMALLINT* subtype,
     SQLLEN* length, SQLSMALLINT* precision, SQLSMALLINT* scale,
-    SQLSMALLINT* nullable) {
+    SQLSMALLINT* nullable, std::string* name_out) {
   if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetDescRec",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -3178,6 +3178,8 @@ SQLRETURN ODBCDescriptor::get_record(
   }
 
   const auto& record = *numbered_record(record_number);
+  // Wide adapters convert the full name; the SQLSMALLINT length is clamped.
+  if (name_out) *name_out = record.name;
   if (string_length) {
     store_application_value(
         string_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
