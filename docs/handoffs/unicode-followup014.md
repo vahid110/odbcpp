@@ -1,0 +1,101 @@
+# Handoff: Unicode follow-up 014 (PR #96)
+
+This file is the checked-in continuation point for another machine, such as a
+macOS instance. The fuller evidence ledger stays private on the Windows host
+(`odbcpp-audits/windows-unicode014-implementation`, which is not in git).
+No credentials or connection strings appear here.
+
+## State
+- Branch: `codex/unicode-contract-followup014`
+- Base: `b5063e1fe0ae1e0a3fc3bf96fe88824411889a2f`
+- PR: https://github.com/vahid110/odbcpp/pull/96 (open, not merged; independent review required)
+- The PR description is the authoritative change and evidence summary: F1, F2, F3, SQLGetDescRecW and the live fixture warm-up.
+
+### Commits
+| Commit | Content |
+|---|---|
+| `2e8424a` | Regression tests only (before snapshot) |
+| `1dfcde3` | F1/F2/F3 implementation |
+| `73fbecd` | SQLGetDescRecW full names beyond `SQLSMALLINT` |
+| `4f7dce2` | Keep the asserted SQLColAttributeW zero-capacity policy |
+| `b1a0ec4` | Four live Redshift GoogleTests |
+| `66c777e` | Opt-in live fixture warm-up (`ODBCPP_REDSHIFT_WARMUP_SECONDS`) |
+
+### Verified so far
+- **Full offline presets, 0 failures:**
+  - Windows ODBC 2/2: 122/122 CTest
+  - WSL unixODBC 2/2: 120/120
+  - WSL iODBC 4/4: 120/120
+- **Live, Redshift Serverless `odbcpp-redshift-pilot` (eu-north-1), verified TLS:**
+  - 10 cases each on Windows, unixODBC and iODBC: 10/10 at `66c777e`.
+  - At `b1a0ec4`, Windows first passed 8/10, and the 2 failures passed on a re-run.
+- **Not run:** macOS, installed driver-manager paths, provisioned Redshift, live PostgreSQL.
+
+### Open owner decisions
+- SQLColAttributeW zero-capacity non-NULL buffer. The existing assertion at `tests/unit/test_backend_contract.cpp` (from #63) requires `SQL_SUCCESS`; the Microsoft truncation rule points to `01004`.
+- SQLGetDescRec(W) zero-capacity, left unchanged because A and W currently behave the same.
+
+## Continuing on macOS
+iODBC with 4-byte SQLWCHAR uses the presets `macos-iodbc-redshift` and `macos-iodbc-redshift-offline`.
+
+```sh
+git fetch origin && git checkout codex/unicode-contract-followup014
+export ODBCPP_IODBC_ROOT=/path/to/iodbc        # include/ and lib/libiodbc.dylib
+python3 tools/development/check_changed_gtest_control_flow.py \
+  --base b5063e1fe0ae1e0a3fc3bf96fe88824411889a2f
+cmake --preset macos-iodbc-redshift
+cmake --build --preset macos-iodbc-redshift
+ctest --preset macos-iodbc-redshift-offline --output-junit ctest-junit.xml
+```
+
+Keep the toolchain identity, the actual exits, the CTest JUnit and the GoogleTest XML together. The Windows offline run had 6 skips (macOS-only trust anchors), and those tests should run on macOS.
+
+### Live cases on macOS
+- **Run as the same 10 cases:**
+  - `RedshiftRealTest.ConnectionTest`, `ErrorHandling`, `UnicodeRoundTrip`
+  - `WideDiagnosticsCarryServerUnicodeErrorText`
+  - `LegacySqlErrorWDrainsServerErrorThenNoData`
+  - `WideZeroCapacityAndDescriptorUnicodeColumnNames`
+  - `WideDriverConnectZeroCapacityOutputReportsTruncation`
+  - `RedshiftUnicodeAliasMetadataRealTest.DirectAndPreparedUnicodeAliasNamesAndRecovery`
+  - `RedshiftUnicodeChunkRealTest.PreparedWideChunksBoundTruncationAndNull`
+  - `RedshiftDeferredInputRealTest.ChunkedUnicodeOwnsPiecesAndReturnsServerValue`
+- **Run them one at a time:** one process per case with `--gtest_filter=<case>` and `--gtest_output=xml:...`. On Linux, the checked-in CTest live registrar (`tests/development/live_suite`) wraps this.
+- **Environment:**
+  - `ODBCPP_REDSHIFT_TEST_CONNECTION`: `SERVER`, `PORT=5439`, `DATABASE=odbcpp_pilot`, `UID`, `PWD`, `SSL=1`, `SSLCAFILE` (a CA bundle that includes the Amazon roots).
+  - `ODBCPP_REDSHIFT_UNICODE_ALIAS_METADATA_ADMISSION=unicode-alias-metadata-v1`
+  - `ODBCPP_REDSHIFT_UNICODE_CHUNK_ADMISSION=unicode-chunk-result-v1`
+  - `ODBCPP_REDSHIFT_WARMUP_SECONDS=120` (optional)
+- **Credentials:** temporary database credentials came from `aws redshift-serverless get-credentials --workgroup-name odbcpp-redshift-pilot --db-name odbcpp_pilot`. Keep them in private (0600) files only. CTest `LastTest.log` records test environments, so it must stay private.
+- **Network:** the workgroup's security group must allow the macOS host's IP on port 5439.
+
+## Gaps toward a production-grade driver (priority order)
+
+**Release blockers**
+1. **macOS.** Build and the full offline suite, plus live runs. Every product PR requires macOS, Linux and Windows. There is also no hosted CI on all three platforms; so far Linux and Windows have run only on one local host.
+2. **Installed driver-manager paths.** Live runs so far link the driver directly. Register it and run through the Windows ODBC Administrator, unixODBC `odbcinst.ini` and iODBC (`it_driver_manager`). The driver manager changes Unicode conversion, how errors reach the application, and how connect works.
+3. **Provisioned Redshift and live PostgreSQL.** This round ran on Serverless only.
+4. **Independent review of PR #96,** plus the owner decision on SQLColAttributeW zero-capacity.
+
+**Correctness and robustness**
+
+5. **Real client applications:** Power BI, Excel, Tableau, DBeaver, pyodbc, `isql`. They exercise W calls, catalog functions, zero-capacity length queries and legacy `SQLError` in ways the tests don't.
+6. **Fuzzing:** the protocol parser (ErrorResponse/NoticeResponse, DataRow, RowDescription) and the connection-string parser. This round found invalid bytes passing straight through `decode_error_fields`.
+7. **Sanitizers and soak tests:** ASan/UBSan beyond unit tests, extended to live and driver-manager runs, plus long connect/disconnect and statement cycles with memory and handle counts checked.
+8. **Concurrency:** multiple threads on separate connections, and `SQLCancel` from another thread, under ThreadSanitizer.
+9. **Network failure:** server restarts, dropped connections in the middle of results, TLS errors, and timeouts at every stage. The first-pass Windows `HYT00`/`08001` came from either a cold start or first-login user creation, and is still unexplained.
+
+**Coverage already listed as debt**
+
+10. **Authentication breadth:** IAM-authenticated SQL, token refresh and reconnect, federation and SSO.
+11. **Other parity gaps:** SQLGetDescFieldW name paths, and the full Redshift parity inventory (`REDSHIFT_PARITY_INVENTORY.md`).
+12. **Wider live coverage:** run the whole live suite on every profile, not just these 10 cases. Treat a missing endpoint as a failure.
+
+**Release engineering**
+
+13. **Release artifacts:** signed installers and packages, reproducible builds with attestation, and upgrade/uninstall tests.
+14. **Performance baselines:** fetch throughput and large result sets compared with the AWS Redshift ODBC driver.
+
+**Known live limits**
+- Names over 32767 bytes can't be created on Redshift (identifiers max out at 127 bytes), and non-UTF-8 server text can't be produced with `client_encoding=UTF8`. Both are covered offline only.
+- The warm-up hasn't been shown to rescue a real cold start.
