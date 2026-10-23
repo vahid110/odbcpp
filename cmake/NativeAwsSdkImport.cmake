@@ -12,6 +12,7 @@ if(NOT IS_ABSOLUTE "${ODBCPP_AWS_SDK_INSTALL}"
 endif()
 set(AWSSDK_ROOT_DIR "${ODBCPP_AWS_SDK_INSTALL}")
 list(PREPEND CMAKE_PREFIX_PATH "${ODBCPP_AWS_SDK_INSTALL}")
+find_package(ZLIB REQUIRED)
 find_package(AWSSDK CONFIG REQUIRED COMPONENTS redshift sts)
 if(NOT TARGET aws-cpp-sdk-redshift OR NOT TARGET aws-cpp-sdk-sts)
   message(FATAL_ERROR "Native provisioned auth incomplete AWS SDK import closure")
