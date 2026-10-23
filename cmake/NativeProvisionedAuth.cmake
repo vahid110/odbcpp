@@ -14,18 +14,8 @@ if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
   message(FATAL_ERROR "Native provisioned auth requires the reviewed Redshift Darwin arm64 static OpenSSL profile")
 endif()
 # Optional provider sources are versioned with this project. The SDK remains an
-# explicitly pinned external build dependency; no ambient credential/package search.
-set(ODBCPP_NATIVE_AUTH_SDK_IMPORT "" CACHE FILEPATH "Reviewed pinned SDK import recipe")
-if(NOT IS_ABSOLUTE "${ODBCPP_NATIVE_AUTH_SDK_IMPORT}" OR
-   NOT EXISTS "${ODBCPP_NATIVE_AUTH_SDK_IMPORT}")
-  message(FATAL_ERROR "Native provisioned auth requires explicit existing absolute ODBCPP_NATIVE_AUTH_SDK_IMPORT")
-endif()
-# Include executes CMake code. Accept only the reviewed recipe bytes, not a
-# caller-supplied fingerprint or ambient installed-package discovery.
-file(SHA256 "${ODBCPP_NATIVE_AUTH_SDK_IMPORT}" _recipe_hash)
-if(NOT _recipe_hash STREQUAL "dd810b77e90777e9f9ff6cfddadaa699a02c6880f520c91cdb94fb387c7a3c00")
-  message(FATAL_ERROR "Native provisioned auth SDK recipe fingerprint mismatch")
-endif()
+# explicitly pinned external build dependency (no ambient package search); the
+# import recipe is git-pinned and consumes the reviewed ODBCPP_AWS_SDK_INSTALL.
 if(NOT EXISTS "${OPENSSL_SSL_LIBRARY}")
   message(FATAL_ERROR "Native provisioned auth missing selected OPENSSL_SSL_LIBRARY")
 endif()
@@ -45,11 +35,11 @@ foreach(_target odbcpp::core odbcpp_auth_core Threads::Threads GTest::gtest_main
     message(FATAL_ERROR "Native provisioned auth missing prerequisite target: ${_target}")
   endif()
 endforeach()
-if(TARGET aws-cpp-sdk-redshift)
+if(TARGET aws-cpp-sdk-redshift OR TARGET aws-cpp-sdk-sts)
   message(FATAL_ERROR "Native provisioned auth refuses an already imported SDK target")
 endif()
-include("${ODBCPP_NATIVE_AUTH_SDK_IMPORT}")
-if(NOT TARGET aws-cpp-sdk-redshift OR NOT SDK_FIXTURE_INCLUDES)
+include("${PROJECT_SOURCE_DIR}/cmake/NativeAwsSdkImport.cmake")
+if(NOT TARGET aws-cpp-sdk-redshift OR NOT TARGET aws-cpp-sdk-sts OR NOT SDK_FIXTURE_INCLUDES)
   message(FATAL_ERROR "Native provisioned auth incomplete SDK import closure")
 endif()
 foreach(_include IN LISTS SDK_FIXTURE_INCLUDES)
@@ -86,7 +76,7 @@ target_compile_definitions(odbcpp_auth_aws_provisioned PRIVATE
   AWS_SDK_USE_CRT_HTTP HAVE_H2_CLIENT PLATFORM_APPLE AWS_ENABLE_DISPATCH_QUEUE
   AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
 target_link_libraries(odbcpp_auth_aws_provisioned PRIVATE
-  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift)
+  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-sts)
 apply_compiler_settings(odbcpp_auth_aws_provisioned)
 
 # Optional provider-to-session composition keeps driver dependencies out of
