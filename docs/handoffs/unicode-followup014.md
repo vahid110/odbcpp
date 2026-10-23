@@ -33,6 +33,9 @@ No credentials or connection strings appear here.
 - **Live, Redshift Serverless `odbcpp-redshift-pilot` (eu-north-1), verified TLS:**
   - 10 cases each on Windows, unixODBC and iODBC: 10/10 at `66c777e`.
   - macOS iODBC 4/4 and macOS unixODBC 2/2, at `a1d9639`: 10/10 each. Warm-up: ready after 1 attempt in 328-649 ms, so no cold start.
+- **Live Redshift through a real driver manager (macOS, REDSHIFT driver registered in private ini files, at `87f3dd6`):** `it_driver_manager_unicode` passed 8/8 through unixODBC 2.3.14. Through iODBC 3.52.16, 6 passed and 2 were skipped as iODBC defects.
+  - iODBC drops every driver-connect warning record (01S00 and 01004) and misreports truncated driver-connect output lengths. A probe confirmed both on macOS.
+  - Through unixODBC, an ANSI Latin-1 unknown keyword keeps its 01S00 readable via ANSI and wide calls.
   - At `b1a0ec4`, Windows first passed 8/10, and the 2 failures passed on a re-run.
 - **PR CI on macOS** (GitHub-hosted `macos-latest`, `primary.yml` job `macos-iodbc-ucs4`), passed at `66c777e`:
   - Configuration: product **POSTGRESQL** with iODBC and 4-byte SQLWCHAR.
@@ -85,7 +88,8 @@ Keep the toolchain identity, the actual exits, the CTest JUnit and the GoogleTes
 
 **Release blockers**
 1. **macOS REDSHIFT: done locally at `a1d9639`.** The offline suites (iODBC 4/4 and unixODBC 2/2) and the 10 live cases on both ran on one macOS 15.3.2 arm64 host. Still open: macOS REDSHIFT is not in PR CI, and in PR CI Linux and Windows build without running tests; their suites have run only on one local host.
-2. **Installed driver-manager paths on Windows and unixODBC.** macOS CI already runs `it_driver_manager` through iODBC with PostgreSQL. Live Redshift runs so far link the driver directly. The driver manager changes Unicode conversion, how errors reach the application, and how connect works.
+2. **Installed driver-manager paths on Windows and unixODBC.** macOS unixODBC and iODBC now ran live Redshift through the manager (see above); Windows and Linux unixODBC with Redshift remain.
+   macOS CI already runs `it_driver_manager` through iODBC with PostgreSQL. Every other live Redshift run links the driver directly. The driver manager changes Unicode conversion, how errors reach the application, and how connect works.
 3. **Provisioned Redshift and live PostgreSQL.** This round ran on Serverless only.
 4. **Independent review of PR #96,** plus the owner decision on SQLColAttributeW zero-capacity.
 
