@@ -4737,6 +4737,113 @@ TEST_F(BackendContractTest, WideDriverConnectScalarTruncationPreservesConnection
   EXPECT_EQ(0,std::memcmp(output.data(),input.data(),input.size()*sizeof(SQLWCHAR)));EXPECT_EQ('x',output[input.size()]);
 }
 
+TEST_F(BackendContractTest, WideUserNameInfoCountsBytesAndKeepsSupplementaryScalarsWhole) {
+  const std::string ascii = "SERVER=fake;PORT=9999;DATABASE=contract;SSL=0;UID=";
+  std::vector<SQLWCHAR> input(ascii.begin(), ascii.end());
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    input.push_back(0xd83d);
+    input.push_back(0xde00);
+  } else {
+    input.push_back(static_cast<SQLWCHAR>(0x1f600));
+  }
+  input.push_back('x');
+  input.push_back(0);
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS,
+                                           nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+
+  // SQLGetInfoW text lengths are bytes: 2-byte builds need a surrogate pair.
+  constexpr SQLSMALLINT units = sizeof(SQLWCHAR) == 2 ? 3 : 2;
+  SQLWCHAR out[4]{'z', 'z', 'z', 'z'};
+  SQLSMALLINT bytes = -1;
+  const auto result = SQLGetInfoW(dbc, SQL_USER_NAME, out, 3 * sizeof(SQLWCHAR), &bytes);
+  EXPECT_EQ(static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR)), bytes);
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, result);
+    EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+    const SQLWCHAR expected[]{0xd83d, 0xde00, 0, 'z'};
+    EXPECT_EQ(0, std::memcmp(out, expected, sizeof(expected)));
+
+    // A two-unit buffer cannot hold the pair, so it is never split.
+    std::fill(std::begin(out), std::end(out), SQLWCHAR('z'));
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetInfoW(dbc, SQL_USER_NAME, out, 2 * sizeof(SQLWCHAR), &bytes));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR)), bytes);
+    EXPECT_EQ(0, out[0]);
+    EXPECT_EQ('z', out[1]);
+  } else {
+    ASSERT_EQ(SQL_SUCCESS, result);
+    const SQLWCHAR expected[]{static_cast<SQLWCHAR>(0x1f600), 'x', 0, 'z'};
+    EXPECT_EQ(0, std::memcmp(out, expected, sizeof(expected)));
+  }
+
+  SQLCHAR narrow[16]{};
+  SQLSMALLINT narrow_length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_USER_NAME, narrow, sizeof(narrow), &narrow_length));
+  EXPECT_EQ(5, narrow_length);
+  EXPECT_STREQ("\xf0\x9f\x98\x80x", reinterpret_cast<char*>(narrow));
+}
+
+TEST_F(BackendContractTest, WideGetDataChunksSplitCombiningSequencesAtScalarBoundaries) {
+  QueryResult result;
+  result.columns = {{"text", NativeTypeInfo{ScalarType::VarChar, 8, 0, true}}};
+  result.rows = {{std::string("e\xcc\x81")}};
+  seen->date_result = result;
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+
+  // ODBC chunks by character units, not grapheme clusters: e, then U+0301.
+  SQLWCHAR out[3]{'z', 'z', 'z'};
+  SQLLEN length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2 * sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(2 * sizeof(SQLWCHAR)), length);
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ('e', out[0]);
+  EXPECT_EQ(0, out[1]);
+  EXPECT_EQ('z', out[2]);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2 * sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+  EXPECT_EQ(0x0301, out[0]);
+  EXPECT_EQ(0, out[1]);
+  EXPECT_EQ(SQL_NO_DATA,
+            SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2 * sizeof(SQLWCHAR), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateAndNative) {
+  // An ANSI application in a legacy code page passes Latin-1 bytes (é = 0xE9).
+  // The driver echoes the DSN into its own message without UTF-8 replacement.
+  SQLCHAR dsn[] = "caf\xe9";
+  ASSERT_EQ(SQL_ERROR, SQLConnect(dbc, dsn, SQL_NTS, nullptr, 0, nullptr, 0));
+  EXPECT_EQ(0, seen->created);
+
+  SQLCHAR narrow_state[6]{};
+  SQLCHAR narrow_message[64]{};
+  SQLSMALLINT narrow_length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, narrow_state, nullptr,
+                                       narrow_message, sizeof(narrow_message),
+                                       &narrow_length));
+  EXPECT_STREQ("08001", reinterpret_cast<char*>(narrow_state));
+  EXPECT_STREQ("DSN 'caf\xe9' not found", reinterpret_cast<char*>(narrow_message));
+
+  // The wide reader keeps the asserted unconvertible-record policy: SQL_ERROR,
+  // with SQLSTATE and native error written and message and length untouched.
+  SQLWCHAR wide_state[6]{};
+  SQLINTEGER native = -1;
+  SQLWCHAR message[64];
+  std::fill(std::begin(message), std::end(message), SQLWCHAR(0x5a5a));
+  SQLSMALLINT length = -1;
+  EXPECT_EQ(SQL_ERROR, SQLGetDiagRecW(SQL_HANDLE_DBC, dbc, 1, wide_state, &native,
+                                      message, 64, &length));
+  const SQLWCHAR expected_state[]{'0', '8', '0', '0', '1', 0};
+  EXPECT_EQ(0, std::memcmp(wide_state, expected_state, sizeof(expected_state)));
+  EXPECT_EQ(0, native);
+  EXPECT_EQ(-1, length);
+  EXPECT_EQ(0x5a5a, message[0]);
+}
+
 TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelectedDdlPolicy) {
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
   auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},
