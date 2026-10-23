@@ -4425,14 +4425,9 @@ TEST_F(BackendContractTest, WideMetadataZeroCapacityNonNullBuffersReportTruncati
             SQLDescribeColW(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));
   EXPECT_EQ(units, length);
 
+  // SQLColAttributeW non-NULL zero capacity keeps its asserted existing
+  // policy (ColumnAttributeNullCharacterPreservesValidationAndNumericDomains).
   SQLSMALLINT bytes = -1;
-  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
-            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, name, 0, &bytes, nullptr));
-  EXPECT_EQ("01004", state());
-  EXPECT_EQ(bytes_expected, bytes);
-  EXPECT_EQ(SQLWCHAR('x'), name[0]);
-
-  bytes = -1;
   ASSERT_EQ(SQL_SUCCESS,
             SQLColAttributeW(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
   EXPECT_EQ(bytes_expected, bytes);
