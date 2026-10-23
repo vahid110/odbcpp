@@ -19,6 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <span>
+#include <string>
+#include <system_error>
+#include <thread>
 
 namespace {
 using odbcpp::test::live_package_inputs::fixture_smallint_length;
@@ -75,6 +78,92 @@ constexpr auto schema_diagnostic_oversize=[] {
 }();
 static_assert(safe_schema_refusal_label(std::string_view(schema_diagnostic_oversize.data(),
     schema_diagnostic_oversize.size()))=="unknown");
+
+// One bounded connect plus SELECT 1; every handle is released before returning.
+bool warm_up_attempt(std::string connection_string, std::uintptr_t seconds) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  SQLHSTMT statement = SQL_NULL_HSTMT;
+  bool connected = false;
+  bool ready = false;
+  const auto timeout = reinterpret_cast<SQLPOINTER>(seconds);
+  if (SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment) == SQL_SUCCESS &&
+      SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0) == SQL_SUCCESS &&
+      SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection) == SQL_SUCCESS &&
+      SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, timeout, 0) == SQL_SUCCESS &&
+      SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT, timeout, 0) == SQL_SUCCESS) {
+    const auto connect = SQLDriverConnect(connection, nullptr,
+        reinterpret_cast<SQLCHAR*>(connection_string.data()), SQL_NTS, nullptr, 0, nullptr,
+        SQL_DRIVER_NOPROMPT);
+    connected = connect == SQL_SUCCESS || connect == SQL_SUCCESS_WITH_INFO;
+  }
+  if (connected && SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement) == SQL_SUCCESS &&
+      SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, timeout, 0) == SQL_SUCCESS) {
+    ready = SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")),
+                          SQL_NTS) == SQL_SUCCESS &&
+            SQLFetch(statement) == SQL_SUCCESS;
+  }
+  if (statement != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, statement);
+  if (connected) SQLDisconnect(connection);
+  if (connection != SQL_NULL_HDBC) SQLFreeHandle(SQL_HANDLE_DBC, connection);
+  if (environment != SQL_NULL_HENV) SQLFreeHandle(SQL_HANDLE_ENV, environment);
+  return ready;
+}
+
+// Opt-in through ODBCPP_REDSHIFT_WARMUP_SECONDS (1..300). Runs once per process
+// before any fixture window starts, so an idle Serverless workgroup's cold start
+// cannot consume a case's 5 s operation cap. It asserts nothing about the
+// endpoint: every case still connects and checks on its own. The outcome is
+// recorded as top-level XML properties.
+class RedshiftWarmUpEnvironment final : public ::testing::Environment {
+public:
+  void SetUp() override {
+    const auto budget_input =
+        odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_WARMUP_SECONDS");
+    if (!budget_input) {
+      return;
+    }
+    int budget = 0;
+    const auto* const first = budget_input->data();
+    const auto* const last = first + budget_input->size();
+    const auto parsed = std::from_chars(first, last, budget);
+    if (parsed.ec != std::errc{} || parsed.ptr != last || budget < 1 || budget > 300) {
+      ADD_FAILURE() << "ODBCPP_REDSHIFT_WARMUP_SECONDS must be an integer from 1 to 300";
+      return;
+    }
+    const auto connection =
+        odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_TEST_CONNECTION");
+    if (!connection || connection->empty()) {
+      return;  // The fixture reports the missing endpoint for each case.
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const auto end = start + std::chrono::seconds{budget};
+    int attempts = 0;
+    bool ready = false;
+    while (!ready) {
+      const auto remaining =
+          std::chrono::duration_cast<std::chrono::seconds>(end - std::chrono::steady_clock::now());
+      if (remaining.count() <= 0) {
+        break;
+      }
+      ++attempts;
+      ready = warm_up_attempt(*connection,
+          static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining.count(), 30)));
+      if (!ready && std::chrono::steady_clock::now() + std::chrono::seconds{2} < end) {
+        std::this_thread::sleep_for(std::chrono::seconds{2});
+      }
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start);
+    ::testing::Test::RecordProperty("redshift_warmup_ready", ready ? "true" : "false");
+    ::testing::Test::RecordProperty("redshift_warmup_attempts", attempts);
+    ::testing::Test::RecordProperty("redshift_warmup_ms", std::to_string(elapsed.count()));
+  }
+};
+
+[[maybe_unused]] ::testing::Environment* const redshift_warm_up =
+    ::testing::AddGlobalTestEnvironment(new RedshiftWarmUpEnvironment);
 
 }  // namespace
 
