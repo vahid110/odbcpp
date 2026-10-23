@@ -88,21 +88,40 @@ bool contains_units(const std::vector<SQLWCHAR>& haystack, const std::vector<SQL
          haystack.end();
 }
 
-// Every diagnostic state on a handle, in record order.
+// Every diagnostic state on a handle, in record order. Wide calls with real
+// buffers, because a manager may reject NULL message buffers on mapped calls.
 std::vector<std::string> diagnostic_states(SQLSMALLINT handle_type, SQLHANDLE handle) {
   std::vector<std::string> states;
   for (SQLSMALLINT record = 1; record <= 16; ++record) {
-    SQLCHAR state[6]{};
-    const auto result =
-        SQLGetDiagRec(handle_type, handle, record, state, nullptr, nullptr, 0, nullptr);
+    SQLWCHAR state[6]{};
+    SQLINTEGER native = 0;
+    SQLWCHAR message[512]{};
+    SQLSMALLINT length = 0;
+    const auto result = SQLGetDiagRecW(handle_type, handle, record, state, &native, message,
+                                       512, &length);
     if (result != SQL_SUCCESS && result != SQL_SUCCESS_WITH_INFO) break;
-    states.emplace_back(reinterpret_cast<const char*>(state));
+    std::string text;
+    for (const auto unit : state) {
+      if (unit == 0) break;
+      text.push_back(unit < 0x80 ? static_cast<char>(unit) : '?');
+    }
+    states.push_back(text);
   }
   return states;
 }
 
-bool has_state(const std::vector<std::string>& states, std::string_view expected) {
-  return std::find(states.begin(), states.end(), expected) != states.end();
+std::string joined(const std::vector<std::string>& states) {
+  std::string text;
+  for (const auto& state : states) text += (text.empty() ? "" : ",") + state;
+  return text.empty() ? std::string("none") : text;
+}
+
+::testing::AssertionResult has_state(const std::vector<std::string>& states,
+                                     std::string_view expected) {
+  if (std::find(states.begin(), states.end(), expected) != states.end()) {
+    return ::testing::AssertionSuccess();
+  }
+  return ::testing::AssertionFailure() << "expected " << expected << " among " << joined(states);
 }
 
 std::string first_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
