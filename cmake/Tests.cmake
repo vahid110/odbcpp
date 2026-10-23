@@ -718,6 +718,10 @@ if(UNIX OR WIN32)
       target_compile_definitions(it_driver_manager_unicode PRIVATE
         ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
     endif()
+    if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+      target_compile_definitions(it_driver_manager_unicode PRIVATE
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
     apply_compiler_settings(it_driver_manager_unicode)
     add_test(NAME it_driver_manager_unicode COMMAND it_driver_manager_unicode)
     set_tests_properties(it_driver_manager_unicode PROPERTIES LABELS "integration" TIMEOUT 90)
