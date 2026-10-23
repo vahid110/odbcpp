@@ -14,6 +14,7 @@ odbcpp/auth/redshift_provisioned_response.h|sdk/internal/odbcpp/auth/redshift_pr
 odbcpp/auth/redshift_serverless_response.h|sdk/internal/odbcpp/auth/redshift_serverless_response.h
 odbcpp/auth/redshift_withiam_response.h|sdk/internal/odbcpp/auth/redshift_withiam_response.h
 odbcpp/auth/response_operation.h|sdk/internal/odbcpp/auth/response_operation.h
+odbcpp/auth/sts_assume_role_response.h|sdk/internal/odbcpp/auth/sts_assume_role_response.h
 odbcpp/auth/temporary_db_validity.h|sdk/internal/odbcpp/auth/temporary_db_validity.h
 odbcpp/database/backend_capabilities.h|sdk/include/odbcpp/database/backend_capabilities.h
 odbcpp/database/backend_provider.h|sdk/include/odbcpp/database/backend_provider.h
