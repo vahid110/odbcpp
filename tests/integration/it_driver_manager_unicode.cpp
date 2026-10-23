@@ -365,6 +365,11 @@ struct ConnectOutcome {
   std::vector<std::string> states;
 };
 
+// Room for the completed string; Redshift IAM passwords alone exceed 1700 units.
+std::size_t full_output_capacity() {
+  return std::max<std::size_t>(1024, wide_connection_string().size() + 256);
+}
+
 ConnectOutcome wide_connect(SQLSMALLINT capacity) {
   ConnectOutcome outcome;
   SQLHENV environment = SQL_NULL_HENV;
@@ -375,7 +380,7 @@ ConnectOutcome wide_connect(SQLSMALLINT capacity) {
     return outcome;
   }
   auto input = wide_connection_string();
-  outcome.output.assign(1024, SQLWCHAR('x'));
+  outcome.output.assign(full_output_capacity(), SQLWCHAR('x'));
   outcome.result = SQLDriverConnectW(connection, nullptr, input.data(), SQL_NTS,
       outcome.output.data(), capacity, &outcome.length, SQL_DRIVER_NOPROMPT);
   outcome.states = diagnostic_states(SQL_HANDLE_DBC, connection);
@@ -395,7 +400,7 @@ TEST(DriverManagerUnicodeConnectTest, WideDriverConnectTruncatedOutputReportsFul
   // directly linked driver report 01004 and the full length. Manager defect.
   GTEST_SKIP() << "iODBC drops driver-connect truncation diagnostics and lengths";
 #endif
-  const auto full = wide_connect(1024);
+  const auto full = wide_connect(static_cast<SQLSMALLINT>(full_output_capacity()));
   ASSERT_EQ(SQL_SUCCESS, full.result) << joined(full.states);
   ASSERT_GT(full.length, 8);
 
@@ -413,6 +418,56 @@ TEST(DriverManagerUnicodeConnectTest, WideDriverConnectTruncatedOutputReportsFul
       EXPECT_EQ(SQLWCHAR(0), truncated.output[static_cast<std::size_t>(capacity - 1)]);
     }
   }
+}
+
+// A legacy code-page ANSI application passes a Latin-1 byte (0xE9) in an
+// unknown keyword. The driver echoes the keyword into its 01S00 warning; the
+// warning's SQLSTATE must stay readable through the manager, ANSI and wide.
+TEST(DriverManagerUnicodeConnectTest, AnsiLatin1KeywordWarningStateStaysReadable) {
+#ifdef ODBCPP_TEST_IODBC
+  // iODBC 3.52.16 returns the driver's SQL_SUCCESS_WITH_INFO from
+  // SQLDriverConnect(A/W) but then reports SQL_NO_DATA for every record, also
+  // for a plain ASCII unknown keyword (01S00) and for 01004. Manager defect.
+  GTEST_SKIP() << "iODBC drops driver-connect warning records";
+#endif
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS, allocate_environment(&environment));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  auto input = connection_string();
+  if (!input.empty() && input.back() != ';') {
+    input.push_back(';');
+  }
+  input += "ODBCPP_ECHO_\xe9=1;";
+  const auto result = SQLDriverConnect(connection, nullptr,
+      reinterpret_cast<SQLCHAR*>(input.data()), SQL_NTS, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT);
+  const bool connected = result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, result);
+
+  SQLCHAR narrow_state[6]{};
+  SQLINTEGER narrow_native = -1;
+  SQLCHAR narrow_message[512]{};
+  SQLSMALLINT narrow_length = -1;
+  const auto narrow = SQLGetDiagRec(SQL_HANDLE_DBC, connection, 1, narrow_state,
+      &narrow_native, narrow_message, sizeof(narrow_message), &narrow_length);
+  EXPECT_EQ(SQL_SUCCESS, narrow) << "ANSI SQLGetDiagRec";
+  EXPECT_STREQ("01S00", reinterpret_cast<char*>(narrow_state));
+
+  SQLWCHAR wide_state[6]{};
+  SQLINTEGER wide_native = -1;
+  SQLWCHAR wide_message[512]{};
+  SQLSMALLINT wide_length = -1;
+  const auto wide = SQLGetDiagRecW(SQL_HANDLE_DBC, connection, 1, wide_state, &wide_native,
+      wide_message, 512, &wide_length);
+  EXPECT_EQ(SQL_SUCCESS, wide) << "SQLGetDiagRecW";
+  EXPECT_EQ(std::vector<SQLWCHAR>(wide_state, wide_state + 6), wide_text(U"01S00"));
+
+  if (connected) {
+    EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+  }
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
 }  // namespace
