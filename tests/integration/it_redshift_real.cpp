@@ -1321,6 +1321,252 @@ TEST_F(RedshiftRealTest, ErrorHandling) {
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
 }
 
+namespace {
+// Lowercase so Redshift's default identifier folding leaves it unchanged.
+constexpr char unicode_identifier[] = "u014_\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
+
+bool contains_units(const std::vector<SQLWCHAR>& haystack,
+                    const std::vector<SQLWCHAR>& needle) {
+  return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) !=
+      haystack.end();
+}
+}  // namespace
+
+// The server echoes a multibyte identifier in its error text; the published
+// diagnostic must stay retrievable through the wide entry points.
+TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
+  ASSERT_TRUE(connect());
+  std::string query = std::string("SELECT * FROM \"") + unicode_identifier + "_missing\"";
+  ASSERT_EQ(SQL_ERROR, SQLExecDirect(checkpoint_statement(hstmt_),
+      reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS));
+  EXPECT_EQ("42S02", get_error(SQL_HANDLE_STMT, hstmt_));
+  const auto identifier_units = rs::odbc::utf8_to_wide(unicode_identifier);
+  ASSERT_TRUE(identifier_units);
+
+  std::array<SQLCHAR, 1024> narrow{};
+  SQLSMALLINT narrow_bytes = -1;
+  SQLINTEGER native = -1;
+  SQLCHAR narrow_state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt_, 1, narrow_state, &native,
+      narrow.data(), static_cast<SQLSMALLINT>(narrow.size()), &narrow_bytes));
+  ASSERT_GT(narrow_bytes, 0);
+  ASSERT_LT(static_cast<std::size_t>(narrow_bytes), narrow.size());
+  const std::string narrow_text(reinterpret_cast<const char*>(narrow.data()),
+                                static_cast<std::size_t>(narrow_bytes));
+  EXPECT_NE(std::string::npos, narrow_text.find(unicode_identifier));
+  const auto expected_units = rs::odbc::utf8_to_wide(narrow_text);
+  ASSERT_TRUE(expected_units) << "Server diagnostic text must be valid UTF-8";
+
+  SQLWCHAR state[6]{};
+  SQLSMALLINT units = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+      nullptr, 0, &units));
+  const auto required = static_cast<SQLSMALLINT>(expected_units->size());
+  EXPECT_EQ(required, units);
+  const SQLWCHAR expected_state[]{'4', '2', 'S', '0', '2', 0};
+  EXPECT_EQ(0, std::memcmp(state, expected_state, sizeof(expected_state)));
+
+  std::vector<SQLWCHAR> wide(static_cast<std::size_t>(required) + 2, SQLWCHAR{0x5a});
+  units = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+      wide.data(), static_cast<SQLSMALLINT>(required + 1), &units));
+  EXPECT_EQ(required, units);
+  EXPECT_TRUE(std::equal(expected_units->begin(), expected_units->end(), wide.begin()));
+  EXPECT_EQ(SQLWCHAR{0}, wide[static_cast<std::size_t>(required)]);
+  EXPECT_EQ(SQLWCHAR{0x5a}, wide[static_cast<std::size_t>(required) + 1]);
+  wide.resize(static_cast<std::size_t>(required));
+  EXPECT_TRUE(contains_units(wide, *identifier_units));
+
+  // Edge: a non-NULL zero-capacity buffer cannot hold the terminator.
+  std::array<SQLWCHAR, 4> zero_capacity;
+  zero_capacity.fill(SQLWCHAR{0x5a});
+  units = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+      zero_capacity.data(), 0, &units));
+  EXPECT_EQ(required, units);
+  EXPECT_EQ(SQLWCHAR{0x5a}, zero_capacity[0]);
+
+  // Edge: one unit short truncates without splitting a surrogate pair.
+  std::vector<SQLWCHAR> short_buffer(static_cast<std::size_t>(required) + 1, SQLWCHAR{0x5a});
+  units = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+      short_buffer.data(), required, &units));
+  EXPECT_EQ(required, units);
+  const auto terminator = std::find(short_buffer.begin(), short_buffer.end(), SQLWCHAR{0});
+  ASSERT_NE(short_buffer.end(), terminator);
+  const auto copied = static_cast<std::size_t>(terminator - short_buffer.begin());
+  EXPECT_LT(copied, static_cast<std::size_t>(required));
+  EXPECT_TRUE(std::equal(short_buffer.begin(), terminator, expected_units->begin()));
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    if (copied > 0) {
+      const auto last = short_buffer[copied - 1];
+      EXPECT_FALSE(last >= 0xd800 && last <= 0xdbff);
+    }
+  }
+
+  // The field API reports wide message text in bytes.
+  SQLSMALLINT field_bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(SQL_HANDLE_STMT, hstmt_, 1, SQL_DIAG_MESSAGE_TEXT,
+      nullptr, 0, &field_bytes));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(required * sizeof(SQLWCHAR)), field_bytes);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+}
+
+// Legacy SQLErrorW drains a real server error to SQL_NO_DATA, while a caller
+// argument error leaves the record retrievable.
+TEST_F(RedshiftRealTest, LegacySqlErrorWDrainsServerErrorThenNoData) {
+  ASSERT_TRUE(connect());
+  std::string query = std::string("SELECT * FROM \"") + unicode_identifier + "_legacy\"";
+  ASSERT_EQ(SQL_ERROR, SQLExecDirect(checkpoint_statement(hstmt_),
+      reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS));
+
+  SQLWCHAR state[6]{};
+  SQLINTEGER native = -1;
+  SQLSMALLINT units = -1;
+  EXPECT_EQ(SQL_ERROR, SQLErrorW(nullptr, nullptr, hstmt_, state, &native, nullptr, -1, &units));
+  std::array<SQLWCHAR, 512> message;
+  message.fill(SQLWCHAR{0x5a});
+  ASSERT_EQ(SQL_SUCCESS, SQLErrorW(nullptr, nullptr, hstmt_, state, &native, message.data(),
+      static_cast<SQLSMALLINT>(message.size()), &units));
+  const SQLWCHAR expected_state[]{'4', '2', 'S', '0', '2', 0};
+  EXPECT_EQ(0, std::memcmp(state, expected_state, sizeof(expected_state)));
+  ASSERT_GT(units, 0);
+  ASSERT_LT(static_cast<std::size_t>(units), message.size());
+  EXPECT_EQ(SQLWCHAR{0}, message[static_cast<std::size_t>(units)]);
+  const auto identifier_units = rs::odbc::utf8_to_wide(unicode_identifier);
+  ASSERT_TRUE(identifier_units);
+  const std::vector<SQLWCHAR> text(message.begin(), message.begin() + units);
+  EXPECT_TRUE(contains_units(text, *identifier_units));
+
+  int extra_records = 0;
+  while (SQLErrorW(nullptr, nullptr, hstmt_, state, nullptr, nullptr, 0, nullptr) == SQL_SUCCESS) {
+    ++extra_records;
+    if (extra_records > 8) {
+      break;
+    }
+  }
+  EXPECT_LE(extra_records, 8) << "SQLErrorW must terminate with SQL_NO_DATA";
+  EXPECT_EQ(SQL_NO_DATA, SQLErrorW(nullptr, nullptr, hstmt_, state, nullptr, nullptr, 0, nullptr));
+  // The ODBC 3 records stay available after the legacy cursor drains.
+  EXPECT_EQ("42S02", get_error(SQL_HANDLE_STMT, hstmt_));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+}
+
+// Zero-capacity and exact/short wide metadata for real Unicode column names,
+// including a long multibyte name whose bytes and units differ threefold.
+TEST_F(RedshiftRealTest, WideZeroCapacityAndDescriptorUnicodeColumnNames) {
+  ASSERT_TRUE(connect());
+  std::string long_name;
+  for (int index = 0; index < 42; ++index) {
+    long_name += "\xe8\xa1\xa8";
+  }
+  std::string query = std::string("SELECT 1 AS \"") + unicode_identifier + "\", 2 AS \"" +
+      long_name + "\"";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
+      reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  SQLHDESC ird = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  ASSERT_NE(nullptr, ird);
+
+  const std::pair<SQLUSMALLINT, std::string> columns[]{{1, unicode_identifier}, {2, long_name}};
+  for (const auto& [column, utf8] : columns) {
+    SCOPED_TRACE(column);
+    const auto expected = rs::odbc::utf8_to_wide(utf8);
+    ASSERT_TRUE(expected);
+    const auto required = static_cast<SQLSMALLINT>(expected->size());
+
+    std::array<SQLWCHAR, 4> untouched;
+    untouched.fill(SQLWCHAR{0x5a});
+    SQLSMALLINT units = -1;
+    SQLSMALLINT type = -1;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLDescribeColW(hstmt_, column, untouched.data(), 0,
+        &units, &type, nullptr, nullptr, nullptr));
+    EXPECT_EQ("01004", get_error(SQL_HANDLE_STMT, hstmt_));
+    EXPECT_EQ(required, units);
+    EXPECT_EQ(SQL_INTEGER, type);
+    EXPECT_EQ(SQLWCHAR{0x5a}, untouched[0]);
+
+    units = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(hstmt_, column, nullptr, 0, &units, nullptr,
+        nullptr, nullptr, nullptr));
+    EXPECT_EQ(required, units);
+
+    std::array<SQLCHAR, 4> narrow;
+    narrow.fill(0x5a);
+    SQLSMALLINT bytes = -1;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLDescribeCol(hstmt_, column, narrow.data(), 0, &bytes,
+        nullptr, nullptr, nullptr, nullptr));
+    EXPECT_EQ("01004", get_error(SQL_HANDLE_STMT, hstmt_));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(utf8.size()), bytes);
+    EXPECT_EQ(0x5a, narrow[0]);
+
+    std::vector<SQLWCHAR> exact(static_cast<std::size_t>(required) + 2, SQLWCHAR{0x5a});
+    units = -1;
+    type = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRecW(ird, column, exact.data(),
+        static_cast<SQLSMALLINT>(required + 1), &units, &type, nullptr, nullptr, nullptr,
+        nullptr, nullptr));
+    EXPECT_EQ(required, units);
+    EXPECT_EQ(SQL_INTEGER, type);
+    EXPECT_TRUE(std::equal(expected->begin(), expected->end(), exact.begin()));
+    EXPECT_EQ(SQLWCHAR{0}, exact[static_cast<std::size_t>(required)]);
+    EXPECT_EQ(SQLWCHAR{0x5a}, exact[static_cast<std::size_t>(required) + 1]);
+
+    std::vector<SQLWCHAR> short_buffer(static_cast<std::size_t>(required), SQLWCHAR{0x5a});
+    units = -1;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDescRecW(ird, column, short_buffer.data(), required,
+        &units, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_EQ("01004", get_error(SQL_HANDLE_DESC, ird));
+    EXPECT_EQ(required, units);
+    const auto terminator = std::find(short_buffer.begin(), short_buffer.end(), SQLWCHAR{0});
+    ASSERT_NE(short_buffer.end(), terminator);
+    EXPECT_TRUE(std::equal(short_buffer.begin(), terminator, expected->begin()));
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+      const auto copied = static_cast<std::size_t>(terminator - short_buffer.begin());
+      if (copied > 0) {
+        const auto last = short_buffer[copied - 1];
+        EXPECT_FALSE(last >= 0xd800 && last <= 0xdbff);
+      }
+    }
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+// A real wide login with a non-NULL zero-capacity output buffer reports
+// truncation, the full unit length, an untouched buffer and a usable session.
+TEST_F(RedshiftRealTest, WideDriverConnectZeroCapacityOutputReportsTruncation) {
+  ASSERT_TRUE(checkpoint_connection_budget(hdbc_, true));
+  auto input = rs::odbc::utf8_to_wide(connection_string_);
+  ASSERT_TRUE(input);
+  const auto input_units = static_cast<SQLSMALLINT>(input->size());
+  input->push_back(0);
+  std::array<SQLWCHAR, 4> output;
+  output.fill(SQLWCHAR{0x5a});
+  SQLSMALLINT length = -1;
+  const auto result = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output.data(), 0,
+                                        &length, SQL_DRIVER_NOPROMPT);
+  if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
+    connected_ = true;
+  }
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, result) << get_error(SQL_HANDLE_DBC, hdbc_);
+  EXPECT_EQ("01004", get_error(SQL_HANDLE_DBC, hdbc_));
+  EXPECT_EQ(input_units, length);
+  EXPECT_EQ(SQLWCHAR{0x5a}, output[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+}
+
 TEST_F(RedshiftRealTest, DataTypes) {
   ASSERT_TRUE(connect());
   
