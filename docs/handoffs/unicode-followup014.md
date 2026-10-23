@@ -29,7 +29,15 @@ No credentials or connection strings appear here.
 - **Live, Redshift Serverless `odbcpp-redshift-pilot` (eu-north-1), verified TLS:**
   - 10 cases each on Windows, unixODBC and iODBC: 10/10 at `66c777e`.
   - At `b1a0ec4`, Windows first passed 8/10, and the 2 failures passed on a re-run.
-- **Not run:** macOS, installed driver-manager paths, provisioned Redshift, live PostgreSQL.
+- **PR CI on macOS** (GitHub-hosted `macos-latest`, `primary.yml` job `macos-iodbc-ucs4`), passed at `66c777e`:
+  - Configuration: product **POSTGRESQL** with iODBC and 4-byte SQLWCHAR.
+  - Results: unit CTest 121/121, then PostgreSQL integration 12/12 against a disposable local server, including `it_driver_manager` through a registered iODBC DSN.
+- **Not run anywhere yet:**
+  - the **REDSHIFT** product on macOS;
+  - live Redshift on macOS;
+  - installed driver-manager paths on Windows and unixODBC;
+  - provisioned Redshift;
+  - the full Linux and Windows suites in CI. The PR Windows and Ubuntu jobs build only and run no tests.
 
 ### Open owner decisions
 - SQLColAttributeW zero-capacity non-NULL buffer. The existing assertion at `tests/unit/test_backend_contract.cpp` (from #63) requires `SQL_SUCCESS`; the Microsoft truncation rule points to `01004`.
@@ -72,8 +80,8 @@ Keep the toolchain identity, the actual exits, the CTest JUnit and the GoogleTes
 ## Gaps toward a production-grade driver (priority order)
 
 **Release blockers**
-1. **macOS.** Build and the full offline suite, plus live runs. Every product PR requires macOS, Linux and Windows. There is also no hosted CI on all three platforms; so far Linux and Windows have run only on one local host.
-2. **Installed driver-manager paths.** Live runs so far link the driver directly. Register it and run through the Windows ODBC Administrator, unixODBC `odbcinst.ini` and iODBC (`it_driver_manager`). The driver manager changes Unicode conversion, how errors reach the application, and how connect works.
+1. **macOS REDSHIFT.** PR CI covers macOS only for the POSTGRESQL product. Still missing are the REDSHIFT product (`macos-iodbc-redshift`, offline suite) and live Redshift runs from macOS. In PR CI, Linux and Windows build without running tests; their suites have run only on one local host.
+2. **Installed driver-manager paths on Windows and unixODBC.** macOS CI already runs `it_driver_manager` through iODBC with PostgreSQL. Live Redshift runs so far link the driver directly. The driver manager changes Unicode conversion, how errors reach the application, and how connect works.
 3. **Provisioned Redshift and live PostgreSQL.** This round ran on Serverless only.
 4. **Independent review of PR #96,** plus the owner decision on SQLColAttributeW zero-capacity.
 
