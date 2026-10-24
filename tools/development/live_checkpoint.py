@@ -105,6 +105,8 @@ LOCAL_VALIDATION_CONTROL_FILES = {
     'tools/development/test_redshift_powerbi_sessions.py',
     'tools/development/redshift_powerbi_session_ops.py',
     'tools/development/test_redshift_powerbi_session_ops.py',
+    'tools/development/windows_powerbi_owner.py',
+    'tools/development/test_windows_powerbi_publication.py',
 }
 
 

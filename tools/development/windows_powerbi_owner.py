@@ -184,7 +184,14 @@ class Context:
     def record(self, name, value):
         need(Path(name).name == name, 'fixed_record_name')
         path = self.run/name
-        self.tree.record(path, value)
+        # Polling readers must never see the final name while PrivateTree's
+        # exclusive writer still holds it. Publish only after flush, private
+        # ACL validation, byte readback and writer closure have completed.
+        # Windows rename refuses an existing destination: preserve one-use
+        # records and retain the staging file if publication fails.
+        staging = self.run/(name+'.publishing')
+        self.tree.record(staging, value)
+        os.rename(staging, path)
         return sha(self.read(path, private=True, maximum=2*1024*1024))
 
     def close(self):
