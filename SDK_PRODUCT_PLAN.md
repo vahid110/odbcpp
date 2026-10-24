@@ -174,7 +174,16 @@ modes remain unadvertised.
 An SDK-managed pool is optional and initially internal. Its policy belongs in a
 separate shared component; backends report health/reset outcomes and must not
 embed independent pool implementations. Public pool APIs, sizing defaults and
-advanced policies require later measured product scope.
+advanced policies require later measured product scope. Standard Driver Manager
+pooling does not require an SDK-managed pool.
+
+[Connection pooling and safe reuse](CONNECTION_POOLING.md) defines the adapter,
+SDK and backend responsibilities, observable reset boundaries, application cleanup
+obligations and separate Windows driver-aware capability. It distinguishes login
+credential expiry from established session lifetime and configured reuse policy.
+Production Windows DM/unixODBC/iODBC qualification remains open; implementation
+and platform-test follow-ups are recorded there without changing the active live
+checkpoint.
 
 Every cache must declare:
 

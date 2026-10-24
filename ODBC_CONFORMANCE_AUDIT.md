@@ -102,9 +102,15 @@ historical “complete” labels without discarding working behavior.
 
 Implemented: `SQL_ATTR_ODBC_VERSION`, mandatory null-terminated output through
 `SQL_ATTR_OUTPUT_NTS`, and iODBC driver Unicode negotiation.
-Connection pooling remains a Driver Manager responsibility, but the audit must
-verify which environment attributes are expected at the driver boundary and
-which should be rejected.
+Connection pooling storage/matching/lifetime remains a Driver Manager
+responsibility. The adapter still needs correct connection attributes, passive
+dead-connection reporting, supported reset interfaces and safe SDK/backend reuse.
+The audit must verify which environment attributes reach the driver and which
+should be rejected. [Connection pooling and safe reuse](CONNECTION_POOLING.md)
+defines the actual callback/reset boundary, application cleanup obligations and
+open per-manager acceptance matrix. Optional Windows driver-aware SPI is separate
+from ordinary DM pooling. Prototype/SDK-only tests and generic live-suite passes
+do not establish this production capability; follow-ups #101/#102 remain deferred.
 
 ### Connection
 
