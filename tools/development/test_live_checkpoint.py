@@ -112,6 +112,17 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('/private/tmp/',source)
         self.assertNotIn('protected-lifecycle-extension',source)
 
+    def test_profile_drivers_are_public_pins(self):
+        # Profile input custody refuses a driver the lifecycle has not pinned.
+        def profile(path, digest):
+            driver = None if path is None else {'path':path,'sha256':digest,'wchar_bytes':4,'kind':'OWN'}
+            return {'private_input':{'kind':'OWN_DSN','driver':driver,'password_rejection':False}}
+        pins = checkpoint.profile_driver_pins({'a':profile('/d/one','1'*64),
+            'b':profile('/d/one','1'*64),'c':profile('/d/two','2'*64),'core':profile(None,None)})
+        self.assertEqual(pins,{'/d/one':'1'*64,'/d/two':'2'*64})
+        with self.assertRaisesRegex(checkpoint.lifecycle.Refused,'one_digest_per_profile_driver'):
+            checkpoint.profile_driver_pins({'a':profile('/d/one','1'*64),'b':profile('/d/one','3'*64)})
+
 
 if __name__ == '__main__':
     unittest.main()

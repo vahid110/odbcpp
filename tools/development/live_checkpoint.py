@@ -95,6 +95,19 @@ def prepare_plan(recipe_path, output):
     return plan
 
 
+def profile_driver_pins(profiles):
+    """Public pins of the drivers that profiles load, so profile input custody
+    and the lifecycle's own pin check both bind the exact files."""
+    pins = {}
+    for profile in profiles.values():
+        driver = profile['private_input']['driver']
+        if driver is not None:
+            lifecycle.need(pins.get(driver['path'], driver['sha256']) == driver['sha256'],
+                           'one_digest_per_profile_driver')
+            pins[driver['path']] = driver['sha256']
+    return pins
+
+
 def read_plan(path, *, require_ci=False):
     plan = json.loads(path.read_text(encoding='utf-8-sig'))
     lifecycle.need(plan['schema_version'] == 1, 'plan_schema')
@@ -235,6 +248,8 @@ def execute(plan, plan_path, admission_path):
     for path in list((ROOT/'tools/development').glob('redshift_*.py')) + [Path(__file__)] + [factory.__file__]:
         path = Path(path).resolve()
         public_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    profiles = json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig'))
+    public_pins.update(profile_driver_pins(profiles))
     # Existing exclusive pilot_lock and exclusive run directory consume the
     # one-use run. A nonce is never automatically renewed or a run reset.
     approval = dict(admission, resource=plan['resource'],
@@ -245,7 +260,6 @@ def execute(plan, plan_path, admission_path):
                     security_groups=plan['security_groups'])
     timeout_factory = TimeoutFactory(**plan['timeout_fixture'])
     timeout_factory.NativeOps = NativeOps
-    profiles = json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig'))
     specs = json.loads(pinned(plan['specs']).read_text(encoding='utf-8-sig'))
     blueprint = json.loads(pinned(plan['index']).read_text(encoding='utf-8-sig'))
     ops_type = Operations
