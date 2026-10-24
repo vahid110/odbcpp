@@ -56,6 +56,13 @@ No credentials or connection strings appear here.
     - WSL iODBC 3.52.16 (private ini registration): 6 passed, 2 skipped (the same iODBC defects).
   - The same runs at `e1b7665` (before `31e5410`) had the same counts; the Windows offline GoogleTest total was 2391 and WSL 2386 each, one fewer because of the new `31e5410` test.
 - **Windows Driver Manager behaviour:** it keeps driver-connect warnings. `AnsiLatin1KeywordWarningStateStaysReadable` passes, so the unknown-keyword 01S00 reaches the application through both `SQLGetDiagRec` and `SQLGetDiagRecW`, and `WideDriverConnectTruncatedOutputReportsFullLength` passes, so 01004 and the full output length arrive. The F1 ANSI-echo route therefore hides no SQLSTATE on Windows.
+- **macOS at `508ace3` (independent-review revision R1/R2), the same macOS 15.3.2 arm64 host, Apple Clang:**
+  - **Full offline presets, 0 failures:** `macos-iodbc-redshift-offline` and `unixodbc-redshift-offline`, each 121 CTest (120 passed, 1 skipped: `test_odbc_trace_reload`, macOS loader). GoogleTest 2395 cases with 2 skips. All 6 `RedshiftWarmUpTest` cases ran and passed.
+  - **R1 before and after**, disposable PostgreSQL 17 with role `café`, `UID=café`, the same driver in every run:
+    - iODBC before: 6 failed with 22018, 2 skipped. After: 7 passed, 2 skipped, both with the non-ASCII and the ASCII override.
+    - unixODBC before: 7 failed with 22018, 1 passed. After: 9/9 with both.
+  - **Live Redshift through the managers,** with `SSLCAFILE` under a directory named `café`: iODBC 7 passed, 2 skipped; unixODBC 9/9.
+    - `ConnectionTest` and `UnicodeRoundTrip` with warm-up passed on both builds: ready after 1 attempt in 415-451 ms.
 - **Not run anywhere yet:**
   - provisioned Redshift;
   - the full Linux and Windows suites in PR CI. The PR Windows and Ubuntu jobs build only and run no tests; the full suites run only in the manually dispatched checkpoint.
