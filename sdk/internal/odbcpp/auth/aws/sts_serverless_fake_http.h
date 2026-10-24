@@ -27,6 +27,7 @@ struct FakeHttpObservation {
   std::atomic<unsigned> denied{0};
   std::atomic<unsigned> assume_role{0};
   std::atomic<unsigned> get_credentials{0};
+  std::atomic<unsigned> get_idc_token{0};
   std::atomic<unsigned> late_completion{0};
   std::atomic<unsigned> continuation_denied{0};
   // STS sends that were AssumeRoleWithWebIdentity (a subset of assume_role),
@@ -35,7 +36,7 @@ struct FakeHttpObservation {
   std::atomic<unsigned> signed_requests{0};
   void reset() noexcept {
     sends = 0; approved = 0; foreign_scheme = 0; foreign_authority = 0;
-    denied = 0; assume_role = 0; get_credentials = 0; late_completion = 0;
+    denied = 0; assume_role = 0; get_credentials = 0; get_idc_token = 0; late_completion = 0;
     continuation_denied = 0; web_identity = 0; signed_requests = 0;
   }
 };
