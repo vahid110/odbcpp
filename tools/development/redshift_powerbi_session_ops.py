@@ -98,7 +98,7 @@ class PowerBiSessionOperations(Operations):
         need(self.now() < deadline <= original, 'original_session_monotonic_deadline')
 
     def session_step(self, kind, deadline):
-        need(kind in sessions.STAGES, 'fixed_session_stage')
+        need(kind in sessions.ALL_STAGES, 'fixed_session_stage')
         self._session_deadline(kind, deadline)
         if kind in ('quiesce', 'restore'):
             need(self.readers_known and self.principals_quiescent and
@@ -149,6 +149,8 @@ class PowerBiSessionOperations(Operations):
         finally:
             os.close(descriptor)
         measurement = json.loads(body)
+        if type(measurement) is dict and measurement.get('decision_kind') == 'retain_original_cap':
+            return self.retain_original_cap(measurement_pin, deadline)
         # These pins refer to actual reviewed client-demand/server observations.
         # This verifies their bytes, never invents or parses a measured demand.
         decided = sessions.decide(self.powerbi_session_state, measurement, now_ms=self.utc_ms())
@@ -159,6 +161,70 @@ class PowerBiSessionOperations(Operations):
         self.session_sequence += 1
         self._publish_session('decision', {'state': decided, 'measurement': measurement_pin})
         self._session_deadline('snapshot', deadline)
+        self.powerbi_session_state = decided
+        return copy.deepcopy(decided)
+
+    def retain_original_cap(self, decision_pin, deadline):
+        """Distinct unchanged-cap route; baseline/cap proof is never demand."""
+        self._session_deadline('baseline_revalidate', deadline)
+        need(self.readers_known and self.native is not None and self.native.readers_known,
+             'retention_requires_known_baseline_readers')
+
+        def load(ref, maximum=16384):
+            verify_public_pin(ref['path'], ref['sha256'])
+            descriptor = os.open(ref['path'], os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(descriptor)
+                need(stat.S_ISREG(info.st_mode) and info.st_size <= maximum, 'bounded_retention_evidence')
+                body = os.read(descriptor, maximum + 1)
+                need(len(body) == info.st_size and hashlib.sha256(body).hexdigest() == ref['sha256'],
+                     'retention_evidence_changed')
+            finally:
+                os.close(descriptor)
+            return json.loads(body)
+
+        decision = load(decision_pin)
+        sessions._retention(decision, self.powerbi_session_state, self.utc_ms())
+        # This is the bridge's actual completed baseline, not a fabricated
+        # replacement for an observed query result or native-reader proof.
+        zero = load(decision['exact_zero'])
+        baseline = load(decision['baseline_closed'], maximum=2 * 1024 * 1024)
+        load(decision['review'])
+        need(set(zero) == {'source_head', 'run_id', 'native_baseline',
+                          'exact_principal_zero', 'SQL_proof'} and
+             zero['source_head'] == self.approval['source_head'] and
+             zero['run_id'] == self.approval['run_name'] and
+             zero['native_baseline'] == decision['baseline_closed'] and
+             zero['exact_principal_zero'] is True and
+             zero['SQL_proof'] == self.proofs.get('principal_zero') and
+             type(zero['SQL_proof']) is dict and set(zero['SQL_proof']) == {'raw', 'intent', 'status'},
+             'retention_requires_actual_current_baseline_zero')
+        from tools.development.windows_powerbi_contract import safe_readers
+        need(baseline['source_head'] == self.approval['source_head'] and
+             baseline['run_id'] == self.approval['run_name'] and
+             baseline['phase'] == 0 and baseline['normal_close'] is True and
+             baseline['workload_sha256'] == self.powerbi_session_state['input_profile_sha256'] and
+             safe_readers(baseline['process']), 'retention_requires_actual_closed_baseline')
+        for ref in zero['SQL_proof'].values():
+            verify_public_pin(ref['path'], ref['sha256'])
+        # One new read helper replaces neither the baseline proof nor its
+        # query-zero assertion. Its exact frame parser rereads identity/caps and
+        # broad session zero after the app has stopped, under normal counters.
+        refreshed = self.session_step('baseline_revalidate', deadline)
+        need('powerbi_sessions_baseline_revalidate' in self.proofs,
+             'retention_requires_actual_revalidation_SQL_proof')
+        decided = sessions.retain_original_cap(refreshed, decision, now_ms=self.utc_ms())
+        # Recheck the exact decision/evidence after the read dispatch, before
+        # durably publishing. No readback can authorize a changed decision.
+        need(load(decision_pin) == decision and load(decision['exact_zero']) == zero,
+             'retention_decision_or_baseline_changed')
+        verify_public_pin(decision['baseline_closed']['path'], decision['baseline_closed']['sha256'])
+        verify_public_pin(decision['review']['path'], decision['review']['sha256'])
+        self._session_deadline('baseline_revalidate', deadline)
+        self.session_sequence += 1
+        self._publish_session('decision', {'state': decided, 'retention': decision_pin,
+            'revalidation_SQL_proof': self.proofs['powerbi_sessions_baseline_revalidate']})
+        self._session_deadline('baseline_revalidate', deadline)
         self.powerbi_session_state = decided
         return copy.deepcopy(decided)
 

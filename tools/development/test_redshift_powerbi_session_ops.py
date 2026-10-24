@@ -38,6 +38,7 @@ class SessionRuntimeTests(unittest.TestCase):
         self.pid = 999
         self.bad_ack = False
         self.original_cap = '2'
+        self.revalidation_cap = None
         original_process = self.ops.native.owned_process
 
         def process(argv, **kwargs):
@@ -48,7 +49,8 @@ class SessionRuntimeTests(unittest.TestCase):
             self.assertEqual(json.loads(intent.read_text()), json.loads(json.dumps(held)))
             self.assertFalse(self.ops.session_armed)
             payload = data.payload(held['pending']['before'], kind,
-                                   cap=self.original_cap if kind == 'snapshot' else None)
+                                   cap=self.original_cap if kind == 'snapshot' else
+                                       self.revalidation_cap if kind == 'baseline_revalidate' else None)
             if self.bad_ack:
                 payload = payload.replace('RSPBIS1|ALTER_ACK\n', '')
             self.ops.native.raw = ('RSD1|odbcpp_pilot|odbcpp_pilot_admin|' +
@@ -71,6 +73,103 @@ class SessionRuntimeTests(unittest.TestCase):
         path.write_text(json.dumps(value))
         return self.ops.decide_session_cap(dict(path=str(path),
             sha256=hashlib.sha256(path.read_bytes()).hexdigest()), 500)
+
+    def retained_descriptor(self, *, baseline_padding=0):
+        def write(name, value):
+            path = self.directory / name
+            path.write_text(json.dumps(value))
+            return dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        self.ops.approval.update(source_head='e' * 40, run_name='powerbi007-own-offline')
+        baseline = write('baseline-closed.json', dict(source_head='e' * 40,
+            run_id='powerbi007-own-offline', phase=0, normal_close=True,
+            workload_sha256='a' * 64, process=dict(readers_known=True,
+                receipt=dict(treeEmpty=True, jobActiveProcesses=0, heldProcessHandlesStopped=True),
+                held_observed_processes=[dict(stopped=True)],
+                capture_evidence='x' * baseline_padding)))
+        proofs = {name: write('zero-' + name + '.json', dict(synthetic_offline_zero=True))
+                  for name in ('raw', 'intent', 'status')}
+        self.ops.proofs['principal_zero'] = proofs
+        zero = write('baseline-exact-zero.json', dict(source_head='e' * 40,
+            run_id='powerbi007-own-offline', native_baseline=baseline,
+            exact_principal_zero=True, SQL_proof=proofs))
+        review = write('retention-review.json', dict(synthetic_offline_review=True))
+        descriptor = data.retention(int(self.original_cap))
+        descriptor.update(baseline_closed=baseline, exact_zero=zero, review=review)
+        return write('retention.json', descriptor), descriptor
+
+    def test_retained_original_path_rechecks_actual_cap_and_keeps_no_alter_cost_below_reserve(self):
+        self.snapshot()
+        ref, descriptor = self.retained_descriptor()
+        state = self.ops.decide_session_cap(ref, 500)
+        self.assertEqual(self.calls, ['snapshot', 'baseline_revalidate'])
+        self.assertIsNone(state['measurement'])
+        self.assertEqual(state['retention'], descriptor)
+        self.assertIsNone(state['temporary_cap'])
+        decision = json.loads((self.directory / 'powerbi-sessions-3-decision.json').read_text())
+        self.assertEqual(decision['revalidation_SQL_proof'],
+                         self.ops.proofs['powerbi_sessions_baseline_revalidate'])
+        for event in sessions.EVENTS:
+            self.ops.session_step('sample_' + event, 500)
+        self.assertEqual(self.ops.restore_session_cap(1500)['phase'], 'CAP_VERIFIED_UNCHANGED')
+        self.assertEqual(self.calls, ['snapshot', 'baseline_revalidate', 'sample_connected',
+                                     'sample_navigator', 'sample_refresh', 'quiesce'])
+        self.assertEqual((self.ops.helpers, self.ops.statements, self.ops.logins), (6, 48, 6))
+        for _, call in self.ops.native.calls:
+            self.assertNotIn('ALTER USER', call['input_bytes'].decode())
+
+    def test_retained_descriptor_requires_actual_current_baseline_SQL_proof_before_read(self):
+        self.snapshot()
+        ref, _ = self.retained_descriptor()
+        self.ops.proofs['principal_zero']['status'] = dict(path='/foreign', sha256='b' * 64)
+        with self.assertRaisesRegex(Refused, 'current_baseline_zero'):
+            self.ops.decide_session_cap(ref, 500)
+        self.assertEqual(self.calls, ['snapshot'])
+        self.assertEqual(self.ops.powerbi_session_state['phase'], 'OBSERVED')
+
+    def test_serverless_retained_path_actual_adapter_cost_keeps_existing_worst_case_reserve(self):
+        self.ops.resource_kind = 'serverless'
+        self.ops.powerbi_session_state['resource_kind'] = 'serverless'
+        self.snapshot()
+        ref, _ = self.retained_descriptor()
+        self.ops.decide_session_cap(ref, 500)
+        for event in sessions.EVENTS:
+            self.ops.session_step('sample_' + event, 500)
+        self.assertEqual(self.ops.restore_session_cap(1500)['phase'], 'CAP_VERIFIED_UNCHANGED')
+        self.assertEqual((self.ops.helpers, self.ops.statements, self.ops.logins), (6, 54, 6))
+        cost = sessions.public_plan('serverless')['maximum_retained_path']
+        self.assertEqual(cost['inclusive'], 60)
+        self.assertLess(cost['inclusive'], sessions.public_plan('serverless')['maximum_changed_path']['inclusive'])
+
+    def test_actual_baseline_process_evidence_uses_existing_two_MiB_contract(self):
+        self.snapshot()
+        ref, value = self.retained_descriptor(baseline_padding=32768)
+        self.assertGreater(Path(value['baseline_closed']['path']).stat().st_size, 16384)
+        state = self.ops.decide_session_cap(ref, 500)
+        self.assertIsNone(state['measurement'])
+        self.assertEqual(self.calls, ['snapshot', 'baseline_revalidate'])
+
+    def test_retained_revalidation_cannot_adopt_changed_cap_or_retry_pending_read(self):
+        self.snapshot()
+        ref, _ = self.retained_descriptor()
+        self.revalidation_cap = '3'
+        with self.assertRaisesRegex(sessions.Refused, 'held_identity_or_cap_changed'):
+            self.ops.decide_session_cap(ref, 500)
+        self.assertIsNotNone(self.ops.powerbi_session_state['pending'])
+        with self.assertRaises(sessions.Refused):
+            self.ops.decide_session_cap(ref, 500)
+        self.assertEqual(self.calls, ['snapshot', 'baseline_revalidate'])
+
+    def test_retained_decision_pins_reader_state_and_freshness_cannot_be_bypassed(self):
+        self.snapshot()
+        ref, value = self.retained_descriptor()
+        self.ops.native.readers_known = False
+        with self.assertRaisesRegex(Refused, 'known_baseline_readers'):
+            self.ops.decide_session_cap(ref, 500)
+        self.ops.native.readers_known = True
+        Path(value['review']['path']).write_text('{"changed":true}')
+        with self.assertRaises(Refused):
+            self.ops.decide_session_cap(ref, 500)
+        self.assertEqual(self.calls, ['snapshot'])
 
     def test_full_fixed_path_durable_intents_exact_restore_and_real_counters(self):
         self.snapshot()

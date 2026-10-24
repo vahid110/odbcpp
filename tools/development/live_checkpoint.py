@@ -101,6 +101,10 @@ LOCAL_VALIDATION_CONTROL_FILES = {
     'tools/development/CHECKPOINT_INPUTS.md',
     'tools/development/redshift_powerbi_app_checkpoint.py',
     'tools/development/test_redshift_powerbi_app_checkpoint.py',
+    'tools/development/redshift_powerbi_sessions.py',
+    'tools/development/test_redshift_powerbi_sessions.py',
+    'tools/development/redshift_powerbi_session_ops.py',
+    'tools/development/test_redshift_powerbi_session_ops.py',
 }
 
 

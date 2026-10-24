@@ -10,6 +10,9 @@ Demand is supplied from a separately reviewed actual concurrent-client-demand
 receipt WITH server census, not a physical peak at a restrictive cap, API trace
 pairs, or a configured parallel-job maximum. Public pins are data: the caller
 must actually verify their immutable bytes and admission/workload applicability.
+The separate retain-original route makes no demand or adequacy claim: it keeps
+an actual finite1..16 cap unchanged after closed-baseline/zero/review evidence
+and a new same-identity/cap/zero-session read. It never dispatches ALTER.
 
 Existing Operations cleanup supports at most8 targets. This optional app
 partition can observe16 test sessions: DO NOT launch it until ROOT independently
@@ -40,6 +43,7 @@ MAX_TEST_SESSIONS = 16
 MAX_OBSERVATION_AGE_MS = 300000
 MAX_PAYLOAD_BYTES = 32768
 STAGES = ('snapshot', 'set_cap', *(('sample_' + event) for event in EVENTS), 'quiesce', 'restore')
+ALL_STAGES = (*STAGES, 'baseline_revalidate')
 MUTATIONS = ('set_cap', 'restore')
 
 
@@ -100,6 +104,7 @@ def new_state(*, workload_id, input_profile_sha256, admitted_ms,
     result = {'phase': 'NEW', 'workload_id': workload_id, 'input_profile_sha256': input_profile_sha256,
             'admitted_ms': admitted_ms, 'execution_deadline_ms': execution_deadline_ms,
             'cleanup_deadline_ms': cleanup_deadline_ms, 'original': None, 'measurement': None,
+            'retention': None, 'baseline_revalidation': None,
             'temporary_cap': None, 'snapshot': None, 'observations': [], 'seen_sessions': [],
             'attempts': [], 'last_completed_ms': admitted_ms, 'pending': None}
     if resource_kind == 'serverless':
@@ -110,7 +115,8 @@ def new_state(*, workload_id, input_profile_sha256, admitted_ms,
 def _validate(state):
     keys = {'phase', 'workload_id', 'input_profile_sha256', 'admitted_ms', 'execution_deadline_ms',
             'cleanup_deadline_ms', 'original', 'measurement', 'temporary_cap', 'snapshot',
-            'observations', 'seen_sessions', 'attempts', 'last_completed_ms', 'pending'}
+            'observations', 'seen_sessions', 'attempts', 'last_completed_ms', 'pending',
+            'retention', 'baseline_revalidation'}
     need(type(state) is dict and set(state) in (keys, keys | {'resource_kind'}) and
          state.get('resource_kind', 'provisioned') in ('provisioned', 'serverless'), 'state_schema')
     new_state(**{key: state[key] for key in ('workload_id', 'input_profile_sha256', 'admitted_ms',
@@ -118,7 +124,7 @@ def _validate(state):
     need(state['phase'] in ('NEW', 'OBSERVED', 'DECIDED', 'ALTER_UNKNOWN', 'CAP_ACTIVE',
                             'QUIESCENT', 'RESTORE_UNKNOWN', 'CAP_RESTORED', 'CAP_VERIFIED_UNCHANGED'), 'phase')
     need(type(state['attempts']) is list and len(state['attempts']) <= 7 and
-         all(kind in STAGES for kind in state['attempts']) and
+         all(kind in ALL_STAGES for kind in state['attempts']) and
          len(state['attempts']) == len(set(state['attempts'])), 'attempt_bound')
     need(type(state['observations']) is list and len(state['observations']) <= 3 and
          type(state['seen_sessions']) is list and len(state['seen_sessions']) <= 48, 'observation_bound')
@@ -133,6 +139,14 @@ def _validate(state):
         _cap(original['test_cap'])
         _cap(original['database_cap'], database=True)
     need(state['temporary_cap'] is None or _integer(state['temporary_cap'], high=16), 'temporary_cap_bound')
+    need(state['retention'] is None or (state['measurement'] is None and
+         state['temporary_cap'] is None and state['baseline_revalidation'] is not None),
+         'retained_cap_cannot_mutate_or_claim_measurement')
+    if state['baseline_revalidation'] is not None:
+        need(state['baseline_revalidation'] == state['snapshot'] and
+             'baseline_revalidate' in state['attempts'], 'actual_baseline_revalidation_state')
+    if state['retention'] is not None:
+        _retention(state['retention'], state, state['retention']['observed_at_ms'])
 
 
 def _now(state, now_ms, *, cleanup=False):
@@ -170,6 +184,7 @@ def decide(state, measured_demand, *, now_ms):
     _validate(state)
     _now(state, now_ms)
     need(state['phase'] == 'OBSERVED' and state['pending'] is None and state['original'] is not None, 'fresh_snapshot_required')
+    need(state['baseline_revalidation'] is None, 'retained_confirmation_not_measured_demand')
     need(0 <= now_ms - state['snapshot']['completed_ms'] <= MAX_OBSERVATION_AGE_MS, 'snapshot_not_fresh')
     _measurement(measured_demand, state, now_ms)
     requested = measured_demand['requested_cap']
@@ -184,6 +199,45 @@ def decide(state, measured_demand, *, now_ms):
     # the finite cleanup envelope. Also bound UNLIMITED/larger originals and
     # retain their exact literal for restoration after the app is quiescent.
     result['temporary_cap'] = requested if original_cap != requested else None
+    result['phase'] = 'DECIDED'
+    result['last_completed_ms'] = now_ms
+    return result
+
+
+def _retention(value, state, now_ms):
+    keys = {'schema_version', 'decision_kind', 'workload_id', 'input_profile_sha256',
+            'observed_at_ms', 'requested_cap', 'baseline_closed', 'exact_zero', 'review',
+            'demand_measured', 'adequacy_claimed'}
+    need(type(value) is dict and set(value) == keys and type(value['schema_version']) is int and
+         value['schema_version'] == 1 and value['decision_kind'] == 'retain_original_cap',
+         'retention_schema')
+    need(value['workload_id'] == state['workload_id'] and
+         value['input_profile_sha256'] == state['input_profile_sha256'], 'retention_workload_mismatch')
+    need(_integer(value['observed_at_ms'], high=2**63 - 1) and
+         state['admitted_ms'] <= value['observed_at_ms'] <= now_ms and
+         now_ms - value['observed_at_ms'] <= MAX_OBSERVATION_AGE_MS, 'retention_not_fresh')
+    need(_integer(value['requested_cap'], high=16) and state['original'] is not None and
+         _cap(state['original']['test_cap']) == value['requested_cap'], 'retain_exact_original_finite_cap')
+    need(value['demand_measured'] is False and value['adequacy_claimed'] is False,
+         'retention_does_not_measure_demand_or_adequacy')
+    for key in ('baseline_closed', 'exact_zero', 'review'):
+        _pin(value[key])
+    need(len({value[key]['path'] for key in ('baseline_closed', 'exact_zero', 'review')}) == 3,
+         'distinct_retention_evidence')
+
+
+def retain_original_cap(state, decision, *, now_ms):
+    """Keep an observed finite original unchanged; make no demand/adequacy claim."""
+    _validate(state)
+    _now(state, now_ms)
+    need(state['phase'] == 'OBSERVED' and state['pending'] is None and
+         state['measurement'] is None and state['retention'] is None and state['temporary_cap'] is None and
+         state['baseline_revalidation'] is not None, 'retention_requires_actual_revalidation')
+    need(0 <= now_ms - state['baseline_revalidation']['completed_ms'] <= MAX_OBSERVATION_AGE_MS,
+         'retention_revalidation_not_fresh')
+    _retention(decision, state, now_ms)
+    result = deepcopy(state)
+    result['retention'] = deepcopy(decision)
     result['phase'] = 'DECIDED'
     result['last_completed_ms'] = now_ms
     return result
@@ -208,9 +262,13 @@ def stage_for(state, kind):
     administrator, global or authentication settings.
     """
     _validate(state)
-    need(state['pending'] is None and kind in STAGES and kind not in state['attempts'], 'pending_or_repeated_stage')
+    need(state['pending'] is None and kind in ALL_STAGES and kind not in state['attempts'], 'pending_or_repeated_stage')
     if kind == 'snapshot':
         need(state['phase'] == 'NEW', 'snapshot_once')
+    elif kind == 'baseline_revalidate':
+        need(state['phase'] == 'OBSERVED' and state['measurement'] is None and
+             state['retention'] is None and state['temporary_cap'] is None,
+             'baseline_revalidation_before_retained_decision')
     elif kind == 'set_cap':
         need(state['phase'] == 'DECIDED' and state['temporary_cap'] is not None, 'no_temporary_change_required')
     elif kind.startswith('sample_'):
@@ -405,11 +463,16 @@ def complete(state, payload, *, native_exit, now_ms):
             observed, sessions = _observe(frames, '', self_row)
             expected = {**original, 'test_cap': _current_cap(before)}
             need(observed == expected, 'held_identity_or_cap_changed')
-            if kind == 'quiesce':
+            if kind == 'baseline_revalidate':
+                need(not sessions, 'retention_requires_zero_sessions')
+                result['snapshot'] = {'helper': self_row, 'completed_ms': now_ms}
+                result['baseline_revalidation'] = deepcopy(result['snapshot'])
+            elif kind == 'quiesce':
                 need(not sessions, 'restore_requires_zero_sessions')
                 result['phase'] = 'QUIESCENT' if before['temporary_cap'] is not None else 'CAP_VERIFIED_UNCHANGED'
             else:
-                requested = before['measurement']['requested_cap']
+                requested = (before['retention'] if before['retention'] is not None
+                             else before['measurement'])['requested_cap']
                 need(len(sessions) <= requested, 'partition_session_bound_exceeded')
                 seen = {row['pid']: row for row in before['seen_sessions']}
                 for row in sessions:
@@ -434,11 +497,14 @@ def public_plan(resource_kind='provisioned'):
                                      'SQL': 70, 'logins': 7, 'inclusive': 77},
             'maximum_unchanged_path': {'helpers': 5, 'SQL_before_wrappers': 25, 'wrapper_SQL': 15,
                                        'SQL': 40, 'logins': 5, 'inclusive': 45},
+            'maximum_retained_path': {'helpers': 6, 'SQL_before_wrappers': 30, 'wrapper_SQL': 18,
+                                      'SQL': 48, 'logins': 6, 'inclusive': 54},
+            'retained_path': 'snapshot, actual baseline exact-zero outside session reserve, revalidation, three samples, quiesce; no ALTER or demand/adequacy claim',
             'existing_global_guards_unchanged': {'helpers_including_network': 40, 'SQL_plus_logins': 450},
             'existing_cleanup_max8_insufficient_for16': True,
             'required_integration': ['Closed Operations reconstruction and durable intent before each dispatch',
                                     'Native exit0, validated RSD1 and exact bounded frames; no retry/adoption of unknown mutation',
-                                    'Reviewed actual concurrent-client demand AND server census with matching workload/input pins',
+                                    'Reviewed actual concurrent-client demand AND server census, or distinct unchanged-original decision with actual closed-baseline/zero/review pins and fresh cap revalidation',
                                     'Original absolute horizons, known stopped readers and exact principal/query cleanup before restore',
                                     'Separately reviewed partition-specific16-target exact PID/birth cleanup before launch',
                                     'Complete combined fixture/network/sample/restoration reserve within unchanged40/450 guards'],
@@ -447,7 +513,8 @@ def public_plan(resource_kind='provisioned'):
         result['resource_kind'] = resource_kind
         for key in result['stage_SQL']:
             result['stage_SQL'][key] += 1
-        for key, extra in (('maximum_changed_path', 7), ('maximum_unchanged_path', 5)):
+        for key, extra in (('maximum_changed_path', 7), ('maximum_unchanged_path', 5),
+                           ('maximum_retained_path', 6)):
             for field in ('SQL_before_wrappers', 'SQL', 'inclusive'):
                 result[key][field] += extra
     return result

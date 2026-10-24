@@ -296,7 +296,11 @@ class LocalValidationTests(unittest.TestCase):
     def test_control_only_source_applicability_is_narrow(self):
         control_changes = ('tools/development/live_checkpoint.py\n'
                            'tools/development/redshift_powerbi_app_checkpoint.py\n'
-                           'tools/development/test_redshift_powerbi_app_checkpoint.py\n')
+                           'tools/development/test_redshift_powerbi_app_checkpoint.py\n'
+                           'tools/development/redshift_powerbi_sessions.py\n'
+                           'tools/development/test_redshift_powerbi_sessions.py\n'
+                           'tools/development/redshift_powerbi_session_ops.py\n'
+                           'tools/development/test_redshift_powerbi_session_ops.py\n')
         with patch.object(checkpoint.subprocess, 'check_output', return_value=control_changes):
             checkpoint.same_validation_product('a'*40, 'b'*40)
         for path in ('sdk/security.cpp', 'CMakeLists.txt', 'odbc/handles.cpp',
