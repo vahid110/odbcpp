@@ -96,7 +96,7 @@ def validate_profile(profile):
     if manager is not None:
         # The owned driver loaded through an installed Driver Manager: by
         # DRIVER= path for CORE_ENV, by the private DSN for OWN_DSN.
-        need(kind in ('CORE_ENV', 'OWN_DSN') and manager in ('iODBC', 'unixODBC') and (not private['password_rejection']), 'driver_manager_profile')
+        need(kind in ('CORE_ENV', 'OWN_DSN') and manager in ('iODBC', 'unixODBC'), 'driver_manager_profile')
         need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'} and driver['kind'] == 'OWN' and (driver['wchar_bytes'] == (4 if manager == 'iODBC' else 2)), 'driver_manager_driver')
         _pin({'path': driver['path'], 'sha256': driver['sha256']})
     elif kind == 'CORE_ENV':

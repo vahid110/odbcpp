@@ -57,19 +57,23 @@ class DriverManagerProfileTests(unittest.TestCase):
         for manager in ('iODBC', 'unixODBC'):
             value = factory.build_profile_connection(self.config, self.profile('CORE_ENV', manager))
             self.assertEqual(value, 'DRIVER={' + str(self.driver) + '};' + direct)
+            # The invalid-password variant reaches the same driver.
+            profile = self.profile('CORE_ENV', manager)
+            profile['private_input']['password_rejection'] = True
+            invalid = factory.build_profile_connection(self.config, profile, password_rejection=True)
+            self.assertTrue(invalid.startswith('DRIVER={' + str(self.driver) + '};'))
+            self.assertNotIn('PWD={invented-test}', invalid)
 
-    def test_manager_profiles_refuse_mismatched_width_kind_and_password_variant(self):
+    def test_manager_profiles_refuse_mismatched_width_kind_and_unpinned_driver(self):
         cases = [self.profile('CORE_ENV', 'iODBC', wchar_bytes=2),
                  self.profile('CORE_ENV', 'unixODBC', wchar_bytes=4),
                  self.profile('CORE_ENV', 'Other')]
         package = self.profile('OWN_DSN', 'iODBC')
         package.update(uses_private_dsn=False, connection_environment=[], variables={})
         package['private_input']['kind'] = 'OWN_DM_FILE'
-        rejection = self.profile('CORE_ENV', 'iODBC')
-        rejection['private_input']['password_rejection'] = True
         unpinned = self.profile('CORE_ENV', 'iODBC')
         unpinned['private_input']['driver']['sha256'] = 'not-a-digest'
-        for profile in cases + [package, rejection, unpinned]:
+        for profile in cases + [package, unpinned]:
             with self.assertRaises(factory.FactoryRefused):
                 factory.validate_profile(profile)
         # A plain CORE_ENV profile still has no driver of its own.
