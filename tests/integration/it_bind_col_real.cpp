@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <optional>
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbcpp/database/backend_provider.h"
 #include "odbc/connection_string.h"
+#endif
 #include "tests/test_connection_config.h"
-#include "core/database/database_factory.h"
-#include "odbc/odbc_types.h"
-#include "odbc/unicode.h"
+#include "tests/test_dm_expectations.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 #include "tests/test_time_helpers.h"
 
 #include <algorithm>
@@ -28,8 +30,7 @@ namespace {
 // SQL fixture grammar follows the actual compiled native product; byte and
 // diagnostic expectations below remain identical across both profiles.
 bool fixture_redshift_product() {
-  return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-      rs::core::database::DatabaseType::Redshift;
+  return odbcpp::test::compiled_redshift_product();
 }
 
 // One original per-case window, including reconnects and sibling handles.
@@ -87,7 +88,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -223,6 +224,12 @@ public:
         property("timeout_fixture_schema", schema);
         property("timeout_fixture_table", table_);
         property("timeout_fixture_oid", oid_);
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+        // The verified-TLS check resolves the private DSN through the driver's
+        // own parser, which a Driver Manager build cannot link. The blocker is
+        // used only for the Redshift product.
+        if (fixture_redshift_product()) return fail("verified TLS profile check needs the direct build");
+#else
         try {
             const auto resolved = rs::odbc::ConnectionString::resolve(
                 odbcpp::test::configured_connection_string(),
@@ -233,11 +240,12 @@ public:
             const auto ssl = rs::odbc::ConnectionString::to_upper(rs::odbc::ConnectionString::trim(fields.at("SSL")));
             if (ssl != "1" && ssl != "TRUE" && ssl != "YES" && ssl != "ON") return fail("TLS must be enabled");
         } catch (...) { return fail("private DSN resolution"); }
+#endif
         if (!identity(waiter, "timeout_waiter_before") || !server_timeout(waiter, "timeout_waiter_before")) return false;
         if (!accept(::SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc_), "allocate blocker")) return false;
         if (!fixture_connection_budget(end_, dbc_, true)) return fail("blocker login budget");
         known_ = false;
-        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_connection_string_data(), SQL_NTS,
+        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_server_name_data(), SQL_NTS,
                 nullptr, 0, nullptr, 0), "blocker login")) return false;
         connected_ = true;
         if (!accept(::SQLAllocHandle(SQL_HANDLE_STMT, dbc_, &stmt_), "allocate blocker statement") ||
@@ -431,13 +439,38 @@ protected:
       return fixture_statement_budget(fixture_end_, statement)
           ? ::SQLFetch(statement) : SQL_ERROR;
     }
+    // iODBC 3.52.16 rejects SQL_ARD_TYPE in SQLGetData without calling the
+    // driver (GetDataArdTypeRejected, bucket D). Asserts that and reports
+    // whether the case must end, since the rest needs the ARD-typed value.
+    bool ard_type_get_data_rejected(SQLUSMALLINT column, SQLPOINTER target,
+        SQLLEN buffer_length, SQLLEN* indicator) {
+      if (!odbcpp::test::dm::stops_case(
+              odbcpp::test::dm::Deviation::GetDataArdTypeRejected)) {
+        return false;
+      }
+      EXPECT_EQ(SQL_ERROR, ::SQLGetData(hstmt, column, SQL_ARD_TYPE, target,
+          buffer_length, indicator));
+      SQLCHAR state[6]{};
+      EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state,
+          nullptr, nullptr, 0, nullptr));
+      EXPECT_STREQ("HY003", reinterpret_cast<char*>(state));
+      return true;
+    }
+    // Manager builds check NULL-buffer diagnostics against the expectation
+    // table and still return the record; direct builds call the driver.
+    SQLRETURN SQLGetDiagRec(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT record,
+        SQLCHAR* state, SQLINTEGER* native, SQLCHAR* message, SQLSMALLINT length,
+        SQLSMALLINT* text_length) {
+      return odbcpp::test::diag_rec(type, handle, record, state, native, message,
+          length, text_length);
+    }
 
     void SetUp() override {
         SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
         SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
-        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0);
+        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0);
         if (ret != SQL_SUCCESS) {
             GTEST_SKIP() << "Database connection failed - skipping integration tests";
         }
@@ -1294,7 +1327,12 @@ TEST_F(BindColIntegrationTest,
     EXPECT_EQ(static_cast<SQLWCHAR>('0'), wide[0]);
     EXPECT_EQ(static_cast<SQLWCHAR>('0'), wide[1]);
     EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[2]);
-    EXPECT_EQ(static_cast<SQLLEN>(6 * sizeof(SQLWCHAR)), wide_length);
+    // iODBC 3.52.16 replaces the driver's total with the bytes it copied.
+    EXPECT_EQ(odbcpp::test::dm::value(
+                  odbcpp::test::dm::Deviation::BoundWideIndicatorIsCopiedBytes,
+                  static_cast<SQLLEN>(6 * sizeof(SQLWCHAR)),
+                  static_cast<SQLLEN>(2 * sizeof(SQLWCHAR))),
+              wide_length);
     EXPECT_EQ(0, empty[0]);
     EXPECT_EQ(0, empty_length);
     EXPECT_EQ(0, tiny[0]);
@@ -2323,6 +2361,9 @@ TEST_F(BindColIntegrationTest, NumericArdScaleAndOverflow) {
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
     SQL_NUMERIC_STRUCT numeric{};
     SQLLEN length = 92;
+    if (ard_type_get_data_rejected(1, &numeric, 0, &length)) {
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_ARD_TYPE,
         &numeric, 0, &length));
     EXPECT_EQ(5, numeric.precision);
@@ -2427,6 +2468,9 @@ TEST_F(BindColIntegrationTest, CharacterNumericGetDataReportsExactDiagnostics) {
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
     SQL_NUMERIC_STRUCT numeric{};
     SQLLEN length = 91;
+    if (ard_type_get_data_rejected(1, &numeric, 0, &length)) {
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_ARD_TYPE,
         &numeric, 0, &length));
     EXPECT_EQ(0x39, numeric.val[0]);
@@ -2525,6 +2569,9 @@ TEST_F(BindColIntegrationTest, ApproximateNumericToNumericHandlesBoundaries) {
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(5)), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 2, SQL_DESC_SCALE,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
+    if (ard_type_get_data_rejected(2, &numeric, 0, &length)) {
+        return;
+    }
     EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_ARD_TYPE,
         &numeric, 0, &length));
     EXPECT_EQ(0x39, numeric.val[0]);
@@ -2594,6 +2641,21 @@ TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT 'AéZ'::text, ''::text", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
+    // stores two characters for the UTF-8 'é'. The byte checks below assume
+    // the original text, so the case asserts the stored bytes and ends.
+    if (odbcpp::test::dm::stops_case(
+            odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+        SQLCHAR stored[16]{};
+        SQLLEN stored_length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+            stored, sizeof(stored), &stored_length));
+        ASSERT_GE(stored_length, 0);
+        EXPECT_EQ(odbcpp::test::dm::latin1_widened("AéZ"),
+                  std::string(reinterpret_cast<const char*>(stored),
+                              static_cast<std::size_t>(stored_length)));
+        return;
+    }
 
     SQLCHAR first[2]{0x55, 0x55};
     SQLCHAR second[2]{0x55, 0x55};
@@ -3106,7 +3168,12 @@ TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
 }
 
 TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
-    const std::string expected = "A\xf0\x9f\x99\x82" "BC";
+    // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
+    // stores the Latin-1 reading of the UTF-8 literal.
+    const std::string expected = odbcpp::test::dm::value(
+        odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte,
+        std::string("A\xf0\x9f\x99\x82" "BC"),
+        odbcpp::test::dm::latin1_widened("A\xf0\x9f\x99\x82" "BC"));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"SELECT 'A\xf0\x9f\x99\x82" "BC'::text",
@@ -3123,7 +3190,7 @@ TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
         ASSERT_TRUE(result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO);
         std::size_t chunk_units = 0;
         while (chunk_units < 2 && chunk[chunk_units] != 0) ++chunk_units;
-        const auto converted = rs::odbc::wide_to_utf8(
+        const auto converted = odbcpp::test::text::wide_to_utf8(
             std::span<const SQLWCHAR>(chunk, chunk_units));
         ASSERT_TRUE(converted.has_value());
         assembled += *converted;
@@ -3973,6 +4040,9 @@ TEST_F(BindColIntegrationTest, GetDataValidatesAndResolvesTargetTypes) {
 
     char value[16]{};
     SQLLEN value_length = 0;
+    if (ard_type_get_data_rejected(1, value, sizeof(value), &value_length)) {
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_ARD_TYPE, value, sizeof(value), &value_length));
     EXPECT_STREQ("42", value);
@@ -4208,7 +4278,11 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
     // Verify diagnostic
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, new_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("24000", (char*)sqlstate);
+    // The manager's state table answers before the driver: HY010, not 24000.
+    EXPECT_STREQ(odbcpp::test::dm::value(
+                     odbcpp::test::dm::Deviation::GetDataBeforeExecuteIsSequenceError,
+                     "24000", "HY010"),
+                 (char*)sqlstate);
     SQLFreeHandle(SQL_HANDLE_STMT, new_stmt);
     
     // Test SQLGetData with invalid column
@@ -4269,6 +4343,10 @@ TEST_F(BindColIntegrationTest, LegacySignedIntegerTargetsFetchBindAndNull) {
             reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(type)), 0));
         ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1::bit", SQL_NTS));
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        if (ard_type_get_data_rejected(1, value.data(),
+                static_cast<SQLLEN>(value.size()), &length)) {
+            return;
+        }
         ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_ARD_TYPE,
             value.data(), value.size(), &length));
         expect_value(1);
