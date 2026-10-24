@@ -164,7 +164,13 @@ def prepare_profile_inputs(directory, config, factory, profiles, manifest, *, de
             connection_file = owned('connection.txt', connection)
             if private['kind'] == 'OWN_DSN':
                 part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.dsn_documents(config, profile['limits'], driver['path']))
-                part['environment'].update({'ODBCINI': str(child / 'dsn' / 'odbc.ini'), 'ODBCSYSINI': str(child / 'dsn'), 'ODBCINSTINI': str(child / 'dsn' / 'odbcinst.ini')})
+                # unixODBC resolves ODBCINSTINI relative to ODBCSYSINI; an
+                # absolute filename prevents its real manager from finding
+                # this DSN. Preserve iODBC's working absolute selector.
+                part['own_dsn_wchar_bytes'] = driver['wchar_bytes']
+                registration = ('odbcinst.ini' if driver['wchar_bytes'] == 2 else
+                                str(child / 'dsn' / 'odbcinst.ini'))
+                part['environment'].update({'ODBCINI': str(child / 'dsn' / 'odbc.ini'), 'ODBCSYSINI': str(child / 'dsn'), 'ODBCINSTINI': registration})
             if private['kind'] in ('OWN_DM_FILE', 'VENDOR_DM_FILE'):
                 if driver['wchar_bytes'] == 4:
                     part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.iodbc_registration_documents(profile))
@@ -211,6 +217,16 @@ def validate_profile_inputs(state, *, profile_id=None, deadline=None):
             _profile_held_file(part['driver'], secret=False, deadline=deadline)
         if part['ca'] is not None:
             _profile_held_file(part['ca'], secret=False, deadline=deadline)
+        if 'own_dsn_wchar_bytes' in part:
+            width = part['own_dsn_wchar_bytes']
+            need(width in (2, 4), 'own_dsn_manager_width')
+            d = child / 'dsn'
+            expected = {'ODBCINI': str(d / 'odbc.ini'), 'ODBCSYSINI': str(d),
+                        'ODBCINSTINI': 'odbcinst.ini' if width == 2 else str(d / 'odbcinst.ini')}
+            selectors = {'HOME', 'ODBCINI', 'ODBCSYSINI', 'ODBCINSTINI',
+                         'SYSODBCINI', 'SYSODBCINSTINI'}
+            need({k: v for k, v in part['environment'].items() if k in selectors} == expected,
+                 'own_dsn_private_selectors_changed')
         if part.get('iodbc_registration') is True:
             d = child / 'dsn'
             need({p.name for p in d.iterdir()} == {'odbc.ini', 'odbcinst.ini'}, 'iodbc_untracked_registration')

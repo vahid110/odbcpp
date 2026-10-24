@@ -301,6 +301,22 @@ class LocalValidationTests(unittest.TestCase):
                 with self.assertRaises(checkpoint.lifecycle.Refused):
                     checkpoint.same_validation_product('a'*40, 'b'*40)
 
+    def test_posix_stager_change_only_preserves_prior_windows_sequence(self):
+        paths = ('tools/development/redshift_profile_inputs.py',
+                 'tools/development/test_redshift_profile_inputs.py')
+        with patch.object(checkpoint.subprocess, 'check_output', return_value='\n'.join(paths)):
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'local_validation_same_product_source'):
+                checkpoint.same_validation_product('a'*40, 'b'*40)
+            checkpoint.same_validation_product('a'*40, 'b'*40, windows_sequence=True)
+        for path in ('tools/development/windows_live_backend.py',
+                     'tools/development/redshift_windows.py',
+                     'tools/development/redshift_fixture_factory.py',
+                     'tools/development/redshift_resource.py', 'odbc/connection_string.cpp'):
+            with self.subTest(path=path), patch.object(checkpoint.subprocess, 'check_output',
+                    return_value='\n'.join((*paths, path))):
+                with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'local_validation_same_product_source'):
+                    checkpoint.same_validation_product('a'*40, 'b'*40, windows_sequence=True)
+
     def test_wsl_requires_coordinator_qualified_complete_windows_result(self):
         self.plan.pop('native_windows')
         self.plan['validation_profile'] = self.receipt['profile'] = 'unixodbc-redshift'; self.refresh()

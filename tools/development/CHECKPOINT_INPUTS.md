@@ -194,5 +194,11 @@ integer `actual_exit: 0`, and a pinned `evidence` assessment. The coordinator's
 assessment binds the complete Windows native and relationship partition union,
 actual body results and physical cleanup; one unrelated or native-only successful
 run is insufficient. The same product-source rule permits an earlier control
-revision. This is sequencing evidence, never new operational authority. Full CI,
+revision. For this Windows sequencing check only, changes confined to the POSIX
+`redshift_profile_inputs.py` stager and its `test_redshift_profile_inputs.py`
+regression are also permitted: WindowsOperations overrides input opening and
+staging and does not execute that stager. This exception does not permit reuse
+of an older WSL compiled-producer/local-validation receipt after a stager change;
+fresh WSL local validation and live fixture qualification are still required.
+This is sequencing evidence, never new operational authority. Full CI,
 all required platform/profile and release gates remain debt until actually passed.

@@ -102,13 +102,20 @@ LOCAL_VALIDATION_CONTROL_FILES = {
 }
 
 
-def same_validation_product(producer, consumer):
-    """Only this control-only exception may differ from the compiled producer."""
+def same_validation_product(producer, consumer, *, windows_sequence=False):
+    """Keep compiled-producer reuse distinct from prior Windows sequencing proof."""
     lifecycle.need(all(isinstance(head, str) and re.fullmatch('[0-9a-f]{40}', head)
                        for head in (producer, consumer)), 'local_validation_source_heads')
     changed = subprocess.check_output(
         ['git', '-C', str(ROOT), 'diff', '--name-only', producer, consumer], text=True).splitlines()
-    lifecycle.need(set(changed) <= LOCAL_VALIDATION_CONTROL_FILES,
+    allowed = LOCAL_VALIDATION_CONTROL_FILES
+    if windows_sequence:
+        # WindowsOperations overrides open_inputs/stage_profiles and never uses
+        # this POSIX DSN stager. Its correction still needs fresh WSL validation;
+        # it does not invalidate the earlier completed Windows sequencing step.
+        allowed = allowed | {'tools/development/redshift_profile_inputs.py',
+                             'tools/development/test_redshift_profile_inputs.py'}
+    lifecycle.need(set(changed) <= allowed,
                    'local_validation_same_product_source')
 
 
@@ -168,7 +175,7 @@ def validate_local_validation(plan):
     if 'native_windows' not in plan:
         lifecycle.need(bool(receipt.get('windows_success')), 'windows_qualification_required_before_WSL')
         windows = load(receipt['windows_success'])
-        same_validation_product(windows['source_head'], plan['source_head'])
+        same_validation_product(windows['source_head'], plan['source_head'], windows_sequence=True)
         lifecycle.need(windows.get('reviewed') is True and windows.get('status') == 'completed' and
                        windows.get('profile') == 'windows-redshift' and
                        windows.get('complete_applicable_windows_live') is True and
