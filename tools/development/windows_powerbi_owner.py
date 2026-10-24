@@ -365,6 +365,67 @@ def assert_desktop():
         need(info(handle, 2, buf, C.sizeof(buf), C.byref(length)) and buf.value.casefold() == expected.casefold(), 'actual_interactive_desktop')
 
 
+def installed_source_applicability(ctx, installed_head):
+    """Prove actual Git product-input identity; a receipt cannot grant it.
+
+    This belongs to external application qualification, not the product SDK.
+    Only operational Python/docs and the two fixed session-identity fixtures
+    may differ. Build graphs, packaging, SDK, adapters and workflows cannot.
+    """
+    current = ctx.plan['source_head']
+    need(all(type(value) is str and re.fullmatch('[0-9a-f]{40}', value)
+             for value in (installed_head, current)), 'own_source_commit_identity')
+    end = time.monotonic() + 30
+    # Ignore inherited repository/index/config overrides; these are exact
+    # local read-only Git operations, with no hooks, textconv or external diff.
+    env = {key:value for key,value in os.environ.items() if not key.upper().startswith('GIT_')}
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+    command = [str(GIT), '--no-replace-objects', '--no-optional-locks', '--no-pager',
+               '-c', 'core.fsmonitor=false',
+               '-c', 'core.untrackedCache=false', '-C', str(ctx.repo)]
+    def git(*args):
+        left = end - time.monotonic()
+        need(left > 0, 'source_comparison_deadline')
+        result = subprocess.run([*command, *args], env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=left, check=False)
+        need(result.returncode == 0 and len(result.stdout) <= 2*1024*1024
+             and len(result.stderr) <= 2*1024*1024 and time.monotonic() < end,
+             'source_comparison_git')
+        return result.stdout
+    def clean_current():
+        need(git('rev-parse', '--verify', 'HEAD').decode('ascii').strip() == current
+             and not git('status', '--porcelain', '--untracked-files=all',
+                         '--ignore-submodules=none').strip(), 'clean_exact_product_comparison_checkout')
+    clean_current()
+    for head in {installed_head, current}:
+        need(git('cat-file', '-t', head).strip() == b'commit', 'own_source_commit_object')
+    if installed_head != current:
+        git('merge-base', '--is-ancestor', installed_head, current)
+    raw = git('diff-tree', '--no-commit-id', '--no-ext-diff', '--no-textconv',
+              '--no-renames', '-r', '--name-only', '-z', installed_head, current, '--')
+    names = raw.decode('utf-8', 'strict').split('\0') if raw else []
+    if names:
+        need(names[-1] == '', 'source_comparison_path_framing')
+        names.pop()
+    need(len(names) <= 4096, 'source_comparison_path_bound')
+    fixture_paths = {'tests/integration/it_bind_col_real.cpp', 'tests/integration/it_metadata_real.cpp'}
+    def operational(path):
+        return (path.startswith('tools/development/') and path.endswith(('.py', '.md'))
+                and '..' not in path.split('/') and '\\' not in path
+                and not any(char in path for char in '\r\n\0'))
+    need(all(path in fixture_paths or operational(path) for path in names),
+         'installed_product_build_inputs_changed')
+    trees = {head:git('rev-parse', '--verify', head+'^{tree}').decode('ascii').strip()
+             for head in {installed_head, current}}
+    need(all(re.fullmatch('[0-9a-f]{40}', value) for value in trees.values()), 'source_tree_identity')
+    clean_current()
+    return dict(installed_source_head=installed_head, application_source_head=current,
+                installed_tree=trees[installed_head], application_tree=trees[current],
+                changed_paths=names, unchanged_product_build_inputs=True,
+                comparison='actual_local_git_commit_objects_and_fixed_path_allowlist',
+                comparison_seconds=30, installed_source_relabelled=False)
+
+
 def hold_runtime(ctx):
     plan, driver = ctx.plan, ctx.plan['driver']
     for item in (plan['application'], plan['ca'], driver['install_receipt'], *driver['payload']):
@@ -383,13 +444,14 @@ def hold_runtime(ctx):
     for item in receipt['evidence']:
         pin(item)
     if driver['kind'] == 'own':
-        need(receipt['source_head'] == plan['source_head'] and receipt['installer_sha256'] is None, 'own_installed_source')
+        need(receipt['installer_sha256'] is None, 'own_installed_source')
         inventory_pin = driver['inventory']
         held = ctx.hold(ctx.native.HeldFile(inventory_pin['path']))
         body = held.read()
         need(sha(body) == inventory_pin['sha256'], 'inventory_pin')
         inv = decode(body)
-        need(inv['sourceRevision'] == plan['source_head'] and inv['targetDatabase'] == 'REDSHIFT', 'own_inventory_source')
+        need(inv['sourceRevision'] == receipt['source_head'] and inv['targetDatabase'] == 'REDSHIFT', 'own_inventory_source')
+        applicability = installed_source_applicability(ctx, inv['sourceRevision'])
         expected = []
         for item in inv['files']:
             need(Path(item['file']).name == item['file'], 'flat_own_inventory')
@@ -405,6 +467,8 @@ def hold_runtime(ctx):
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 'SOFTWARE\\ODBC\\ODBCINST.INI\\ODBC Drivers',
                         0, winreg.KEY_READ|winreg.KEY_WOW64_64KEY) as key:
         need(winreg.QueryValueEx(key, driver['description']) == ('Installed', winreg.REG_SZ), 'installed_mapping')
+    if driver['kind'] == 'own':
+        ctx.record('installed-source-applicability.json', applicability)
 
 
 def fields(ctx, connection):

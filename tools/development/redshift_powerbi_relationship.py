@@ -137,6 +137,7 @@ def stage_for(state, kind):
         need(key != 'parent' or state['fact']['status'] in ('ABSENT', 'DROPPED'), 'reverse_dependency_order')
     lines = []
     count = 0
+    guard_count = 0
 
     def sql(query, label=None):
         nonlocal count
@@ -146,8 +147,10 @@ def stage_for(state, kind):
         count += 1
 
     def guard(expression):
+        nonlocal guard_count
         sql('SELECT CASE WHEN ' + expression + ' THEN 1 ELSE 0 END AS pbi_held')
         lines[-1] = lines[-1][:-1] + '\n\\gset\n\\if :pbi_held'
+        guard_count += 1
 
     session = ("SELECT current_database(),TRIM(current_user),(SELECT usesysid FROM pg_user WHERE usename='" + OWNER +
                "'),(SELECT usesysid FROM pg_user WHERE usename='" + PRINCIPAL +
@@ -168,7 +171,11 @@ def stage_for(state, kind):
             key = kind[7:]
             guard('NOT EXISTS(' + _identity(key).removesuffix(' LIMIT 2').replace('SELECT c.oid,c.relowner,n.oid,n.nspowner,c.relkind', 'SELECT 1') + ')')
             if key == 'fact':
-                guard(_held(state, 'parent') + ' AND ' + _shape_guard('parent') + ' AND ' + _rows_guard('parent'))
+                # Redshift cannot combine leader catalog, SVV shape and user
+                # rows in one query. Keep every predicate in its own gate.
+                guard(_held(state, 'parent'))
+                guard(_shape_guard('parent'))
+                guard(_rows_guard('parent'))
             columns = ('parent_id INTEGER NOT NULL,parent_label VARCHAR(16) NOT NULL,CONSTRAINT pbi_parent_single_q007_pk PRIMARY KEY(parent_id)' if key == 'parent' else
                        'fact_id INTEGER NOT NULL,parent_id INTEGER NOT NULL,amount INTEGER NOT NULL,CONSTRAINT pbi_fact_single_q007_pk PRIMARY KEY(fact_id),CONSTRAINT pbi_fact_single_q007_fk FOREIGN KEY(parent_id) REFERENCES ' + _q('parent') + '(parent_id)')
             sql('CREATE TABLE ' + _q(key) + '(' + columns + ')')
@@ -179,9 +186,6 @@ def stage_for(state, kind):
             sql(_identity(key), 'IDENTITY')
             sql(_shape(key), 'SHAPE')
             sql(_rows(key), 'ROWS')
-            lines.append('\\else\n\\echo RSPBI1|REFUSED\n\\endif')
-            if key == 'fact':
-                lines.append('\\else\n\\echo RSPBI1|REFUSED\n\\endif')
         elif kind == 'verify':
             for key in NAMES:
                 sql(_identity(key), key.upper() + '_IDENTITY')
@@ -189,16 +193,20 @@ def stage_for(state, kind):
                 sql(_rows(key), key.upper() + '_ROWS')
         else:
             key = kind[5:]
-            guard(_held(state, key) + ' AND ' + _shape_guard(key) + ' AND ' + _rows_guard(key) +
-                  ' AND (SELECT COUNT(*)=0 FROM svv_transactions WHERE relation=' + str(state[key]['oid']) +
+            guard(_held(state, key))
+            guard(_shape_guard(key))
+            guard(_rows_guard(key))
+            guard('(SELECT COUNT(*)=0 FROM svv_transactions WHERE relation=' + str(state[key]['oid']) +
                   " AND lockable_object_type='relation' AND txn_db='" + DATABASE + "')")
             sql('DROP TABLE ' + _q(key) + ' RESTRICT')
             lines.append('\\echo RSPBI1|DROP_ACK')
             sql(_identity(key), 'IDENTITY')
             sql('SELECT COUNT(*) FROM pg_catalog.pg_class WHERE oid=' + str(state[key]['oid']), 'OID_ABSENT')
             sql("SELECT oid,nspowner FROM pg_catalog.pg_namespace WHERE nspname='" + SCHEMA + "' LIMIT 2", 'SCHEMA')
+        # All gates enclose the stage effects/ACK; each false branch emits one
+        # refusal. Close every nested gate in reverse order, including anchor.
+        for _ in range(guard_count):
             lines.append('\\else\n\\echo RSPBI1|REFUSED\n\\endif')
-        lines.append('\\else\n\\echo RSPBI1|REFUSED\n\\endif')
     query = '\n'.join(lines) + '\n'
     need(len(query.encode('utf-8')) <= 16384 and count <= 12, 'stage_bounds')
     return {'stage': 'powerbi_relationship_' + kind, 'keys': ('POWERBI_SINGLE_KEY',),
@@ -296,10 +304,10 @@ def public_plan():
     return {'schema_version': 1, 'readiness': 'NOT_EXECUTABLE_UNTIL_ROOT_INTEGRATION',
             'database': DATABASE, 'schema': SCHEMA, 'owner': OWNER, 'principal': PRINCIPAL,
             'tables': deepcopy(NAMES), 'stages': list(KINDS), 'helpers': 6,
-            'statement_upper_bound_including_operations_wrappers': 62,
-            'login_upper_bound': 6, 'inclusive_statements_plus_logins': 68,
-            'stage_statement_bounds': {'inspect': 3, 'create_parent': 9, 'create_fact': 10,
-                                       'verify': 8, 'drop_fact': 7, 'drop_parent': 7},
+            'statement_upper_bound_including_operations_wrappers': 70,
+            'login_upper_bound': 6, 'inclusive_statements_plus_logins': 76,
+            'stage_statement_bounds': {'inspect': 3, 'create_parent': 9, 'create_fact': 12,
+                                       'verify': 8, 'drop_fact': 10, 'drop_parent': 10},
             'existing_absolute_deadline_required': True, 'statement_timeout_ms_max': 15000,
             'shared_schema': 'RETAIN', 'drop': 'RESTRICT; fact before parent; no unknown adoption',
             'marker': {'ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP': '1'},

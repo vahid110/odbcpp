@@ -151,7 +151,7 @@ class SessionRuntimeTests(unittest.TestCase):
     def test_separate_app_reserve_is_within_unchanged_global_caps(self):
         result = validate_fixture_plan(runtime.plan())
         self.assertEqual((result['total_helpers'], result['total_SQL'],
-                          result['total_logins'], result['total_inclusive']), (22, 202, 22, 224))
+                          result['total_logins'], result['total_inclusive']), (22, 210, 22, 232))
         self.assertEqual(result['maximum_cleanup_targets'], 16)
 
     def test_extended_cleanup_is_scoped_and_uses_captured_birth_guards(self):

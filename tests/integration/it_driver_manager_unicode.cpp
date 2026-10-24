@@ -13,6 +13,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -33,6 +34,87 @@ static_assert(sizeof(SQLWCHAR) == ODBCPP_EXPECT_DM_SQLWCHAR_SIZE,
 // "ODBCPP PostgreSQL" driver that CI provisions; ODBCPP_DM_UNICODE_CONNECTION
 // overrides it for local runs. Connection strings are never printed.
 namespace {
+
+// One original case window, shared by every connect/reconnect and cleanup.
+// Attribute changes precede I/O only: restoring them afterwards would replace
+// the Unicode/truncation diagnostics that these tests are meant to inspect.
+constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
+  if (left <= 0) {
+    return 0;
+  }
+  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  return requested == 0 ? cap : std::min(cap, requested);
+}
+static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(4) == 4);
+static_assert(fixture_timeout_seconds(1) == 1);
+static_assert(fixture_timeout_seconds(0) == 0);
+static_assert(fixture_timeout_seconds(-1) == 0);
+static_assert(fixture_timeout_seconds(40, 1) == 1);
+static_assert(fixture_timeout_seconds(40, 2) == 2);
+
+class FixtureBudget {
+ public:
+  bool connection(SQLHDBC connection, bool login) const {
+    // LOGIN_TIMEOUT governs connect. iODBC cannot read CONNECTION_TIMEOUT
+    // before a driver is loaded; apply that attribute before subsequent I/O.
+    return connection_attribute(connection,
+        login ? SQL_ATTR_LOGIN_TIMEOUT : SQL_ATTR_CONNECTION_TIMEOUT);
+  }
+
+  bool statement(SQLHDBC connection, SQLHSTMT statement) const {
+    if (!this->connection(connection, false)) {
+      return false;
+    }
+    SQLULEN requested = 0;
+    if (SQLGetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, &requested, 0, nullptr) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not read finite fixture statement timeout";
+      return false;
+    }
+    const auto seconds = seconds_left(requested);
+    if (seconds == 0) {
+      return false;
+    }
+    if (seconds != requested && SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not apply finite fixture statement timeout";
+      return false;
+    }
+    return true;
+  }
+
+ private:
+  SQLULEN seconds_left(SQLULEN requested) const {
+    const auto left = std::chrono::duration_cast<std::chrono::seconds>(
+        end_ - std::chrono::steady_clock::now()).count();
+    const auto seconds = fixture_timeout_seconds(left, requested);
+    if (seconds == 0) {
+      ADD_FAILURE() << "Original forty-second fixture window expired; no new I/O";
+    }
+    return seconds;
+  }
+
+  bool connection_attribute(SQLHDBC connection, SQLINTEGER attribute) const {
+    SQLULEN requested = 0;
+    if (SQLGetConnectAttr(connection, attribute, &requested, 0, nullptr) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not read finite fixture connection timeout";
+      return false;
+    }
+    const auto seconds = seconds_left(requested);
+    if (seconds == 0) {
+      return false;
+    }
+    if (seconds != requested && SQLSetConnectAttr(connection, attribute,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
+      ADD_FAILURE() << "Could not apply finite fixture connection timeout";
+      return false;
+    }
+    return true;
+  }
+
+  const std::chrono::steady_clock::time_point end_ =
+      std::chrono::steady_clock::now() + std::chrono::seconds(40);
+};
 
 // One Unicode scalar as UTF-8.
 void append_utf8(std::string& output, std::uint32_t code_point) {
@@ -302,6 +384,7 @@ class DriverManagerUnicodeTest : public ::testing::Test {
     // A Unicode application connects wide; unixODBC otherwise treats the
     // connection as ANSI and widens driver diagnostics through the C locale.
     auto input = wide_connection_string();
+    ASSERT_TRUE(budget_.connection(connection_, true));
     const auto result = SQLDriverConnectW(connection_, nullptr, input.data(), SQL_NTS, nullptr,
                                           0, nullptr, SQL_DRIVER_NOPROMPT);
     ASSERT_TRUE(result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO)
@@ -315,7 +398,9 @@ class DriverManagerUnicodeTest : public ::testing::Test {
       EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement_));
     }
     if (connected_) {
-      EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+      if (budget_.connection(connection_, false)) {
+        EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+      }
     }
     if (connection_ != SQL_NULL_HDBC) {
       EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
@@ -327,9 +412,13 @@ class DriverManagerUnicodeTest : public ::testing::Test {
 
   SQLRETURN execute_wide(std::u32string_view sql) {
     auto text = wide_text(sql);
+    if (!budget_.statement(connection_, statement_)) {
+      return SQL_ERROR;
+    }
     return SQLExecDirectW(statement_, text.data(), SQL_NTS);
   }
 
+  const FixtureBudget budget_;
   SQLHENV environment_{SQL_NULL_HENV};
   SQLHDBC connection_{SQL_NULL_HDBC};
   SQLHSTMT statement_{SQL_NULL_HSTMT};
@@ -508,7 +597,7 @@ std::size_t full_output_capacity() {
   return std::max<std::size_t>(1024, wide_connection_string().size() + 256);
 }
 
-ConnectOutcome wide_connect(SQLSMALLINT capacity) {
+ConnectOutcome wide_connect(SQLSMALLINT capacity, const FixtureBudget& budget) {
   ConnectOutcome outcome;
   SQLHENV environment = SQL_NULL_HENV;
   SQLHDBC connection = SQL_NULL_HDBC;
@@ -519,11 +608,15 @@ ConnectOutcome wide_connect(SQLSMALLINT capacity) {
   }
   auto input = wide_connection_string();
   outcome.output.assign(full_output_capacity(), SQLWCHAR('x'));
-  outcome.result = SQLDriverConnectW(connection, nullptr, input.data(), SQL_NTS,
-      outcome.output.data(), capacity, &outcome.length, SQL_DRIVER_NOPROMPT);
-  outcome.states = diagnostic_states(SQL_HANDLE_DBC, connection);
+  if (budget.connection(connection, true)) {
+    outcome.result = SQLDriverConnectW(connection, nullptr, input.data(), SQL_NTS,
+        outcome.output.data(), capacity, &outcome.length, SQL_DRIVER_NOPROMPT);
+    outcome.states = diagnostic_states(SQL_HANDLE_DBC, connection);
+  }
   if (outcome.result == SQL_SUCCESS || outcome.result == SQL_SUCCESS_WITH_INFO) {
-    SQLDisconnect(connection);
+    if (budget.connection(connection, false)) {
+      EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+    }
   }
   SQLFreeHandle(SQL_HANDLE_DBC, connection);
   SQLFreeHandle(SQL_HANDLE_ENV, environment);
@@ -531,6 +624,7 @@ ConnectOutcome wide_connect(SQLSMALLINT capacity) {
 }
 
 TEST(DriverManagerUnicodeConnectTest, WideDriverConnectTruncatedOutputReportsFullLength) {
+  const FixtureBudget budget;
 #ifdef ODBCPP_TEST_IODBC
   // iODBC 3.52.16 (A and W) returns SQL_SUCCESS_WITH_INFO without the driver's
   // 01004 and reports the copied length (capacity 8 -> 7) or a length scanned
@@ -538,13 +632,13 @@ TEST(DriverManagerUnicodeConnectTest, WideDriverConnectTruncatedOutputReportsFul
   // directly linked driver report 01004 and the full length. Manager defect.
   GTEST_SKIP() << "iODBC drops driver-connect truncation diagnostics and lengths";
 #endif
-  const auto full = wide_connect(static_cast<SQLSMALLINT>(full_output_capacity()));
+  const auto full = wide_connect(static_cast<SQLSMALLINT>(full_output_capacity()), budget);
   ASSERT_EQ(SQL_SUCCESS, full.result) << joined(full.states);
   ASSERT_GT(full.length, 8);
 
   for (const SQLSMALLINT capacity : {SQLSMALLINT{8}, SQLSMALLINT{0}}) {
     SCOPED_TRACE(capacity);
-    const auto truncated = wide_connect(capacity);
+    const auto truncated = wide_connect(capacity, budget);
     EXPECT_EQ(SQL_SUCCESS_WITH_INFO, truncated.result) << joined(truncated.states);
     EXPECT_TRUE(has_state(truncated.states, "01004"));
     EXPECT_EQ(full.length, truncated.length);
@@ -562,6 +656,7 @@ TEST(DriverManagerUnicodeConnectTest, WideDriverConnectTruncatedOutputReportsFul
 // unknown keyword. The driver echoes the keyword into its 01S00 warning; the
 // warning's SQLSTATE must stay readable through the manager, ANSI and wide.
 TEST(DriverManagerUnicodeConnectTest, AnsiLatin1KeywordWarningStateStaysReadable) {
+  const FixtureBudget budget;
 #ifdef ODBCPP_TEST_IODBC
   // iODBC 3.52.16 returns the driver's SQL_SUCCESS_WITH_INFO from
   // SQLDriverConnect(A/W) but then reports SQL_NO_DATA for every record, also
@@ -577,9 +672,10 @@ TEST(DriverManagerUnicodeConnectTest, AnsiLatin1KeywordWarningStateStaysReadable
     input.push_back(';');
   }
   input += "ODBCPP_ECHO_\xe9=1;";
-  const auto result = SQLDriverConnect(connection, nullptr,
-      reinterpret_cast<SQLCHAR*>(input.data()), SQL_NTS, nullptr, 0, nullptr,
-      SQL_DRIVER_NOPROMPT);
+  const auto result = budget.connection(connection, true)
+      ? SQLDriverConnect(connection, nullptr, reinterpret_cast<SQLCHAR*>(input.data()),
+                         SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT)
+      : SQL_ERROR;
   const bool connected = result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
   EXPECT_EQ(SQL_SUCCESS_WITH_INFO, result);
 
@@ -602,7 +698,9 @@ TEST(DriverManagerUnicodeConnectTest, AnsiLatin1KeywordWarningStateStaysReadable
   EXPECT_EQ(std::vector<SQLWCHAR>(wide_state, wide_state + 6), wide_text(U"01S00"));
 
   if (connected) {
-    EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+    if (budget.connection(connection, false)) {
+      EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+    }
   }
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));

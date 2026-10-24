@@ -85,13 +85,22 @@ def profile_variables(profile, observed):
     return dict(profile['variables'], **observed)
 
 
-def plan():
-    # Fixed fixture6/62SQL; conservative existing startup5/23SQL; cleanup:
+def plan(resource_kind='provisioned'):
+    need(resource_kind in ('provisioned', 'serverless'), 'relationship_plan_resource_kind')
+    if resource_kind == 'serverless':
+        from tools.development.redshift_ctest_ops import serverless_fixture_reserve
+        return dict(serverless_fixture_reserve('powerbi_relationship'),
+                    relationship_fixture=relationship.public_plan(),
+                    fixture_scope='powerbi_relationship')
+    # Derive the fixed fixture cost; conservative existing startup5/23SQL; cleanup:
     # PID capture4SQL + max8 guarded termination19SQL + two zero probes8SQL.
     # Wrapper SQL is already included. One login accompanies each helper.
-    return {'total_helpers': 15, 'total_SQL': 116, 'total_logins': 15,
-            'total_inclusive': 131, 'network_helpers_separate': 1,
-            'relationship_fixture': relationship.public_plan(),
+    fixture = relationship.public_plan()
+    helpers = fixture['helpers'] + 5 + 4
+    statements = fixture['statement_upper_bound_including_operations_wrappers'] + 23 + 31
+    return {'total_helpers': helpers, 'total_SQL': statements, 'total_logins': helpers,
+            'total_inclusive': statements + helpers, 'network_helpers_separate': 1,
+            'relationship_fixture': fixture,
             'startup_reserve': {'helpers': 5, 'SQL': 23},
             'principal_cleanup_reserve': {'helpers': 4, 'SQL': 31},
             'maximum_cleanup_targets': 8, 'fixture_scope': 'powerbi_relationship',

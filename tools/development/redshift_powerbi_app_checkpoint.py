@@ -324,7 +324,9 @@ def execute(plan_path, admission_path):
         deadlines = _deadlines(components, admission, monotonic, wall)
         deadlines.validate(time.clock_gettime(time.CLOCK_MONOTONIC))
         from tools.development.redshift_ctest_lifecycle import record, validate_fixture_plan
-        fixture_plan = validate_fixture_plan(components.fixture_plan())
+        resource_kind = checkpoint['resource'].get('kind', 'provisioned')
+        fixture_plan = validate_fixture_plan(components.fixture_plan(
+            **({'resource_kind': resource_kind} if resource_kind == 'serverless' else {})))
         tools, manifest = _manifest(plan, checkpoint, plan_path)
         profiles = json.loads(pin_file(checkpoint['profiles']).read_text(encoding='utf-8-sig'))
         specs = json.loads(pin_file(checkpoint['specs']).read_text(encoding='utf-8-sig'))

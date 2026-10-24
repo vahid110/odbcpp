@@ -80,6 +80,24 @@ def sample_rows(count, *, start=100, birth='2026-10-22 12:00:01'):
 
 
 class PowerBiSessionSafetyTests(unittest.TestCase):
+    def test_serverless_cap_roundtrip_preserves_measurement_intents_and_original_cap(self):
+        state = new_state()
+        state['resource_kind'] = 'serverless'
+        state = advance(state, 'snapshot')
+        state = sessions.decide(state, measurement(), now_ms=BASE_MS + 22)
+        stage = sessions.stage_for(state, 'set_cap')
+        self.assertEqual(stage['statements'], 13)
+        self.assertIn(':rs_admin_oid=10 AND :rs_test_oid=11', stage['query'])
+        self.assertNotIn('stv_', stage['query'])
+        state = advance(state, 'set_cap', now_ms=BASE_MS + 23)
+        state = advance(state, 'sample_connected', rows=sample_rows(8))
+        state = advance(state, 'quiesce', now_ms=EXEC_END + 1)
+        self.assertIn('CONNECTION LIMIT 2;', sessions.stage_for(state, 'restore')['query'])
+        state = advance(state, 'restore', now_ms=EXEC_END + 5)
+        self.assertEqual(state['phase'], 'CAP_RESTORED')
+        self.assertEqual(state['resource_kind'], 'serverless')
+        self.assertEqual(state['original']['test_cap'], '2')
+
     def test_cap_two_default_parallel_exact_change_and_restore(self):
         state = decided()
         self.assertEqual('2', state['original']['test_cap'])

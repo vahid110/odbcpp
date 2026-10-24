@@ -120,12 +120,16 @@ def read_plan(path, *, require_ci=False):
     for ref in plan['authority_receipts'].values():
         pinned(ref)
     resource = plan['resource']
-    lifecycle.need(set(resource) == {'account','arn','cluster','created','region','profile','node_type'}
-                   and resource['account'] == '385207570137'
-                   and resource['arn'] == 'arn:aws:iam::385207570137:user/odbcpp-redshift-pilot'
-                   and resource['cluster'] == 'odbcpp-redshift-provisioned-pilot'
-                   and resource['profile'] == 'odbcpp-redshift-pilot', 'unchanged_existing_resource_identity')
-    lifecycle.need(resource['region'] == 'eu-north-1', 'approved_region_eu_north_1')
+    from tools.development.redshift_resource import validate_resource
+    resource_kind = validate_resource(resource)
+    if resource_kind == 'serverless':
+        timeout = plan.get('timeout_fixture')
+        lifecycle.need(type(timeout) is dict and set(timeout) == {
+            'table', 'expected_principal', 'allow_current_identity', 'resource_kind'}
+            and timeout['expected_principal'] is None
+            and timeout['allow_current_identity'] is True
+            and timeout['resource_kind'] == 'serverless',
+            'serverless_current_principal_discovery_required')
     lifecycle.need(re.fullmatch('[0-9a-f]{64}', plan['ca_sha256']) is not None, 'CA_pin')
     # Completeness compares ordered tuples through the existing registrar. No
     # profile environment or protected database/credential file is opened here.
@@ -189,6 +193,34 @@ def validate_native_plan(plan, index, expected):
                        'same_actual_native_owning_images')
 
 
+def profile_driver_pins(profiles, public_pins):
+    """Validate and bind every declared profile image before private acquisition."""
+    from tools.development import redshift_fixture_factory as factory
+    lifecycle.need(type(profiles) is dict, 'profile_inventory')
+    result = dict(public_pins)
+    drivers = {}
+    for profile in profiles.values():
+        factory.validate_profile(profile)
+        driver = profile['private_input']['driver']
+        if driver is not None:
+            path, digest = driver['path'], driver['sha256']
+            lifecycle.need(result.get(path, digest) == digest,
+                           'profile_driver_pin_collision')
+            result[path] = digest
+            drivers[path] = digest
+    for path, digest in drivers.items():
+        pinned(dict(path=path, sha256=digest))
+    return result
+
+
+def validate_execution_bounds(plan, bounds):
+    # This is the native delegate's existing necessary envelope, checked before
+    # opening resource inputs. It does not extend any original deadline or
+    # guarantee that fixture preparation leaves the required time at dispatch.
+    if 'native_windows' in plan:
+        lifecycle.need(bounds.execution >= 1560, 'native_complete_suite_execution_envelope')
+
+
 def execute(plan, plan_path, admission_path):
     # On Windows, --wsl-source invokes this same fixed entry locally in WSL.
     # WSL owns resource credentials/SQL; the native backend owns its held test
@@ -203,6 +235,23 @@ def execute(plan, plan_path, admission_path):
     actual_head = subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'], text=True).strip()
     dirty = subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain'], text=True).strip()
     lifecycle.need(actual_head == plan['source_head'] and not dirty, 'clean_exact_admitted_source')
+    # Finish public validation, including profile image hashes and collisions,
+    # before even reading the private admission; no driver is loaded here.
+    plan = read_plan(plan_path, require_ci=True)
+    state = Path(plan['state_directory'])
+    lifecycle.need(state.is_absolute() and state.is_dir() and not state.is_symlink(), 'owned_private_state')
+    tools = {k: str(pinned(v).resolve(strict=True)) for k, v in plan['tools'].items()}
+    public_pins = {v['path']: v['sha256'] for v in plan['tools'].values()}
+    for key in ('index','expected','profiles','specs','ci_receipt'):
+        public_pins[plan[key]['path']] = plan[key]['sha256']
+    if 'partition' in plan:
+        for key in ('checkpoint_expected', 'checkpoint_partitions'):
+            public_pins[plan[key]['path']] = plan[key]['sha256']
+    for path in list((ROOT/'tools/development').glob('redshift_*.py')) + [Path(__file__), Path(factory.__file__)]:
+        path = path.resolve()
+        public_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    profiles = json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig'))
+    public_pins = profile_driver_pins(profiles, public_pins)
     admission = private_json(admission_path)
     lifecycle.need(admission.get('reviewed') is True
                    and admission['plan_sha256'] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
@@ -219,22 +268,9 @@ def execute(plan, plan_path, admission_path):
                        plan['checkpoint_expected']['sha256'],
                        'fresh_complete_checkpoint_partition_admission')
     bounds = lifecycle.Bounds(**admission['bounds']);bounds.validate()
+    validate_execution_bounds(plan, bounds)
     lifecycle.need(utc(admission['expires_utc']) > dt.datetime.now(dt.timezone.utc)
                    + dt.timedelta(seconds=bounds.owner), 'finite_authority_horizon')
-    # Source/pins cannot drift between preflight and real composition.
-    plan = read_plan(plan_path, require_ci=True)
-    state = Path(plan['state_directory'])
-    lifecycle.need(state.is_absolute() and state.is_dir() and not state.is_symlink(), 'owned_private_state')
-    tools = {k: str(pinned(v).resolve(strict=True)) for k, v in plan['tools'].items()}
-    public_pins = {v['path']: v['sha256'] for v in plan['tools'].values()}
-    for key in ('index','expected','profiles','specs','ci_receipt'):
-        public_pins[plan[key]['path']] = plan[key]['sha256']
-    if 'partition' in plan:
-        for key in ('checkpoint_expected', 'checkpoint_partitions'):
-            public_pins[plan[key]['path']] = plan[key]['sha256']
-    for path in list((ROOT/'tools/development').glob('redshift_*.py')) + [Path(__file__)] + [factory.__file__]:
-        path = Path(path).resolve()
-        public_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
     # Existing exclusive pilot_lock and exclusive run directory consume the
     # one-use run. A nonce is never automatically renewed or a run reset.
     approval = dict(admission, resource=plan['resource'],
@@ -245,7 +281,6 @@ def execute(plan, plan_path, admission_path):
                     security_groups=plan['security_groups'])
     timeout_factory = TimeoutFactory(**plan['timeout_fixture'])
     timeout_factory.NativeOps = NativeOps
-    profiles = json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig'))
     specs = json.loads(pinned(plan['specs']).read_text(encoding='utf-8-sig'))
     blueprint = json.loads(pinned(plan['index']).read_text(encoding='utf-8-sig'))
     ops_type = Operations
@@ -272,7 +307,8 @@ def execute(plan, plan_path, admission_path):
         cleanup = staticmethod(fixtures.cleanup)
     if plan.get('partition') == 'powerbi_relationship':
         from tools.development import redshift_powerbi_partition as partition
-        CompleteFixtures.plan = staticmethod(partition.plan)
+        CompleteFixtures.plan = staticmethod(lambda: partition.plan(
+            plan['resource'].get('kind', 'provisioned')))
         CompleteFixtures.prepare = staticmethod(partition.prepare)
         CompleteFixtures.cleanup = staticmethod(partition.cleanup)
     # Ignore a second interrupt only while mandatory cleanup is running.
