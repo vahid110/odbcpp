@@ -58,11 +58,35 @@ as public inventory, profiles, specs, tools or receipt inputs.
 | `tools` | Absolute `cmake`, `ctest`, `aws`, `psql`, `python` executables on the resource host |
 | `ci_receipt` | Optional during preparation; required for run: exact `source_head` and `applicable_ci_green: true`, with retained CI evidence |
 | `authority_receipts` | Existing `authority`, `applicability`, `cleanup_delegation` receipt paths for standing fixture authority |
-| `resource` | Existing `account`, `arn`, `cluster`, `created`, `region` fixed to `eu-north-1`, `profile`, `node_type`; no infrastructure expansion |
+| `resource` | Legacy/default `provisioned`: existing `account`, `arn`, `cluster`, `created`, `region` fixed to `eu-north-1`, `profile`, `node_type`. Explicit `kind: serverless` uses the strict existing workgroup/namespace binding below; no infrastructure expansion |
 | `security_groups` | Approved current public security-group describe snapshot, required for run and compared exactly before resume; preflight may report it pending |
 | `ca_sha256` | Approved CA hash; actual CA/hostname/config remain protected |
 | `timeout_fixture` | `table` and `expected_principal` (`database`, `owner`, `owner_oid`, `schema_oid`, `schema_owner_oid`) from current approved identities; no historical OID defaults |
 | `native_windows` | Omit for POSIX-owning binaries; native fields below for Windows |
+
+Serverless resource keys are exactly `kind`, `account`, `arn`, `region`, `profile`,
+`workgroup`, `workgroup_id`, `namespace`, `namespace_id`, `namespace_created`,
+`base_capacity`, `max_capacity`, `endpoint`, `port`, `security_group_ids`, and
+`max_query_execution_time`. Only the existing `odbcpp-redshift-pilot` workgroup
+and namespace are accepted, with their independently recorded exact IDs and
+creation timestamp, existing endpoint/security group, 4/4 RPU caps and 30-second
+query cap. Acquisition checks current identity, TLS, current single-address
+network ingress and all resource bindings; it never creates, updates, resumes
+or pauses Serverless. `AVAILABLE` metadata is not SQL readiness or physical
+compute-idle evidence. Serverless cleanup separately verifies owned readers,
+principals, queries and fixture cleanup, then publishes
+`owned_activity_quiescent`; `paused_verified` and
+`physical_compute_idle_verified` remain false.
+
+For Serverless, `timeout_fixture` contains exactly `table`,
+`expected_principal: null`, `allow_current_identity: true`, and
+`resource_kind: "serverless"`. An admitted read-only identity/privilege query
+binds the current existing database/test principal/schema OIDs before any
+fixture mutation. Missing or changed identities refuse; historical provisioned
+OIDs, automatic principal creation and guessed passwords are not substitutes.
+The normalized protected config still has the same eight keys; a historical
+Serverless config containing `ca_file`, `schema` or `table` must be explicitly
+normalized and privately pinned before use.
 
 `prepare` obtains actual source directory/head from its checkout. The normal run
 requires that checkout clean at that exact head. For Windows, public recipe

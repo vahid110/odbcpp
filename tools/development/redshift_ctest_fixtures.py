@@ -366,11 +366,13 @@ def cleanup(ops, state, deadline):
     t = state['timeout']
     def close_timeout():
         if t['object'] == 'OWNED':
-            stage = ops.factory.timeout_stage(t['record'], 'timeout_cleanup')
+            stage = ops.factory.timeout_stage(t['record'], 'timeout_cleanup',
+                **({'resource_kind': 'serverless'} if getattr(ops, 'resource_kind', 'provisioned') == 'serverless' else {}))
             _sql_allowed(ops, state, deadline)
             t['object'] = 'DROP_UNKNOWN'
             frames = ops.factory.whole_frames(_sql(ops, state, stage, deadline))
-            ops.factory.validate_timeout_frames(t['record'], 'timeout_cleanup', frames)
+            ops.factory.validate_timeout_frames(t['record'], 'timeout_cleanup', frames,
+                **({'resource_kind': 'serverless'} if getattr(ops, 'resource_kind', 'provisioned') == 'serverless' else {}))
             t['object'] = 'DROPPED'
     attempt(close_timeout)
 

@@ -120,12 +120,16 @@ def read_plan(path, *, require_ci=False):
     for ref in plan['authority_receipts'].values():
         pinned(ref)
     resource = plan['resource']
-    lifecycle.need(set(resource) == {'account','arn','cluster','created','region','profile','node_type'}
-                   and resource['account'] == '385207570137'
-                   and resource['arn'] == 'arn:aws:iam::385207570137:user/odbcpp-redshift-pilot'
-                   and resource['cluster'] == 'odbcpp-redshift-provisioned-pilot'
-                   and resource['profile'] == 'odbcpp-redshift-pilot', 'unchanged_existing_resource_identity')
-    lifecycle.need(resource['region'] == 'eu-north-1', 'approved_region_eu_north_1')
+    from tools.development.redshift_resource import validate_resource
+    resource_kind = validate_resource(resource)
+    if resource_kind == 'serverless':
+        timeout = plan.get('timeout_fixture')
+        lifecycle.need(type(timeout) is dict and set(timeout) == {
+            'table', 'expected_principal', 'allow_current_identity', 'resource_kind'}
+            and timeout['expected_principal'] is None
+            and timeout['allow_current_identity'] is True
+            and timeout['resource_kind'] == 'serverless',
+            'serverless_current_principal_discovery_required')
     lifecycle.need(re.fullmatch('[0-9a-f]{64}', plan['ca_sha256']) is not None, 'CA_pin')
     # Completeness compares ordered tuples through the existing registrar. No
     # profile environment or protected database/credential file is opened here.
@@ -272,7 +276,8 @@ def execute(plan, plan_path, admission_path):
         cleanup = staticmethod(fixtures.cleanup)
     if plan.get('partition') == 'powerbi_relationship':
         from tools.development import redshift_powerbi_partition as partition
-        CompleteFixtures.plan = staticmethod(partition.plan)
+        CompleteFixtures.plan = staticmethod(lambda: partition.plan(
+            plan['resource'].get('kind', 'provisioned')))
         CompleteFixtures.prepare = staticmethod(partition.prepare)
         CompleteFixtures.cleanup = staticmethod(partition.cleanup)
     # Ignore a second interrupt only while mandatory cleanup is running.

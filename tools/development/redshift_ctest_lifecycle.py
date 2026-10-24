@@ -173,7 +173,11 @@ def run_once(config, ops, fixtures):
     state = None
     errors = []
     fixture_cleanup = principal_cleanup = final_zero = None
-    paused = inputs_closed = readers_known = False
+    paused = inputs_closed = readers_known = owned_activity_quiescent = False
+    resource_kind = getattr(ops, 'resource_kind', 'provisioned')
+    need(resource_kind in ('provisioned', 'serverless'), 'resource_kind')
+    if resource_kind == 'serverless':
+        need(not getattr(ops, 'keep_cluster_running', False), 'serverless_no_cluster_continuation')
     ctest_result = None
     ctest_started = False
     phase = 'binding'
@@ -199,12 +203,12 @@ def run_once(config, ops, fixtures):
         try:
             phase = 'inputs'
             ops.open_inputs(config.run_directory, child_end)
-            phase = 'paused_security'
+            phase = 'serverless_security' if resource_kind == 'serverless' else 'paused_security'
             availability_end = min(started + bounds.availability,
                                    child_end - bounds.aggregate - bounds.recovery)
             remaining(availability_end)
             ops.security_paused(availability_end)
-            phase = 'resume'
+            phase = 'serverless_availability' if resource_kind == 'serverless' else 'resume'
             ops.resume_available(availability_end)
             aggregate_started = ops.now()
             aggregate_end = min(aggregate_started + bounds.aggregate,
@@ -300,13 +304,21 @@ def run_once(config, ops, fixtures):
                 # Recovery retains its own bounded time after SQL cleanup; it
                 # never extends SQL, CTest or successful aggregate acceptance.
                 recovery_end = min(owner_end, ops.now() + bounds.recovery)
-                if getattr(ops, 'keep_cluster_running', False):
+                if resource_kind == 'serverless':
+                    need(readers_known and principal_cleanup is not None
+                         and principal_cleanup.get('complete') is True
+                         and fixture_cleanup is not None and fixture_cleanup.get('complete') is True
+                         and final_zero is not None and final_zero.get('complete') is True,
+                         'serverless_owned_activity_unknown')
+                    owned_activity_quiescent = ops.verify_idle(recovery_end) is True
+                    need(owned_activity_quiescent, 'serverless_owned_activity_unverified')
+                elif getattr(ops, 'keep_cluster_running', False):
                     ops.verify_running(recovery_end)
                 else:
                     paused = ops.pause_until(recovery_end) is True
                     need(paused, 'paused_unverified')
             except BaseException as error:
-                capture_error('pause', error)
+                capture_error('serverless_quiescence' if resource_kind == 'serverless' else 'pause', error)
             try:
                 need(readers_known, 'private_input_readers_unknown_retained')
                 inputs_closed = ops.close_inputs(recovery_end) is True
@@ -320,11 +332,14 @@ def run_once(config, ops, fixtures):
                       'principal_cleanup': principal_cleanup, 'final_zero': final_zero,
                       'readers_known': readers_known,
                       'paused_verified': paused, 'cluster_left_running_by_human_request': getattr(ops, 'keep_cluster_running', False),
+                      'resource_kind': resource_kind,
+                      'owned_activity_quiescent': owned_activity_quiescent,
+                      'physical_compute_idle_verified': False,
                       'private_inputs_closed': inputs_closed,
                       'owner_deadline': owner_end, 'child_deadline': child_end,
                       'aggregate_end': aggregate_end, 'execution_end': execution_end,
                       'within_original_aggregate': within_original_aggregate,
-                      'lifecycle_cleanup_complete': not errors and readers_known and (paused or getattr(ops, 'keep_cluster_running', False)) and
+                      'lifecycle_cleanup_complete': not errors and readers_known and (paused or owned_activity_quiescent or getattr(ops, 'keep_cluster_running', False)) and
                           inputs_closed and within_original_aggregate,
                       'feature_results_parsed': False, 'feature_PASS_claimed': False}
             record(config.run_directory / 'lifecycle-result.json', result)

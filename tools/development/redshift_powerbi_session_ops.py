@@ -18,16 +18,24 @@ from tools.development.redshift_ctest_lifecycle import need, record, verify_publ
 from tools.development.redshift_ctest_ops import Operations
 
 
-def plan():
+def plan(resource_kind='provisioned'):
     # Minimal relationship6/62SQL, cap7/70SQL, startup5/23SQL and
     # capture+max16 guarded termination+two zero probes4/47SQL.
-    return {'total_helpers': 22, 'total_SQL': 202, 'total_logins': 22,
+    need(resource_kind in ('provisioned', 'serverless'), 'app_plan_resource_kind')
+    if resource_kind == 'serverless':
+        from tools.development.redshift_ctest_ops import serverless_fixture_reserve
+        return dict(serverless_fixture_reserve('app'),
+                    relationship=relationship.plan(resource_kind),
+                    session_controls=sessions.public_plan(resource_kind),
+                    no_resource_or_admission_effects=True)
+    result = {'total_helpers': 22, 'total_SQL': 202, 'total_logins': 22,
             'total_inclusive': 224, 'network_helpers_separate': 1,
             'maximum_cleanup_targets': 16, 'relationship': relationship.plan(),
             'session_controls': sessions.public_plan(),
             'principal_cleanup': {'helpers': 4, 'SQL': 47},
             'scope': 'single minimal app partition; no full native fixtures or repeated vendor cycle',
             'no_resource_or_admission_effects': True}
+    return result
 
 
 class PowerBiSessionOperations(Operations):
@@ -37,7 +45,8 @@ class PowerBiSessionOperations(Operations):
         need(self.approval.get('inventory_scope') == 'complete_app_checkpoint_partition',
              'fresh_app_partition_admission_required')
         authority = self.approval['powerbi_sessions']
-        self.powerbi_session_state = sessions.new_state(**authority)
+        self.powerbi_session_state = sessions.new_state(**authority,
+            **({'resource_kind': 'serverless'} if self.resource_kind == 'serverless' else {}))
         now_ms, monotonic = self.utc_ms(), self.now()
         need(authority['admitted_ms'] <= now_ms < authority['execution_deadline_ms'] and
              authority['cleanup_deadline_ms'] - authority['admitted_ms'] <= 7200000,
