@@ -265,13 +265,26 @@ ambiguous partial writes, reset failures and reset timeouts retire the session.
 
 Driver Manager pooling and any internal SDK pool use the same session-reuse
 contract. The backend reports passive status and implements bounded health/reset;
-shared policy decides whether and when to pool or probe.
+shared policy decides whether and when to probe or admit reuse. The external DM
+owns its pool storage/matching/lifetime; the ODBC adapter maps actual DM calls and
+supported reset interfaces to SDK operations. DM-specific APIs do not belong in
+the SDK. See [Connection pooling and safe reuse](CONNECTION_POOLING.md) for the
+ownership and qualification contract.
 
-The replacement internal pool uses a move-only RAII lease. One physical session
-has at most one logical borrower. Stale, foreign and duplicate return are
-impossible by type. Release performs the declared reset or retires the session.
-The existing copyable `shared_ptr`/manual-release pool remains private prototype
-code until replaced; patching its counters does not make it acceptable.
+An optional future internal pool must use a move-only RAII lease. One physical
+session has at most one logical borrower. Stale, foreign and duplicate return
+must be prevented by ownership. Release performs the declared reset or retires
+the session. The existing copyable `shared_ptr`/manual-release pool remains
+quarantined test/example code; replacing it is not a prerequisite for standard
+DM pooling support.
+
+A DM may satisfy logical checkout/return without calling the physical driver.
+Promise reset only at an identified callback or explicit application boundary;
+document application cleanup and narrower supported profiles where the DM cannot
+observe SQL-created state. Ordinary pooling and optional Windows driver-aware
+pooling are separate capabilities. Passive CONNECTION_DEAD must not issue a
+network probe. Distinguish login-credential expiry, configured reuse-admission
+policy and actual server-session validity; no automatic reauthentication follows.
 
 Reset covers the promised baseline: rollback open/failed transactions, restore
 catalog/isolation/role and supported session variables, clear diagnostics and
