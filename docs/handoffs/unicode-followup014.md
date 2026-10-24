@@ -43,10 +43,22 @@ No credentials or connection strings appear here.
 - **PR CI on macOS** (GitHub-hosted `macos-latest`, `primary.yml` job `macos-iodbc-ucs4`), passed at `66c777e`:
   - Configuration: product **POSTGRESQL** with iODBC and 4-byte SQLWCHAR.
   - Results: unit CTest 121/121, then PostgreSQL integration 12/12 against a disposable local server, including `it_driver_manager` through a registered iODBC DSN.
+- **Full CI checkpoint** (`ci.yml` dispatched by hand, run 40024334082) at `2b53ff6`: every job green, including sanitizers, `windows-live` and both macOS `iodbc-unicode` variants. `windows-live` ran `it_driver_manager_unicode` 8/8 through the HKLM-registered PostgreSQL driver.
+- **Windows and WSL at `aa949ec` (after the owner decisions), one Windows 11 host plus WSL Ubuntu:**
+  - Full offline presets, 0 failures:
+    - `windows-redshift-offline`: CTest 122/122; GoogleTest 2392 passed, 6 skipped (macOS-only trust anchors).
+    - `unixodbc-redshift-offline` and `linux-iodbc-redshift-offline`: CTest 120/120 each; GoogleTest 2387 passed, 8 skipped (`NativeChainEvaluationTest`, macOS-only) on each.
+    - The `a1d9639` and `31e5410` cases passed on all three, including `AnsiDsnEchoReplacesInvalidBytesSoWideDiagnosticsSucceed` (Windows registry branch), `EveryPostingPathReplacesInvalidUtf8SoWideReadsSucceed`, `SQLErrorW_MalformedPostedTextIsReplacedAndLegacyRecordsDrain`, `SQLGetDiagRec_MalformedPostedTextIsReplacedForWideAndAnsiReaders` and `ColumnAttributeNullCharacterPreservesValidationAndNumericDomains`.
+  - `it_driver_manager_unicode` against a disposable PostgreSQL 18 through WSL managers: unixODBC 8/8; iODBC 6 passed, 2 skipped (the documented iODBC driver-connect defects).
+  - Live Redshift Serverless through installed managers, REDSHIFT driver built at `aa949ec`:
+    - Windows Driver Manager: 8/8. Without admin rights the PR-built driver can't be added to HKLM `ODBCINST.INI`, so a temporary per-user DSN (HKCU `ODBC.INI`, removed afterwards) names the driver DLL and the manager loads it from the registry. The HKLM `DRIVER={...}` lookup is covered by `windows-live` with PostgreSQL.
+    - WSL unixODBC 2.3.14 (Ubuntu `libodbc2` 2.3.14-1, private ini registration): 8/8.
+    - WSL iODBC 3.52.16 (private ini registration): 6 passed, 2 skipped (the same iODBC defects).
+  - The same runs at `e1b7665` (before `31e5410`) had the same counts; the Windows offline GoogleTest total was 2391 and WSL 2386 each, one fewer because of the new `31e5410` test.
+- **Windows Driver Manager behaviour:** it keeps driver-connect warnings. `AnsiLatin1KeywordWarningStateStaysReadable` passes, so the unknown-keyword 01S00 reaches the application through both `SQLGetDiagRec` and `SQLGetDiagRecW`, and `WideDriverConnectTruncatedOutputReportsFullLength` passes, so 01004 and the full output length arrive. The F1 ANSI-echo route therefore hides no SQLSTATE on Windows.
 - **Not run anywhere yet:**
-  - installed driver-manager paths on Windows and unixODBC;
   - provisioned Redshift;
-  - the full Linux and Windows suites in CI. The PR Windows and Ubuntu jobs build only and run no tests.
+  - the full Linux and Windows suites in PR CI. The PR Windows and Ubuntu jobs build only and run no tests; the full suites run only in the manually dispatched checkpoint.
 
 ### Owner decisions (decided 2026-10-24, implemented in `31e5410`)
 - **F1, ANSI encoding policy:** every diagnostic posting path stores valid UTF-8, with each invalid byte replaced by U+FFFD. Wide diagnostic readers therefore always succeed, and ANSI readers receive the replacement as UTF-8 bytes. The statement diagnostic header is not a record and keeps the old unconvertible-text behaviour. `AnsiDsnEchoReplacesInvalidBytesSoWideDiagnosticsSucceed` and `EveryPostingPathReplacesInvalidUtf8SoWideReadsSucceed` assert it.
@@ -91,10 +103,12 @@ Keep the toolchain identity, the actual exits, the CTest JUnit and the GoogleTes
 
 **Release blockers**
 1. **macOS REDSHIFT: done locally at `a1d9639`.** The offline suites (iODBC 4/4 and unixODBC 2/2) and the 10 live cases on both ran on one macOS 15.3.2 arm64 host. Still open: macOS REDSHIFT is not in PR CI, and in PR CI Linux and Windows build without running tests; their suites have run only on one local host.
-2. **Installed driver-manager paths on Windows and unixODBC.** macOS unixODBC and iODBC now ran live Redshift through the manager (see above); Windows and Linux unixODBC with Redshift remain.
-   macOS CI already runs `it_driver_manager` through iODBC with PostgreSQL. Every other live Redshift run links the driver directly. The driver manager changes Unicode conversion, how errors reach the application, and how connect works.
+2. **Installed driver-manager paths: done locally for Redshift on Windows, WSL unixODBC/iODBC and macOS unixODBC/iODBC** (see above). Still open:
+   - the Windows run used a per-user DSN naming the PR-built DLL, not an HKLM-installed driver; an MSI-installed REDSHIFT driver has not run live;
+   - live Redshift through a manager is not in CI (CI covers it with PostgreSQL only);
+   - the iODBC 3.52.16 defects (dropped driver-connect warnings, misreported truncated lengths, unconverted non-BMP counts between mixed widths) are worked around in tests and not reported upstream.
 3. **Provisioned Redshift and live PostgreSQL.** This round ran on Serverless only.
-4. **Independent review of PR #96,** plus the owner decision on SQLColAttributeW zero-capacity.
+4. **Independent review of PR #96.** The owner decisions are made and implemented (`31e5410`).
 
 **Correctness and robustness**
 
