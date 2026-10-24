@@ -64,7 +64,7 @@ class HeldFile:
             self.name = parts[-1]
             if not executable:
                 _private_directory(os.fstat(self.parent))
-            self.fd = os.open(self.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            self.fd = os.open(self.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
                               dir_fd=self.parent)
             info = os.fstat(self.fd)
             if executable:
@@ -171,7 +171,8 @@ class Output:
 
     def adopt(self, name):
         self.check()
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.fd)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     dir_fd=self.fd)
         try:
             info = os.fstat(fd)
             # Track this exact inode before parsing/size validation can fail.
@@ -297,20 +298,67 @@ def _environment(directory, credentials):
             'AWS_RETRY_MODE': 'standard', 'AWS_PAGER': '', 'AWS_CLI_AUTO_PROMPT': 'off'}
 
 
+def _finish(output, metadata, success, reason, deadline):
+    """Success includes final retirement and durable metadata within its deadline.
+
+    Failure reporting/checked retirement may continue after expiry, but can never
+    publish or return an accepted credential. Publication failure gets one fixed
+    failure record; no retry of issuance, or of an ambiguous publication inode.
+    """
+    try:
+        if metadata['readers_reaped']:
+            clean = output.retire(('credentials.ini',) if success else ())
+            metadata['temporary_outputs_retired'] = clean
+            if not clean:
+                success, reason = False, 'cleanup_unknown'
+                output.retire(only=('credentials.ini',))
+        else:
+            success, reason = False, 'process_cleanup_unknown'
+            metadata['temporary_outputs_retired'] = False
+        if success:
+            need(time.monotonic() < deadline, 'deadline_expired')
+        metadata.update({'verified': success, 'status': reason,
+                         'finished_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')})
+        output.create('metadata.json', (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode('ascii'))
+        if success:
+            need(time.monotonic() < deadline, 'deadline_expired')
+    except Exception as error:
+        metadata.update({'verified': False, 'status': 'deadline_expired' if
+                         isinstance(error, Refused) and str(error) == 'deadline_expired'
+                         else 'metadata_publication_failed',
+                         'finished_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')})
+        if metadata['readers_reaped']:
+            try:
+                clean = output.retire(only=('credentials.ini', 'metadata.json'))
+            except Exception:
+                clean = False
+            metadata['failed_publication_outputs_retired'] = clean
+        # A partial/late successful metadata inode is retired above, never
+        # rewritten or followed. This distinct record contains public facts only.
+        metadata['failure_metadata_file'] = 'failure.json'
+        try:
+            output.create('failure.json', (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode('ascii'))
+        except Exception:
+            # Persistent storage itself may have failed. CLI still returns these
+            # sanitized failure facts and can never return an accepted session.
+            metadata['failure_metadata_file'] = None
+    return metadata
+
+
 def issue(directory):
     """Return only public metadata. A failure never retries or reuses its directory."""
     need(os.name == 'posix', 'posix_required')
-    output = Output(directory)
-    source = tool = None
     started = datetime.now(timezone.utc)
     deadline = time.monotonic() + TOTAL_SECONDS
+    output = Output(directory)
+    source = tool = None
     metadata = {'schema': 1, 'verified': False, 'status': 'failed',
                 'account': ACCOUNT, 'arn': ARN, 'region': REGION, 'endpoint': ENDPOINT,
                 'requested_seconds': SESSION_SECONDS, 'bootstrap_path': BOOTSTRAP,
                 'tool_path': AWS, 'tool_sha256': AWS_SHA256,
                 'issuer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'started_at': started.isoformat().replace('+00:00', 'Z'),
-                'aws_calls_started': 0, 'readers_reaped': True}
+                'aws_calls_started': 0, 'readers_reaped': True, 'calls': []}
     success, reason = False, 'issuer_failed'
     try:
         source = HeldFile(BOOTSTRAP)
@@ -331,11 +379,18 @@ def issue(directory):
                     '--cli-connect-timeout', '5', '--cli-read-timeout', '5']
             metadata['aws_calls_started'] += 1
             metadata['readers_reaped'] = False
+            observation = {'operation': operation, 'returncode': None,
+                           'timed_out': None, 'readers_reaped': False}
+            metadata['calls'].append(observation)
             # bounded_process returns only after the entire child group is reaped.
             result = bounded_process(argv, env=_environment(directory, credentials),
                                      seconds=min(20, math.floor(remaining - 5)),
                                      output=Path(directory) / name)
             metadata['readers_reaped'] = True
+            # Preserve the actual supervised result before parsing/retiring raw
+            # output; no exception text or AWS response becomes a diagnostic.
+            observation.update({'returncode': result.returncode,
+                                'timed_out': result.timed_out, 'readers_reaped': True})
             data = output.adopt(name)
             need(not result.timed_out and result.returncode == 0, 'aws_call_failed')
             need(time.monotonic() < deadline, 'deadline_expired')
@@ -356,6 +411,7 @@ def issue(directory):
             need(with_file.read() == credentials, 'output_changed')
         finally:
             with_file.close()
+        need(time.monotonic() < deadline, 'deadline_expired')
         need(datetime.fromisoformat(expiration.replace('Z', '+00:00')) >
              datetime.now(timezone.utc), 'invalid_expiry')
         metadata.update({'identity': after, 'expires_at': expiration})
@@ -368,24 +424,13 @@ def issue(directory):
         reason = 'issuer_failed'
     finally:
         try:
-            if metadata['readers_reaped']:
-                clean = output.retire(('credentials.ini',) if success else ())
-                if not clean:
-                    success, reason = False, 'cleanup_unknown'
-                    output.retire(only=('credentials.ini',))
-                metadata['temporary_outputs_retired'] = clean
-            else:
-                # An unverified process-group cleanup forbids erasing its inputs.
-                success, reason = False, 'process_cleanup_unknown'
-                metadata['temporary_outputs_retired'] = False
-            metadata.update({'verified': success, 'status': reason,
-                             'finished_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')})
-            output.create('metadata.json', (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode('ascii'))
-        finally:
+            # Close non-output acquisitions before the final acceptance check.
             if tool is not None:
                 tool.close()
             if source is not None:
                 source.close()
+            _finish(output, metadata, success, reason, deadline)
+        finally:
             output.close()
     return metadata
 

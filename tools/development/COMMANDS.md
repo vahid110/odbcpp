@@ -11,6 +11,9 @@ then verifies the temporary identity. It makes at most three STS CLI invocations
 without retries or ambient providers. Success leaves private `credentials.ini`
 and secret-free `metadata.json`; failure leaves metadata and reports any
 unverified process cleanup rather than erasing potentially active inputs.
+Per-call exit, timeout and reap facts remain in the metadata after raw output
+retirement. Late/failed metadata publication revokes success, retires exact owned
+credentials, and records public failure facts in `failure.json` when writable.
 Keep the bootstrap protected for future explicit issuance; retire each issued
 credential file only after its consumers are reaped. This grants no resource or
 live-test admission. Offline controls: `python3 -m unittest

@@ -61,7 +61,8 @@ class OperatorTests(unittest.TestCase):
 
     def run_issue(self):
         result = session.issue(str(self.output))
-        self.assertEqual(json.loads((self.output / 'metadata.json').read_text()), result)
+        record = self.output / (result.get('failure_metadata_file') or 'metadata.json')
+        self.assertEqual(json.loads(record.read_text()), result)
         self.assertEqual(self.bootstrap.read_bytes(), self.original)
         self.assertNotIn('bootstrap-secret', json.dumps(result))
         self.assertNotIn('temporary-secret', json.dumps(result))
@@ -149,6 +150,10 @@ class OperatorTests(unittest.TestCase):
                 self.calls.clear()
                 self.result = result
                 self.failed_clean('aws_call_failed', 1)
+                facts = json.loads((self.output / 'metadata.json').read_text())['calls']
+                self.assertEqual(facts, [{'operation': 'get-caller-identity',
+                    'returncode': result.returncode, 'timed_out': result.timed_out,
+                    'readers_reaped': True}])
 
     def test_issuance_and_verification_errors_retire_all_exact_outputs(self):
         for failed_index in (1, 2):
@@ -157,6 +162,9 @@ class OperatorTests(unittest.TestCase):
                 self.calls.clear()
                 self.result = lambda index: ProcessResult(9 if index == failed_index else 0, False)
                 self.failed_clean('aws_call_failed', failed_index + 1)
+                facts = json.loads((self.output / 'metadata.json').read_text())['calls']
+                self.assertEqual([call['returncode'] for call in facts], [0]*failed_index + [9])
+                self.assertTrue(all(call['readers_reaped'] for call in facts))
 
     def test_oversized_reaped_response_is_removed_without_exposing_raw_output(self):
         self.transform = lambda index, response: 'secret-raw' * 3000
@@ -168,6 +176,8 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(result['status'], 'process_cleanup_unknown')
         self.assertFalse(result['readers_reaped'])
         self.assertFalse(result['temporary_outputs_retired'])
+        self.assertEqual(result['calls'], [{'operation': 'get-caller-identity',
+                          'returncode': None, 'timed_out': None, 'readers_reaped': False}])
         self.assertNotIn('secret-diagnostic', json.dumps(result))
         self.assertFalse((self.output / 'credentials.ini').exists())
         self.assertTrue((self.output / 'bootstrap.private').is_file())
@@ -269,6 +279,151 @@ class OperatorTests(unittest.TestCase):
     def test_invalid_credentials_line_never_reaches_temporary_identity(self):
         self.credentials['SessionToken'] = 'bad\ncredential_process=bad'
         self.failed_clean('invalid_profile', 2)
+
+    def test_late_final_readback_revokes_success_and_retires_credentials(self):
+        clock = [0]
+        original = session.HeldFile.read
+        def late(held):
+            data = original(held)
+            if held.path == str(self.output / 'credentials.ini'):
+                clock[0] = 91
+            return data
+        with patch.object(session.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(session.HeldFile, 'read', late):
+            self.failed_clean('deadline_expired', 3)
+
+    def test_late_final_cleanup_revokes_success(self):
+        clock = [0]
+        original = session.Output.retire
+        def late(output, *args, **kwargs):
+            result = original(output, *args, **kwargs)
+            clock[0] = 91
+            return result
+        with patch.object(session.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(session.Output, 'retire', late):
+            result = self.run_issue()
+        self.assertEqual(result['status'], 'deadline_expired')
+        self.assertFalse(result['verified'])
+        self.assertTrue(result['failed_publication_outputs_retired'])
+        self.assertEqual({path.name for path in self.output.iterdir()}, {'failure.json'})
+
+    def test_late_metadata_publication_retires_both_success_outputs(self):
+        clock = [0]
+        original = session.Output.create
+        def late(output, name, data):
+            original(output, name, data)
+            if name == 'metadata.json':
+                clock[0] = 91
+        with patch.object(session.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(session.Output, 'create', late):
+            result = self.run_issue()
+        self.assertEqual(result['status'], 'deadline_expired')
+        self.assertFalse(result['verified'])
+        self.assertTrue(result['failed_publication_outputs_retired'])
+        self.assertEqual({path.name for path in self.output.iterdir()}, {'failure.json'})
+
+    def test_metadata_creation_failure_retires_credentials_and_records_public_facts(self):
+        original = session.Output.create
+        def fail(output, name, data):
+            if name == 'metadata.json':
+                raise OSError('private-raw-diagnostic')
+            original(output, name, data)
+        with patch.object(session.Output, 'create', fail):
+            result = self.run_issue()
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['status'], 'metadata_publication_failed')
+        self.assertTrue(result['failed_publication_outputs_retired'])
+        self.assertNotIn('private-raw-diagnostic', json.dumps(result))
+        self.assertEqual({path.name for path in self.output.iterdir()}, {'failure.json'})
+        self.assertEqual([fact['returncode'] for fact in result['calls']], [0, 0, 0])
+
+    def test_metadata_fsync_failure_retires_partial_metadata_and_credentials(self):
+        original = session.os.fsync
+        def fail(fd):
+            if os.readlink('/proc/self/fd/' + str(fd)) == str(self.output / 'metadata.json'):
+                raise OSError('private-fsync-diagnostic')
+            return original(fd)
+        with patch.object(session.os, 'fsync', fail):
+            result = self.run_issue()
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['status'], 'metadata_publication_failed')
+        self.assertTrue(result['failed_publication_outputs_retired'])
+        self.assertEqual({path.name for path in self.output.iterdir()}, {'failure.json'})
+
+    def test_metadata_failure_does_not_delete_replaced_credential_inode(self):
+        original = session.Output.create
+        def fail(output, name, data):
+            if name == 'metadata.json':
+                target = self.output / 'credentials.ini'
+                target.unlink()
+                target.write_text('unowned-replacement')
+                target.chmod(0o600)
+                raise OSError('failed')
+            original(output, name, data)
+        with patch.object(session.Output, 'create', fail):
+            result = self.run_issue()
+        self.assertFalse(result['verified'])
+        self.assertFalse(result['failed_publication_outputs_retired'])
+        self.assertEqual((self.output / 'credentials.ini').read_text(), 'unowned-replacement')
+
+    def test_metadata_failure_with_unknown_readers_retains_their_exact_inputs(self):
+        original_create = session.Output.create
+        original_process = self.fake
+        def fail_create(output, name, data):
+            if name == 'metadata.json':
+                raise OSError('failed')
+            original_create(output, name, data)
+        def unknown(*args, **kwargs):
+            if len(self.calls) == 2:
+                raise RuntimeError('cleanup unknown')
+            return original_process(*args, **kwargs)
+        with patch.object(session.Output, 'create', fail_create), \
+                patch.object(session, 'bounded_process', unknown):
+            result = self.run_issue()
+        self.assertFalse(result['readers_reaped'])
+        self.assertFalse(result['verified'])
+        self.assertTrue((self.output / 'bootstrap.private').exists())
+        self.assertTrue((self.output / 'credentials.ini').exists())
+
+    def test_bootstrap_and_tool_fifos_are_nonblocking_and_launch_no_aws(self):
+        original_open = session.os.open
+        def checked_open(name, flags, *args, **kwargs):
+            if name in ('credentials.ini', 'aws') and not flags & os.O_CREAT:
+                self.assertTrue(flags & os.O_NONBLOCK)
+            return original_open(name, flags, *args, **kwargs)
+        for index, path in enumerate((self.bootstrap, self.aws)):
+            with self.subTest(path=path):
+                self.output = self.base / ('fifo' + str(index))
+                original = path.read_bytes()
+                mode = path.stat().st_mode & 0o777
+                path.unlink()
+                os.mkfifo(path, 0o600)
+                with patch.object(session.os, 'open', checked_open):
+                    result = session.issue(str(self.output))
+                self.assertFalse(result['verified'])
+                self.assertEqual(result['status'], 'unsafe_file' if index == 0 else 'unsafe_tool')
+                self.assertFalse(self.calls)
+                self.assertFalse((self.output / 'credentials.ini').exists())
+                path.unlink()
+                path.write_bytes(original)
+                path.chmod(mode)
+        self.assertEqual(self.bootstrap.read_bytes(), self.original)
+
+    def test_adopt_fifo_is_nonblocking_and_refused(self):
+        owned = session.Output(str(self.output))
+        try:
+            os.mkfifo(self.output / 'before.private', 0o600)
+            original_open = session.os.open
+            def checked_open(name, flags, *args, **kwargs):
+                if name == 'before.private':
+                    self.assertTrue(flags & os.O_NONBLOCK)
+                return original_open(name, flags, *args, **kwargs)
+            with patch.object(session.os, 'open', checked_open):
+                with self.assertRaisesRegex(session.private.InputBlocked, 'unsafe_file'):
+                    owned.adopt('before.private')
+            self.assertFalse(self.calls)
+        finally:
+            owned.close()
 
 
 if __name__ == '__main__':
