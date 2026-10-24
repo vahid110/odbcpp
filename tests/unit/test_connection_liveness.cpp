@@ -274,9 +274,10 @@ TEST(TerminalErrorResponseTest, FatalAfterBeginKeepsPassiveDeadHandleAndExplicit
   EXPECT_EQ(sends, facts->sends);
   EXPECT_EQ(0u, facts->reads_after_error);
   EXPECT_EQ(1u, facts->closes);
+  // SQLDisconnect drops any statements still owned by the connection.
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   EXPECT_EQ(1u, facts->closes);
-  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, env));
 }
