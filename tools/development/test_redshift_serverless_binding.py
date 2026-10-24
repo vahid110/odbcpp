@@ -63,7 +63,7 @@ class BindingComposition(unittest.TestCase):
             if stage['stage'] == 'current_identity':
                 return identity_csv(), 999
             if stage['stage'] == 'principal_zero':
-                return 'f|f', 999
+                return 'f\nf\n', 999
             if stage['stage'] == 'principal_pids':
                 return '', 999
             if stage['stage'].startswith('powerbi_relationship_'):

@@ -68,8 +68,8 @@ def exists_sql(*, queries=False):
 
 
 def zero():
-    # Independent SYS subqueries exclude the helper; neither history table is
-    # joined to the other, nor to leader-only principal catalogs.
-    return ('SELECT EXISTS(SELECT 1 FROM sys_session_history WHERE ' + scope() +
-            ') AS sessions,EXISTS(SELECT 1 FROM sys_query_history WHERE ' + scope(queries=True) +
-            ') AS queries;')
+    # Dispatch each SYS view independently in the same bounded psql helper.
+    # Compound scalar subqueries repeatedly exceeded the 15-second statement
+    # limit during startup; separate reads preserve every ownership predicate
+    # without a history cutoff, retry or deadline extension.
+    return exists_sql() + ';\n' + exists_sql(queries=True) + ';'

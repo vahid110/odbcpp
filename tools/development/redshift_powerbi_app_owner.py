@@ -18,11 +18,11 @@ def public_plan(resource_kind='provisioned'):
     if resource_kind == 'serverless':
         from tools.development.redshift_powerbi_session_ops import plan
         result = plan(resource_kind)
-        result['branches']['baseline_zero'] = {'helpers': 1, 'SQL': 5}
+        result['branches']['baseline_zero'] = {'helpers': 1, 'SQL': 6}
         result['total_helpers'] += 1
-        result['total_SQL'] += 5
+        result['total_SQL'] += 6
         result['total_logins'] += 1
-        result['total_inclusive'] += 6
+        result['total_inclusive'] += 7
         result['serverless_principal_binding_sites'].append('baseline_zero')
         result['serverless_principal_binding_SQL'] += 1
         result.update(native_control_processes_maximum=8, maximum_app_launches=3,

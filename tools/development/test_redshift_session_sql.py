@@ -31,10 +31,22 @@ class ServerlessSql(unittest.TestCase):
                 self.assertNotIn('\\echo', binding)
                 self.assertTrue(commands.startswith('\\if :rs_principals_held\n'))
                 self.assertIn('\\else\n\\quit 4\n\\endif', commands)
-                # One bind dispatch plus one final-zero dispatch; neither the
+                # One bind dispatch plus two independent zero dispatches; neither the
                 # original extra principal row nor a second bind is admitted.
                 stage = binding + sql.zero()
-                self.assertEqual(stage.count(';') + stage.count('\\gset'), 2)
+                self.assertEqual(stage.count(';') + stage.count('\\gset'), 3)
+
+    def test_zero_dispatches_each_sys_view_separately_without_narrowing_scope(self):
+        statements = [statement.strip() for statement in sql.zero().split(';') if statement.strip()]
+        self.assertEqual(len(statements), 2)
+        for index, (view, queries) in enumerate((('sys_session_history', False), ('sys_query_history', True))):
+            self.assertEqual(statements[index], sql.exists_sql(queries=queries))
+            self.assertEqual(statements[index].count(view), 1)
+            self.assertNotIn('sys_query_history' if not queries else 'sys_session_history', statements[index])
+            for guard in ("TRIM(database_name)='odbcpp_pilot'", 'session_id<>pg_backend_pid()',
+                          ':rs_admin_oid', ':rs_test_oid'):
+                self.assertIn(guard, statements[index])
+            self.assertNotIn('start_time>', statements[index])
 
     def test_name_resolution_is_separate_bounded_and_exact(self):
         query = sql.binding()

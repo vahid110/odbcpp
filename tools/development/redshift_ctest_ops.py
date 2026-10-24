@@ -90,10 +90,10 @@ def serverless_fixture_reserve(scope):
     need(scope in ('native', 'powerbi_relationship', 'app'), 'serverless_reserve_scope')
     branches = {
         'current_identity_before_mutation': {'helpers': 1, 'SQL': 4},
-        'startup_zero': {'helpers': 1, 'SQL': 5},
-        'principal_cleanup': {'helpers': 3, 'SQL': 30 if scope != 'app' else 46},
-        'lifecycle_zero': {'helpers': 1, 'SQL': 5},
-        'final_idle_zero': {'helpers': 1, 'SQL': 5},
+        'startup_zero': {'helpers': 1, 'SQL': 6},
+        'principal_cleanup': {'helpers': 3, 'SQL': 31 if scope != 'app' else 47},
+        'lifecycle_zero': {'helpers': 1, 'SQL': 6},
+        'final_idle_zero': {'helpers': 1, 'SQL': 6},
     }
     if scope == 'native':
         branches['complete_fixtures'] = {'helpers': 28, 'SQL': 311}
@@ -707,9 +707,10 @@ class Operations:
         bound = getattr(getattr(self, 'timeout_factory', None), 'EXPECTED_PRINCIPAL', None)
         query = (session_sql.binding(**(self._session_principal_oids() if bound is not None else {})) +
                  session_sql.zero()) if serverless else ZERO
-        raw, _ = self._sql({'query': query, 'statements': 1 + int(serverless), 'role': 'admin',
+        raw, _ = self._sql({'query': query, 'statements': 3 if serverless else 1, 'role': 'admin',
                             'stage': 'principal_zero'}, deadline)
-        need(raw.strip() == 'f|f', 'exact_principal_session_query_zero')
+        need(raw == 'f\nf\n' if serverless else raw.strip() == 'f|f',
+             'exact_principal_session_query_zero')
         return {'complete': True}
 
     def verify_running(self, deadline):

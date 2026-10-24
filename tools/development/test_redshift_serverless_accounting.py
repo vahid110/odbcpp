@@ -62,7 +62,7 @@ class CountingOps(module.Operations):
         if name=='current_identity':
             payload='database,owner,owner_oid,schema_oid,schema_owner_oid\nodbcpp_pilot,odbcpp_pilot_test,701,702,700\n'
         elif name=='principal_zero':
-            payload='f|f\n'
+            payload='f\nf\n'
         elif name=='principal_pids':
             payload=''.join(f'{200+i}|odbcpp_pilot_test|odbcpp_pilot|2026-10-24 12:00:00\n'
                             for i in range(self.maximum_cleanup_targets))
@@ -133,10 +133,10 @@ class Envelope:
 
 class Accounting(unittest.TestCase):
     def test_mode_reserves_fit_unchanged_caps_and_include_every_branch(self):
-        plans=[(module.combined_fixture_plan('serverless'),(37,368,37,405)),
-               (relationship.plan('serverless'),(15,119,15,134)),
-               (app.plan('serverless'),(20,204,20,224)),
-               (app_owner.public_plan('serverless'),(21,209,21,230))]
+        plans=[(module.combined_fixture_plan('serverless'),(37,372,37,409)),
+               (relationship.plan('serverless'),(15,123,15,138)),
+               (app.plan('serverless'),(20,208,20,228)),
+               (app_owner.public_plan('serverless'),(21,214,21,235))]
         for plan,expected in plans:
             with self.subTest(scope=plan['scope']):
                 lifecycle.validate_fixture_plan(plan)
@@ -161,7 +161,7 @@ class Accounting(unittest.TestCase):
             ops=CountingOps(directory)
             result=self.run_counted(directory,ops)
             self.assertTrue(result['lifecycle_cleanup_complete'],result['errors'])
-            self.assertEqual((ops.helpers,ops.statements,ops.logins),(37,368,37))
+            self.assertEqual((ops.helpers,ops.statements,ops.logins),(37,372,37))
             self.assertEqual(sum(name=='principal_zero' for name,_ in ops.charged),4)
             self.assertIn(('principal_terminate',17),ops.charged)
             self.assertEqual(len(ops.binding_stages),7)
@@ -185,7 +185,7 @@ class Accounting(unittest.TestCase):
             ops=CountingOps(directory)
             result=self.run_counted(directory,ops,'powerbi_relationship')
             self.assertTrue(result['lifecycle_cleanup_complete'],result['errors'])
-            self.assertEqual((ops.helpers,ops.statements,ops.logins),(15,119,15))
+            self.assertEqual((ops.helpers,ops.statements,ops.logins),(15,123,15))
             self.assertEqual(sum(name=='native_persistent_census' for name,_ in ops.charged),2)
             self.assertEqual(len(ops.binding_stages),6)
 
@@ -206,7 +206,7 @@ class Accounting(unittest.TestCase):
             envelope.cleanup(ops,state,300)
             ops.final_zero(300)
             self.assertTrue(ops.verify_idle(300))
-            self.assertEqual((ops.helpers,ops.statements,ops.logins),(21,209,21))
+            self.assertEqual((ops.helpers,ops.statements,ops.logins),(21,214,21))
             self.assertEqual(len(ops.binding_stages),14)
             self.assertIn(('principal_terminate',33),ops.charged)
 
