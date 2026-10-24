@@ -81,8 +81,8 @@ class SecretBytes final {
 };
 
 enum class Service { PostgreSql, Redshift, Rds };
-enum class Method { OrdinaryPassword, TemporaryDatabasePassword };
-enum class SourceKind { ExternalPassword, TrustedTemporaryDbIssuer };
+enum class Method { OrdinaryPassword, TemporaryDatabasePassword, NativeIdpToken };
+enum class SourceKind { ExternalPassword, TrustedTemporaryDbIssuer, ExternalNativeIdpToken };
 struct TargetInput {
   Service service;
   std::string endpoint;
@@ -131,7 +131,18 @@ class Request final {
   rs::util::Clock::duration headroom_;
 };
 
-enum class MaterialKind { OrdinaryPassword, TemporaryDatabasePassword };
+enum class MaterialKind { OrdinaryPassword, TemporaryDatabasePassword, NativeIdpToken };
+// Provider-neutral native-IdP attributes. Values are opaque text carried to the
+// backend, which owns their wire spelling (Redshift `idp_type`/`provider_name`/
+// `token_type`/`identity_namespace`). All-or-nothing: valid iff every field is
+// non-empty printable text. A future IdP is a new set of values, not a schema change.
+struct NativeIdpAttributes {
+  std::string idp_type, provider_name, token_type, identity_namespace;
+  bool empty() const noexcept {
+    return idp_type.empty() && provider_name.empty() && token_type.empty() && identity_namespace.empty();
+  }
+  bool operator==(const NativeIdpAttributes&) const = default;
+};
 struct Validity {
   enum class Kind { NoKnownAcquisitionExpiry, TrustedMonotonicExpiry };
   Kind kind;
@@ -147,6 +158,9 @@ class Material final {
  public:
   static Outcome<Material> create(Binding binding, MaterialKind kind,
       std::string returned_principal, SecretBytes secret, Validity validity);
+  static Outcome<Material> create(Binding binding, MaterialKind kind,
+      std::string returned_principal, SecretBytes secret, Validity validity,
+      NativeIdpAttributes attributes);
   Material(const Material&) = delete;
   Material& operator=(const Material&) = delete;
   Material(Material&&) = default;
@@ -155,20 +169,24 @@ class Material final {
   MaterialKind kind() const noexcept { return kind_; }
   const std::string& principal() const noexcept { return principal_; }
   Validity validity() const noexcept { return validity_; }
+  const NativeIdpAttributes& native_idp_attributes() const noexcept { return native_idp_attributes_; }
   template<class Consumer> void with_secret(Consumer&& consumer) const {
     secret_.with_bytes(std::forward<Consumer>(consumer));
   }
  private:
   friend class Authority;
   std::optional<Error> invariant_error() const noexcept;
-  Material(Binding binding, MaterialKind kind, std::string principal, SecretBytes secret, Validity validity)
+  Material(Binding binding, MaterialKind kind, std::string principal, SecretBytes secret,
+      Validity validity, NativeIdpAttributes attributes = {})
       : binding_(std::move(binding)), kind_(kind), principal_(std::move(principal)),
-        secret_(std::move(secret)), validity_(validity) {}
+        secret_(std::move(secret)), validity_(validity),
+        native_idp_attributes_(std::move(attributes)) {}
   Binding binding_;
   MaterialKind kind_;
   std::string principal_;
   SecretBytes secret_;
   Validity validity_;
+  NativeIdpAttributes native_idp_attributes_;
 };
 // Pure injected cancellation observation; no threads, timers or OS callbacks.
 // Observation must be noexcept; integration owns synchronization/lifetime.

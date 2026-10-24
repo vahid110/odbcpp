@@ -28,6 +28,9 @@ bool text(std::string_view s) noexcept {
   }
   return true;
 }
+bool native_idp_attributes_valid(const NativeIdpAttributes& a) noexcept {
+  return text(a.idp_type) && text(a.provider_name) && text(a.token_type) && text(a.identity_namespace);
+}
 bool finite(rs::util::Deadline t) noexcept {
   return t != rs::util::Deadline::min() && t != rs::util::Deadline::max();
 }
@@ -102,12 +105,15 @@ namespace {
 std::optional<Error> binding_policy_error(const TargetInput& target, const SourceInput& source, Method method) noexcept {
   if (target.service != Service::PostgreSql && target.service != Service::Redshift && target.service != Service::Rds)
     return Error{Reason::UnsupportedMethod};
-  if (method != Method::OrdinaryPassword && method != Method::TemporaryDatabasePassword)
+  if (method != Method::OrdinaryPassword && method != Method::TemporaryDatabasePassword &&
+      method != Method::NativeIdpToken)
     return Error{Reason::UnsupportedMethod};
-  if (method == Method::TemporaryDatabasePassword && target.service != Service::Redshift)
+  if ((method == Method::TemporaryDatabasePassword || method == Method::NativeIdpToken) &&
+      target.service != Service::Redshift)
     return Error{Reason::UnsupportedMethod};
   if ((method == Method::OrdinaryPassword && source.kind != SourceKind::ExternalPassword) ||
-      (method == Method::TemporaryDatabasePassword && source.kind != SourceKind::TrustedTemporaryDbIssuer))
+      (method == Method::TemporaryDatabasePassword && source.kind != SourceKind::TrustedTemporaryDbIssuer) ||
+      (method == Method::NativeIdpToken && source.kind != SourceKind::ExternalNativeIdpToken))
     return Error{Reason::UnsupportedMethod};
   if (target.port == 0 || target.port > 65535 || !text(target.endpoint) || !text(target.database) ||
       !text(target.principal) || !text(target.resource_id) || !text(target.tls_identity) ||
@@ -143,24 +149,33 @@ std::optional<Error> Material::invariant_error() const noexcept {
     return Error{Reason::InvalidMaterial};
   const bool ordinary = kind_ == MaterialKind::OrdinaryPassword;
   const bool temporary = kind_ == MaterialKind::TemporaryDatabasePassword;
-  if (!ordinary && !temporary) return Error{Reason::UnsupportedMethod};
+  const bool native = kind_ == MaterialKind::NativeIdpToken;
+  if (!ordinary && !temporary && !native) return Error{Reason::UnsupportedMethod};
   if ((ordinary && binding_.method() != Method::OrdinaryPassword) ||
-      (temporary && binding_.method() != Method::TemporaryDatabasePassword)) return Error{Reason::MethodMismatch};
+      (temporary && binding_.method() != Method::TemporaryDatabasePassword) ||
+      (native && binding_.method() != Method::NativeIdpToken)) return Error{Reason::MethodMismatch};
   if (ordinary && (validity_.kind != Validity::Kind::NoKnownAcquisitionExpiry ||
       validity_.issued_at != rs::util::Deadline{} || validity_.expires_at != rs::util::Deadline{}))
     return Error{Reason::InvalidMaterial};
   if (temporary && (validity_.kind != Validity::Kind::TrustedMonotonicExpiry ||
       !finite(validity_.issued_at) || !finite(validity_.expires_at) || validity_.issued_at >= validity_.expires_at))
     return Error{Reason::InvalidMaterial};
+  if (!native && !native_idp_attributes_.empty()) return Error{Reason::InvalidMaterial};
+  if (native && !native_idp_attributes_valid(native_idp_attributes_)) return Error{Reason::InvalidMaterial};
   return {};
 }
 Outcome<Material> Material::create(Binding binding, MaterialKind kind, std::string principal,
                                  SecretBytes secret, Validity validity) {
+  return Material::create(std::move(binding), kind, std::move(principal), std::move(secret), validity, {});
+}
+Outcome<Material> Material::create(Binding binding, MaterialKind kind, std::string principal,
+                                 SecretBytes secret, Validity validity, NativeIdpAttributes attributes) {
   if (auto error = binding.invariant_error()) return *error;
   bool nul = false;
   secret.with_bytes([&](auto bytes) { nul = std::find(bytes.begin(), bytes.end(), std::byte{0}) != bytes.end(); });
   if (nul) return Error{Reason::InvalidMaterial};
-  Material candidate{std::move(binding), kind, std::move(principal), std::move(secret), validity};
+  Material candidate{std::move(binding), kind, std::move(principal), std::move(secret), validity,
+                     std::move(attributes)};
   if (auto error = candidate.invariant_error()) return *error;
   return candidate;
 }
