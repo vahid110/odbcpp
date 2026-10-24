@@ -8,6 +8,7 @@
 #include "core/database/database_factory.h"
 #endif
 #include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 #include "tests/test_product_profile.h"
 #include "tests/test_driver_exports.h"
 
@@ -120,8 +121,8 @@ TEST(GetInfoFixtureProfile, KeepsPostgresAndRedshiftExpectationsDistinct) {
 std::string diagnostic_state(SQLHDBC connection) {
   SQLCHAR state[6]{};
   EXPECT_EQ(SQL_SUCCESS,
-            SQLGetDiagRec(SQL_HANDLE_DBC, connection, 1, state, nullptr,
-                          nullptr, 0, nullptr));
+            odbcpp::test::diag_rec(SQL_HANDLE_DBC, connection, 1, state, nullptr,
+                                   nullptr, 0, nullptr));
   return reinterpret_cast<const char*>(state);
 }
 

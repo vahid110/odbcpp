@@ -6,6 +6,7 @@
 #include "odbc/odbc_api.h"
 #endif
 #include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 #include "tests/test_product_profile.h"
 #include "tests/test_text.h"
 
@@ -98,8 +99,8 @@ namespace {
 std::string diagnostic_state(SQLSMALLINT type, SQLHANDLE handle) {
   SQLCHAR state[6]{};
   EXPECT_EQ(SQL_SUCCESS,
-            SQLGetDiagRec(type, handle, 1, state, nullptr, nullptr, 0,
-                          nullptr));
+            odbcpp::test::diag_rec(type, handle, 1, state, nullptr, nullptr, 0,
+                                   nullptr));
   return reinterpret_cast<const char*>(state);
 }
 

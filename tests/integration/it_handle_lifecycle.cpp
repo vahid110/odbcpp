@@ -8,6 +8,7 @@
 #include "tests/test_handle_helpers.h"
 #endif
 #include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 
 #include <array>
 #include <cstdint>
@@ -99,8 +100,8 @@ std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle,
                              SQLSMALLINT record_number = 1) {
   SQLCHAR state[6]{};
   EXPECT_EQ(SQL_SUCCESS,
-            SQLGetDiagRec(handle_type, handle, record_number, state, nullptr,
-                          nullptr, 0, nullptr));
+            odbcpp::test::diag_rec(handle_type, handle, record_number, state,
+                                   nullptr, nullptr, 0, nullptr));
   return reinterpret_cast<const char*>(state);
 }
 
@@ -132,31 +133,31 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLConnectW(SQLHDBC connection, SQLWCHAR* server_name, SQLSMALLINT name_length1,
         SQLWCHAR* user_name, SQLSMALLINT name_length2, SQLWCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnectW(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnect(SQLHDBC connection, SQLHWND window_handle,
         SQLCHAR* connection_string_in, SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
         SQLSMALLINT buffer_length, SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnect(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnectW(SQLHDBC connection, SQLHWND window_handle,
         SQLWCHAR* connection_string_in, SQLSMALLINT string_length1,
         SQLWCHAR* connection_string_out, SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
         SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnectW(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLEndTran(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT completion) {
       if (type == SQL_HANDLE_DBC && !fixture_connection_budget(fixture_end_, handle, false)) return SQL_ERROR;
@@ -343,9 +344,9 @@ class ConnectionAttributeIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLSetConnectAttr(SQLHDBC connection, SQLINTEGER attribute, SQLPOINTER value, SQLINTEGER length) {
       if ((attribute == SQL_ATTR_AUTOCOMMIT || attribute == SQL_ATTR_TXN_ISOLATION) &&
@@ -503,31 +504,31 @@ class DriverConnectIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLConnectW(SQLHDBC connection, SQLWCHAR* server_name, SQLSMALLINT name_length1,
         SQLWCHAR* user_name, SQLSMALLINT name_length2, SQLWCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnectW(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnect(SQLHDBC connection, SQLHWND window_handle,
         SQLCHAR* connection_string_in, SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
         SQLSMALLINT buffer_length, SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnect(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnectW(SQLHDBC connection, SQLHWND window_handle,
         SQLWCHAR* connection_string_in, SQLSMALLINT string_length1,
         SQLWCHAR* connection_string_out, SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
         SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnectW(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLEndTran(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT completion) {
       if (type == SQL_HANDLE_DBC && !fixture_connection_budget(fixture_end_, handle, false)) return SQL_ERROR;
@@ -767,9 +768,9 @@ class EnvironmentTransactionIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLEndTran(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT completion) {
       if (type == SQL_HANDLE_DBC && !fixture_connection_budget(fixture_end_, handle, false)) return SQL_ERROR;

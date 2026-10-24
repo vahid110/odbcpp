@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 #include "tests/test_product_profile.h"
 #include "tests/test_text.h"
 #include "tests/test_time_helpers.h"
@@ -187,6 +188,14 @@ protected:
       if ((attribute == SQL_ATTR_AUTOCOMMIT || attribute == SQL_ATTR_TXN_ISOLATION) &&
           !fixture_connection_budget(fixture_end_, connection, false)) return SQL_ERROR;
       return ::SQLSetConnectAttr(connection, attribute, value, length);
+    }
+    // Manager builds check NULL-buffer diagnostics against the expectation
+    // table and still return the record; direct builds call the driver.
+    SQLRETURN SQLGetDiagRec(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT record,
+        SQLCHAR* state, SQLINTEGER* native, SQLCHAR* message, SQLSMALLINT length,
+        SQLSMALLINT* text_length) {
+      return odbcpp::test::diag_rec(type, handle, record, state, native, message,
+          length, text_length);
     }
 
     void SetUp() override {

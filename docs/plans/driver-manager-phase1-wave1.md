@@ -106,7 +106,48 @@ No driver defect was confirmed in this wave. K, at first an open question, is de
 | N | unixODBC | 1 | `SQL_API_ODBC3_ALL_FUNCTIONS` also reports 10 ODBC 2.x function IDs (1, 2, 3, 14, 15, 22, 23, 42, 46, 50) | **Manager:** unixODBC maps those ODBC 2.x functions onto the driver's ODBC 3 functions. | profile expectation |
 | O | unixODBC | 1 | After a failed re-`SQLPrepare`, `SQLExecute` of the earlier prepared statement fails | **Manager, per the state tables:** a failed prepare returns the statement to the allocated state. The driver isn't called. The driver keeps the old statement when called directly. | expectation is direct-only |
 
-Totals: iODBC's buckets sum to 198 failing or crashing cases, and unixODBC's to 17. The bucket list for each case is reproducible from the evidence directory.
+| P | iODBC | 1 | ANSI `SQLGetInfo(SQL_DRIVER_NAME)` reports length 4 for a truncated 5-byte buffer, and 84 for a NULL buffer, where the answer is 21 characters | **Manager.** iODBC calls the driver's `SQLGetInfoW`, which correctly reports truncation and 84 bytes (21 four-byte characters). iODBC then hands the ANSI application the copied length, or the wide byte count, instead of 21. The application's own wide calls get the correct 84. | manager defect |
+| Q | unixODBC | 1 | After a driver-connect warning, record 1 is `01S00` and record 2 is `01004`; the driver posted them in the opposite order | **Manager.** The driver trace shows unixODBC fetching `01004` then `01S00` through `SQLError` during the connect. The application then reads them in reverse. | manager defect |
+| R | iODBC | 1 | `SQLGetFunctions(..., NULL)` returns `SQL_SUCCESS` instead of `HY009` | **Manager.** iODBC answers without calling the driver. | manager defect |
+
+Totals: iODBC's buckets sum to 198 failing or crashing cases, and unixODBC's to 17. The bucket list for each case is reproducible from the evidence directory. Buckets P, Q and R were hidden behind bucket A or A2 in this first collection and became visible in Phase 3 step 1 (below).
+
+## Phase 3 step 1: expectation table and NULL-buffer diagnostics
+
+Plan principles 3, 4 and 6 call for expected manager results kept as data, known deviations asserted rather than skipped, and each expectation recording who raised the SQLSTATE. `tests/test_dm_expectations.h` is that table.
+
+The default for every profile is "same as direct". A manager that behaves differently fails the test, and the table is updated with evidence. A manager's own version (`SQL_DM_VER`, read on an unconnected handle) selects its entries. The origin of a record comes from its message prefix: `[iODBC][Driver Manager]`, `[unixODBC][Driver Manager]` or `[Microsoft][ODBC Driver Manager]`. This driver's messages carry no vendor prefix.
+
+The first entry covers ANSI `SQLGetDiagRec` with a NULL message buffer and length 0 (buckets A and A2), the pattern behind most first failures. A direct probe on both managers gave:
+
+| manager (`SQL_DM_VER`) | driver-raised record | manager-held record |
+|---|---|---|
+| iODBC `03.52.1623.0502` | `SQL_SUCCESS_WITH_INFO`, SQLSTATE buffer not written | same as direct |
+| unixODBC `03.52.0002.0003` | same as direct | `SQL_SUCCESS_WITH_INFO`, SQLSTATE written |
+
+"Manager-held" means a record the manager raised, or, for unixODBC, a driver record posted by `SQLConnect` or `SQLDriverConnect`. unixODBC copies those into its own store during the connect call. The fixture connect forwards record them (state plus message, read non-destructively), so a later, different record on the same connection isn't mistaken for one.
+
+`odbcpp::test::diag_rec` applies the entry:
+- **Direct builds:** it is `::SQLGetDiagRec` itself, so nothing changes.
+- **Manager builds,** for the NULL-buffer call only: it asserts the result and SQLSTATE against the table, then reads the record again with a real buffer and returns that. The case therefore goes on to check the record instead of stopping at the first diagnostic.
+
+It is reached through a fixture-member `SQLGetDiagRec` forward in `it_prepared_statements_real` and `it_bind_col_real`, the same forwarding pattern those fixtures already use for timeout budgets, and directly from the three `diagnostic_state` helpers. No test body changed.
+
+Results on the same fixture as above; the direct suites are unchanged (310 of 310 pass on both profiles):
+
+| profile | manager before | manager after |
+|---|---|---|
+| iODBC 3.52.16 | 100 pass, 192 fail, 6 crash | 269 pass, 24–25 fail, 4–5 crash, 0 skip (one bucket J case crashes in some runs) |
+| unixODBC 2.3.14 | 281 pass, 17 fail | 292 pass, 6 fail, 0 skip |
+
+Of the 174 iODBC cases whose first failure was bucket A, 169 now pass entirely. Four now fail on a deeper deviation (D, P, R and O), and one, the `SQLNativeSql` case, is still A. The remaining failures, by bucket:
+
+| profile | cases | buckets |
+|---|---:|---|
+| iODBC | 29 | A 1 (`SQLNativeSql` with a NULL output, which doesn't use the diagnostic helper), B 2, C 5, D 5 (one more `SQL_ARD_TYPE` case surfaced), E 3, F 1, G 1, H 1, I 3, J 2, K 1, L 1, O 1, P 1, R 1 |
+| unixODBC | 6 | F 1, M 1, N 1, O 2 (one more state-table case, `ReplacesPreparedStatementsAndProtectsOpenCursors`: after the driver's `24000`, unixODBC answers the next call with `HY010` without calling the driver), Q 1 |
+
+No driver defect surfaced in the previously hidden assertions.
 
 ## Not done in this wave
 

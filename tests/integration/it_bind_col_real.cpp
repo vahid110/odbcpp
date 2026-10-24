@@ -6,6 +6,7 @@
 #include "odbc/connection_string.h"
 #endif
 #include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 #include "tests/test_product_profile.h"
 #include "tests/test_text.h"
 #include "tests/test_time_helpers.h"
@@ -437,6 +438,14 @@ protected:
     SQLRETURN SQLFetch(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
           ? ::SQLFetch(statement) : SQL_ERROR;
+    }
+    // Manager builds check NULL-buffer diagnostics against the expectation
+    // table and still return the record; direct builds call the driver.
+    SQLRETURN SQLGetDiagRec(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT record,
+        SQLCHAR* state, SQLINTEGER* native, SQLCHAR* message, SQLSMALLINT length,
+        SQLSMALLINT* text_length) {
+      return odbcpp::test::diag_rec(type, handle, record, state, native, message,
+          length, text_length);
     }
 
     void SetUp() override {
