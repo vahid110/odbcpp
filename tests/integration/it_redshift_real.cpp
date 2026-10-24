@@ -1,14 +1,18 @@
 #include "../test_live_package_inputs.h"
 #include "../redshift_warm_up.h"
 #include <gtest/gtest.h>
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
-#include "odbc/connection_string.h"
-#include "odbc/unicode.h"
 #include "odbcpp/database/backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
 #include "core/database/postgres/redshift_foreign_key_contract.h"
 #include "odbc/resource_limits.h"
+#endif
+#include "tests/test_connection_string.h"
+#include "tests/test_sdk_limits.h"
+#include "tests/test_dm_expectations.h"
+#include "tests/test_text.h"
 #include <charconv>
 #include <chrono>
 #include <vector>
@@ -26,6 +30,12 @@
 #include <utility>
 
 namespace {
+// The SDK's Clock, Deadline and result-cell types are these std types.
+using Clock = std::chrono::steady_clock;
+using Deadline = Clock::time_point;
+using ResultCell = std::optional<std::string>;
+using ResultRow = std::vector<ResultCell>;
+using ResultRows = std::vector<ResultRow>;
 using odbcpp::test::live_package_inputs::fixture_smallint_length;
 namespace warm_up = odbcpp::test::redshift_warm_up;
 // A whole-second ODBC timeout must never round an expired/subsecond budget
@@ -197,11 +207,11 @@ public:
 class RedshiftRealTest : public ::testing::Test {
 protected:
   // Created before any derived SetUp, never renewed by reconnect or retry.
-  const rs::util::Deadline checkpoint_end_ =
-      rs::util::Clock::now() + std::chrono::seconds{40};
+  const Deadline checkpoint_end_ =
+      Clock::now() + std::chrono::seconds{40};
   std::uintptr_t checkpoint_seconds() const {
     return checkpoint_timeout_seconds(std::chrono::duration_cast<std::chrono::milliseconds>(
-        checkpoint_end_ - rs::util::Clock::now()));
+        checkpoint_end_ - Clock::now()));
   }
   bool checkpoint_connection_budget(SQLHDBC connection, bool login = false) {
     const auto seconds = checkpoint_seconds();
@@ -240,7 +250,7 @@ protected:
     connection_string_ = configured;
     ASSERT_FALSE(connection_string_.empty())
         << "ODBCPP_REDSHIFT_TEST_CONNECTION must not be empty";
-    const auto parameters = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto parameters = odbcpp::test::connection_string::parse(connection_string_);
     const auto ssl = parameters.find("SSL");
     ASSERT_NE(ssl, parameters.end())
         << "The real Redshift pilot requires explicit verified TLS (SSL=1)";
@@ -271,7 +281,7 @@ protected:
     if (henv_) {
       EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_ENV, henv_), SQL_SUCCESS);
     }
-    EXPECT_LT(rs::util::Clock::now(), checkpoint_end_)
+    EXPECT_LT(Clock::now(), checkpoint_end_)
         << "Redshift fixture exceeded its original forty-second window";
   }
   
@@ -736,8 +746,10 @@ TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
 // The fixed fixture declares (key_b,key_a), reversing physical column order.
 // Each ODBC operation has its existing 15s timeout; the future reviewed runner
 // must impose its outer bound. No shared SDK deadline across ODBC calls claimed.
+// Direct only: resolves the DSN through the driver's own resolver.
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 void RedshiftRealTest::odbc_primary_key_mode_contract(const char* explicit_mode) {
-  const auto base = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto base = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"))
       << "Base configuration must omit the catalog mode to avoid duplicate-option ambiguity";
   for (const auto* field : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
@@ -824,10 +836,11 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyExplicitLegacyOptionContract) {
 TEST_F(RedshiftRealTest, OdbcPrimaryKeyDefaultShowOptionContract) {
   odbc_primary_key_mode_contract(nullptr);
 }
+#endif
 
 // Future wider-fixture scope only: no DDL, grants or automatic admission.
 void RedshiftRealTest::odbc_primary_key_edge_contract(const char* mode, bool quoted) {
-  const auto base = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto base = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"));
   for (const auto* field : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
     ASSERT_TRUE(base.contains(field));
@@ -922,7 +935,7 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyQuotedLegacyContract) {
 // confirm this exact name absent before and after the case; never create/drop it.
 // A collision or concurrent appearance invalidates proof. No SHOW outcome claim.
 TEST_F(RedshiftRealTest, OdbcPrimaryKeyMissingLegacyContract) {
-  const auto base = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto base = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"));
   for (const auto* field : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
     ASSERT_TRUE(base.contains(field));
@@ -981,10 +994,12 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyMissingLegacyContract) {
 // Pinned upstream56d35297f9bee0cc31c0148581c87ca455639a39:
 // rsMetadataAPIHelper.cpp:186; rsMetadataServerProxyHelper.cpp:806-810;
 // rsutil.c:16303-16325 (Unspecified OID0 alternative, not default VARCHAR1043).
+// Direct only: opens a backend session directly.
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool invalid_names, bool legacy) {
   using namespace rs::core::database;
   using namespace rs::core::database::postgres;
-  const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto fields = odbcpp::test::connection_string::parse(connection_string_);
   for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
     ASSERT_TRUE(fields.contains(key)) << "Required explicit connection field missing";
     ASSERT_FALSE(fields.at(key).empty()) << "Required explicit connection field empty";
@@ -1039,8 +1054,8 @@ void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool inval
       {plan->schema, QueryParameterType::Unspecified},
       {plan->table, QueryParameterType::Unspecified}};
   const auto deadline = std::min(checkpoint_end_,
-      rs::util::Clock::now() + std::chrono::seconds{5});
-  ASSERT_LT(rs::util::Clock::now(), deadline);
+      Clock::now() + std::chrono::seconds{5});
+  ASSERT_LT(Clock::now(), deadline);
   if (invalid_names) {
     ASSERT_TRUE(use_executor);
     auto* executor = session.catalog_execution();
@@ -1137,6 +1152,7 @@ TEST_F(RedshiftRealTest, LegacyPrimaryKeyExecutionContract) {
 TEST_F(RedshiftRealTest, LegacyPrimaryKeyExecutionInvalidExactNamesPreserveSession) {
   modern_primary_key_contract(true, true, true);
 }
+#endif
 
 TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {
   ASSERT_TRUE(connect());
@@ -1456,7 +1472,7 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
   ASSERT_EQ(SQL_ERROR, SQLExecDirect(checkpoint_statement(hstmt_),
       reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS));
   EXPECT_EQ("42S02", get_error(SQL_HANDLE_STMT, hstmt_));
-  const auto identifier_units = rs::odbc::utf8_to_wide(unicode_identifier);
+  const auto identifier_units = odbcpp::test::text::utf8_to_wide(unicode_identifier);
   ASSERT_TRUE(identifier_units);
 
   std::array<SQLCHAR, 1024> narrow{};
@@ -1470,7 +1486,7 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
   const std::string narrow_text(reinterpret_cast<const char*>(narrow.data()),
                                 static_cast<std::size_t>(narrow_bytes));
   EXPECT_NE(std::string::npos, narrow_text.find(unicode_identifier));
-  const auto expected_units = rs::odbc::utf8_to_wide(narrow_text);
+  const auto expected_units = odbcpp::test::text::utf8_to_wide(narrow_text);
   ASSERT_TRUE(expected_units) << "Server diagnostic text must be valid UTF-8";
 
   SQLWCHAR state[6]{};
@@ -1553,7 +1569,7 @@ TEST_F(RedshiftRealTest, LegacySqlErrorWDrainsServerErrorThenNoData) {
   ASSERT_GT(units, 0);
   ASSERT_LT(static_cast<std::size_t>(units), message.size());
   EXPECT_EQ(SQLWCHAR{0}, message[static_cast<std::size_t>(units)]);
-  const auto identifier_units = rs::odbc::utf8_to_wide(unicode_identifier);
+  const auto identifier_units = odbcpp::test::text::utf8_to_wide(unicode_identifier);
   ASSERT_TRUE(identifier_units);
   const std::vector<SQLWCHAR> text(message.begin(), message.begin() + units);
   EXPECT_TRUE(contains_units(text, *identifier_units));
@@ -1595,7 +1611,7 @@ TEST_F(RedshiftRealTest, WideZeroCapacityAndDescriptorUnicodeColumnNames) {
   const std::pair<SQLUSMALLINT, std::string> columns[]{{1, unicode_identifier}, {2, long_name}};
   for (const auto& [column, utf8] : columns) {
     SCOPED_TRACE(column);
-    const auto expected = rs::odbc::utf8_to_wide(utf8);
+    const auto expected = odbcpp::test::text::utf8_to_wide(utf8);
     ASSERT_TRUE(expected);
     const auto required = static_cast<SQLSMALLINT>(expected->size());
 
@@ -1660,7 +1676,7 @@ TEST_F(RedshiftRealTest, WideZeroCapacityAndDescriptorUnicodeColumnNames) {
 // truncation, the full unit length, an untouched buffer and a usable session.
 TEST_F(RedshiftRealTest, WideDriverConnectZeroCapacityOutputReportsTruncation) {
   ASSERT_TRUE(checkpoint_connection_budget(hdbc_, true));
-  auto input = rs::odbc::utf8_to_wide(connection_string_);
+  auto input = odbcpp::test::text::utf8_to_wide(connection_string_);
   ASSERT_TRUE(input);
   const auto input_units = static_cast<SQLSMALLINT>(input->size());
   input->push_back(0);
@@ -1804,8 +1820,8 @@ TEST_F(RedshiftRealTest, IAMInvalidPassword) {
   const auto invalid_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_IAM_INVALID_CONNECTION");
   const char* invalid = invalid_environment ? invalid_environment->c_str() : nullptr;
   ASSERT_NE(nullptr, invalid);
-  const auto valid_fields = rs::odbc::ConnectionString::parse(connection_string_);
-  const auto invalid_fields = rs::odbc::ConnectionString::parse(invalid);
+  const auto valid_fields = odbcpp::test::connection_string::parse(connection_string_);
+  const auto invalid_fields = odbcpp::test::connection_string::parse(invalid);
   for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "SSL", "SSLCAFILE"}) {
     ASSERT_TRUE(valid_fields.count(key) != 0 && invalid_fields.count(key) != 0);
     // Boolean comparison keeps connection values out of assertion output.
@@ -1833,8 +1849,8 @@ TEST_F(RedshiftRealTest, PasswordRejectedThenFreshValidConnection) {
   ASSERT_FALSE(expected_user.empty());
   // Fixed output-buffer resource bound, not an asserted AWS username limit.
   ASSERT_TRUE(expected_user.size() < 1024);
-  const auto valid_fields = rs::odbc::ConnectionString::parse(connection_string_);
-  const auto invalid_fields = rs::odbc::ConnectionString::parse(invalid_connection);
+  const auto valid_fields = odbcpp::test::connection_string::parse(connection_string_);
+  const auto invalid_fields = odbcpp::test::connection_string::parse(invalid_connection);
   for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "SSL", "SSLCAFILE", "PWD"}) {
     ASSERT_TRUE(valid_fields.contains(key) && invalid_fields.contains(key));
     ASSERT_TRUE(!valid_fields.at(key).empty() && !invalid_fields.at(key).empty());
@@ -2360,9 +2376,9 @@ TEST_F(RedshiftVarbyteTextParameterRealTest, PreparedHexTextToVarbyteBytes) {
 // Neither case grants fixture/setup authority or exercises primary keys.
 class RedshiftMetadataWorkflowRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline workflow_end_{};
+  Deadline workflow_end_{};
   void SetUp() override {
-    workflow_end_=rs::util::Clock::now()+std::chrono::seconds{40};
+    workflow_end_=Clock::now()+std::chrono::seconds{40};
     const auto marker_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_WORKFLOW_ADMISSION");
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Metadata workflow scope is not admitted"; }
@@ -2374,7 +2390,7 @@ protected:
   }
   std::uintptr_t workflow_seconds() const {
     const auto left=std::chrono::duration_cast<std::chrono::seconds>(
-        workflow_end_-rs::util::Clock::now()).count();
+        workflow_end_-Clock::now()).count();
     return left>0 ? static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5)) : 0;
   }
   bool workflow_budget(bool statement) {
@@ -2497,7 +2513,7 @@ protected:
     // Catalog enumeration includes the deliberately Unicode-named fixtures.
     // SQL_VARCHAR column size counts characters; SQLGetData's byte indicator
     // and canaries remain checked separately by text().
-    const auto characters=rs::odbc::utf8_code_point_count(value);
+    const auto characters=odbcpp::test::text::utf8_code_point_count(value);
     ASSERT_TRUE(characters.has_value());
     if(descriptor.size!=0) {
       EXPECT_LE(*characters,descriptor.size);
@@ -2544,7 +2560,7 @@ protected:
   }
   void workflow(const char* mode) {
     ASSERT_TRUE(std::string_view(mode)=="SHOW"||std::string_view(mode)=="LEGACY");
-    const auto base=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto base=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"));ASSERT_FALSE(base.contains("DSN"));
     for(const char* key:{"SERVER","PORT","DATABASE","UID","PWD","SSLCAFILE"}) {
       ASSERT_TRUE(base.contains(key));ASSERT_TRUE(!base.at(key).empty());ASSERT_TRUE(base.at(key).find('\0')==std::string::npos);
@@ -2719,7 +2735,7 @@ protected:
       if(index<2) { EXPECT_TRUE(std::equal(expected_marker.begin(),expected_marker.end(),row.marker.begin())); }
       else { EXPECT_TRUE(std::all_of(row.marker.begin(),row.marker.end(),[](auto unit){return unit==0x5a;})); }
     }
-    EXPECT_LT(rs::util::Clock::now(),workflow_end_);
+    EXPECT_LT(Clock::now(),workflow_end_);
   }
 };
 
@@ -3787,7 +3803,7 @@ protected:
     // FIRST gate, before endpoint/configuration/handles/connection work.
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");
     ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
@@ -4029,7 +4045,7 @@ TEST_F(RedshiftUnicodeCatalogRealTest, DiscoveredQuotedIdentifiersPrepareUnicode
 // Happy native queries do not prove deadline interruption/cancellation/streaming.
 class RedshiftOperationalRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   bool admitted_ = false;
   bool manual_mode_ = false;
   bool rollback_attempted_ = false, rollback_completed_ = false;
@@ -4046,17 +4062,17 @@ protected:
     if(marker==nullptr) { GTEST_SKIP() << "Operational recovery scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="operational-recovery-v1") << "Invalid operational scope marker";
     // FIRST gate, before clock/configuration/handles/connection work.
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};
+    window_end_=Clock::now()+std::chrono::seconds{40};
     admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE"));ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");
     ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");ASSERT_FALSE(settings.contains("DSN"));
   }
-  bool cap(rs::util::Deadline cutoff,bool statement) {
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+  bool cap(Deadline cutoff,bool statement) {
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(cutoff-Clock::now()).count();
     if(remaining<=0) { ADD_FAILURE() << "Operational finite window expired; no new operation admitted";return false; }
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5));
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
@@ -4069,7 +4085,7 @@ protected:
   }
   void connect_bounded() {
     ASSERT_TRUE(cap(window_end_,false));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();
     ASSERT_GT(remaining,0);
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5));
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0));
@@ -4114,7 +4130,7 @@ protected:
     manual_mode_=false;expect_autocommit(SQL_AUTOCOMMIT_ON);
   }
   void TearDown() override {
-    const auto cleanup_entry=rs::util::Clock::now();
+    const auto cleanup_entry=Clock::now();
     if(admitted_) {
       EXPECT_TRUE(cleanup_entry<window_end_) << "Operational case completed after its original finite window";
     }
@@ -4263,7 +4279,7 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
 // These cases qualify the existing buffered facade, not streaming or cancellation.
 class RedshiftBufferedLifecycleRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   bool admitted_ = false;
   SQLHSTMT second_ = nullptr;
   struct IntegerCell { std::array<unsigned char,8> before; SQLINTEGER value; std::array<unsigned char,8> after; } integer_{};
@@ -4279,15 +4295,15 @@ protected:
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Buffered lifecycle scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="operational-buffered-lifecycle-v1") << "Invalid buffered lifecycle scope marker";
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE"));ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");ASSERT_FALSE(settings.contains("DSN"));
   }
-  bool cap(rs::util::Deadline cutoff,SQLHSTMT statement=nullptr) {
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+  bool cap(Deadline cutoff,SQLHSTMT statement=nullptr) {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-Clock::now()).count();
     if(left<=0) { ADD_FAILURE() << "Buffered lifecycle finite window expired";return false; }
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5));
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
@@ -4300,7 +4316,7 @@ protected:
   }
   void connect_bounded() {
     ASSERT_TRUE(cap(window_end_));
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(left,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5))),0));
     ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);ASSERT_TRUE(cap(window_end_,hstmt_));
@@ -4357,7 +4373,7 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(statement,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(statement,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(statement,SQL_RESET_PARAMS));
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();
+    const auto entry=Clock::now();
     if(admitted_) { EXPECT_TRUE(entry<window_end_) << "Buffered lifecycle case completed after original finite window"; }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     // Release both statements while every borrowed member still exists.
@@ -4469,7 +4485,7 @@ TEST_F(RedshiftBufferedLifecycleRealTest, CompoundResultsAndDeferredErrorRecover
 // Fixed common-type boundaries exercise the existing buffered facade only.
 class RedshiftCommonTypeBoundariesRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   bool admitted_ = false;
   struct IntegerCell { std::array<unsigned char,8> before; SQLINTEGER value; std::array<unsigned char,8> after; } integer_{};
   struct TextCell { std::array<unsigned char,8> before; std::array<char,64> value; std::array<unsigned char,8> after; } text_{};
@@ -4531,15 +4547,15 @@ protected:
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Common-type boundaries scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="common-type-boundaries-v1") << "Invalid common-type boundaries scope marker";
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE"));ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");ASSERT_FALSE(settings.contains("DSN"));
   }
-  bool cap(rs::util::Deadline cutoff,SQLHSTMT statement=nullptr) {
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+  bool cap(Deadline cutoff,SQLHSTMT statement=nullptr) {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-Clock::now()).count();
     if(left<=0) { ADD_FAILURE() << "Common-type boundaries finite window expired";return false; }
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5));
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
@@ -4552,7 +4568,7 @@ protected:
   }
   void connect_bounded() {
     ASSERT_TRUE(cap(window_end_));
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(left,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5))),0));
     ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);ASSERT_TRUE(cap(window_end_,hstmt_));
@@ -4609,7 +4625,7 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(statement,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(statement,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(statement,SQL_RESET_PARAMS));
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();
+    const auto entry=Clock::now();
     if(admitted_) { EXPECT_TRUE(entry<window_end_) << "Common-type boundaries case completed after original finite window"; }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     // Release the statement while every borrowed member still exists.
@@ -4770,7 +4786,7 @@ TEST_F(RedshiftCommonTypeBoundariesRealTest, NumericRescaleOverflowTextRetryNull
 // Fixed materialized exchanges only: application chunking is not network streaming.
 class RedshiftMaterializedEnvelopeRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   bool admitted_ = false;
   std::string original_connection_, query_;
   struct IntegerCell { std::array<unsigned char,8> before; SQLINTEGER value; std::array<unsigned char,8> after; } ordinal_{};
@@ -4791,10 +4807,10 @@ protected:
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Materialized envelope scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="materialized-envelope-v1") << "Invalid materialized envelope scope marker";
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE"));ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");ASSERT_FALSE(settings.contains("DSN"));
     for(const char* key:{"MAXROWS","MAXCELLS","MAXRESPONSEBYTES","MAXRESPONSEMESSAGES"}) {
@@ -4808,11 +4824,14 @@ protected:
     original_connection_=connection_string_;
   }
   bool within() {
-    if(rs::util::Clock::now()>=window_end_) { ADD_FAILURE() << "Materialized envelope original finite window expired";return false; }
+    if (Clock::now() >= window_end_) {
+      ADD_FAILURE() << "Materialized envelope original finite window expired";
+      return false;
+    }
     return true;
   }
-  bool cap(rs::util::Deadline cutoff,bool statement,bool prepared_payload=false) {
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+  bool cap(Deadline cutoff,bool statement,bool prepared_payload=false) {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-Clock::now()).count();
     if(left<=0) { ADD_FAILURE() << "Materialized envelope finite operation window expired";return false; }
     // Materializing 8 MiB may exceed five seconds on the real connection.
     // This ordinary correctness exchange uses a bounded 15s budget,
@@ -4836,7 +4855,7 @@ protected:
     connection_string_+="MAXROWS="+std::to_string(rows)+";MAXCELLS=3000;MAXRESPONSEBYTES="+
         std::to_string(bytes)+";MAXRESPONSEMESSAGES=4096;MAXVARCHARSIZE=0;";
     ASSERT_TRUE(cap(window_end_,false));
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(left,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5))),0));
     ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);++connections_;
@@ -5009,7 +5028,7 @@ protected:
     connect_limits(1000,16777216);ASSERT_FALSE(HasFailure());scalar_recovery();ASSERT_FALSE(HasFailure());
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();
+    const auto entry=Clock::now();
     if(admitted_) { EXPECT_TRUE(entry<window_end_) << "Materialized envelope case completed after original finite window"; }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     // Every bound value/indicator/status remains a member until handles are freed.
@@ -5090,7 +5109,7 @@ TEST_F(RedshiftMaterializedEnvelopeRealTest, WireByteCapRefusesLargerMaterializa
 // Modern per-schema SHOW route only. Existing objects are reused, never created.
 class RedshiftShowTablesRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   bool admitted_ = false;
   std::string schema_,table_,catalog_input_,schema_input_,table_input_,types_input_;
   std::vector<SQLWCHAR> wide_catalog_,wide_schema_,wide_table_,wide_types_;
@@ -5110,9 +5129,9 @@ protected:
     ASSERT_TRUE(std::string_view(marker)=="show-tables-v1") << "Invalid SHOW tables scope marker";
     ASSERT_TRUE(sizeof(SQLWCHAR)==2u || sizeof(SQLWCHAR)==4u)
         << "SHOW tables native scope requires supported UTF16 or UCS4 SQLWCHAR";
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     for(const char* key:{"SERVER","PORT","DATABASE","UID","PWD","SSLCAFILE"}) {
       ASSERT_TRUE(settings.contains(key));ASSERT_FALSE(settings.at(key).empty());
     }
@@ -5148,8 +5167,8 @@ protected:
     for(const unsigned char ch:input) { output.push_back(static_cast<SQLWCHAR>(ch)); }
     output.push_back(0);return output;
   }
-  bool cap(rs::util::Deadline cutoff,bool statement) {
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+  bool cap(Deadline cutoff,bool statement) {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-Clock::now()).count();
     if(left<=0) { ADD_FAILURE() << "SHOW tables original finite window expired";return false; }
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5));
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
@@ -5162,7 +5181,7 @@ protected:
   }
   void connect_bounded() {
     ASSERT_TRUE(cap(window_end_,false));
-    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(left,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5))),0));
     ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);ASSERT_TRUE(cap(window_end_,true));
@@ -5186,7 +5205,7 @@ protected:
     // Synchronous catalog arguments must not be retained by the owning result.
     for(auto* input:{&catalog_input_,&schema_input_,&table_input_,&types_input_}) { std::fill(input->begin(),input->end(),'!'); }
     ASSERT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,hstmt_);
-    ASSERT_LT(rs::util::Clock::now(),window_end_);
+    ASSERT_LT(Clock::now(),window_end_);
   }
   template<class Cell> void poison(Cell& cell) {cell.before.fill(0x5a);cell.after.fill(0x5a);}
   template<class Cell> void guards(const Cell& cell) {
@@ -5294,7 +5313,7 @@ protected:
     }
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();
+    const auto entry=Clock::now();
     if(admitted_) { EXPECT_TRUE(entry<window_end_) << "SHOW tables case completed after original finite window"; }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(hstmt_) {EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
@@ -5330,7 +5349,7 @@ TEST_F(RedshiftShowTablesRealTest, TablePatternAndTypeFilterStayBounded) {
   std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());
   std::vector<OwnedRow> owned;std::size_t selected=0;bool exhausted=false;
   for(std::size_t index=0;index<=64;++index) {
-    ASSERT_LT(rs::util::Clock::now(),window_end_);const auto result=SQLFetch(hstmt_);
+    ASSERT_LT(Clock::now(),window_end_);const auto result=SQLFetch(hstmt_);
     if(result==SQL_NO_DATA) {exhausted=true;break;}
     ASSERT_EQ(SQL_SUCCESS,result);ASSERT_LT(index,64u);OwnedRow value;row(value,descriptors);ASSERT_FALSE(HasFailure());
     ASSERT_TRUE(value.fields[2]);ASSERT_TRUE(value.fields[3]);EXPECT_TRUE(value.fields[2]->ends_with(table_));EXPECT_TRUE(*value.fields[3]=="TABLE");
@@ -5386,10 +5405,10 @@ protected:
     ASSERT_TRUE(std::string_view(marker)=="show-columns-v1") << "Invalid SHOW columns scope marker";
     ASSERT_TRUE(sizeof(SQLWCHAR)==2u || sizeof(SQLWCHAR)==4u)
         << "SHOW columns native scope requires supported UTF16 or UCS4 SQLWCHAR";
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     // Do not invoke the unrelated SHOW TABLES marker gate.
     RedshiftRealTest::SetUp();if(HasFatalFailure()) {return;}
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     for(const char* key:{"SERVER","PORT","DATABASE","UID","PWD","SSLCAFILE"}) {ASSERT_TRUE(settings.contains(key));ASSERT_FALSE(settings.at(key).empty());}
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
     ASSERT_TRUE(settings.at("PORT")=="5439");ASSERT_FALSE(settings.contains("DSN"));ASSERT_FALSE(settings.contains("REDSHIFTCATALOGMODE"));
@@ -5426,7 +5445,7 @@ protected:
     }
     for(auto* input:{&catalog_input_,&schema_input_,&table_input_}) {std::fill(input->begin(),input->end(),'!');}
     if(column_input_) {std::fill(column_input_->begin(),column_input_->end(),'!');}
-    ASSERT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,hstmt_);ASSERT_LT(rs::util::Clock::now(),window_end_);
+    ASSERT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,hstmt_);ASSERT_LT(Clock::now(),window_end_);
   }
   static constexpr std::array<std::string_view,18> column_names{
       "TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME","DATA_TYPE","TYPE_NAME","COLUMN_SIZE","BUFFER_LENGTH",
@@ -5537,7 +5556,7 @@ protected:
     ASSERT_FALSE(HasFailure());
   }
   void column_row(bool value,bool use_wide,const std::array<ColumnDescriptor,18>& descriptors,OwnedColumn& owned) {
-    ASSERT_LT(rs::util::Clock::now(),window_end_);
+    ASSERT_LT(Clock::now(),window_end_);
     for(SQLUSMALLINT column=1;column<=18;++column) {
       if(field_type(column)==SQL_VARCHAR) {text_field(column,value,use_wide,descriptors[column-1],owned);}
       else {numeric_field(column,value,owned);}
@@ -5553,7 +5572,7 @@ protected:
   }
   void recheck_columns(const std::array<ColumnDescriptor,18>& descriptors,const std::array<OwnedColumn,2>& rows,bool use_wide) {
     for(std::size_t index=0;index<2;++index) {
-      ASSERT_LT(rs::util::Clock::now(),window_end_);
+      ASSERT_LT(Clock::now(),window_end_);
       for(std::size_t column=1;column<=18;++column) {
         EXPECT_TRUE(descriptors[column-1].name==column_names[column-1]);EXPECT_EQ(field_type(column),descriptors[column-1].type);
         if(field_type(column)!=SQL_VARCHAR) {EXPECT_TRUE(rows[index].number[column-1]==literal_number(column,index==1));}
@@ -5656,9 +5675,9 @@ protected:
     const auto temp_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_RECENT_TEMP_TABLE_ADMISSION");
     const char* temp = temp_environment ? temp_environment->c_str() : nullptr;
     ASSERT_NE(temp,nullptr); ASSERT_TRUE(std::string_view(temp)=="session-temp-insert-v1");
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{60}; admitted_=true;
     RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");
     ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test"); ASSERT_FALSE(settings.contains("DSN"));
@@ -5736,10 +5755,10 @@ protected:
   }
   void TearDown() override {
     // Every borrowed member stays alive until both statements are freed below.
-    if(temp_scope_started_&&connected_&&second_&&rs::util::Clock::now()<window_end_) {
+    if(temp_scope_started_&&connected_&&second_&&Clock::now()<window_end_) {
       if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE)); }
       EXPECT_EQ(SQL_SUCCESS,SQLFreeStmt(second_,SQL_CLOSE));
-      const auto cutoff=std::min(window_end_,rs::util::Clock::now()+std::chrono::seconds{5});
+      const auto cutoff=std::min(window_end_,Clock::now()+std::chrono::seconds{5});
       if(budget()&&cap(cutoff,second_)) {
         const auto result=SQLExecDirect(second_,reinterpret_cast<SQLCHAR*>(const_cast<char*>("DROP TABLE IF EXISTS odbcpp_recent_array_native")),SQL_NTS);
         EXPECT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,second_);
@@ -5912,9 +5931,9 @@ protected:
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Expanded binding scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="recent-expanded-bindings-v1");
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{60}; admitted_=true;
     RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");
     ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test"); ASSERT_FALSE(settings.contains("DSN"));
@@ -6121,9 +6140,9 @@ protected:
     charges_+=count; return true;
   }
   void setup_handles() {
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{60}; admitted_=true;
     RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
-    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto settings=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
     ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot"); ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
     ASSERT_FALSE(settings.contains("DSN"));
@@ -6494,7 +6513,7 @@ TEST_F(RedshiftBitPrecisionNativeRealTest, FractionOnlyZeroNumericDecimalNullAnd
 // requires separate exact-session TEMP/setup/cleanup admission.
 class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
  protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   bool admitted_{};
   bool table_owned_{};
   bool unknown_completion_{};
@@ -6512,19 +6531,19 @@ class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
     if(marker==nullptr) { GTEST_SKIP() << "Temporal escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="temporal-escapes-v1");
     // FIRST gate, before clocks/settings/handle/provider actions.
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40}; admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40}; admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));
     ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));
     ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));
     ASSERT_FALSE(options.contains("DSN"));
   }
-  bool cap(rs::util::Deadline end,bool statement) {
+  bool cap(Deadline end,bool statement) {
     if(unknown_completion_) { return false; }
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(end-rs::util::Clock::now()).count();
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(end-Clock::now()).count();
     if(remaining<=0) { ADD_FAILURE() << "Original temporal escape window expired"; return false; }
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5));
     if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
@@ -6537,7 +6556,7 @@ class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
   }
   void connect_bounded() {
     ASSERT_TRUE(cap(window_end_,false));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();
     ASSERT_GT(remaining,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
@@ -6652,7 +6671,7 @@ class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
     ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();
+    const auto entry=Clock::now();
     if(admitted_) { EXPECT_TRUE(entry<window_end_); }
     const auto end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
@@ -6727,10 +6746,10 @@ class RedshiftLocateEscapeRealTest : public RedshiftTemporalEscapeRealTest {
     if(marker==nullptr) { GTEST_SKIP() << "LOCATE escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="locate-escapes-v1");
     // This suite has its own FIRST gate, not the temporal suite's admission.
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));
     ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));
@@ -6809,7 +6828,10 @@ class RedshiftLocateEscapeRealTest : public RedshiftTemporalEscapeRealTest {
     ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto entry = Clock::now();
+    if (admitted_) {
+      EXPECT_TRUE(entry < window_end_);
+    }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
       if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
@@ -6869,10 +6891,10 @@ class RedshiftLengthEscapeRealTest : public RedshiftLocateEscapeRealTest {
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "LENGTH escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="length-escapes-v1");
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
   }
@@ -6936,7 +6958,10 @@ class RedshiftLengthEscapeRealTest : public RedshiftLocateEscapeRealTest {
   }
 
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto entry = Clock::now();
+    if (admitted_) {
+      EXPECT_TRUE(entry < window_end_);
+    }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
       if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
@@ -7001,14 +7026,14 @@ class RedshiftCalendarEscapeRealTest : public RedshiftLocateEscapeRealTest {
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Calendar escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="calendar-escapes-v1");
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
     // Reject a configured insufficient bound before connect; never silently
     // clip the thirteen-column/four-row/fifty-two-cell direct projection.
-    const rs::core::database::ResultLimits defaults{};
+    const odbcpp::test::ResultLimits defaults{};
     const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t> {
       const auto found=options.find(key);if(found==options.end()) { return fallback; }
       std::size_t value{};const auto& text=found->second;
@@ -7085,7 +7110,10 @@ class RedshiftCalendarEscapeRealTest : public RedshiftLocateEscapeRealTest {
   }
 
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto entry = Clock::now();
+    if (admitted_) {
+      EXPECT_TRUE(entry < window_end_);
+    }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
       if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
@@ -7149,14 +7177,14 @@ class RedshiftClockEscapeRealTest : public RedshiftLocateEscapeRealTest {
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr) { GTEST_SKIP() << "Clock escape scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="clock-escapes-v1");
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
     // Reject a configured insufficient bound before connect; never silently
     // clip the thirteen-column/four-row/fifty-two-cell direct projection.
-    const rs::core::database::ResultLimits defaults{};
+    const odbcpp::test::ResultLimits defaults{};
     const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t> {
       const auto found=options.find(key);if(found==options.end()) { return fallback; }
       std::size_t value{};const auto& text=found->second;
@@ -7234,7 +7262,10 @@ class RedshiftClockEscapeRealTest : public RedshiftLocateEscapeRealTest {
   }
 
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto entry = Clock::now();
+    if (admitted_) {
+      EXPECT_TRUE(entry < window_end_);
+    }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
       if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
@@ -7289,9 +7320,11 @@ TEST_F(RedshiftClockEscapeRealTest, PreparedTimestampFractionBoundaryNullRebindA
 
 // One separately admitted, same-carrier observation. This is not an ODBC FK
 // success substitute, and never logs credentials or arbitrary backend messages.
+// Direct only: observes raw backend metadata.
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 class RedshiftForeignKeyObservationNativeRealTest : public RedshiftRealTest {
 protected:
-  rs::util::Deadline window_end_{};
+  Deadline window_end_{};
   std::optional<rs::core::database::postgres::PgDatabaseConnection> raw_session_;
   std::size_t property_bytes_{};
 
@@ -7300,11 +7333,11 @@ protected:
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if (marker == nullptr) { GTEST_SKIP() << "FK observation scope is not admitted"; }
     ASSERT_TRUE(std::string_view(marker) == "fk-owning-observation-v1");
-    window_end_ = rs::util::Clock::now() + std::chrono::seconds{60};
+    window_end_ = Clock::now() + std::chrono::seconds{60};
     RedshiftRealTest::SetUp();
     if (HasFatalFailure()) return;
     using namespace rs::core::database;
-    const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto fields = odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_FALSE(fields.contains("DSN"));
     for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
       ASSERT_TRUE(fields.contains(key));
@@ -7343,7 +7376,7 @@ protected:
         value.input_limits.max_request_wire_bytes, value.input_limits.max_startup_wire_bytes, value.input_limits.max_auth_wire_bytes};
     };
     const auto intended_limits = limits(options);
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(window_end_ - rs::util::Clock::now());
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(window_end_ - Clock::now());
     ASSERT_GT(remaining.count(), 0);
     options.timeout = std::min(remaining, std::chrono::milliseconds{5000});
     auto settings = configured_backend_provider().resolve_connection_options(std::move(options));
@@ -7353,7 +7386,7 @@ protected:
                 settings->host == fields.at("SERVER") && settings->port == port &&
                 settings->database == fields.at("DATABASE") && settings->user == fields.at("UID"));
     raw_session_.emplace(nullptr, std::nullopt, rs::core::database::postgres::PgCatalogProfile::Redshift);
-    const auto remaining_before_connect = std::chrono::duration_cast<std::chrono::milliseconds>(window_end_ - rs::util::Clock::now());
+    const auto remaining_before_connect = std::chrono::duration_cast<std::chrono::milliseconds>(window_end_ - Clock::now());
     ASSERT_GT(remaining_before_connect.count(), 0);
     settings->timeout = std::min(remaining_before_connect, std::chrono::milliseconds{5000});
     const auto connected = raw_session_->connect(*settings);
@@ -7395,7 +7428,7 @@ TEST_F(RedshiftForeignKeyObservationNativeRealTest, PreparedShowOwnsRawMetadataB
   using namespace rs::core::database;
   using namespace rs::core::database::postgres;
   ASSERT_TRUE(raw_session_.has_value());
-  const auto now = rs::util::Clock::now(); ASSERT_LT(now, window_end_);
+  const auto now = Clock::now(); ASSERT_LT(now, window_end_);
   const std::vector<QueryParameter> parameters{{"odbcpp_pilot", QueryParameterType::Unspecified},
       {"odbcpp_fixture", QueryParameterType::Unspecified},
       {"m2_catalog_child_20261003_c01", QueryParameterType::Unspecified}};
@@ -7450,6 +7483,7 @@ TEST_F(RedshiftForeignKeyObservationNativeRealTest, PreparedShowOwnsRawMetadataB
   EXPECT_TRUE(normalized) << "Strict FK normalizer rejected the captured owning response";
   if (normalized) { EXPECT_EQ(2u, normalized->rows.size()); }
 }
+#endif
 
 class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
  protected:
@@ -7482,9 +7516,9 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
     if(marker==nullptr) { GTEST_SKIP()<<"Day ordinal escape scope is not admitted"; }
     const std::string_view expected=std::string_view(::testing::UnitTest::GetInstance()->current_test_info()->name())=="DirectDateTimestampOrdinalsAnsiWideNullAndRecovery"?"day_ordinal_date_ts_direct_v1":"day_ordinal_date_ts_prepared_v1";
     ASSERT_TRUE(std::string_view(marker)==expected);
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
     const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
@@ -7494,7 +7528,7 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
       if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()) { return std::nullopt; }
       return value;
     };
-    const rs::core::database::ResultLimits result_defaults{};const rs::core::database::InputLimits input_defaults{};
+    const odbcpp::test::ResultLimits result_defaults{};const odbcpp::test::InputLimits input_defaults{};
     const auto columns=limit("MAXCOLUMNS",result_defaults.max_columns_per_description);
     const auto rows=limit("MAXROWS",result_defaults.max_rows),cells=limit("MAXCELLS",result_defaults.max_cells);
     const auto metadata=limit("MAXMETADATAENTRIES",result_defaults.max_metadata_entries);
@@ -7518,7 +7552,7 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
     ASSERT_NO_FATAL_FAILURE(direct(create_sql()));table_owned_=true;
     ASSERT_NO_FATAL_FAILURE(direct(insert_sql()));
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&sibling_));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(remaining,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
     std::string sql="SELECT 1";ASSERT_TRUE(known_sql(SQLExecDirect(sibling_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS)));
   }
@@ -7576,11 +7610,11 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
     ASSERT_NO_FATAL_FAILURE(ordinal_close());
   }
   void cap_sibling(){
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(remaining,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
   }
   void owning_sibling_recovery(){
-    ASSERT_FALSE(unknown_completion_);ASSERT_TRUE(rs::util::Clock::now()<window_end_);
+    ASSERT_FALSE(unknown_completion_);ASSERT_TRUE(Clock::now()<window_end_);
     ASSERT_NO_FATAL_FAILURE(cap_sibling());
     auto result=SQLFetch(sibling_);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);
     poison(sibling_value_);sibling_length_=97;
@@ -7592,7 +7626,10 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
     result=SQLFetch(sibling_);if(result!=SQL_NO_DATA){unknown_completion_=true;}ASSERT_EQ(SQL_NO_DATA,result);ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();if(admitted_){EXPECT_TRUE(entry<window_end_);}
+    const auto entry = Clock::now();
+    if (admitted_) {
+      EXPECT_TRUE(entry < window_end_);
+    }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_){
       if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS){unknown_completion_=true;}
@@ -7662,9 +7699,9 @@ class RedshiftLogFloat8EscapeRealTest : public RedshiftLocateEscapeRealTest {
     if(marker==nullptr) { GTEST_SKIP()<<"FLOAT8 logarithm escape scope is not admitted"; }
     const std::string_view expected=std::string_view(::testing::UnitTest::GetInstance()->current_test_info()->name())=="DirectFloat8NaturalBaseTenAnsiWideNullAndRecovery"?"log_float8_direct_v1":"log_float8_prepared_v1";
     ASSERT_TRUE(std::string_view(marker)==expected);
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
     const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
@@ -7674,7 +7711,7 @@ class RedshiftLogFloat8EscapeRealTest : public RedshiftLocateEscapeRealTest {
       if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()) { return std::nullopt; }
       return value;
     };
-    const rs::core::database::ResultLimits result_defaults{};const rs::core::database::InputLimits input_defaults{};
+    const odbcpp::test::ResultLimits result_defaults{};const odbcpp::test::InputLimits input_defaults{};
     const auto columns=limit("MAXCOLUMNS",result_defaults.max_columns_per_description);
     const auto rows=limit("MAXROWS",result_defaults.max_rows),cells=limit("MAXCELLS",result_defaults.max_cells);
     const auto metadata=limit("MAXMETADATAENTRIES",result_defaults.max_metadata_entries);
@@ -7694,7 +7731,7 @@ class RedshiftLogFloat8EscapeRealTest : public RedshiftLocateEscapeRealTest {
 
   void cap_sibling(){
     ASSERT_TRUE(cap(window_end_,false));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(remaining,0);
     const auto rc=SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0);
     if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
   }
@@ -7785,7 +7822,10 @@ class RedshiftLogFloat8EscapeRealTest : public RedshiftLocateEscapeRealTest {
     ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
   }
   void TearDown() override {
-    const auto entry=rs::util::Clock::now();if(admitted_){EXPECT_TRUE(entry<window_end_);}
+    const auto entry = Clock::now();
+    if (admitted_) {
+      EXPECT_TRUE(entry < window_end_);
+    }
     const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
     if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_){
       if(!cap(cleanup_end,true)){unknown_completion_=true;}
@@ -7845,9 +7885,9 @@ class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeReal
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr){GTEST_SKIP()<<"Connected metadata timeout happy scope not admitted";}
     ASSERT_EQ(std::string_view("connection_metadata_timeout_happy_v1"),std::string_view(marker));
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()){return;}
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
     const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
@@ -7855,7 +7895,7 @@ class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeReal
       std::size_t value{};const auto& text=found->second;const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
       if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()){return std::nullopt;}return value;
     };
-    const rs::core::database::InputLimits inputs{};const rs::core::database::ResultLimits results{};
+    const odbcpp::test::InputLimits inputs{};const odbcpp::test::ResultLimits results{};
     const auto sql=limit("MAXSQLBYTES",inputs.max_sql_bytes),parameters=limit("MAXPARAMETERS",inputs.max_parameters);
     const auto value=limit("MAXPARAMETERBYTES",inputs.max_parameter_bytes),total=limit("MAXPARAMETERTOTALBYTES",inputs.max_parameter_total_bytes);
     const auto columns=limit("MAXCOLUMNS",results.max_columns_per_description),rows=limit("MAXROWS",results.max_rows),cells=limit("MAXCELLS",results.max_cells),metadata=limit("MAXMETADATAENTRIES",results.max_metadata_entries);
@@ -7865,7 +7905,7 @@ class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeReal
   }
   void metadata_cap(){
     ASSERT_FALSE(unknown_completion_);
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(remaining,0);
     const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,2));
     ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttrW(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0));
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,nullptr,0));
@@ -7874,7 +7914,7 @@ class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeReal
   }
   void cap_sibling(){
     ASSERT_TRUE(cap(window_end_,false));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(remaining,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
   }
   void prepare_metadata(bool eager){
@@ -7923,7 +7963,9 @@ class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeReal
     ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
   }
   void TearDown() override {
-    if(admitted_){EXPECT_TRUE(rs::util::Clock::now()<window_end_);}
+    if (admitted_) {
+      EXPECT_TRUE(Clock::now() < window_end_);
+    }
     // No fixture/DDL exists. Uncertain remote completion fences further SQL;
     // release owning parameter storage only after these registered handles.
     if(sibling_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
@@ -7974,9 +8016,9 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     const char* marker = marker_environment ? marker_environment->c_str() : nullptr;
     if(marker==nullptr){GTEST_SKIP()<<"Selected happy scope not admitted";}
     ASSERT_EQ(std::string_view(expected_marker),std::string_view(marker));
-    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    window_end_=Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()){return;}
-    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options=odbcpp::test::connection_string::parse(connection_string_);
     ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
     ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
     const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
@@ -7985,7 +8027,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
       const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
       if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()){return std::nullopt;}return value;
     };
-    const rs::core::database::InputLimits inputs{};const rs::core::database::ResultLimits results{};
+    const odbcpp::test::InputLimits inputs{};const odbcpp::test::ResultLimits results{};
     const auto sql=limit("MAXSQLBYTES",inputs.max_sql_bytes),parameters=limit("MAXPARAMETERS",inputs.max_parameters);
     const auto value=limit("MAXPARAMETERBYTES",inputs.max_parameter_bytes),total=limit("MAXPARAMETERTOTALBYTES",inputs.max_parameter_total_bytes);
     const auto columns=limit("MAXCOLUMNS",results.max_columns_per_description),rows=limit("MAXROWS",results.max_rows),cells=limit("MAXCELLS",results.max_cells),metadata=limit("MAXMETADATAENTRIES",results.max_metadata_entries);
@@ -7999,7 +8041,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     ASSERT_NO_FATAL_FAILURE(readback(30));
   }
   std::string keyword_input(const char* key,const char* value){
-    auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    auto options=odbcpp::test::connection_string::parse(connection_string_);
     options.erase("LOGINTIMEOUT");options.erase("LT");options[key]=value;
     std::string result;
     for(const auto& [name,text]:options){
@@ -8009,7 +8051,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     }
     // Test-side serialization preserves all endpoint/principal/TLS values and
     // first-key policy. Never print the input or credentials in a failure.
-    EXPECT_TRUE(options==rs::odbc::ConnectionString::parse(result))<<"Login input preservation failed";
+    EXPECT_TRUE(options==odbcpp::test::connection_string::parse(result))<<"Login input preservation failed";
     return result;
   }
   void readback(SQLUINTEGER expected){
@@ -8019,10 +8061,10 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
   }
   void login(const char* key,const char* value,SQLUINTEGER expected,bool wide){
     ASSERT_TRUE(cap(window_end_,false));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GE(remaining,static_cast<std::int64_t>(expected));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GE(remaining,static_cast<std::int64_t>(expected));
     auto text=keyword_input(key,value);SQLRETURN result;
     if(wide){
-      auto input=rs::odbc::utf8_to_wide(text);ASSERT_TRUE(input);input->push_back(0);
+      auto input=odbcpp::test::text::utf8_to_wide(text);ASSERT_TRUE(input);input->push_back(0);
       result=SQLDriverConnectW(hdbc_,nullptr,input->data(),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);
     }else{result=SQLDriverConnect(hdbc_,nullptr,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);}
     if(result==SQL_SUCCESS||result==SQL_SUCCESS_WITH_INFO){connected_=true;}
@@ -8033,10 +8075,10 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     ASSERT_TRUE(cap(window_end_,true));
   }
   void invalid_selected(bool wide,SQLUINTEGER unchanged){
-    ASSERT_FALSE(unknown_completion_);ASSERT_TRUE(rs::util::Clock::now()<window_end_);
+    ASSERT_FALSE(unknown_completion_);ASSERT_TRUE(Clock::now()<window_end_);
     auto text=keyword_input("LOGINTIMEOUT","not-decimal");SQLSMALLINT bytes=66;SQLRETURN result;
     if(wide){
-      auto input=rs::odbc::utf8_to_wide(text);ASSERT_TRUE(input);input->push_back(0);
+      auto input=odbcpp::test::text::utf8_to_wide(text);ASSERT_TRUE(input);input->push_back(0);
       SQLWCHAR output[4]{static_cast<SQLWCHAR>('x'),0,static_cast<SQLWCHAR>('y'),0};
       result=SQLDriverConnectW(hdbc_,nullptr,input->data(),SQL_NTS,output,4,&bytes,SQL_DRIVER_NOPROMPT);
       EXPECT_EQ(static_cast<SQLWCHAR>('x'),output[0]);EXPECT_EQ(static_cast<SQLWCHAR>('y'),output[2]);
@@ -8063,7 +8105,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
   }
   void cap_sibling(){
     ASSERT_TRUE(cap(window_end_,false));
-    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-Clock::now()).count();ASSERT_GT(remaining,0);
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
   }
   void typed_row(bool nulls,bool early=false){
@@ -8078,7 +8120,9 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
   }
   void TearDown() override {
-    if(admitted_){EXPECT_TRUE(rs::util::Clock::now()<window_end_);}
+    if (admitted_) {
+      EXPECT_TRUE(Clock::now() < window_end_);
+    }
     // No table, DDL, DROP, recovery query or latency trigger exists. Unknown
     // remote completion suppresses further SQL; handle/session release remains.
     if(sibling_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
@@ -8106,7 +8150,7 @@ TEST_F(RedshiftLoginTimeoutOptionsRealTest, ExplicitLifetimeTypedNullOwningRefil
   ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));
   ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT","not-decimal",2,false));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
-  auto sql=typed_sql();auto wide=rs::odbc::utf8_to_wide(sql);ASSERT_TRUE(wide);wide->push_back(0);
+  auto sql=typed_sql();auto wide=odbcpp::test::text::utf8_to_wide(sql);ASSERT_TRUE(wide);wide->push_back(0);
   ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide->data(),SQL_NTS)));
   SQLSMALLINT parameters=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameters));ASSERT_EQ(1,parameters);
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&input_,0,&input_length_));
@@ -8164,7 +8208,7 @@ TEST_F(RedshiftAccessModeHintRealTest, AdvisoryModePersistsThroughTypedNullRefil
   ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, true));
   ASSERT_NO_FATAL_FAILURE(mode_readback(SQL_MODE_READ_ONLY));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_MAX_ROWS, nullptr, 0));
-  auto sql = typed_sql(); auto wide = rs::odbc::utf8_to_wide(sql);
+  auto sql = typed_sql(); auto wide = odbcpp::test::text::utf8_to_wide(sql);
   ASSERT_TRUE(wide); wide->push_back(0);
   ASSERT_TRUE(cap(window_end_, true));
   ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, wide->data(), SQL_NTS)));
@@ -8215,7 +8259,7 @@ TEST_F(RedshiftApplicationNameRealTest, AnsiWideNamesAndEmptyReconnectKeepTypedN
     connection_string_ = keyword_input("APPLICATIONNAME", names[i].c_str());
     ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, i != 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_MAX_ROWS, nullptr, 0));
-    auto text = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
+    auto text = odbcpp::test::text::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
     ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, text->data(), SQL_NTS)));
     input_ = 41; input_length_ = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
@@ -8265,7 +8309,7 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
     // Collision is an error: no IF NOT EXISTS, adoption or foreign cleanup.
     schema_ = "\"" + std::string(selected) + "\"";
     table_ = schema_ + ".\"payload\"";
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     if (const auto limit = options.find("MAXSQLBYTES"); limit != options.end()) {
       std::size_t bytes{};
       const auto parsed = std::from_chars(limit->second.data(), limit->second.data() + limit->second.size(), bytes);
@@ -8275,7 +8319,7 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
   }
   bool writer_cap() {
     if (unknown_completion_) return false;
-    const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count();
+    const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count();
     if (remaining <= 0) { ADD_FAILURE() << "ReadOnly fixture window expired"; return false; }
     const auto seconds = reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining, 5)));
     return observed(SQLSetConnectAttr(writer_, SQL_ATTR_CONNECTION_TIMEOUT, seconds, 0)) &&
@@ -8305,7 +8349,7 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
     const std::string sql = "INSERT INTO " + table_ + " VALUES (2)";
     ASSERT_TRUE(cap(window_end_, true)); SQLRETURN rc;
     if (prepared) {
-      auto wide = rs::odbc::utf8_to_wide(sql); ASSERT_TRUE(wide); wide->push_back(0);
+      auto wide = odbcpp::test::text::utf8_to_wide(sql); ASSERT_TRUE(wide); wide->push_back(0);
       ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, wide->data(), SQL_NTS)));
       ASSERT_TRUE(cap(window_end_, true)); rc = SQLExecute(hstmt_);
     } else {
@@ -8398,7 +8442,7 @@ TEST_F(RedshiftReadOnlySettingRealTest, OwnedWriterAndReadOnlyTargetRefuseWrites
   ASSERT_TRUE(cap(window_end_, true));
   ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_SLONG, &id, sizeof(id), &length))); EXPECT_EQ(1, id);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
-  auto typed = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(typed); typed->push_back(0);
+  auto typed = odbcpp::test::text::utf8_to_wide(typed_sql()); ASSERT_TRUE(typed); typed->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, typed->data(), SQL_NTS)));
   ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
       SQL_INTEGER, 10, 0, &input_, 0, &input_length_)));
@@ -8412,7 +8456,7 @@ TEST_F(RedshiftReadOnlySettingRealTest, OwnedWriterAndReadOnlyTargetRefuseWrites
       static_cast<SQLSMALLINT>(sizeof(info)), nullptr))); ASSERT_EQ('N', info[0]);
   std::string insert = "INSERT INTO " + table_ + " VALUES (2)";
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(insert.data()), SQL_NTS)));
-  auto write = rs::odbc::utf8_to_wide(insert); ASSERT_TRUE(write); write->push_back(0);
+  auto write = odbcpp::test::text::utf8_to_wide(insert); ASSERT_TRUE(write); write->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, write->data(), SQL_NTS)));
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
   ASSERT_NO_FATAL_FAILURE(writer_count(3)); EXPECT_EQ(43, snapshot);
@@ -8441,7 +8485,7 @@ class RedshiftQueryTimeoutDefaultRealTest : public RedshiftLoginTimeoutOptionsRe
     EXPECT_EQ(0xa5, output.front()); EXPECT_EQ(0xa5, output.back());
   }
   std::string query_input(const char* key, const char* value) {
-    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    auto options = odbcpp::test::connection_string::parse(connection_string_);
     options.erase("QUERYTIMEOUT"); options.erase("QT");
     options.erase("LOGINTIMEOUT"); options.erase("LT");
     options[key] = value; options["LOGINTIMEOUT"] = "5";
@@ -8451,16 +8495,16 @@ class RedshiftQueryTimeoutDefaultRealTest : public RedshiftLoginTimeoutOptionsRe
       for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
       text += "};";
     }
-    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text))
+    EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text))
         << "QueryTimeout login input preservation failed";
     return text;
   }
   void open_default(const char* key, const char* value, SQLULEN expected, bool wide) {
     ASSERT_TRUE(bounded());
-    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count(), 5);
     auto text = query_input(key, value); SQLRETURN rc;
     if (wide) {
-      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      auto input = odbcpp::test::text::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
       rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     } else {
       rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
@@ -8515,7 +8559,7 @@ TEST_F(RedshiftQueryTimeoutDefaultRealTest, AnsiWideDefaultsOverridesTypedNullRe
   ASSERT_TRUE(observed(SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT,
       reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}), 0)));
   ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, 1));
-  auto sql = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(sql); sql->push_back(0);
+  auto sql = odbcpp::test::text::utf8_to_wide(typed_sql()); ASSERT_TRUE(sql); sql->push_back(0);
   ASSERT_TRUE(bounded()); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, sql->data(), SQL_NTS)));
   ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
       SQL_INTEGER, 10, 0, &input_, 0, &input_length_)));
@@ -8541,7 +8585,7 @@ class RedshiftKeepaliveOptionsRealTest : public RedshiftLoginTimeoutOptionsRealT
     return true;
   }
   std::string keepalive_input(bool enabled, bool invalid = false) {
-    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const char* key : {"KEEPALIVE", "KEEPALIVEIDLE", "KEEPALIVEINTERVAL", "KEEPALIVECOUNT", "LT", "LOGINTIMEOUT"}) options.erase(key);
     options["KEEPALIVE"] = enabled ? "true" : "false";
     options["KEEPALIVEIDLE"] = "7"; options["KEEPALIVEINTERVAL"] = "3";
@@ -8553,13 +8597,13 @@ class RedshiftKeepaliveOptionsRealTest : public RedshiftLoginTimeoutOptionsRealT
       for (char ch : value) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
       text += "};";
     }
-    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text))
+    EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text))
         << "Keepalive login input preservation failed";
     return text;
   }
   void local_refusal() {
     ASSERT_TRUE(cap(window_end_, false));
-    auto text = rs::odbc::utf8_to_wide(keepalive_input(false, true)); ASSERT_TRUE(text); text->push_back(0);
+    auto text = odbcpp::test::text::utf8_to_wide(keepalive_input(false, true)); ASSERT_TRUE(text); text->push_back(0);
     SQLWCHAR output[4]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y'), 0}; SQLSMALLINT length = 66;
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, output, 4, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
@@ -8576,10 +8620,10 @@ class RedshiftKeepaliveOptionsRealTest : public RedshiftLoginTimeoutOptionsRealT
   }
   void open_keepalive(bool enabled, bool wide) {
     ASSERT_TRUE(cap(window_end_, false));
-    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count(), 5);
     auto text = keepalive_input(enabled); SQLRETURN rc;
     if (wide) {
-      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      auto input = odbcpp::test::text::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
       rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     } else {
       rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
@@ -8602,7 +8646,7 @@ TEST_F(RedshiftKeepaliveOptionsRealTest, ConfiguredTuningLocalRefusalTypedNullSi
   ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
   ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS)));
-  auto text = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
+  auto text = odbcpp::test::text::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, text->data(), SQL_NTS)));
   ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
       SQL_INTEGER, 10, 0, &input_, 0, &input_length_)));
@@ -8637,7 +8681,7 @@ class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
   }
   static constexpr const char* value = "é表😀-value-longer-than-the-report";
   std::string sizing_input(bool disabled, bool invalid = false) {
-    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const char* key : {"MAXVARCHARSIZE", "MAXLONGVARCHARSIZE", "LT", "LOGINTIMEOUT"}) options.erase(key);
     options["MAXVARCHARSIZE"] = disabled ? "0" : "8";
     options["MAXLONGVARCHARSIZE"] = invalid ? "65536" : disabled ? "0" : "17";
@@ -8648,12 +8692,12 @@ class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
       for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
       text += "};";
     }
-    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Sizing input preservation failed";
+    EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Sizing input preservation failed";
     return text;
   }
   void refuse_sizing() {
     ASSERT_TRUE(cap(window_end_, false));
-    auto text = rs::odbc::utf8_to_wide(sizing_input(true, true)); ASSERT_TRUE(text); text->push_back(0);
+    auto text = odbcpp::test::text::utf8_to_wide(sizing_input(true, true)); ASSERT_TRUE(text); text->push_back(0);
     SQLWCHAR guard[3]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y')}; SQLSMALLINT length = 66;
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, guard, 3, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
@@ -8670,10 +8714,10 @@ class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
   }
   void open_sizing(bool disabled, bool wide) {
     ASSERT_TRUE(cap(window_end_, false));
-    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count(), 5);
     auto text = sizing_input(disabled); SQLRETURN rc;
     if (wide) {
-      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      auto input = odbcpp::test::text::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
       rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS,
         nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
@@ -8703,7 +8747,7 @@ class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
       ASSERT_TRUE(observed(SQLGetData(statement, 1, SQL_C_WCHAR, output, sizeof(output) - sizeof(SQLWCHAR), &length)));
       if (null) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); }
       else {
-        const auto expected = rs::odbc::utf8_to_wide(value); ASSERT_TRUE(expected);
+        const auto expected = odbcpp::test::text::utf8_to_wide(value); ASSERT_TRUE(expected);
         EXPECT_EQ(static_cast<SQLLEN>(expected->size() * sizeof(SQLWCHAR)), length);
         EXPECT_TRUE(std::equal(expected->begin(), expected->end(), output)); EXPECT_EQ(0, output[expected->size()]);
       }
@@ -8729,7 +8773,7 @@ TEST_F(RedshiftVarcharSizingRealTest, ReportedMetadataPreservesValuesParametersN
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
   ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(direct.c_str())), SQL_NTS)));
   ASSERT_NO_FATAL_FAILURE(sizing_descriptor(sibling_, SQL_LONGVARCHAR, 17));
-  auto prepared = rs::odbc::utf8_to_wide("SELECT CAST(? AS VARCHAR(300)) AS sizing_value"); ASSERT_TRUE(prepared); prepared->push_back(0);
+  auto prepared = odbcpp::test::text::utf8_to_wide("SELECT CAST(? AS VARCHAR(300)) AS sizing_value"); ASSERT_TRUE(prepared); prepared->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, prepared->data(), SQL_NTS)));
   SQLLEN indicator = SQL_NTS;
   ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 300, 0,
@@ -8748,7 +8792,7 @@ TEST_F(RedshiftVarcharSizingRealTest, ReportedMetadataPreservesValuesParametersN
   const std::string owning_snapshot(value);
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
   ASSERT_NO_FATAL_FAILURE(open_sizing(true, true));
-  auto wide_direct = rs::odbc::utf8_to_wide(direct); ASSERT_TRUE(wide_direct); wide_direct->push_back(0);
+  auto wide_direct = odbcpp::test::text::utf8_to_wide(direct); ASSERT_TRUE(wide_direct); wide_direct->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecDirectW(hstmt_, wide_direct->data(), SQL_NTS)));
   ASSERT_NO_FATAL_FAILURE(sizing_descriptor(hstmt_, SQL_VARCHAR, 300));
   ASSERT_NO_FATAL_FAILURE(sizing_row(hstmt_, false, true));
@@ -8762,7 +8806,7 @@ class RedshiftBooleanCharacterRealTest : public RedshiftKeepaliveOptionsRealTest
     setup_admitted("ODBCPP_REDSHIFT_BOOLEAN_CHARACTER_ADMISSION", "boolean_character_happy_v1");
   }
   std::string boolean_input(bool enabled, bool invalid = false) {
-    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const char* key : {"BOOLSASCHAR", "MAXVARCHARSIZE", "MAXLONGVARCHARSIZE", "LT", "LOGINTIMEOUT"}) options.erase(key);
     options["BOOLSASCHAR"] = invalid ? "invalid-secret" : enabled ? "TRUE" : "FALSE";
     options["MAXVARCHARSIZE"] = "1"; options["MAXLONGVARCHARSIZE"] = "17";
@@ -8773,12 +8817,12 @@ class RedshiftBooleanCharacterRealTest : public RedshiftKeepaliveOptionsRealTest
       for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
       text += "};";
     }
-    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Boolean input preservation failed";
+    EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Boolean input preservation failed";
     return text;
   }
   void refuse_boolean() {
     ASSERT_TRUE(cap(window_end_, false));
-    auto input = rs::odbc::utf8_to_wide(boolean_input(true, true)); ASSERT_TRUE(input); input->push_back(0);
+    auto input = odbcpp::test::text::utf8_to_wide(boolean_input(true, true)); ASSERT_TRUE(input); input->push_back(0);
     SQLWCHAR output[3]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y')}; SQLSMALLINT length = 66;
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
@@ -8794,10 +8838,10 @@ class RedshiftBooleanCharacterRealTest : public RedshiftKeepaliveOptionsRealTest
   }
   void open_boolean(bool enabled, bool wide) {
     ASSERT_TRUE(cap(window_end_, false));
-    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count(), 5);
     auto text = boolean_input(enabled); SQLRETURN rc;
     if (wide) {
-      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      auto input = odbcpp::test::text::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
       rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
@@ -8851,7 +8895,7 @@ TEST_F(RedshiftBooleanCharacterRealTest, CanonicalValuesNativeParametersNullRefi
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
   ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, direct, SQL_NTS)));
   ASSERT_NO_FATAL_FAILURE(boolean_descriptor(sibling_, SQL_VARCHAR));
-  auto query = rs::odbc::utf8_to_wide("SELECT flag, flag, flag FROM (SELECT CAST(? AS BOOLEAN) AS flag) AS flags"); ASSERT_TRUE(query); query->push_back(0);
+  auto query = odbcpp::test::text::utf8_to_wide("SELECT flag, flag, flag FROM (SELECT CAST(? AS BOOLEAN) AS flag) AS flags"); ASSERT_TRUE(query); query->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, query->data(), SQL_NTS)));
   SQLCHAR bit = 1; SQLLEN indicator = 1;
   ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_BIT, SQL_BIT, 1, 0, &bit, sizeof(bit), &indicator)));
@@ -8875,7 +8919,7 @@ TEST_F(RedshiftBooleanCharacterRealTest, CanonicalValuesNativeParametersNullRefi
   ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLCloseCursor(sibling_)));
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
   ASSERT_NO_FATAL_FAILURE(open_boolean(false, true));
-  auto wide = rs::odbc::utf8_to_wide("SELECT TRUE AS flag, FALSE AS other_flag, CAST(NULL AS BOOLEAN) AS null_flag"); ASSERT_TRUE(wide); wide->push_back(0);
+  auto wide = odbcpp::test::text::utf8_to_wide("SELECT TRUE AS flag, FALSE AS other_flag, CAST(NULL AS BOOLEAN) AS null_flag"); ASSERT_TRUE(wide); wide->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecDirectW(hstmt_, wide->data(), SQL_NTS)));
   ASSERT_NO_FATAL_FAILURE(boolean_descriptor(hstmt_, SQL_BIT));
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
@@ -8893,7 +8937,7 @@ class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
     setup_admitted("ODBCPP_REDSHIFT_TABLE_TYPES_ADMISSION", "table_types_happy_v1");
   }
   std::string table_types_input(bool enabled, bool invalid = false) {
-    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const char* key : {"ENABLETABLETYPES", "REDSHIFTCATALOGMODE", "LT", "LOGINTIMEOUT"}) options.erase(key);
     options["ENABLETABLETYPES"] = invalid ? "invalid-secret" : enabled ? "TRUE" : "FALSE";
     options["REDSHIFTCATALOGMODE"] = "LEGACY";
@@ -8904,12 +8948,12 @@ class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
       for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
       text += "};";
     }
-    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Table types input preservation failed";
+    EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Table types input preservation failed";
     return text;
   }
   void refuse_table_types() {
     ASSERT_TRUE(cap(window_end_, false));
-    auto input = rs::odbc::utf8_to_wide(table_types_input(true, true)); ASSERT_TRUE(input); input->push_back(0);
+    auto input = odbcpp::test::text::utf8_to_wide(table_types_input(true, true)); ASSERT_TRUE(input); input->push_back(0);
     SQLWCHAR output[3]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y')}; SQLSMALLINT length = 66;
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
@@ -8925,10 +8969,10 @@ class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
   }
   void open_table_types(bool enabled, bool wide) {
     ASSERT_TRUE(cap(window_end_, false));
-    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count(), 5);
     auto text = table_types_input(enabled); SQLRETURN rc;
     if (wide) {
-      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      auto input = odbcpp::test::text::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
       rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
@@ -9023,6 +9067,8 @@ class RedshiftCancelHandleRealTest : public RedshiftLoginTimeoutOptionsRealTest 
   }
 };
 
+// iODBC 3.52 neither declares nor exports SQLCancelHandle.
+#if !defined(ODBCPP_TEST_VIA_DRIVER_MANAGER) || !defined(ODBCPP_TEST_IODBC)
 TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwning) {
   ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_));
@@ -9082,6 +9128,7 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
   ASSERT_EQ(SQL_SUCCESS, result); EXPECT_EQ(7, value);
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+#endif
 
 class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
  protected:
@@ -9089,7 +9136,7 @@ class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
     setup_admitted("ODBCPP_REDSHIFT_METADATA_SCOPE_ADMISSION", "metadata_scope_existing_principal_v1");
   }
   std::string scope_input(const char* value, const char* mode = "LEGACY") {
-    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const char* key : {"DATABASEMETADATACURRENTDBONLY", "REDSHIFTCATALOGMODE", "LT", "LOGINTIMEOUT"}) options.erase(key);
     if (value) options["DATABASEMETADATACURRENTDBONLY"] = value;
     options["REDSHIFTCATALOGMODE"] = mode; options["LOGINTIMEOUT"] = "5";
@@ -9099,12 +9146,12 @@ class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
       for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
       text += "};";
     }
-    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Metadata scope input preservation failed";
+    EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Metadata scope input preservation failed";
     return text;
   }
   void invalid_scope() {
     ASSERT_TRUE(cap(window_end_, false));
-    auto input = rs::odbc::utf8_to_wide(scope_input("invalid-secret")); ASSERT_TRUE(input); input->push_back(0);
+    auto input = odbcpp::test::text::utf8_to_wide(scope_input("invalid-secret")); ASSERT_TRUE(input); input->push_back(0);
     SQLWCHAR output[3]{'x', 0, 'y'}; SQLSMALLINT bytes = 66;
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &bytes, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
@@ -9120,10 +9167,10 @@ class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
   }
   void open_scope(const char* value, bool wide, const char* mode = "LEGACY") {
     ASSERT_TRUE(cap(window_end_, false));
-    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - Clock::now()).count(), 5);
     auto text = scope_input(value, mode); SQLRETURN rc;
     if (wide) {
-      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      auto input = odbcpp::test::text::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
       rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
@@ -9207,7 +9254,7 @@ class RedshiftMetadataScopeShowRealTest : public RedshiftMetadataScopeRealTest {
     setup_admitted("ODBCPP_REDSHIFT_METADATA_SCOPE_SHOW_ADMISSION", "metadata_scope_two_visible_contexts_v1");
     if (IsSkipped() || HasFatalFailure()) return;
     const auto existing_name = [](const char* value) {
-      return value && *value && std::strlen(value) <= 128 && rs::odbc::utf8_code_point_count(value).has_value();
+      return value && *value && std::strlen(value) <= 128 && odbcpp::test::text::utf8_code_point_count(value).has_value();
     };
     const auto second_environment = odbcpp::test::live_package_inputs::fixture_environment("ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE");
     const char* second = second_environment ? second_environment->c_str() : nullptr;
@@ -9216,7 +9263,7 @@ class RedshiftMetadataScopeShowRealTest : public RedshiftMetadataScopeRealTest {
     ASSERT_TRUE(existing_name(second)); ASSERT_TRUE(existing_name(schema));
     second_database_ = second; common_schema_ = schema; ASSERT_NE("odbcpp_pilot", second_database_);
     // Explicit finite controls are prerequisites, not silently enlarged here.
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const auto& required : {std::pair{"MAXRESULTS", "4"}, std::pair{"MAXROWS", "128"},
                                 std::pair{"MAXCELLS", "4096"}, std::pair{"MAXCOLUMNS", "18"}}) {
       ASSERT_TRUE(options.contains(required.first)); ASSERT_EQ(required.second, options.at(required.first));
@@ -9294,11 +9341,11 @@ class RedshiftMetadataScopeShowRealTest : public RedshiftMetadataScopeRealTest {
         ASSERT_GE(bytes, 0); ASSERT_LT(bytes, static_cast<SQLLEN>(sizeof(cell.value)));
         EXPECT_EQ(0, cell.value[static_cast<std::size_t>(bytes)]);
         std::string value{reinterpret_cast<char*>(cell.value), static_cast<std::size_t>(bytes)};
-        if (value.find('\0') != std::string::npos || !rs::odbc::utf8_code_point_count(value)) {
+        if (value.find('\0') != std::string::npos || !odbcpp::test::text::utf8_code_point_count(value)) {
           unknown_completion_ = true;
         }
         ASSERT_EQ(std::string::npos, value.find('\0'));
-        ASSERT_TRUE(rs::odbc::utf8_code_point_count(value));
+        ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(value));
         if (column == name_column) {
           if (value.empty()) { unknown_completion_ = true; }
           ASSERT_FALSE(value.empty());
@@ -9392,7 +9439,7 @@ class RedshiftNegativeNumericScaleRealTest : public RedshiftLoginTimeoutOptionsR
     setup_admitted("ODBCPP_REDSHIFT_NEGATIVE_NUMERIC_SCALE_ADMISSION",
                    "negative_numeric_scale_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const auto minimum = [&](const char* key, std::size_t required) {
       const auto found = options.find(key);
       if (found == options.end()) return true;
@@ -9573,7 +9620,7 @@ class RedshiftNumericTargetRescaleRealTest : public RedshiftNegativeNumericScale
     setup_admitted("ODBCPP_REDSHIFT_NUMERIC_TARGET_RESCALE_ADMISSION",
                    "numeric_target_rescale_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()},
         {"MAXCOLUMNS", 2}, {"MAXCELLS", 2}};
@@ -9656,7 +9703,7 @@ class RedshiftCharacterNumericLossRealTest : public RedshiftNumericTargetRescale
     setup_admitted("ODBCPP_REDSHIFT_CHARACTER_NUMERIC_LOSS_ADMISSION",
                    "character_numeric_loss_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()},
         {"MAXCOLUMNS", 2}, {"MAXCELLS", 2}};
@@ -9753,7 +9800,7 @@ class RedshiftFixedNumericCompletionRealTest : public RedshiftNegativeNumericSca
     setup_admitted("ODBCPP_REDSHIFT_FIXED_NUMERIC_COMPLETION_ADMISSION",
                    "fixed_numeric_completion_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(completion_sql).size()},
         {"MAXCOLUMNS", 5}, {"MAXROWS", 1}, {"MAXCELLS", 5},
@@ -9911,7 +9958,7 @@ class RedshiftCnumericApproximateRangeRealTest : public RedshiftNegativeNumericS
     setup_admitted("ODBCPP_REDSHIFT_CNUMERIC_APPROXIMATE_RANGE_ADMISSION",
                    "cnumeric_approximate_range_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()},
         {"MAXPARAMETERS", 3}, {"MAXPARAMETERBYTES", 102},
@@ -10038,7 +10085,7 @@ class RedshiftFixedTemporalCompletionRealTest : public RedshiftFixedNumericCompl
     setup_admitted("ODBCPP_REDSHIFT_FIXED_TEMPORAL_COMPLETION_ADMISSION",
                    "fixed_temporal_completion_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(temporal_sql).size()},
         {"MAXCOLUMNS", 5}, {"MAXROWS", 1}, {"MAXCELLS", 5},
@@ -10162,7 +10209,7 @@ class RedshiftApdRestrictedPairRealTest : public RedshiftNegativeNumericScaleRea
     setup_admitted("ODBCPP_REDSHIFT_APD_RESTRICTED_PAIR_ADMISSION",
                    "apd_restricted_pair_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()},
         {"MAXPARAMETERS", 2}, {"MAXPARAMETERBYTES", 10},
@@ -10274,7 +10321,7 @@ class RedshiftBinaryIntegerInputRealTest : public RedshiftNegativeNumericScaleRe
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_BINARY_INTEGER_INPUT_ADMISSION", "binary_integer_input_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
         {"MAXPARAMETERBYTES", 11}, {"MAXPARAMETERTOTALBYTES", 11},
@@ -10370,7 +10417,7 @@ class RedshiftNumericTemporalInputRealTest : public RedshiftNegativeNumericScale
     setup_admitted("ODBCPP_REDSHIFT_NUMERIC_TEMPORAL_INPUT_ADMISSION",
                    "numeric_temporal_input_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
         {"MAXPARAMETERBYTES", 10}, {"MAXPARAMETERTOTALBYTES", 10},
@@ -10485,7 +10532,7 @@ class RedshiftBinaryBigintInputRealTest : public RedshiftNegativeNumericScaleRea
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_BINARY_BIGINT_INPUT_ADMISSION", "binary_bigint_input_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     const std::pair<const char*, std::size_t> minima[] = {
         {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
         {"MAXPARAMETERBYTES", 20}, {"MAXPARAMETERTOTALBYTES", 20},
@@ -10577,7 +10624,7 @@ class RedshiftBitInputPairRealTest : public RedshiftNegativeNumericScaleRealTest
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_BIT_INPUT_PAIR_ADMISSION", "bit_input_pair_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const auto& [key, required] : std::initializer_list<std::pair<const char*, std::size_t>>{
          {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
          {"MAXPARAMETERBYTES", 1}, {"MAXPARAMETERTOTALBYTES", 1},
@@ -10682,7 +10729,7 @@ class RedshiftSignedIntegerBinaryResultRealTest : public RedshiftNegativeNumeric
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_SIGNED_INTEGER_BINARY_RESULT_ADMISSION", "signed_integer_binary_result_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const auto& [key, required] : std::initializer_list<std::pair<const char*, std::size_t>>{
          {"MAXSQLBYTES", 449}, {"MAXPARAMETERS", 1}, {"MAXPARAMETERBYTES", 20},
          {"MAXPARAMETERTOTALBYTES", 20}, {"MAXCOLUMNS", 3}, {"MAXROWS", 4}, {"MAXCELLS", 12}, {"MAXMETADATAENTRIES", 9}}) {
@@ -10768,7 +10815,7 @@ class RedshiftFloatingBinaryResultRealTest : public RedshiftNegativeNumericScale
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_FLOATING_BINARY_RESULT_ADMISSION", "floating_binary_result_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const auto& [key, required] : std::initializer_list<std::pair<const char*, std::size_t>>{
          {"MAXSQLBYTES", 421}, {"MAXPARAMETERS", 2}, {"MAXPARAMETERBYTES", 32},
          {"MAXPARAMETERTOTALBYTES", 64}, {"MAXCOLUMNS", 2}, {"MAXROWS", 5}, {"MAXCELLS", 10}, {"MAXMETADATAENTRIES", 6}}) {
@@ -10886,7 +10933,7 @@ class RedshiftNumericBinaryInputRealTest : public RedshiftNegativeNumericScaleRe
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_NUMERIC_BINARY_INPUT_ADMISSION", "numeric_binary_input_v1");
     if (IsSkipped() || HasFatalFailure()) return;
-    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto options = odbcpp::test::connection_string::parse(connection_string_);
     for (const auto& [key, required] : std::initializer_list<std::pair<const char*, std::size_t>>{
          {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
          {"MAXPARAMETERBYTES", 16}, {"MAXPARAMETERTOTALBYTES", 16},
@@ -10987,7 +11034,7 @@ void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
   if (!enabled || std::string_view(enabled)!="1") {
     GTEST_SKIP()<<"Separately admitted current-database primary-key fixture";
   }
-  const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+  const auto options=odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
   connection_string_+=";RedshiftCatalogMode=SHOW";
   ASSERT_TRUE(connect());
@@ -10998,11 +11045,11 @@ void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
   ASSERT_GT(length,0);ASSERT_LT(static_cast<std::size_t>(length),name.size());
   const std::string database(reinterpret_cast<char*>(name.data()),length);
   const std::string schema="odbcpp_fixture",table="m2_catalog_parent_20261003_c01";
-  std::array<rs::core::database::ResultRows,2> owned;
+  std::array<ResultRows,2> owned;
   for (unsigned explicit_catalog=0;explicit_catalog<2;++explicit_catalog) {
     SQLRETURN result=SQL_ERROR;
     if (wide) {
-      auto db=rs::odbc::utf8_to_wide(database),sc=rs::odbc::utf8_to_wide(schema),t=rs::odbc::utf8_to_wide(table);
+      auto db=odbcpp::test::text::utf8_to_wide(database),sc=odbcpp::test::text::utf8_to_wide(schema),t=odbcpp::test::text::utf8_to_wide(table);
       ASSERT_TRUE(db);ASSERT_TRUE(sc);ASSERT_TRUE(t);
       result=SQLPrimaryKeysW(checkpoint_statement(hstmt_),explicit_catalog?db->data():nullptr,
           explicit_catalog?static_cast<SQLSMALLINT>(db->size()):0,
@@ -11016,7 +11063,7 @@ void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
     ASSERT_TRUE(catalog_succeeded(result))<<metadata_diagnostic();
     SQLSMALLINT columns=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(checkpoint_statement(hstmt_),&columns));ASSERT_EQ(6,columns);
     for (unsigned row=0;row<2;++row) {
-      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));rs::core::database::ResultRow cells;
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));ResultRow cells;
       for (SQLUSMALLINT col=1;col<=6;++col) {
         std::array<char,1025> value{};SQLLEN indicator=0;
         ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,col,SQL_C_CHAR,value.data(),value.size(),&indicator));
@@ -11026,11 +11073,11 @@ void RedshiftRealTest::current_database_primary_key_contract(bool wide) {
           cells.emplace_back(std::string(value.data(),indicator));
         }
       }
-      EXPECT_EQ(rs::core::database::ResultCell{database},cells[0]);
-      EXPECT_EQ(rs::core::database::ResultCell{schema},cells[1]);
-      EXPECT_EQ(rs::core::database::ResultCell{table},cells[2]);
-      EXPECT_EQ(rs::core::database::ResultCell{row?"key_a":"key_b"},cells[3]);
-      EXPECT_EQ(rs::core::database::ResultCell{std::to_string(row+1)},cells[4]);
+      EXPECT_EQ(ResultCell{database},cells[0]);
+      EXPECT_EQ(ResultCell{schema},cells[1]);
+      EXPECT_EQ(ResultCell{table},cells[2]);
+      EXPECT_EQ(ResultCell{row?"key_a":"key_b"},cells[3]);
+      EXPECT_EQ(ResultCell{std::to_string(row+1)},cells[4]);
       ASSERT_TRUE(cells[5]);EXPECT_FALSE(cells[5]->empty());
       owned[explicit_catalog].push_back(std::move(cells));
     }
@@ -11052,7 +11099,7 @@ void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
   if (!enabled || std::string_view(enabled) != "1") {
     GTEST_SKIP() << "Separately admitted current-database foreign-key fixture";
   }
-  const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto options = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
   connection_string_ += ";RedshiftCatalogMode=SHOW";
   ASSERT_TRUE(connect());
@@ -11079,13 +11126,13 @@ void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
       {"pk_name", SQL_VARCHAR}, {"deferrability", SQL_SMALLINT}}};
   for (unsigned direction = 0; direction < 3; ++direction) {
     SCOPED_TRACE(direction);
-    std::array<rs::core::database::ResultRows, 2> owned;
+    std::array<ResultRows, 2> owned;
     for (bool explicit_catalog : {false, true}) {
       SQLRETURN result = SQL_ERROR;
       const bool primary = direction != 0, foreign = direction != 1;
       if (wide) {
-        auto db = rs::odbc::utf8_to_wide(database), sc = rs::odbc::utf8_to_wide(schema);
-        auto pk = rs::odbc::utf8_to_wide(parent), fk = rs::odbc::utf8_to_wide(child);
+        auto db = odbcpp::test::text::utf8_to_wide(database), sc = odbcpp::test::text::utf8_to_wide(schema);
+        auto pk = odbcpp::test::text::utf8_to_wide(parent), fk = odbcpp::test::text::utf8_to_wide(child);
         ASSERT_TRUE(db);
         ASSERT_TRUE(sc);
         ASSERT_TRUE(pk);
@@ -11114,7 +11161,7 @@ void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
       ASSERT_FALSE(HasFatalFailure());
       for (unsigned row = 0; row < 2; ++row) {
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
-        rs::core::database::ResultRow cells;
+        ResultRow cells;
         for (SQLUSMALLINT column = 1; column <= 14; ++column) {
           std::array<char, 1025> value{};
           SQLLEN indicator = 0;
@@ -11127,14 +11174,14 @@ void RedshiftRealTest::current_database_foreign_key_contract(bool wide) {
             cells.emplace_back(std::string(value.data(), indicator));
           }
         }
-        EXPECT_EQ(rs::core::database::ResultCell{database}, cells[0]);
-        EXPECT_EQ(rs::core::database::ResultCell{schema}, cells[1]);
-        EXPECT_EQ(rs::core::database::ResultCell{parent}, cells[2]);
-        EXPECT_EQ(rs::core::database::ResultCell{row ? "key_a" : "key_b"}, cells[3]);
-        EXPECT_EQ(rs::core::database::ResultCell{database}, cells[4]);
-        EXPECT_EQ(rs::core::database::ResultCell{child}, cells[6]);
-        EXPECT_EQ(rs::core::database::ResultCell{row ? "ref_a" : "ref_b"}, cells[7]);
-        EXPECT_EQ(rs::core::database::ResultCell{std::to_string(row + 1)}, cells[8]);
+        EXPECT_EQ(ResultCell{database}, cells[0]);
+        EXPECT_EQ(ResultCell{schema}, cells[1]);
+        EXPECT_EQ(ResultCell{parent}, cells[2]);
+        EXPECT_EQ(ResultCell{row ? "key_a" : "key_b"}, cells[3]);
+        EXPECT_EQ(ResultCell{database}, cells[4]);
+        EXPECT_EQ(ResultCell{child}, cells[6]);
+        EXPECT_EQ(ResultCell{row ? "ref_a" : "ref_b"}, cells[7]);
+        EXPECT_EQ(ResultCell{std::to_string(row + 1)}, cells[8]);
         ASSERT_TRUE(cells[11]);
         EXPECT_FALSE(cells[11]->empty());
         owned[explicit_catalog].push_back(std::move(cells));
@@ -11174,9 +11221,9 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
   ASSERT_FALSE(table.empty());
   ASSERT_LE(schema.size(), 1024u);
   ASSERT_LE(table.size(), 1024u);
-  ASSERT_TRUE(rs::odbc::utf8_code_point_count(schema));
-  ASSERT_TRUE(rs::odbc::utf8_code_point_count(table));
-  const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(schema));
+  ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(table));
+  const auto options = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
   const auto original_connection_string = connection_string_;
   const auto literal_pattern = [](std::string_view input) {
@@ -11190,7 +11237,7 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
     return value;
   };
   const auto schema_pattern = literal_pattern(schema), table_pattern = literal_pattern(table);
-  std::array<rs::core::database::ResultRows, 2> owning;
+  std::array<ResultRows, 2> owning;
   for (unsigned mode = 0; mode < 2; ++mode) {
     connection_string_ = original_connection_string + (mode ? ";RedshiftCatalogMode=LEGACY" : ";RedshiftCatalogMode=SHOW");
     ASSERT_TRUE(connect());
@@ -11203,11 +11250,11 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
     ASSERT_GT(database_length, 0);
     ASSERT_LT(static_cast<std::size_t>(database_length), database_buffer.size());
     const std::string database{reinterpret_cast<char*>(database_buffer.data()), static_cast<std::size_t>(database_length)};
-    const auto capture = [&](rs::core::database::ResultRows& rows) {
+    const auto capture = [&](ResultRows& rows) {
       SQLRETURN status = SQL_ERROR;
       if (wide) {
-        auto db = rs::odbc::utf8_to_wide(database), sc = rs::odbc::utf8_to_wide(schema_pattern);
-        auto target = rs::odbc::utf8_to_wide(table_pattern);
+        auto db = odbcpp::test::text::utf8_to_wide(database), sc = odbcpp::test::text::utf8_to_wide(schema_pattern);
+        auto target = odbcpp::test::text::utf8_to_wide(table_pattern);
         ASSERT_TRUE(db);
         ASSERT_TRUE(sc);
         ASSERT_TRUE(target);
@@ -11234,7 +11281,7 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
         }
         ASSERT_EQ(SQL_SUCCESS, fetched);
         ASSERT_LT(row, 10000u);
-        rs::core::database::ResultRow cells;
+        ResultRow cells;
         for (SQLUSMALLINT column = 1; column <= 18; ++column) {
           std::array<char, 1025> value{};
           SQLLEN length = 0;
@@ -11247,9 +11294,9 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
             cells.emplace_back(std::string(value.data(), static_cast<std::size_t>(length)));
           }
         }
-        ASSERT_EQ(rs::core::database::ResultCell{database}, cells[0]);
-        ASSERT_EQ(rs::core::database::ResultCell{schema}, cells[1]);
-        ASSERT_EQ(rs::core::database::ResultCell{table}, cells[2]);
+        ASSERT_EQ(ResultCell{database}, cells[0]);
+        ASSERT_EQ(ResultCell{schema}, cells[1]);
+        ASSERT_EQ(ResultCell{table}, cells[2]);
         ASSERT_TRUE(cells[5]);
         auto label = *cells[5];
         for (char& c : label) {
@@ -11259,8 +11306,8 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
         }
         if (label == "varbyte" || label == "varbinary" || label == "binary varying") {
           ++binary_columns;
-          EXPECT_EQ(rs::core::database::ResultCell{"-4"}, cells[4]);
-          EXPECT_EQ(rs::core::database::ResultCell{"-4"}, cells[13]);
+          EXPECT_EQ(ResultCell{"-4"}, cells[4]);
+          EXPECT_EQ(ResultCell{"-4"}, cells[13]);
           for (const unsigned field : {6u, 7u, 8u, 9u, 14u, 15u}) {
             EXPECT_FALSE(cells[field]) << field;
           }
@@ -11270,7 +11317,7 @@ void RedshiftRealTest::varbyte_catalog_type_classification(bool wide) {
     };
     capture(owning[mode]);
     ASSERT_FALSE(HasFatalFailure());
-    rs::core::database::ResultRows recovered;
+    ResultRows recovered;
     capture(recovered);
     ASSERT_FALSE(HasFatalFailure());
     EXPECT_EQ(owning[mode], recovered);
@@ -11310,9 +11357,9 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
   ASSERT_FALSE(table.empty());
   ASSERT_LE(schema.size(), 1024u);
   ASSERT_LE(table.size(), 1024u);
-  ASSERT_TRUE(rs::odbc::utf8_code_point_count(schema));
-  ASSERT_TRUE(rs::odbc::utf8_code_point_count(table));
-  const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(schema));
+  ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(table));
+  const auto options = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
   const auto original_connection_string = connection_string_;
   const auto literal_pattern = [](std::string_view input) {
@@ -11326,7 +11373,7 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
     return value;
   };
   const auto schema_pattern = literal_pattern(schema), table_pattern = literal_pattern(table);
-  std::array<rs::core::database::ResultRows, 2> owning;
+  std::array<ResultRows, 2> owning;
   for (unsigned mode = 0; mode < 2; ++mode) {
     connection_string_ = original_connection_string + (mode ? ";RedshiftCatalogMode=LEGACY" : ";RedshiftCatalogMode=SHOW");
     ASSERT_TRUE(connect());
@@ -11339,11 +11386,11 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
     ASSERT_GT(database_length, 0);
     ASSERT_LT(static_cast<std::size_t>(database_length), database_buffer.size());
     const std::string database{reinterpret_cast<char*>(database_buffer.data()), static_cast<std::size_t>(database_length)};
-    const auto capture = [&](rs::core::database::ResultRows& rows) {
+    const auto capture = [&](ResultRows& rows) {
       SQLRETURN status = SQL_ERROR;
       if (wide) {
-        auto db = rs::odbc::utf8_to_wide(database), sc = rs::odbc::utf8_to_wide(schema_pattern);
-        auto target = rs::odbc::utf8_to_wide(table_pattern);
+        auto db = odbcpp::test::text::utf8_to_wide(database), sc = odbcpp::test::text::utf8_to_wide(schema_pattern);
+        auto target = odbcpp::test::text::utf8_to_wide(table_pattern);
         ASSERT_TRUE(db);
         ASSERT_TRUE(sc);
         ASSERT_TRUE(target);
@@ -11370,7 +11417,7 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
         }
         ASSERT_EQ(SQL_SUCCESS, fetched);
         ASSERT_LT(row, 10000u);
-        rs::core::database::ResultRow cells;
+        ResultRow cells;
         for (SQLUSMALLINT column = 1; column <= 18; ++column) {
           std::array<char, 1025> value{};
           SQLLEN length = 0;
@@ -11383,9 +11430,9 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
             cells.emplace_back(std::string(value.data(), static_cast<std::size_t>(length)));
           }
         }
-        ASSERT_EQ(rs::core::database::ResultCell{database}, cells[0]);
-        ASSERT_EQ(rs::core::database::ResultCell{schema}, cells[1]);
-        ASSERT_EQ(rs::core::database::ResultCell{table}, cells[2]);
+        ASSERT_EQ(ResultCell{database}, cells[0]);
+        ASSERT_EQ(ResultCell{schema}, cells[1]);
+        ASSERT_EQ(ResultCell{table}, cells[2]);
         ASSERT_TRUE(cells[5]);
         auto label = *cells[5];
         for (char& c : label) {
@@ -11395,8 +11442,8 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
         }
         if (label == "super") {
           ++super_columns;
-          EXPECT_EQ(rs::core::database::ResultCell{"-1"}, cells[4]);
-          EXPECT_EQ(rs::core::database::ResultCell{"-1"}, cells[13]);
+          EXPECT_EQ(ResultCell{"-1"}, cells[4]);
+          EXPECT_EQ(ResultCell{"-1"}, cells[13]);
           for (const unsigned field : {6u, 7u, 8u, 9u, 14u, 15u}) {
             EXPECT_FALSE(cells[field]) << field;
           }
@@ -11406,7 +11453,7 @@ void RedshiftRealTest::super_catalog_type_classification(bool wide) {
     };
     capture(owning[mode]);
     ASSERT_FALSE(HasFatalFailure());
-    rs::core::database::ResultRows recovered;
+    ResultRows recovered;
     capture(recovered);
     ASSERT_FALSE(HasFatalFailure());
     EXPECT_EQ(owning[mode], recovered);
@@ -11443,9 +11490,9 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
   ASSERT_FALSE(table.empty());
   ASSERT_LE(schema.size(), 1024u);
   ASSERT_LE(table.size(), 1024u);
-  ASSERT_TRUE(rs::odbc::utf8_code_point_count(schema));
-  ASSERT_TRUE(rs::odbc::utf8_code_point_count(table));
-  const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(schema));
+  ASSERT_TRUE(odbcpp::test::text::utf8_code_point_count(table));
+  const auto options = odbcpp::test::connection_string::parse(connection_string_);
   ASSERT_FALSE(options.contains("REDSHIFTCATALOGMODE"));
   const auto original_connection_string = connection_string_;
   const auto literal_pattern = [](std::string_view input) {
@@ -11459,7 +11506,7 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
     return value;
   };
   const auto schema_pattern = literal_pattern(schema), table_pattern = literal_pattern(table);
-  std::array<rs::core::database::ResultRows, 2> owning;
+  std::array<ResultRows, 2> owning;
   for (unsigned mode = 0; mode < 2; ++mode) {
     connection_string_ = original_connection_string + (mode ? ";RedshiftCatalogMode=LEGACY" : ";RedshiftCatalogMode=SHOW");
     ASSERT_TRUE(connect());
@@ -11472,11 +11519,11 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
     ASSERT_GT(database_length, 0);
     ASSERT_LT(static_cast<std::size_t>(database_length), database_buffer.size());
     const std::string database{reinterpret_cast<char*>(database_buffer.data()), static_cast<std::size_t>(database_length)};
-    const auto capture = [&](rs::core::database::ResultRows& rows) {
+    const auto capture = [&](ResultRows& rows) {
       SQLRETURN status = SQL_ERROR;
       if (wide) {
-        auto db = rs::odbc::utf8_to_wide(database), sc = rs::odbc::utf8_to_wide(schema_pattern);
-        auto target = rs::odbc::utf8_to_wide(table_pattern);
+        auto db = odbcpp::test::text::utf8_to_wide(database), sc = odbcpp::test::text::utf8_to_wide(schema_pattern);
+        auto target = odbcpp::test::text::utf8_to_wide(table_pattern);
         ASSERT_TRUE(db);
         ASSERT_TRUE(sc);
         ASSERT_TRUE(target);
@@ -11503,7 +11550,7 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
         }
         ASSERT_EQ(SQL_SUCCESS, fetched);
         ASSERT_LT(row, 10000u);
-        rs::core::database::ResultRow cells;
+        ResultRow cells;
         for (SQLUSMALLINT column = 1; column <= 18; ++column) {
           std::array<char, 1025> value{};
           SQLLEN length = 0;
@@ -11516,9 +11563,9 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
             cells.emplace_back(std::string(value.data(), static_cast<std::size_t>(length)));
           }
         }
-        ASSERT_EQ(rs::core::database::ResultCell{database}, cells[0]);
-        ASSERT_EQ(rs::core::database::ResultCell{schema}, cells[1]);
-        ASSERT_EQ(rs::core::database::ResultCell{table}, cells[2]);
+        ASSERT_EQ(ResultCell{database}, cells[0]);
+        ASSERT_EQ(ResultCell{schema}, cells[1]);
+        ASSERT_EQ(ResultCell{table}, cells[2]);
         ASSERT_TRUE(cells[5]);
         auto label = *cells[5];
         for (char& c : label) {
@@ -11528,8 +11575,8 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
         }
         if (label == "geometry" || label == "geography") {
           spatial_columns[label == "geography" ? 1 : 0] = true;
-          EXPECT_EQ(rs::core::database::ResultCell{"-4"}, cells[4]);
-          EXPECT_EQ(rs::core::database::ResultCell{"-4"}, cells[13]);
+          EXPECT_EQ(ResultCell{"-4"}, cells[4]);
+          EXPECT_EQ(ResultCell{"-4"}, cells[13]);
           for (const unsigned field : {6u, 7u, 8u, 9u, 14u, 15u}) {
             EXPECT_FALSE(cells[field]) << field;
           }
@@ -11539,7 +11586,7 @@ void RedshiftRealTest::spatial_catalog_type_classification(bool wide) {
     };
     capture(owning[mode]);
     ASSERT_FALSE(HasFatalFailure());
-    rs::core::database::ResultRows recovered;
+    ResultRows recovered;
     capture(recovered);
     ASSERT_FALSE(HasFatalFailure());
     EXPECT_EQ(owning[mode], recovered);

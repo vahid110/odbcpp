@@ -740,9 +740,14 @@ if(UNIX OR WIN32)
     else()
       set(_dm_redshift_product 0)
     endif()
-    foreach(_dm_suite IN ITEMS it_prepared_statements_real it_bind_col_real
+    set(_dm_suites it_prepared_statements_real it_bind_col_real
         it_native_sql it_handle_lifecycle it_diagnostics it_get_info
         it_metadata_real)
+    # Like its direct target, the real Redshift suite exists only in Redshift builds.
+    if(TARGET_DATABASE STREQUAL "REDSHIFT")
+      list(APPEND _dm_suites it_redshift_real)
+    endif()
+    foreach(_dm_suite IN LISTS _dm_suites)
       set(_dm_target dm_${_dm_suite})
       add_executable(${_dm_target} tests/integration/${_dm_suite}.cpp)
       if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
@@ -759,6 +764,9 @@ if(UNIX OR WIN32)
         target_compile_definitions(${_dm_target} PRIVATE
           ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
       endif()
+      if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+        target_compile_definitions(${_dm_target} PRIVATE ODBCPP_TEST_IODBC=1)
+      endif()
       add_dependencies(${_dm_target} ${PROJECT_NAME}_driver)
       apply_compiler_settings(${_dm_target})
       set_target_properties(${_dm_target} PROPERTIES
@@ -770,6 +778,7 @@ if(UNIX OR WIN32)
       endif()
     endforeach()
     unset(_dm_redshift_product)
+    unset(_dm_suites)
   elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
     message(FATAL_ERROR
       "ODBC driver-manager library was not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")

@@ -85,11 +85,22 @@ inline std::optional<std::string> wide_to_utf8(std::span<const SQLWCHAR> input) 
   return output;
 }
 
+// Code points in valid UTF-8 text, or nullopt for invalid text.
+inline std::optional<std::size_t> utf8_code_point_count(std::string_view input) {
+  if (!utf8_to_wide(input)) return std::nullopt;
+  std::size_t count = 0;
+  for (const unsigned char byte : input) {
+    if ((byte & 0xc0) != 0x80) ++count;
+  }
+  return count;
+}
+
 }  // namespace odbcpp::test::text
 #else
 #include "odbc/unicode.h"
 
 namespace odbcpp::test::text {
+using rs::odbc::utf8_code_point_count;
 using rs::odbc::utf8_to_wide;
 using rs::odbc::wide_to_utf8;
 }  // namespace odbcpp::test::text
