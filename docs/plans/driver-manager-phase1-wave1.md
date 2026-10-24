@@ -66,10 +66,16 @@ The fixtures skip, rather than fail, when they can't connect, so a run with skip
 - **Traces:** the iODBC application-side trace plus the driver's own API trace (`ODBCPP_TRACE`), which records what the manager called and what the driver returned.
 - **Evidence:** raw output, XML, traces and macOS crash reports are kept in the private evidence directory `~/odbcpp-audits/dm-test-layer/`.
 
+Final runs are on `10d664c` with a clean worktree and `-DODBCPP_DM_INTEGRATION_TESTS=ON`; an earlier collection on the same source gave the same buckets.
+
 | profile | direct (`it_*`) | manager (`dm_it_*`) |
 |---|---|---|
-| iODBC 3.52.16, 4/4 (`macos-iodbc-pg`) | 310 pass, 0 fail, 0 skip | 298 cases: 100 pass, 193 fail, 5 crash, 0 skip |
+| iODBC 3.52.16, 4/4 (`macos-iodbc-pg`) | 310 pass, 0 fail, 0 skip | 298 cases: 100 pass, 192 fail, 6 crash, 0 skip |
 | unixODBC 2.3.14, 2/2 (`unixodbc-pg`) | 310 pass, 0 fail, 0 skip | 298 cases: 281 pass, 17 fail, 0 crash, 0 skip |
+
+One `it_handle_lifecycle` case crashed in the final iODBC run but failed in the earlier one (6 crashes against 5). That matches bucket J, whose crashes depend on memory layout.
+
+With the option off (the default), CTest lists 133 tests and no `dm_*`.
 
 Windows ODBC and Linux runs aren't part of this wave.
 
