@@ -76,7 +76,7 @@ class ProfileInputsTests(unittest.TestCase):
                           admin_user='odbcpp_pilot_admin', admin_password='dummy-unused-admin',
                           ca=str(root / 'dummy-ca.pem'))
             profile = dict(profile_name='REDSHIFT/offline-private-DSN', limits=factory.limits_for(1),
-                connection_environment=['ODBCPP_TEST_DSN'], uses_private_dsn=True,
+                connection_environment=['ODBCPP_REDSHIFT_TEST_CONNECTION'], uses_private_dsn=True,
                 variables={'ODBCPP_TEST_DSN': 'DSN=RedshiftProd;'},
                 review=dict(path=str(root / 'synthetic-review.json'), sha256='a' * 64),
                 private_input=dict(kind='OWN_DSN', password_rejection=False,
