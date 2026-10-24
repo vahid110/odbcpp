@@ -52,8 +52,15 @@ enum class Deviation {
   Odbc2FunctionsReported,
   LoginTimeoutWritesEightBytes,
   ColumnCountWrittenOnError,
-  FailedPrepareForgetsOpenCursor,
+  FailedCallForgetsOpenCursor,
   ManagerWideXopenCliYear,
+  MoreResultsErrorKeepsCursorOpen,
+  RowCountWrittenOnError,
+  RowDescriptorUnavailableAfterClose,
+  AnsiTruncatedLengthIsCopied,
+  SpecialColumnsNullableDropped,
+  ColumnCountNullOutputAccepted,
+  ReconnectAfterInternalCloseRefused,
 };
 
 }  // namespace dm
@@ -130,8 +137,18 @@ inline constexpr Entry kEntries[] = {
     {Deviation::Odbc2FunctionsReported, kUnixodbc2314, nullptr, "bucket N"},
     {Deviation::LoginTimeoutWritesEightBytes, kIodbc35216, nullptr, "bucket J"},
     {Deviation::ColumnCountWrittenOnError, kIodbc35216, nullptr, "bucket S"},
-    {Deviation::FailedPrepareForgetsOpenCursor, kUnixodbc2314, nullptr, "bucket O"},
+    {Deviation::FailedCallForgetsOpenCursor, kUnixodbc2314, nullptr, "bucket O"},
     {Deviation::ManagerWideXopenCliYear, kUnixodbc2314, "1994", "bucket T"},
+    {Deviation::MoreResultsErrorKeepsCursorOpen, kIodbc35216, nullptr, "bucket V"},
+    {Deviation::MoreResultsErrorKeepsCursorOpen, kUnixodbc2314, nullptr, "bucket V"},
+    {Deviation::RowCountWrittenOnError, kUnixodbc2314, nullptr, "bucket W"},
+    // value: the SQLSTATE the manager raises.
+    {Deviation::RowDescriptorUnavailableAfterClose, kUnixodbc2314, "HY007", "bucket X"},
+    {Deviation::AnsiTruncatedLengthIsCopied, kIodbc35216, nullptr, "bucket P"},
+    {Deviation::SpecialColumnsNullableDropped, kIodbc35216, nullptr, "bucket U"},
+    {Deviation::ColumnCountNullOutputAccepted, kIodbc35216, nullptr, "bucket S"},
+    {Deviation::ReconnectAfterInternalCloseRefused, kIodbc35216, nullptr, "bucket Y"},
+    {Deviation::ReconnectAfterInternalCloseRefused, kUnixodbc2314, nullptr, "bucket Y"},
 };
 
 inline const Entry* entry(Deviation deviation) {
@@ -308,7 +325,7 @@ namespace dm {
 inline const char* odbc3_state(std::string_view odbc2) {
   struct Mapping { const char* odbc2; const char* odbc3; };
   static constexpr Mapping kMappings[] = {
-      {"S1000", "HY000"}, {"S1001", "HY001"}, {"S1003", "HY003"},
+      {"S1000", "HY000"}, {"S1001", "HY001"}, {"S1002", "07009"}, {"S1003", "HY003"},
       {"S1004", "HY004"}, {"S1009", "HY009"}, {"S1010", "HY010"},
       {"S1090", "HY090"}, {"S1091", "HY091"}, {"S1092", "HY092"},
       {"S1093", "07009"}, {"S1096", "HY096"}, {"S1105", "HY105"},

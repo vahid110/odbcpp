@@ -2622,81 +2622,81 @@ tests/integration/it_handle_lifecycle.cpp,790,TEST_F,DriverConnectIntegrationTes
 tests/integration/it_handle_lifecycle.cpp,872,TEST_F,EnvironmentTransactionIntegrationTest,CommitAndRollbackApplyToEveryConnectedChild,,public-only,SQLConnect,,,,,15
 tests/integration/it_handle_lifecycle.cpp,997,TEST_F,HandleLifecycleIntegrationTest,ActiveHealthProbePreservesTransactionState,,needs-internals,SQLDriverConnect,,,body,BackendOperation BackendResult Deadline DescriptorRecord HandleRegistry::get_handle_as ODBCBackendTestAccess ODBCConnection(non-construction) ODBCStatement,19
 tests/integration/it_handle_lifecycle.cpp,1025,TEST_F,HandleLifecycleIntegrationTest,ExpiredHealthDeadlineRetiresWithoutReconnect,,needs-internals,SQLDriverConnect,,,body,BackendErrorClass BackendOperation BackendResult Deadline DescriptorRecord HandleRegistry::get_handle_as ODBCBackendTestAccess ODBCConnection(non-construction),19
-tests/integration/it_metadata_real.cpp,676,TEST_F,MetadataIntegrationTest,BasicMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,717,TEST_F,MetadataIntegrationTest,NotificationDoesNotCorruptQueryResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,731,TEST_F,MetadataIntegrationTest,ReportsCurrentRowNumberOnlyWhilePositioned,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,788,TEST_F,MetadataIntegrationTest,ReportsAnsiColumnNameTruncation,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,815,TEST_F,MetadataIntegrationTest,ImplementationDescriptorReportsResultMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,860,TEST_F,MetadataIntegrationTest,ImplementationDescriptorCompletesFieldMatrix,,needs-internals,SQLConnect,,,body,DatabaseFactory wide_to_utf8,43
-tests/integration/it_metadata_real.cpp,978,TEST_F,MetadataIntegrationTest,GetDataWideHandlesUnalignedBuffer,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,999,TEST_F,MetadataIntegrationTest,GetDataRejectsTargetChangeMidChunk,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,1041,TEST_F,MetadataIntegrationTest,GetDataCanChangeTypeAfterZeroLengthProbe,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,1063,TEST_F,MetadataIntegrationTest,ExecutesAndPreparesUnicodeSql,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide wide_to_utf8,41
-tests/integration/it_metadata_real.cpp,1131,TEST_F,MetadataIntegrationTest,FindsUnicodeCatalogIdentifiers,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide wide_to_utf8,39
-tests/integration/it_metadata_real.cpp,1189,TEST_F,MetadataIntegrationTest,DescribesUnicodeColumnNames,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide wide_to_utf8,40
-tests/integration/it_metadata_real.cpp,1226,TEST_F,MetadataIntegrationTest,MultipleColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,1248,TEST_F,MetadataIntegrationTest,ReportsAffectedRows,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,1276,TEST_F,MetadataIntegrationTest,CountOutputsHandleUnalignedBuffers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,1311,TEST_F,MetadataIntegrationTest,DescribesPreparedResultsBeforeExecution,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
-tests/integration/it_metadata_real.cpp,1413,TEST_F,MetadataIntegrationTest,DescribesPreparedColumnsDirectly,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,1510,TEST_F,MetadataIntegrationTest,DescribeOutputsHandleUnalignedBuffers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,1590,TEST_F,MetadataIntegrationTest,ColumnAttributeOutputsHandleUnalignedBuffers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,1629,TEST_F,MetadataIntegrationTest,ColumnAttributesMatchImplementationDescriptor,,needs-internals,SQLConnect,,,body,DatabaseFactory wide_to_utf8,42
-tests/integration/it_metadata_real.cpp,1748,TEST_F,MetadataIntegrationTest,ColumnMetadataStateErrorsPreserveOutputs,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,1843,TEST_F,MetadataIntegrationTest,DescribesPreparedWideColumnNames,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide wide_to_utf8,40
-tests/integration/it_metadata_real.cpp,1890,TEST_F,MetadataIntegrationTest,RefreshesPreparedShapeAfterIpdTypeChange,,needs-internals,SQLConnect,,,body,ConnectionString DatabaseFactory,43
-tests/integration/it_metadata_real.cpp,2045,TEST_F,MetadataIntegrationTest,ResultShapeAndRowCountFollowStatementState,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,2133,TEST_F,MetadataIntegrationTest,TypeInfoSchemaUsesNormalizedDescriptorMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
-tests/integration/it_metadata_real.cpp,2167,TEST_F,MetadataIntegrationTest,ReportsSupportedTypeInformation,,needs-internals,SQLConnect,,,body,DatabaseFactory,42
-tests/integration/it_metadata_real.cpp,2363,TEST_F,MetadataIntegrationTest,BackendColumnCatalogsPreserveDomainDimensionsAndNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,2412,TEST_F,MetadataIntegrationTest,BackendRoutineCatalogsPreserveDomainArgumentsAndNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,2447,TEST_F,MetadataIntegrationTest,BackendCatalogsPreserveQuotedUnicodeNames,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,2514,TEST_F,MetadataIntegrationTest,ListsPostgreSQLTables,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,2535,TEST_F,MetadataIntegrationTest,TablePatternsTypesAndEnumerationsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,2655,TEST_F,MetadataIntegrationTest,ListsPostgreSQLColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,2702,TEST_F,MetadataIntegrationTest,ColumnPatternsAndCatalogArgumentsFollowOdbc,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,40
-tests/integration/it_metadata_real.cpp,2803,TEST_F,MetadataIntegrationTest,CatalogTypeNamesPreservePostgreSQLTypes,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,2969,TEST_F,MetadataIntegrationTest,NestedDomainsKeepBaseCatalogMetadata,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,40
-tests/integration/it_metadata_real.cpp,3095,TEST_F,MetadataIntegrationTest,NestedDomainParameterMetadataKeepsTypmods,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,3168,TEST_F,MetadataIntegrationTest,DomainMetadataReprepareAndFailureRecovery,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,3226,TEST_F,MetadataIntegrationTest,ReprepareRetainsExplicitParameterTypeAndLength,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,3250,TEST_F,MetadataIntegrationTest,NestedDomainCatalogDimensionsMatchBaseColumns,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,3393,TEST_F,MetadataIntegrationTest,NegativeNumericScaleMetadata,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,41
-tests/integration/it_metadata_real.cpp,3557,TEST_F,MetadataIntegrationTest,TemporalMetadataUsesDeclaredPrecision,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,3650,TEST_F,MetadataIntegrationTest,ListsPostgreSQLPrimaryKeys,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,3750,TEST_F,MetadataIntegrationTest,PrimaryKeyArgumentsAreLiteralAndKeepEmpty,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,3906,TEST_F,MetadataIntegrationTest,ListsPostgreSQLForeignKeys,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,3981,TEST_F,MetadataIntegrationTest,ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdbc,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,40
-tests/integration/it_metadata_real.cpp,4326,TEST_F,MetadataIntegrationTest,ListsPostgreSQLIndexes,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,4370,TEST_F,MetadataIntegrationTest,StatisticsReportPostgreSQLIndexSemantics,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,4562,TEST_F,MetadataIntegrationTest,ListsPostgreSQLRoutines,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,4597,TEST_F,MetadataIntegrationTest,RoutinePatternsTypesAndOverloadsFollowOdbc,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,4698,TEST_F,MetadataIntegrationTest,ProcedureCountsFollowPostgreSQLArgumentModes,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,4745,TEST_F,MetadataIntegrationTest,ListsPostgreSQLRoutineColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,4783,TEST_F,MetadataIntegrationTest,ProcedureColumnModesAndPatternsFollowOdbc,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,4911,TEST_F,MetadataIntegrationTest,ReportsBestRowIdentifier,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,4948,TEST_F,MetadataIntegrationTest,SpecialColumnScopeAndArgumentsFollowOdbc,,needs-internals,SQLConnect,,,body,DatabaseFactory utf8_to_wide,39
-tests/integration/it_metadata_real.cpp,5069,TEST_F,MetadataIntegrationTest,SpecialColumnsFallsBackToUsableUniqueIndex,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,5132,TEST_F,MetadataIntegrationTest,LimitsRowsAndCompletesResultSequence,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5148,TEST_F,MetadataIntegrationTest,FetchScrollSupportsNextRows,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,5158,TEST_F,MetadataIntegrationTest,TraversesMultiplePostgreSQLResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
-tests/integration/it_metadata_real.cpp,5197,TEST_F,MetadataIntegrationTest,LaterBatchErrorSurfacesThroughMoreResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5223,TEST_F,MetadataIntegrationTest,InvalidTextCastUsesOdbcSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5249,TEST_F,MetadataIntegrationTest,IntegrityViolationsUseOdbcSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5286,TEST_F,MetadataIntegrationTest,MissingObjectsUseOdbcSqlstates,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5324,TEST_F,MetadataIntegrationTest,DuplicateObjectsUseOdbcSqlstates,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5375,TEST_F,MetadataIntegrationTest,DuplicateIndexUsesIndexSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5411,TEST_F,MetadataIntegrationTest,MissingIndexUsesIndexSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5439,TEST_F,MetadataIntegrationTest,MissingSchemaUsesOdbcSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5477,TEST_F,MetadataIntegrationTest,ClosingCursorDiscardsPendingResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
-tests/integration/it_metadata_real.cpp,5492,TEST_F,MetadataIntegrationTest,ErrorCases,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,5508,TEST_F,MetadataIntegrationTest,NegativeTests,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5541,TEST_F,MetadataIntegrationTest,InvalidHandleTests,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,40
-tests/integration/it_metadata_real.cpp,5559,TEST_F,MetadataIntegrationTest,BackendScalarMetadataAgreesBeforeAndAfterExecution,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,39
-tests/integration/it_metadata_real.cpp,5614,TEST_F,MetadataIntegrationTest,BackendDiagnosticFallbackAndRecoveryAcrossExecutionPaths,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
-tests/integration/it_metadata_real.cpp,5640,TEST_F,MetadataIntegrationTest,CompletionKindsDriveEachBatchResultDiagnostic,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
-tests/integration/it_metadata_real.cpp,5662,TEST_F,MetadataIntegrationTest,PreparedMetadataRefreshesAfterTimeoutReconnect,,needs-internals,SQLConnect,,,helpers,ConnectionString DatabaseFactory configured_backend_provider fail trim,40
-tests/integration/it_metadata_real.cpp,5730,TEST_F,MetadataIntegrationTest,PreparedMetadataRefreshesAfterLocalSchemaMutationAndReset,,needs-internals,SQLConnect,,,body,BackendResult DatabaseFactory DbErrorCode Deadline DescriptorRecord HandleRegistry::get_handle_as ODBCBackendTestAccess ODBCConnection(non-construction),39
+tests/integration/it_metadata_real.cpp,728,TEST_F,MetadataIntegrationTest,BasicMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,769,TEST_F,MetadataIntegrationTest,NotificationDoesNotCorruptQueryResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,783,TEST_F,MetadataIntegrationTest,ReportsCurrentRowNumberOnlyWhilePositioned,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,840,TEST_F,MetadataIntegrationTest,ReportsAnsiColumnNameTruncation,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,870,TEST_F,MetadataIntegrationTest,ImplementationDescriptorReportsResultMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,925,TEST_F,MetadataIntegrationTest,ImplementationDescriptorCompletesFieldMatrix,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,45
+tests/integration/it_metadata_real.cpp,1043,TEST_F,MetadataIntegrationTest,GetDataWideHandlesUnalignedBuffer,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,1064,TEST_F,MetadataIntegrationTest,GetDataRejectsTargetChangeMidChunk,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,1106,TEST_F,MetadataIntegrationTest,GetDataCanChangeTypeAfterZeroLengthProbe,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,1128,TEST_F,MetadataIntegrationTest,ExecutesAndPreparesUnicodeSql,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,43
+tests/integration/it_metadata_real.cpp,1196,TEST_F,MetadataIntegrationTest,FindsUnicodeCatalogIdentifiers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,1254,TEST_F,MetadataIntegrationTest,DescribesUnicodeColumnNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1291,TEST_F,MetadataIntegrationTest,MultipleColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,1313,TEST_F,MetadataIntegrationTest,ReportsAffectedRows,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1341,TEST_F,MetadataIntegrationTest,CountOutputsHandleUnalignedBuffers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1383,TEST_F,MetadataIntegrationTest,DescribesPreparedResultsBeforeExecution,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,43
+tests/integration/it_metadata_real.cpp,1485,TEST_F,MetadataIntegrationTest,DescribesPreparedColumnsDirectly,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1582,TEST_F,MetadataIntegrationTest,DescribeOutputsHandleUnalignedBuffers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,1662,TEST_F,MetadataIntegrationTest,ColumnAttributeOutputsHandleUnalignedBuffers,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1701,TEST_F,MetadataIntegrationTest,ColumnAttributesMatchImplementationDescriptor,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,44
+tests/integration/it_metadata_real.cpp,1822,TEST_F,MetadataIntegrationTest,ColumnMetadataStateErrorsPreserveOutputs,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1917,TEST_F,MetadataIntegrationTest,DescribesPreparedWideColumnNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,1964,TEST_F,MetadataIntegrationTest,RefreshesPreparedShapeAfterIpdTypeChange,,needs-internals,SQLDriverConnect,,,body,ConnectionString DatabaseFactory,46
+tests/integration/it_metadata_real.cpp,2131,TEST_F,MetadataIntegrationTest,ResultShapeAndRowCountFollowStatementState,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,2219,TEST_F,MetadataIntegrationTest,TypeInfoSchemaUsesNormalizedDescriptorMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,44
+tests/integration/it_metadata_real.cpp,2253,TEST_F,MetadataIntegrationTest,ReportsSupportedTypeInformation,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,44
+tests/integration/it_metadata_real.cpp,2451,TEST_F,MetadataIntegrationTest,BackendColumnCatalogsPreserveDomainDimensionsAndNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2508,TEST_F,MetadataIntegrationTest,BackendRoutineCatalogsPreserveDomainArgumentsAndNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2551,TEST_F,MetadataIntegrationTest,BackendCatalogsPreserveQuotedUnicodeNames,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2626,TEST_F,MetadataIntegrationTest,ListsPostgreSQLTables,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2647,TEST_F,MetadataIntegrationTest,TablePatternsTypesAndEnumerationsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2767,TEST_F,MetadataIntegrationTest,ListsPostgreSQLColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2814,TEST_F,MetadataIntegrationTest,ColumnPatternsAndCatalogArgumentsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,2915,TEST_F,MetadataIntegrationTest,CatalogTypeNamesPreservePostgreSQLTypes,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,3081,TEST_F,MetadataIntegrationTest,NestedDomainsKeepBaseCatalogMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,3207,TEST_F,MetadataIntegrationTest,NestedDomainParameterMetadataKeepsTypmods,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,3280,TEST_F,MetadataIntegrationTest,DomainMetadataReprepareAndFailureRecovery,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,3338,TEST_F,MetadataIntegrationTest,ReprepareRetainsExplicitParameterTypeAndLength,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,3362,TEST_F,MetadataIntegrationTest,NestedDomainCatalogDimensionsMatchBaseColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,3505,TEST_F,MetadataIntegrationTest,NegativeNumericScaleMetadata,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,43
+tests/integration/it_metadata_real.cpp,3669,TEST_F,MetadataIntegrationTest,TemporalMetadataUsesDeclaredPrecision,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,3762,TEST_F,MetadataIntegrationTest,ListsPostgreSQLPrimaryKeys,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,3862,TEST_F,MetadataIntegrationTest,PrimaryKeyArgumentsAreLiteralAndKeepEmpty,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4018,TEST_F,MetadataIntegrationTest,ListsPostgreSQLForeignKeys,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4093,TEST_F,MetadataIntegrationTest,ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4438,TEST_F,MetadataIntegrationTest,ListsPostgreSQLIndexes,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4482,TEST_F,MetadataIntegrationTest,StatisticsReportPostgreSQLIndexSemantics,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4677,TEST_F,MetadataIntegrationTest,ListsPostgreSQLRoutines,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4712,TEST_F,MetadataIntegrationTest,RoutinePatternsTypesAndOverloadsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4816,TEST_F,MetadataIntegrationTest,ProcedureCountsFollowPostgreSQLArgumentModes,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4863,TEST_F,MetadataIntegrationTest,ListsPostgreSQLRoutineColumns,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,4901,TEST_F,MetadataIntegrationTest,ProcedureColumnModesAndPatternsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5032,TEST_F,MetadataIntegrationTest,ReportsBestRowIdentifier,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5069,TEST_F,MetadataIntegrationTest,SpecialColumnScopeAndArgumentsFollowOdbc,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5193,TEST_F,MetadataIntegrationTest,SpecialColumnsFallsBackToUsableUniqueIndex,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5261,TEST_F,MetadataIntegrationTest,LimitsRowsAndCompletesResultSequence,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5277,TEST_F,MetadataIntegrationTest,FetchScrollSupportsNextRows,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5287,TEST_F,MetadataIntegrationTest,TraversesMultiplePostgreSQLResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,43
+tests/integration/it_metadata_real.cpp,5326,TEST_F,MetadataIntegrationTest,LaterBatchErrorSurfacesThroughMoreResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5352,TEST_F,MetadataIntegrationTest,InvalidTextCastUsesOdbcSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5379,TEST_F,MetadataIntegrationTest,IntegrityViolationsUseOdbcSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5416,TEST_F,MetadataIntegrationTest,MissingObjectsUseOdbcSqlstates,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5455,TEST_F,MetadataIntegrationTest,DuplicateObjectsUseOdbcSqlstates,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5508,TEST_F,MetadataIntegrationTest,DuplicateIndexUsesIndexSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5545,TEST_F,MetadataIntegrationTest,MissingIndexUsesIndexSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5574,TEST_F,MetadataIntegrationTest,MissingSchemaUsesOdbcSqlstate,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5613,TEST_F,MetadataIntegrationTest,ClosingCursorDiscardsPendingResults,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5628,TEST_F,MetadataIntegrationTest,ErrorCases,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5644,TEST_F,MetadataIntegrationTest,NegativeTests,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5682,TEST_F,MetadataIntegrationTest,InvalidHandleTests,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5700,TEST_F,MetadataIntegrationTest,BackendScalarMetadataAgreesBeforeAndAfterExecution,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,41
+tests/integration/it_metadata_real.cpp,5755,TEST_F,MetadataIntegrationTest,BackendDiagnosticFallbackAndRecoveryAcrossExecutionPaths,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,42
+tests/integration/it_metadata_real.cpp,5781,TEST_F,MetadataIntegrationTest,CompletionKindsDriveEachBatchResultDiagnostic,,needs-internals,SQLConnect,,,helpers,DatabaseFactory,43
+tests/integration/it_metadata_real.cpp,5810,TEST_F,MetadataIntegrationTest,PreparedMetadataRefreshesAfterTimeoutReconnect,,needs-internals,SQLConnect,,,helpers,ConnectionString DatabaseFactory configured_backend_provider fail trim,42
+tests/integration/it_metadata_real.cpp,5890,TEST_F,MetadataIntegrationTest,PreparedMetadataRefreshesAfterLocalSchemaMutationAndReset,,needs-internals,SQLConnect,,,body,BackendResult DatabaseFactory DbErrorCode Deadline DescriptorRecord HandleRegistry::get_handle_as ODBCBackendTestAccess ODBCConnection(non-construction),41
 tests/integration/it_mysql_date_parameters.cpp,244,TEST_F,MySqlDateParametersIntegrationTest,PhysicalDateComparisonBoundsNullAndOwningReceipts,,no-odbc-entry,none,DeadlineTransport,yes,body,BackendOperation BackendResult ConnectionSettings DbErrorCode Deadline MySqlSession QueryParameter QueryParameterType,0
 tests/integration/it_mysql_datetime_parameter_receipt.cpp,205,TEST_F,MySqlDatetimeReceiptObservationIntegrationTest,ActualQualifiedParameterStageRefusalIsObserved,,no-odbc-entry,none,ReceiptTransport,yes,body,BackendOperation BackendResult ConnectionSettings DbErrorCode Deadline QueryParameter QueryParameterType QueryResult,0
 tests/integration/it_mysql_datetime_results.cpp,178,TEST_F,MySqlDatetimeResultsIntegrationTest,CalendarPrecisionNullAndOwnershipAgreeAcrossProtocols,,no-odbc-entry,none,DeadlineTransport,yes,body,BackendResult ConnectionSettings Deadline MySqlSession QueryResult ResultRow ResultRows ScalarType,0

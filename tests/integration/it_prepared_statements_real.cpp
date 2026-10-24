@@ -5162,7 +5162,7 @@ TEST_F(PreparedStatementIntegrationTest,
     // failed re-prepare, although the driver's cursor is still open: it
     // refuses SQLExecute and SQLCloseCursor itself, so the case ends here.
     if (odbcpp::test::dm::stops_case(
-            odbcpp::test::dm::Deviation::FailedPrepareForgetsOpenCursor)) {
+            odbcpp::test::dm::Deviation::FailedCallForgetsOpenCursor)) {
         expect_state(SQLExecute(hstmt), "HY010");
         EXPECT_EQ(SQL_ERROR, SQLCloseCursor(hstmt));
         return;

@@ -741,7 +741,8 @@ if(UNIX OR WIN32)
       set(_dm_redshift_product 0)
     endif()
     foreach(_dm_suite IN ITEMS it_prepared_statements_real it_bind_col_real
-        it_native_sql it_handle_lifecycle it_diagnostics it_get_info)
+        it_native_sql it_handle_lifecycle it_diagnostics it_get_info
+        it_metadata_real)
       set(_dm_target dm_${_dm_suite})
       add_executable(${_dm_target} tests/integration/${_dm_suite}.cpp)
       if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)

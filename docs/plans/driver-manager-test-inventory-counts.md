@@ -13,9 +13,9 @@ whether the case body configures or reads fake-backend state:
 |---|---|---|---:|
 | fake-backend | - | - | 8 |
 | fake-backend | - | yes | 92 |
-| needs-internals | body | - | 123 |
+| needs-internals | body | - | 104 |
 | needs-internals | body | yes | 287 |
-| needs-internals | helpers | - | 325 |
+| needs-internals | helpers | - | 344 |
 | needs-internals | helpers | yes | 136 |
 
 ## By directory
