@@ -138,3 +138,31 @@ issuer; direct-token is caller-supplied and treated like an external secret).
 
 Deliver each phase as a reviewed local commit; no push/PR/live run until the
 human confirms the live checkpoint.
+
+## 7. Live environment prerequisites (verified 2026-10-24)
+
+The AWS-side IdC/Redshift configuration is a hard prerequisite for the live
+native-IdP tests. Verified against the pilot account (eu-north-1):
+
+- The Redshift IdC application (`odbcpp-idc-app2`, managed SSO app
+  `apl-<managed-app-id>`) must have the **RedshiftConnect service integration
+  enabled** (`modify-redshift-idc-application` `ServiceIntegrations.Redshift[].Connect.Authorization
+  = Enabled`). Redshift installs the `redshift:connect` access scope on the
+  managed app only when this integration is enabled; without it the data plane
+  fails `identitystore:DescribeUser` with "no resource-based policy allows ..."
+  (CloudTrail `identitystore.amazonaws.com`, caller `redshift.amazonaws.com`).
+  Direct `sso-admin put-application-access-scope` on a Redshift-managed app is
+  rejected ("supported through integration with its associated AWS service").
+- The managed app needs: IAM authentication method ActorPolicy allowing
+  `sso-oauth:CreateTokenWithIAM`/`IntrospectTokenWithIAM` for
+  `redshift.amazonaws.com` + `redshift-serverless.amazonaws.com`, the
+  `token-exchange`/`refresh_token` grants, the user/group assignment, and the
+  DB `CREATE IDENTITY PROVIDER` row pointing at the app ARN. The IdC KMS key
+  policy (multi-region replicas included) must keep the baseline provisions.
+- The IdC app role (`odbcpp-idc-integration-role`) needs `sso:DescribeApplication`
+  + `sso:DescribeInstance` and the Redshift trust principals; the integration
+  role's own `identitystore:*` grants do **not** cover the data-plane
+  `DescribeUser` (that call is made by the Redshift service, not the role).
+- Native login auto-creates the DB user on first login; `AUTO_CREATE_ROLES`
+  only affects group-to-role mapping. Users without IdC groups connect with
+  PUBLIC only, which suffices for the connect/`SELECT 1` live assertions.
