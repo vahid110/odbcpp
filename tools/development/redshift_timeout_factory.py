@@ -41,10 +41,41 @@ class TimeoutFactory:
         """
         need(self.allow_current_identity and self.EXPECTED_PRINCIPAL is None,
              'current_identity_one_use')
-        self.permission(value, absent='t')
+        fields = {'database', 'owner', 'owner_oid', 'schema_oid', 'schema_owner_oid'}
+        if type(value) is dict and set(value) == fields:
+            need(value['database'] == DATABASE and value['owner'] == ORDINARY,
+                 'current_identity_exact_database_principal')
+            for key in ('owner_oid', 'schema_oid', 'schema_owner_oid'):
+                self.positive(value[key])
+            need(value['owner_oid'] != value['schema_owner_oid'], 'current_identity_distinct_principals')
+        else:
+            # Retain the existing permission-row API for historical controls.
+            self.permission(value, absent='t')
         self.EXPECTED_PRINCIPAL = {key: value[key] for key in
             ('database', 'owner', 'owner_oid', 'schema_oid', 'schema_owner_oid')}
         return dict(self.EXPECTED_PRINCIPAL)
+
+    def current_identity_stage(self):
+        """Existing exact principals/schema, independent of any fixture table.
+
+        Called before the first fixture mutation in every Serverless partition.
+        It neither creates missing resources nor requires an unrelated timeout
+        table to be absent. Ordinary fixture privilege/absence checks still run
+        at their original stages after the identity has been bound.
+        """
+        need(self.resource_kind == 'serverless' and self.allow_current_identity and
+             self.EXPECTED_PRINCIPAL is None, 'current_identity_one_use')
+        headers = ('database', 'owner', 'owner_oid', 'schema_oid', 'schema_owner_oid')
+        query = ("SELECT current_database() AS database,TRIM(u.usename) AS owner,"
+                 "u.usesysid AS owner_oid,n.oid AS schema_oid,n.nspowner AS schema_owner_oid "
+                 "FROM pg_catalog.pg_namespace n CROSS JOIN pg_catalog.pg_user u "
+                 "CROSS JOIN pg_catalog.pg_user a WHERE current_database()='odbcpp_pilot' "
+                 "AND current_user='odbcpp_pilot_admin' AND n.nspname='odbcpp_fixture' "
+                 "AND u.usename='odbcpp_pilot_test' AND NOT u.usesuper "
+                 "AND a.usename='odbcpp_pilot_admin' AND a.usesuper "
+                 "AND a.usesysid<>u.usesysid AND n.nspowner=a.usesysid LIMIT 2;")
+        return {'stage': 'current_identity', 'role': 'admin', 'query': query,
+                'statements': 1, 'headers': headers, 'maxrows': 1}
 
     def _bind_oids(self, queries):
         need(self.EXPECTED_PRINCIPAL is not None, 'timeout_current_identity_unbound')

@@ -5,8 +5,10 @@ resource effects start solely when the reviewed lifecycle calls open_inputs.
 The accepted fixture092 NativeOps implementation remains immutable.
 """
 import copy
+import csv
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -64,6 +66,12 @@ def pin(path):
 
 def combined_fixture_plan(resource_kind='provisioned'):
     """Pure complete reserve, callable before Operations or private inputs."""
+    need(resource_kind in ('provisioned', 'serverless'), 'fixture_plan_resource_kind')
+    if resource_kind == 'serverless':
+        # Recompose the emitted path instead of adding to the historical
+        # five-helper startup cushion. Every helper includes three wrapper
+        # statements and one login; network remains separately charged.
+        return serverless_fixture_reserve('native')
     plan = fixtures.plan()
     census = native_custody.plan()
     for key, extra in (('total_helpers', 'helpers'), ('total_SQL', 'SQL'),
@@ -74,15 +82,46 @@ def combined_fixture_plan(resource_kind='provisioned'):
     plan['max8_termination_scope_guards_SQL'] = 8
     plan['native_census'] = census
     plan['network_helpers_separate'] = 1
-    need(resource_kind in ('provisioned', 'serverless'), 'fixture_plan_resource_kind')
-    if resource_kind == 'serverless':
-        # Name/OID binds are additional statements, not extra logins/helpers:
-        # capture, max8 termination batch, startup/final zero probes and the
-        # timeout cleanup. Reserve six, including final idle's independent zero.
-        plan['serverless_principal_binding_SQL'] = 6
-        plan['total_SQL'] += 6
-        plan['total_inclusive'] += 6
     return plan
+
+
+def serverless_fixture_reserve(scope):
+    """Conservative complete mode bounds, with each emitted binding visible."""
+    need(scope in ('native', 'powerbi_relationship', 'app'), 'serverless_reserve_scope')
+    branches = {
+        'current_identity_before_mutation': {'helpers': 1, 'SQL': 4},
+        'startup_zero': {'helpers': 1, 'SQL': 5},
+        'principal_cleanup': {'helpers': 3, 'SQL': 30 if scope != 'app' else 46},
+        'lifecycle_zero': {'helpers': 1, 'SQL': 5},
+        'final_idle_zero': {'helpers': 1, 'SQL': 5},
+    }
+    if scope == 'native':
+        branches['complete_fixtures'] = {'helpers': 28, 'SQL': 311}
+        branches['native_census'] = {'helpers': 2, 'SQL': 8}
+    else:
+        branches['relationship_fixture'] = {'helpers': 6, 'SQL': 62}
+        if scope == 'powerbi_relationship':
+            branches['native_census'] = {'helpers': 2, 'SQL': 8}
+        else:
+            branches['changed_session_cap_maximum'] = {'helpers': 7, 'SQL': 77}
+    helpers = sum(row['helpers'] for row in branches.values())
+    statements = sum(row['SQL'] for row in branches.values())
+    sites = ['startup_zero', 'PID_capture', 'max_target_termination',
+             'cleanup_principals_zero', 'lifecycle_zero', 'final_idle_zero']
+    if scope == 'native':
+        sites.append('timeout_cleanup')
+    if scope == 'app':
+        sites.extend(['session_snapshot', 'session_set_cap', 'session_sample_connected',
+                      'session_sample_navigator', 'session_sample_refresh',
+                      'session_quiesce', 'session_restore'])
+    return {'total_helpers': helpers, 'total_SQL': statements, 'total_logins': helpers,
+            'total_inclusive': statements + helpers, 'network_helpers_separate': 1,
+            'resource_kind': 'serverless', 'branches': branches,
+            'serverless_principal_binding_sites': sites,
+            'serverless_principal_binding_SQL': len(sites),
+            'maximum_cleanup_targets': 16 if scope == 'app' else 8,
+            'wrapper_SQL_per_helper': 3, 'login_per_helper': 1,
+            'scope': scope, 'ordinary_case_execution': 'CTest only' if scope != 'app' else 'native app owner'}
 
 
 def termination_stage(targets, *, maximum=8, resource_kind='provisioned', principal_oids=None):
@@ -268,6 +307,7 @@ class Operations:
     def resume_available(self, end):
         if getattr(self, 'resource_kind', 'provisioned') == 'serverless':
             self.native.resume_available(end)
+            self.bind_current_identity(end)
         elif self.approval.get('continue_available_cluster_from') is not None:
             need(self.available_cluster_verified, 'available_security_not_verified')
             cluster = self._available_cluster(end)
@@ -277,6 +317,22 @@ class Operations:
             self.native.resume_available(end)
         self.final_zero(end)
 
+    def bind_current_identity(self, end):
+        """One common read-only binding before any partition's fixture work."""
+        need(self.resource_kind == 'serverless' and self.now() < end,
+             'current_identity_resource_deadline')
+        stage = self.timeout_factory.current_identity_stage()
+        raw = self.sql(stage, end)
+        need(type(raw) is str and len(raw.encode('utf-8')) <= 65536 and '\x00' not in raw,
+             'current_identity_payload')
+        rows = list(csv.reader(io.StringIO(raw), strict=True))
+        need(len(rows) == 2 and tuple(rows[0]) == stage['headers'] and
+             len(rows[1]) == len(stage['headers']) and self.now() < end,
+             'current_identity_exact_one_CSV_row')
+        self.timeout_factory.bind_current_principal(dict(zip(stage['headers'], rows[1])))
+        self.record({'kind': 'current_existing_principal_schema',
+                     'identity': self.timeout_factory.EXPECTED_PRINCIPAL})
+
     def record(self, event):
         self.events += 1
         record(self.directory / ('fixture-event-' + str(self.events) + '.json'), event)
@@ -285,6 +341,13 @@ class Operations:
         need(type(stage) is dict and type(stage.get('stage')) is str,
              'fixture_stage_schema')
         name = stage['stage']
+        if name == 'current_identity':
+            need(self.resource_kind == 'serverless' and
+                 stage == self.timeout_factory.current_identity_stage(),
+                 'closed_current_identity_SQL_changed')
+            return
+        if getattr(self, 'resource_kind', 'provisioned') == 'serverless':
+            self._session_principal_oids()
         if name.startswith('powerbi_relationship_'):
             need(self.relationship_partition is True and
                  self.powerbi_relationship_armed is True,

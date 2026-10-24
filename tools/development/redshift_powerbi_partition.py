@@ -85,7 +85,13 @@ def profile_variables(profile, observed):
     return dict(profile['variables'], **observed)
 
 
-def plan():
+def plan(resource_kind='provisioned'):
+    need(resource_kind in ('provisioned', 'serverless'), 'relationship_plan_resource_kind')
+    if resource_kind == 'serverless':
+        from tools.development.redshift_ctest_ops import serverless_fixture_reserve
+        return dict(serverless_fixture_reserve('powerbi_relationship'),
+                    relationship_fixture=relationship.public_plan(),
+                    fixture_scope='powerbi_relationship')
     # Fixed fixture6/62SQL; conservative existing startup5/23SQL; cleanup:
     # PID capture4SQL + max8 guarded termination19SQL + two zero probes8SQL.
     # Wrapper SQL is already included. One login accompanies each helper.

@@ -276,7 +276,8 @@ def execute(plan, plan_path, admission_path):
         cleanup = staticmethod(fixtures.cleanup)
     if plan.get('partition') == 'powerbi_relationship':
         from tools.development import redshift_powerbi_partition as partition
-        CompleteFixtures.plan = staticmethod(partition.plan)
+        CompleteFixtures.plan = staticmethod(lambda: partition.plan(
+            plan['resource'].get('kind', 'provisioned')))
         CompleteFixtures.prepare = staticmethod(partition.prepare)
         CompleteFixtures.cleanup = staticmethod(partition.cleanup)
     # Ignore a second interrupt only while mandatory cleanup is running.

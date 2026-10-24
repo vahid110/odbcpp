@@ -120,8 +120,6 @@ def _prepare_timeout(ops, state, deadline):
     f = ops.timeout_factory
     initial = f.permission(_timeout_get(ops, state, 'permission_initial', deadline),
                            absent='t')
-    if getattr(f, 'allow_current_identity', False) and f.EXPECTED_PRINCIPAL is None:
-        f.bind_current_principal(initial)
     _need(all(initial[k] == v for k, v in f.EXPECTED_PRINCIPAL.items()),
           'timeout_exact_initial_identity', state)
     t['facts']['permission'] = initial
