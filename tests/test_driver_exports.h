@@ -1,6 +1,10 @@
 #pragma once
 
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+#include "tests/test_dm_odbc.h"
+#else
 #include "odbc/odbc_types.h"
+#endif
 
 #include <algorithm>
 #include <array>

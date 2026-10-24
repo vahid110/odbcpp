@@ -122,7 +122,7 @@ The remaining unit files are almost entirely `no-odbc-entry`. The generated coun
 | `it_bind_col_real` | `integration` | core | `SQLConnect`(string) | 110 | 101 | 7 / 1 | 1 | No. Blockers 1 and 2. Helpers use `DatabaseFactory`; one case uses `ConnectionString` and `configured_backend_provider`. **First wave.** |
 | `it_native_sql` | `integration` | core | `SQLConnect`(string) | 18 | 12 | 0 / 6 | 0 | No. Blockers 1 and 2. Six cases use `utf8_to_wide`/`wide_to_utf8` (needs a test-local converter). **First wave.** |
 | `it_handle_lifecycle` | `integration` | core | `SQLDriverConnect` | 14 | 12 | 0 / 2 | 0 | No. Blocker 1, plus the exact echo expectation (blocker 4). Two cases use `ODBCBackendTestAccess`. **First wave.** |
-| `it_diagnostics` | `integration` | core | `SQLConnect` | 10 | 1 | 9 / 0 | 0 | No. The fixture creates statements with `make_statement` (`get_handle_as`); switching it to `SQLAllocHandle` makes nine more cases public. |
+| `it_diagnostics` | `integration` | core | `SQLConnect` | 10 | 1 | 9 / 0 | 0 | No. The fixture uses `make_statement` to create a statement on a connection that was never opened. Correction found in Phase 1: no public call can create that state (a manager returns 08003 first), so those 9 cases stay direct-only. |
 | `it_get_info` | `integration` | core | `SQLConnect`(string) | 11 | 0 | 10 / 0 | 1 | No. Only the fixture's `DatabaseFactory` profile is internal; a compile definition replaces it. Cheap. |
 | `it_metadata_real` | `integration` | core | `SQLConnect`(string) | 75 | 0 | 54 / 21 | 0 | No. Helpers use `DatabaseFactory`; bodies use `utf8_to_wide`, `ConnectionString` and `ODBCBackendTestAccess`. Second wave. |
 | `it_redshift_real` | `integration`, Redshift builds only, live | core | `SQLDriverConnect` from `ODBCPP_REDSHIFT_TEST_CONNECTION` | 157 | 0 | 110 / 47 | 0 | No. The fixture uses `ConnectionString::parse` for its SSL check and `rs::util::Clock`; replacing those makes 110 cases public. Needs live admission. Second wave, opt-in. |
@@ -142,7 +142,7 @@ The remaining unit files are almost entirely `no-odbc-entry`. The generated coun
 1. **Phase 1, wave 1: PostgreSQL integration suites through unixODBC in CI, and through iODBC locally.** Suites: `it_prepared_statements_real`, `it_bind_col_real`, `it_native_sql`, `it_handle_lifecycle`, `it_diagnostics`, `it_get_info`.
    - These provide 252 public cases. Replacing their fixture helpers adds up to 37 more, for up to 289 cases:
      - the `DatabaseFactory` profile helpers in `it_prepared_statements_real`, `it_bind_col_real` and `it_get_info`;
-     - the `make_statement` helper in `it_diagnostics`.
+     - the `make_statement` helper in `it_diagnostics`. (Corrected in Phase 1: those 9 cases can't migrate. Results are in [driver-manager-phase1-wave1.md](driver-manager-phase1-wave1.md).)
    - The 13 cases with internals in the body stay direct-only, compiled out of the manager build by a test define.
    - Changes needed:
      - manager include and link variants of these targets;

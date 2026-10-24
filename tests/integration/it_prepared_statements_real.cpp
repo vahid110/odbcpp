@@ -1,8 +1,7 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
-#include "core/database/database_factory.h"
-#include "odbc/odbc_types.h"
-#include "odbc/unicode.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 #include "tests/test_time_helpers.h"
 #include <algorithm>
 #include <array>
@@ -25,8 +24,7 @@ namespace {
 // Native fixture SQL follows the explicitly compiled backend; parameter bytes
 // and all adapter diagnostics remain the subject of the same assertions.
 bool fixture_redshift_product() {
-    return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-        rs::core::database::DatabaseType::Redshift;
+    return odbcpp::test::compiled_redshift_product();
 }
 
 // One original per-case window, including reconnects and sibling handles.
@@ -197,7 +195,7 @@ protected:
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
         // Connect to real database
-        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0);
+        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0);
         if (ret != SQL_SUCCESS) {
             GTEST_SKIP() << "Database connection failed - skipping integration tests";
         }
@@ -3233,7 +3231,7 @@ TEST_F(PreparedStatementIntegrationTest,
     const SQLLEN text_bytes = 3;
     const SQLLEN binary_bytes = 2;
     const SQLLEN null_value = SQL_NULL_DATA;
-    auto wide = rs::odbc::utf8_to_wide("Hi");
+    auto wide = odbcpp::test::text::utf8_to_wide("Hi");
     ASSERT_TRUE(wide.has_value());
     const SQLLEN wide_bytes = static_cast<SQLLEN>(
         wide->size() * sizeof(SQLWCHAR));
@@ -3368,7 +3366,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?::text", SQL_NTS));
     const std::string expected = "\xf0\x9f\x9a\x80 prepared";
-    auto wide = rs::odbc::utf8_to_wide(expected);
+    auto wide = odbcpp::test::text::utf8_to_wide(expected);
     ASSERT_TRUE(wide.has_value());
     wide->push_back(0);
     alignas(SQLWCHAR)

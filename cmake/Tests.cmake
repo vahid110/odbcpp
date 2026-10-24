@@ -57,6 +57,9 @@ option(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS "Build separately admitted inst
 option(ODBCPP_REDSHIFT_OFFICIAL_IMPORT_LIVE_TESTS "Build separately admitted official Redshift import comparison tests" OFF)
 option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification peer" OFF)
+# The dm_it_* targets always build; their known manager deviations are not yet
+# asserted as expectations, so CTest registers them only on request.
+option(ODBCPP_DM_INTEGRATION_TESTS "Register the integration suites built against the Driver Manager" OFF)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
 target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
 apply_compiler_settings(crypto_identity_probe)
@@ -727,6 +730,45 @@ if(UNIX OR WIN32)
     set_tests_properties(it_driver_manager_unicode PROPERTIES LABELS "integration" TIMEOUT 90)
     set_target_properties(it_driver_manager_unicode PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+    # The same integration sources built against the manager and the
+    # registered driver instead of odbcpp_core. The direct targets above stay
+    # the diagnostic baseline; cases that need driver internals are compiled
+    # out by ODBCPP_TEST_VIA_DRIVER_MANAGER. See docs/plans/driver-manager-test-layer.md.
+    if(TARGET_DATABASE STREQUAL "REDSHIFT")
+      set(_dm_redshift_product 1)
+    else()
+      set(_dm_redshift_product 0)
+    endif()
+    foreach(_dm_suite IN ITEMS it_prepared_statements_real it_bind_col_real
+        it_native_sql it_handle_lifecycle it_diagnostics it_get_info)
+      set(_dm_target dm_${_dm_suite})
+      add_executable(${_dm_target} tests/integration/${_dm_suite}.cpp)
+      if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+        target_include_directories(${_dm_target} BEFORE PRIVATE
+          ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      endif()
+      target_include_directories(${_dm_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+      target_link_libraries(${_dm_target} PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY})
+      target_compile_definitions(${_dm_target} PRIVATE
+        ODBCPP_TEST_VIA_DRIVER_MANAGER=1
+        ODBCPP_TEST_REDSHIFT_PRODUCT=${_dm_redshift_product})
+      if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+        target_compile_definitions(${_dm_target} PRIVATE
+          ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+      endif()
+      add_dependencies(${_dm_target} ${PROJECT_NAME}_driver)
+      apply_compiler_settings(${_dm_target})
+      set_target_properties(${_dm_target} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      if(ODBCPP_DM_INTEGRATION_TESTS)
+        add_test(NAME ${_dm_target} COMMAND ${_dm_target})
+        set_tests_properties(${_dm_target} PROPERTIES
+          LABELS "integration;dm-integration")
+      endif()
+    endforeach()
+    unset(_dm_redshift_product)
   elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
     message(FATAL_ERROR
       "ODBC driver-manager library was not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")

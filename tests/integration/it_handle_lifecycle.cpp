@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <chrono>
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
-#include "tests/test_connection_config.h"
 #include "tests/test_handle_helpers.h"
+#endif
+#include "tests/test_connection_config.h"
 
 #include <array>
 #include <cstdint>
@@ -106,6 +108,10 @@ SQLCHAR* test_dsn() {
   return odbcpp::test::configured_connection_string_data();
 }
 
+SQLCHAR* test_server_name() {
+  return odbcpp::test::configured_server_name_data();
+}
+
 std::vector<SQLWCHAR> wide_ascii(const std::string& value) {
   std::vector<SQLWCHAR> result;
   result.reserve(value.size() + 1);
@@ -187,7 +193,7 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
                             reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    const auto result = SQLConnect(connection_, test_dsn(), SQL_NTS,
+    const auto result = SQLConnect(connection_, test_server_name(), SQL_NTS,
                                    nullptr, 0, nullptr, 0);
     if (result != SQL_SUCCESS) {
       GTEST_SKIP() << "Database connection failed";
@@ -214,7 +220,7 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
   EXPECT_EQ(SQL_ERROR,
-            SQLConnect(connection_, test_dsn(), SQL_NTS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
@@ -228,17 +234,17 @@ TEST_F(HandleLifecycleIntegrationTest,
   auto wrong_password =
       reinterpret_cast<SQLCHAR*>(const_cast<char*>("wrong-password"));
   EXPECT_EQ(SQL_ERROR,
-            SQLConnect(connection_, test_dsn(), SQL_NTS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS,
                        missing_user, SQL_NTS, wrong_password, SQL_NTS));
   EXPECT_EQ("28000", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(connection_, test_dsn(), SQL_NTS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
 
   auto wide_dsn =
-      wide_ascii(odbcpp::test::configured_connection_string());
+      wide_ascii(odbcpp::test::configured_server_name());
   auto wide_user = wide_ascii("odbcpp_missing_wide_login_role");
   auto wide_password = wide_ascii("wrong-password");
   EXPECT_EQ(SQL_ERROR,
@@ -366,7 +372,7 @@ TEST_F(ConnectionAttributeIntegrationTest,
             SQLSetConnectAttr(connection, SQL_ATTR_CURRENT_CATALOG,
                               catalog, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(connection, test_dsn(), SQL_NTS,
+            SQLConnect(connection, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
 
   SQLUINTEGER dead = SQL_CD_TRUE;
@@ -803,10 +809,10 @@ TEST_F(EnvironmentTransactionIntegrationTest,
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &second_connection));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(first_connection, test_dsn(), SQL_NTS,
+            SQLConnect(first_connection, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(second_connection, test_dsn(), SQL_NTS,
+            SQLConnect(second_connection, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_STMT, first_connection,
@@ -909,6 +915,8 @@ TEST_F(EnvironmentTransactionIntegrationTest,
 
 }  // namespace
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
+// Backend session health is observable only through the test access view.
 TEST_F(HandleLifecycleIntegrationTest, ActiveHealthProbePreservesTransactionState) {
   using namespace rs::core::database;
   auto handle = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(connection_);
@@ -954,3 +962,4 @@ TEST_F(HandleLifecycleIntegrationTest, ExpiredHealthDeadlineRetiresWithoutReconn
   EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
   EXPECT_EQ(BackendOperation::CheckHealth, closed.backend_error().operation);
 }
+#endif

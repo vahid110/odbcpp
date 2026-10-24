@@ -4,7 +4,7 @@ Total GoogleTest case definitions: 3051 (TEST_P counted once per definition).
 
 | scope | cases | public-only | fake-backend | needs-internals | no-odbc-entry |
 |---|---:|---:|---:|---:|---:|
-| `all` | 3051 | 293 | 100 | 878 | 1780 |
+| `all` | 3051 | 300 | 100 | 871 | 1780 |
 
 Where the internals are (`helpers` = only fixtures/helpers the case reaches) and
 whether the case body configures or reads fake-backend state:
@@ -13,9 +13,9 @@ whether the case body configures or reads fake-backend state:
 |---|---|---|---:|
 | fake-backend | - | - | 8 |
 | fake-backend | - | yes | 92 |
-| needs-internals | body | - | 132 |
+| needs-internals | body | - | 123 |
 | needs-internals | body | yes | 287 |
-| needs-internals | helpers | - | 323 |
+| needs-internals | helpers | - | 325 |
 | needs-internals | helpers | yes | 136 |
 
 ## By directory
@@ -23,7 +23,7 @@ whether the case body configures or reads fake-backend state:
 | directory | cases | public-only | fake-backend | needs-internals | no-odbc-entry |
 |---|---:|---:|---:|---:|---:|
 | `tests/driver_manager` | 10 | 10 | 0 | 0 | 0 |
-| `tests/integration` | 570 | 262 | 0 | 289 | 19 |
+| `tests/integration` | 570 | 269 | 0 | 282 | 19 |
 | `tests/security` | 3 | 3 | 0 | 0 | 0 |
 | `tests/security/awslc` | 5 | 0 | 0 | 0 | 5 |
 | `tests/unit` | 2451 | 15 | 100 | 589 | 1747 |
@@ -38,7 +38,7 @@ whether the case body configures or reads fake-backend state:
 | `tests/driver_manager/it_redshift_package_import_live.cpp` | 3 | 3 | 0 | 0 | 0 |
 | `tests/driver_manager/it_redshift_package_live.cpp` | 3 | 3 | 0 | 0 | 0 |
 | `tests/integration/it_auth_pg_material_tls.cpp` | 3 | 0 | 0 | 0 | 3 |
-| `tests/integration/it_bind_col_real.cpp` | 110 | 101 | 0 | 8 | 1 |
+| `tests/integration/it_bind_col_real.cpp` | 110 | 102 | 0 | 7 | 1 |
 | `tests/integration/it_connection_pool.cpp` | 5 | 0 | 0 | 0 | 5 |
 | `tests/integration/it_diagnostics.cpp` | 10 | 1 | 0 | 9 | 0 |
 | `tests/integration/it_driver_manager_unicode.cpp` | 8 | 8 | 0 | 0 | 0 |
@@ -50,8 +50,8 @@ whether the case body configures or reads fake-backend state:
 | `tests/integration/it_mysql_datetime_results.cpp` | 1 | 0 | 0 | 0 | 1 |
 | `tests/integration/it_mysql_decimal_parameter_receipt.cpp` | 1 | 0 | 0 | 0 | 1 |
 | `tests/integration/it_mysql_decimal_results.cpp` | 1 | 0 | 0 | 0 | 1 |
-| `tests/integration/it_native_sql.cpp` | 18 | 12 | 0 | 6 | 0 |
-| `tests/integration/it_prepared_statements_real.cpp` | 141 | 126 | 0 | 15 | 0 |
+| `tests/integration/it_native_sql.cpp` | 18 | 17 | 0 | 1 | 0 |
+| `tests/integration/it_prepared_statements_real.cpp` | 141 | 127 | 0 | 14 | 0 |
 | `tests/integration/it_redshift_columns_omitted_table.cpp` | 4 | 0 | 0 | 4 | 0 |
 | `tests/integration/it_redshift_native_auth.cpp` | 2 | 0 | 0 | 0 | 2 |
 | `tests/integration/it_redshift_powerbi_relationship.cpp` | 2 | 2 | 0 | 0 | 0 |
@@ -174,7 +174,7 @@ whether the case body configures or reads fake-backend state:
 |---|---:|---:|---:|---:|---:|
 | `it_auth_pg_material_tls.cpp:OrdinaryPgMaterialTls` | 3 | 0 | 0 | 0 | 3 |
 | `it_bind_col_real.cpp:BindColFixtureBounds` | 1 | 0 | 0 | 0 | 1 |
-| `it_bind_col_real.cpp:BindColIntegrationTest` | 109 | 101 | 0 | 8 | 0 |
+| `it_bind_col_real.cpp:BindColIntegrationTest` | 109 | 102 | 0 | 7 | 0 |
 | `it_connection_pool.cpp:ConnectionPoolFixtureBounds` | 3 | 0 | 0 | 0 | 3 |
 | `it_connection_pool.cpp:ConnectionPoolIntegrationTest` | 2 | 0 | 0 | 0 | 2 |
 | `it_crypto_profile_live.cpp:CryptoProfileLiveTest` | 3 | 3 | 0 | 0 | 0 |
@@ -194,8 +194,8 @@ whether the case body configures or reads fake-backend state:
 | `it_mysql_datetime_results.cpp:MySqlDatetimeResultsIntegrationTest` | 1 | 0 | 0 | 0 | 1 |
 | `it_mysql_decimal_parameter_receipt.cpp:MySqlDecimalReceiptObservationIntegrationTest` | 1 | 0 | 0 | 0 | 1 |
 | `it_mysql_decimal_results.cpp:MySqlDecimalResultsIntegrationTest` | 1 | 0 | 0 | 0 | 1 |
-| `it_native_sql.cpp:NativeSqlIntegrationTest` | 18 | 12 | 0 | 6 | 0 |
-| `it_prepared_statements_real.cpp:PreparedStatementIntegrationTest` | 140 | 125 | 0 | 15 | 0 |
+| `it_native_sql.cpp:NativeSqlIntegrationTest` | 18 | 17 | 0 | 1 | 0 |
+| `it_prepared_statements_real.cpp:PreparedStatementIntegrationTest` | 140 | 126 | 0 | 14 | 0 |
 | `it_prepared_statements_real.cpp:PreparedStatementRealDataTest` | 1 | 1 | 0 | 0 | 0 |
 | `it_redshift_columns_omitted_table.cpp:ColumnsOmittedTableNative` | 4 | 0 | 0 | 4 | 0 |
 | `it_redshift_max_length_reference.cpp:RedshiftMaxLengthReferenceTest` | 1 | 1 | 0 | 0 | 0 |

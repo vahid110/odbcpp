@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <chrono>
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
 #include "core/database/database_factory.h"
+#endif
 #include "tests/test_connection_config.h"
+#include "tests/test_product_profile.h"
 #include "tests/test_driver_exports.h"
 
 #include <array>
@@ -98,6 +101,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
 
 namespace {
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 std::optional<bool> fixture_redshift_profile(rs::core::database::DatabaseType type) {
   using rs::core::database::DatabaseType;
   if (type == DatabaseType::PostgreSQL) return false;
@@ -111,6 +115,7 @@ TEST(GetInfoFixtureProfile, KeepsPostgresAndRedshiftExpectationsDistinct) {
   EXPECT_EQ(std::optional<bool>(true), fixture_redshift_profile(DatabaseType::Redshift));
   EXPECT_FALSE(fixture_redshift_profile(static_cast<DatabaseType>(-1)).has_value());
 }
+#endif
 
 std::string diagnostic_state(SQLHDBC connection) {
   SQLCHAR state[6]{};
@@ -142,8 +147,12 @@ class GetInfoIntegrationTest : public ::testing::Test {
   void SetUp() override {
     // Select independent literal expectations by the existing compiled product,
     // never by learning expected capabilities from the SQLGetInfo output.
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+    const std::optional<bool> profile = odbcpp::test::compiled_redshift_product();
+#else
     const auto profile = fixture_redshift_profile(
         rs::core::database::DatabaseFactory::get_compiled_database_type());
+#endif
     ASSERT_TRUE(profile.has_value()) << "Unsupported integration fixture product profile";
     redshift_profile_ = *profile;
     // Independent API expectation includes local Need Data cancellation on every
@@ -176,7 +185,7 @@ class GetInfoIntegrationTest : public ::testing::Test {
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
     if (SQLConnect(connection_,
-                   odbcpp::test::configured_connection_string_data(), SQL_NTS,
+                   odbcpp::test::configured_server_name_data(), SQL_NTS,
                    nullptr, 0, nullptr, 0) != SQL_SUCCESS) {
       GTEST_SKIP() << "Database connection failed";
     }

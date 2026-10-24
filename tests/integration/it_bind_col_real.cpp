@@ -1,12 +1,13 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <optional>
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbcpp/database/backend_provider.h"
 #include "odbc/connection_string.h"
+#endif
 #include "tests/test_connection_config.h"
-#include "core/database/database_factory.h"
-#include "odbc/odbc_types.h"
-#include "odbc/unicode.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 #include "tests/test_time_helpers.h"
 
 #include <algorithm>
@@ -28,8 +29,7 @@ namespace {
 // SQL fixture grammar follows the actual compiled native product; byte and
 // diagnostic expectations below remain identical across both profiles.
 bool fixture_redshift_product() {
-  return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-      rs::core::database::DatabaseType::Redshift;
+  return odbcpp::test::compiled_redshift_product();
 }
 
 // One original per-case window, including reconnects and sibling handles.
@@ -223,6 +223,12 @@ public:
         property("timeout_fixture_schema", schema);
         property("timeout_fixture_table", table_);
         property("timeout_fixture_oid", oid_);
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+        // The verified-TLS check resolves the private DSN through the driver's
+        // own parser, which a Driver Manager build cannot link. The blocker is
+        // used only for the Redshift product.
+        if (fixture_redshift_product()) return fail("verified TLS profile check needs the direct build");
+#else
         try {
             const auto resolved = rs::odbc::ConnectionString::resolve(
                 odbcpp::test::configured_connection_string(),
@@ -233,11 +239,12 @@ public:
             const auto ssl = rs::odbc::ConnectionString::to_upper(rs::odbc::ConnectionString::trim(fields.at("SSL")));
             if (ssl != "1" && ssl != "TRUE" && ssl != "YES" && ssl != "ON") return fail("TLS must be enabled");
         } catch (...) { return fail("private DSN resolution"); }
+#endif
         if (!identity(waiter, "timeout_waiter_before") || !server_timeout(waiter, "timeout_waiter_before")) return false;
         if (!accept(::SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc_), "allocate blocker")) return false;
         if (!fixture_connection_budget(end_, dbc_, true)) return fail("blocker login budget");
         known_ = false;
-        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_connection_string_data(), SQL_NTS,
+        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_server_name_data(), SQL_NTS,
                 nullptr, 0, nullptr, 0), "blocker login")) return false;
         connected_ = true;
         if (!accept(::SQLAllocHandle(SQL_HANDLE_STMT, dbc_, &stmt_), "allocate blocker statement") ||
@@ -437,7 +444,7 @@ protected:
         SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
-        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0);
+        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0);
         if (ret != SQL_SUCCESS) {
             GTEST_SKIP() << "Database connection failed - skipping integration tests";
         }
@@ -3123,7 +3130,7 @@ TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
         ASSERT_TRUE(result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO);
         std::size_t chunk_units = 0;
         while (chunk_units < 2 && chunk[chunk_units] != 0) ++chunk_units;
-        const auto converted = rs::odbc::wide_to_utf8(
+        const auto converted = odbcpp::test::text::wide_to_utf8(
             std::span<const SQLWCHAR>(chunk, chunk_units));
         ASSERT_TRUE(converted.has_value());
         assembled += *converted;

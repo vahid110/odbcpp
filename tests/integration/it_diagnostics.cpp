@@ -3,8 +3,10 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
 #include "tests/test_handle_helpers.h"
+#endif
 
 
 namespace {
@@ -83,6 +85,10 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
 }  // namespace
 
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
+// A statement on a never-connected connection exists only through the test
+// registry helper: SQLAllocHandle refuses it, and a Driver Manager raises its
+// own 08003 first. These cases stay on the direct layer.
 class DiagnosticsIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -252,6 +258,7 @@ TEST_F(DiagnosticsIntegrationTest, SQLGetDiagFieldRecordFields) {
     EXPECT_GT(length, 0);
     EXPECT_TRUE(strstr(message, "Connection") != nullptr);
 }
+#endif
 
 class DiagnosticsConnectedIntegrationTest : public ::testing::Test {
  protected:
@@ -287,7 +294,7 @@ TEST_F(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
     ASSERT_EQ(SQL_SUCCESS,
               SQLConnect(connection,
-                         odbcpp::test::configured_connection_string_data(),
+                         odbcpp::test::configured_server_name_data(),
                          SQL_NTS, nullptr, 0, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
@@ -342,6 +349,7 @@ TEST_F(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 TEST_F(DiagnosticsIntegrationTest, SQLErrorCompatibility) {
     // First create an error
     SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS); // Will fail - no connection
@@ -363,3 +371,4 @@ TEST_F(DiagnosticsIntegrationTest, SQLErrorCompatibility) {
                   message, sizeof(message), &text_length);
     EXPECT_EQ(ret, SQL_NO_DATA);
 }
+#endif

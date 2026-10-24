@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <chrono>
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
-#include "odbc/unicode.h"
+#endif
 #include "tests/test_connection_config.h"
-#include "core/database/database_factory.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 
 #include <array>
 #include <cstddef>
@@ -149,7 +151,7 @@ class NativeSqlIntegrationTest : public ::testing::Test {
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
     if (SQLConnect(connection_,
-                   odbcpp::test::configured_connection_string_data(), SQL_NTS,
+                   odbcpp::test::configured_server_name_data(), SQL_NTS,
                    nullptr, 0, nullptr, 0) != SQL_SUCCESS) {
       GTEST_SKIP() << "Database connection failed";
     }
@@ -296,7 +298,7 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
                          static_cast<SQLINTEGER>(output.size()), &length));
   EXPECT_STREQ(expected, reinterpret_cast<const char*>(output.data()));
 
-  auto wide_input = rs::odbc::utf8_to_wide("SELECT {t '12:34:56'} trailing");
+  auto wide_input = odbcpp::test::text::utf8_to_wide("SELECT {t '12:34:56'} trailing");
   ASSERT_TRUE(wide_input.has_value());
   std::array<SQLWCHAR, 32> wide_output{};
   length = -1;
@@ -307,7 +309,7 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
                           &length));
   EXPECT_EQ(22, length);
   EXPECT_EQ("SELECT TIME '12:34:56'",
-            *rs::odbc::wide_to_utf8(
+            *odbcpp::test::text::wide_to_utf8(
                 std::span<const SQLWCHAR>(wide_output.data(), length)));
 
   length = -1;
@@ -328,7 +330,7 @@ TEST_F(NativeSqlIntegrationTest, ReportsAnsiAndWideTruncation) {
   EXPECT_EQ(21, length);
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
-  auto wide_input = rs::odbc::utf8_to_wide(
+  auto wide_input = odbcpp::test::text::utf8_to_wide(
       "SELECT {fn LCASE('MIXED')}");
   ASSERT_TRUE(wide_input.has_value());
   std::array<SQLWCHAR, 8> wide_output{};
@@ -340,7 +342,7 @@ TEST_F(NativeSqlIntegrationTest, ReportsAnsiAndWideTruncation) {
                           static_cast<SQLINTEGER>(wide_output.size()),
                           &length));
   EXPECT_EQ(21, length);
-  EXPECT_EQ("SELECT ", *rs::odbc::wide_to_utf8(
+  EXPECT_EQ("SELECT ", *odbcpp::test::text::wide_to_utf8(
                            std::span<const SQLWCHAR>(wide_output.data(), 7)));
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
@@ -374,7 +376,7 @@ TEST_F(NativeSqlIntegrationTest, LengthOutputsHandleUnalignedBuffers) {
       connection_, input, SQL_NTS, nullptr, 0, length));
   EXPECT_EQ(expected, read_length());
 
-  auto wide_input = rs::odbc::utf8_to_wide("SELECT {fn UCASE('x')}");
+  auto wide_input = odbcpp::test::text::utf8_to_wide("SELECT {fn UCASE('x')}");
   ASSERT_TRUE(wide_input.has_value());
   SQLWCHAR wide_output = static_cast<SQLWCHAR>('k');
   expected = -1;
@@ -473,7 +475,7 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
                          sizeof(output), nullptr));
   EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
 
-  auto wide_input = rs::odbc::utf8_to_wide(
+  auto wide_input = odbcpp::test::text::utf8_to_wide(
       reinterpret_cast<const char*>(unicode));
   ASSERT_TRUE(wide_input.has_value());
   std::array<SQLWCHAR, sizeof(expected)> wide_output{};
@@ -485,7 +487,7 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
                           static_cast<SQLINTEGER>(wide_output.size()),
                           &wide_length));
   ASSERT_GE(wide_length, 0);
-  const auto native_wide = rs::odbc::wide_to_utf8(
+  const auto native_wide = odbcpp::test::text::wide_to_utf8(
       std::span<const SQLWCHAR>(wide_output.data(), wide_length));
   ASSERT_TRUE(native_wide.has_value());
   EXPECT_EQ(expected, *native_wide);
@@ -550,8 +552,7 @@ TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideBackslashQuotedStrings) {
   // its ordinary quoted spelling with the identical value and escape payload.
   SQLCHAR redshift_input[] =
       "SELECT 'it''s {fn UCASE(ignored)}', {fn UCASE('ok')}";
-  const bool redshift = rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-      rs::core::database::DatabaseType::Redshift;
+  const bool redshift = odbcpp::test::compiled_redshift_product();
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_,
       redshift ? redshift_input : input, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
@@ -619,7 +620,7 @@ TEST_F(NativeSqlIntegrationTest, BackendTranslationErrorsPreservePreparedSqlAndR
       SCOPED_TRACE(input);
       SCOPED_TRACE(wide);
       std::string narrow(input);
-      auto unicode = rs::odbc::utf8_to_wide(input);
+      auto unicode = odbcpp::test::text::utf8_to_wide(input);
       ASSERT_TRUE(unicode);
       // Translation fails before replacing prepared text or executing SQL.
       EXPECT_EQ(SQL_ERROR, wide
