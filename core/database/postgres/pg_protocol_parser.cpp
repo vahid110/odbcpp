@@ -1,5 +1,6 @@
 #include "pg_command.h"
 #include "odbcpp/util/hex.h"
+#include "odbcpp/util/utf8.h"
 #include "odbcpp/security/crypto.h"
 #include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
@@ -1225,8 +1226,10 @@ rs::pg::ErrorResponse PgProtocolParser::decode_error_fields(
     if (offset == payload.size()) {
       throw std::runtime_error("Unterminated PostgreSQL error field");
     }
-    const auto* value = reinterpret_cast<const char*>(payload.data() + start);
-    if (!e.fields.emplace(code, std::string(value, offset - start)).second) {
+    const std::string_view value(
+        reinterpret_cast<const char*>(payload.data() + start), offset - start);
+    // Server text can precede client_encoding; publish only valid UTF-8 text.
+    if (!e.fields.emplace(code, rs::util::replace_invalid_utf8(value)).second) {
       throw std::runtime_error("Duplicate PostgreSQL error field");
     }
     ++offset;

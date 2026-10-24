@@ -36,6 +36,11 @@
 namespace rs::odbc {
 namespace detail { struct MetadataEpochIdentity {}; struct PendingInputSessionIdentity {}; }
 using rs::core::database::SqlTranslationError;
+
+std::string ODBCHandle::valid_diagnostic_text(const std::string& message) {
+  return rs::util::replace_invalid_utf8(message);
+}
+
 namespace {
 
 std::atomic<std::uint64_t> next_connection_id{1};
@@ -3161,7 +3166,7 @@ SQLRETURN ODBCDescriptor::get_record(
     SQLSMALLINT record_number, SQLCHAR* name, SQLSMALLINT buffer_length,
     SQLSMALLINT* string_length, SQLSMALLINT* type, SQLSMALLINT* subtype,
     SQLLEN* length, SQLSMALLINT* precision, SQLSMALLINT* scale,
-    SQLSMALLINT* nullable) {
+    SQLSMALLINT* nullable, std::string* name_out) {
   if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetDescRec",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -3178,6 +3183,8 @@ SQLRETURN ODBCDescriptor::get_record(
   }
 
   const auto& record = *numbered_record(record_number);
+  // Wide adapters convert the full name; the SQLSMALLINT length is clamped.
+  if (name_out) *name_out = record.name;
   if (string_length) {
     store_application_value(
         string_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
@@ -8633,6 +8640,22 @@ SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
 SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
                                      SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
                                      SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  return describe_col_impl(column_number, column_name, name_buffer_length, name_length,
+                           data_type, column_size, decimal_digits, nullable, nullptr);
+}
+
+SQLRETURN ODBCStatement::describe_col_name(SQLUSMALLINT column_number, std::string& name,
+                                          SQLSMALLINT* data_type, SQLULEN* column_size,
+                                          SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  return describe_col_impl(column_number, nullptr, 0, nullptr, data_type, column_size,
+                           decimal_digits, nullable, &name);
+}
+
+SQLRETURN ODBCStatement::describe_col_impl(SQLUSMALLINT column_number, SQLCHAR* column_name,
+                                          SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+                                          SQLSMALLINT* data_type, SQLULEN* column_size,
+                                          SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable,
+                                          std::string* name_out) {
   if (name_buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
               "Invalid column-name buffer length");
@@ -8660,9 +8683,10 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
     column_name[copy_len] = '\0';
   }
   
+  if (name_out) *name_out = col.name;
   if (name_length) {
-    store_application_value(name_length,
-                            static_cast<SQLSMALLINT>(col.name.length()));
+    store_application_value(name_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
+        col.name.length(), std::numeric_limits<SQLSMALLINT>::max())));
   }
   if (data_type) {
     store_application_value(data_type, static_cast<SQLSMALLINT>(col.sql_type));
@@ -8691,6 +8715,20 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
 SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                                       SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                                       SQLSMALLINT* string_length, SQLLEN* numeric_attribute) {
+  return col_attribute_impl(column_number, field_identifier, character_attribute,
+                            buffer_length, string_length, numeric_attribute, nullptr);
+}
+
+SQLRETURN ODBCStatement::col_attribute_text(SQLUSMALLINT column_number,
+                                            SQLUSMALLINT field_identifier, std::string& text) {
+  return col_attribute_impl(column_number, field_identifier, nullptr, 0, nullptr,
+                            nullptr, &text);
+}
+
+SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                                           SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
+                                           SQLSMALLINT* string_length, SQLLEN* numeric_attribute,
+                                           std::string* text_out) {
   if (!is_known_column_attribute(field_identifier)) {
     set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
               "Invalid column attribute identifier");
@@ -8758,9 +8796,10 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
       std::memcpy(character_attribute, text->c_str(), copy_len);
       static_cast<char*>(character_attribute)[copy_len] = '\0';
     }
+    if (text_out) *text_out = *text;
     if (string_length) {
-      store_application_value(
-          string_length, static_cast<SQLSMALLINT>(text->length()));
+      store_application_value(string_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          text->length(), std::numeric_limits<SQLSMALLINT>::max())));
     }
     if (character_attribute && !text->empty() &&
         static_cast<std::size_t>(buffer_length) <= text->length()) {

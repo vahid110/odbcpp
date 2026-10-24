@@ -81,6 +81,10 @@ public:
   
   HandleType get_type() const { return type_; }
   
+  // Records hold valid UTF-8 only: echoed ANSI input or server text may carry
+  // invalid bytes, which become U+FFFD so W readers always convert.
+  static std::string valid_diagnostic_text(const std::string& message);
+
   // Diagnostic record management
   void clear_diagnostics() {
     std::lock_guard lock(diagnostics_mutex_);
@@ -91,7 +95,7 @@ public:
   
   void add_diagnostic(const std::string& sqlstate, SQLINTEGER native_error, const std::string& message) {
     std::lock_guard lock(diagnostics_mutex_);
-    diagnostic_records_.emplace_back(sqlstate, native_error, message);
+    diagnostic_records_.emplace_back(sqlstate, native_error, valid_diagnostic_text(message));
   }
   
   // Rowset diagnostics are ODBC records, not a source-sized scratch array.
@@ -101,7 +105,7 @@ public:
     std::lock_guard lock(diagnostics_mutex_);
     if (diagnostic_records_.size() >= static_cast<std::size_t>(
             (std::numeric_limits<SQLSMALLINT>::max)())) return;
-    diagnostic_records_.emplace_back(state, native_error, message);
+    diagnostic_records_.emplace_back(state, native_error, valid_diagnostic_text(message));
     diagnostic_records_.back().row_number = row;
     diagnostic_records_.back().column_number = static_cast<SQLINTEGER>(column);
   }
@@ -109,7 +113,7 @@ public:
   void set_error(const std::string& sqlstate, const std::string& message, SQLINTEGER native_error = 0) {
     std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
-    diagnostic_records_.emplace_back(sqlstate, native_error, message);
+    diagnostic_records_.emplace_back(sqlstate, native_error, valid_diagnostic_text(message));
     legacy_diagnostic_record_ = 1;
   }
   
@@ -476,7 +480,8 @@ public:
                        SQLSMALLINT* string_length, SQLSMALLINT* type,
                        SQLSMALLINT* subtype, SQLLEN* length,
                        SQLSMALLINT* precision, SQLSMALLINT* scale,
-                       SQLSMALLINT* nullable);
+                       SQLSMALLINT* nullable,
+                       std::string* name_out = nullptr);
   SQLRETURN set_record(SQLSMALLINT record_number, SQLSMALLINT type,
                        SQLSMALLINT subtype, SQLLEN length,
                        SQLSMALLINT precision, SQLSMALLINT scale,
@@ -600,7 +605,13 @@ public:
   SQLRETURN col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length, SQLLEN* numeric_attribute);
-  
+  // Full UTF-8 text for wide adapters; lengths are clamped only at the API.
+  SQLRETURN describe_col_name(SQLUSMALLINT column_number, std::string& name,
+                              SQLSMALLINT* data_type, SQLULEN* column_size,
+                              SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
+  SQLRETURN col_attribute_text(SQLUSMALLINT column_number,
+                               SQLUSMALLINT field_identifier, std::string& text);
+
   // Parameter metadata (IPD)
   SQLRETURN describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
@@ -613,6 +624,15 @@ private:
   friend struct detail::ODBCBackendTestAccess;
 #endif
   SQLRETURN fetch_impl(SQLSMALLINT orientation, SQLLEN offset);
+  SQLRETURN describe_col_impl(SQLUSMALLINT column_number, SQLCHAR* column_name,
+                              SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+                              SQLSMALLINT* data_type, SQLULEN* column_size,
+                              SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable,
+                              std::string* name_out);
+  SQLRETURN col_attribute_impl(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                               SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
+                               SQLSMALLINT* string_length, SQLLEN* numeric_attribute,
+                               std::string* text_out);
   enum class StaticPosition { BeforeStart, OnRowset, AfterEnd };
   StaticPosition static_position_ = StaticPosition::BeforeStart;
   SQLULEN cursor_type_ = SQL_CURSOR_FORWARD_ONLY;

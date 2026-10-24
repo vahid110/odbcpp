@@ -440,6 +440,9 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table" OR test_name STREQUAL "it_redshift_powerbi_relationship")
     continue() # Explicit opt-in native registration above.
   endif()
+  if(test_name STREQUAL "it_driver_manager_unicode")
+    continue() # Registered below against the Driver Manager, never odbcpp_core.
+  endif()
   if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
@@ -697,6 +700,32 @@ if(UNIX OR WIN32)
     add_test(NAME it_driver_manager COMMAND it_driver_manager)
     set_tests_properties(it_driver_manager PROPERTIES LABELS "integration")
     set_target_properties(it_driver_manager PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+    # Unicode metadata/truncation/diagnostic contracts as the application sees
+    # them through the real manager, against the same registered driver.
+    add_executable(it_driver_manager_unicode tests/integration/it_driver_manager_unicode.cpp)
+    if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      target_include_directories(it_driver_manager_unicode PRIVATE
+        ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    endif()
+    target_link_libraries(it_driver_manager_unicode PRIVATE
+      GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY})
+    if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+      target_compile_definitions(it_driver_manager_unicode PRIVATE ODBCPP_TEST_IODBC=1)
+    endif()
+    if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+      target_compile_definitions(it_driver_manager_unicode PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+    endif()
+    if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+      target_compile_definitions(it_driver_manager_unicode PRIVATE
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
+    apply_compiler_settings(it_driver_manager_unicode)
+    add_test(NAME it_driver_manager_unicode COMMAND it_driver_manager_unicode)
+    set_tests_properties(it_driver_manager_unicode PROPERTIES LABELS "integration" TIMEOUT 90)
+    set_target_properties(it_driver_manager_unicode PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
     message(FATAL_ERROR

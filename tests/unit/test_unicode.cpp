@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <utility>
 
 using rs::odbc::sqlwchar_to_utf8;
 using rs::odbc::utf8_to_wide;
@@ -267,6 +268,26 @@ TEST(Utf8CoreTest, DecoderAdvancesAcrossValidScalarsAndStopsAtEnd) {
   EXPECT_EQ(0x10ffffu, rs::util::next_utf8_code_point(text, offset).value());
   EXPECT_EQ(text.size(), offset);
   EXPECT_FALSE(rs::util::next_utf8_code_point(text, offset));
+}
+
+TEST(Utf8CoreTest, ReplacementPreservesValidScalarsAndSubstitutesEachInvalidByte) {
+  EXPECT_EQ("", rs::util::replace_invalid_utf8(""));
+  const std::string valid("a\0\xC3\xA9\xF0\x9F\x98\x80\xF4\x8F\xBF\xBF", 12);
+  EXPECT_EQ(valid, rs::util::replace_invalid_utf8(valid));
+
+  const std::string fffd("\xEF\xBF\xBD");
+  const std::pair<std::string, std::string> cases[]{
+      {std::string("\xF0\x28\x8C\x28", 4), fffd + "(" + fffd + "("},
+      {"x\xF0\x9F", "x" + fffd + fffd},
+      {"\xC0\x80", fffd + fffd},
+      {"\xED\xA0\x80", fffd + fffd + fffd},
+      {"\xF4\x90\x80\x80", fffd + fffd + fffd + fffd},
+      {"\xFF\xE2\x82\xAC", fffd + "\xE2\x82\xAC"}};
+  for (const auto& [input, expected] : cases) {
+    const auto replaced = rs::util::replace_invalid_utf8(input);
+    EXPECT_EQ(expected, replaced);
+    EXPECT_TRUE(rs::util::utf8_code_point_count(replaced));
+  }
 }
 
 TEST(UnicodeInputBudgetTest, BoundedConversionHandlesExactUtf8ExpansionAndNoPartialOutput) {
