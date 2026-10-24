@@ -88,15 +88,13 @@ std::string base64url(const unsigned char* data, std::size_t size) {
     const unsigned n = data[i] << 16;
     out.push_back(table[(n >> 18) & 63]);
     out.push_back(table[(n >> 12) & 63]);
-    out.append("==");
   } else if (i + 2 == size) {
     const unsigned n = (data[i] << 16) | (data[i + 1] << 8);
     out.push_back(table[(n >> 18) & 63]);
     out.push_back(table[(n >> 12) & 63]);
     out.push_back(table[(n >> 6) & 63]);
-    out.push_back('=');
   }
-  return out;
+  return out;  // PKCE/OIDC base64url is unpadded.
 }
 std::string random_base64url(std::size_t length) {
   std::random_device rd;
