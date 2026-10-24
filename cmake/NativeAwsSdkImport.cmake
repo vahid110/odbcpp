@@ -76,14 +76,16 @@ function(_odbcpp_validate_imported _target _required)
     if(NOT IS_ABSOLUTE "${_odbcpp_aws_loc}")
       message(FATAL_ERROR "Native provisioned auth imported ${_target} from a non-absolute location (${_odbcpp_aws_loc})")
     endif()
-    # Canonical path containment, not an unescaped prefix regex.
-    cmake_path(IS_PREFIX _odbcpp_aws_prefix "${_odbcpp_aws_loc}" NORMALIZE _odbcpp_aws_contained)
-    if(NOT _odbcpp_aws_contained)
-      message(FATAL_ERROR "Native provisioned auth imported ${_target} from outside the selected prefix (${_odbcpp_aws_loc})")
+    # Resolve symlinks (canonical path) before enforcing containment; a lexical
+    # prefix check would accept an archive symlinked outside the selected prefix.
+    file(REAL_PATH "${_odbcpp_aws_loc}" _odbcpp_aws_loc_real)
+    file(RELATIVE_PATH _odbcpp_aws_rel "${_odbcpp_aws_prefix_real}" "${_odbcpp_aws_loc_real}")
+    if(IS_ABSOLUTE "${_odbcpp_aws_rel}" OR _odbcpp_aws_rel MATCHES "^\\.\\.(/|$)")
+      message(FATAL_ERROR "Native provisioned auth imported ${_target} from outside the selected prefix (${_odbcpp_aws_loc_real})")
     endif()
   endforeach()
 endfunction()
-set(_odbcpp_aws_prefix "${ODBCPP_AWS_SDK_INSTALL}")
+file(REAL_PATH "${ODBCPP_AWS_SDK_INSTALL}" _odbcpp_aws_prefix_real)
 foreach(_target IN ITEMS aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless aws-cpp-sdk-sts
     aws-cpp-sdk-core AWS::aws-crt-cpp)
   _odbcpp_validate_imported(${_target} TRUE)

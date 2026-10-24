@@ -23,9 +23,11 @@ struct FakeHttpObservation {
   std::atomic<unsigned> assume_role{0};
   std::atomic<unsigned> get_credentials{0};
   std::atomic<unsigned> late_completion{0};
+  std::atomic<unsigned> continuation_denied{0};
   void reset() noexcept {
     sends = 0; approved = 0; foreign_scheme = 0; foreign_authority = 0;
     denied = 0; assume_role = 0; get_credentials = 0; late_completion = 0;
+    continuation_denied = 0;
   }
 };
 

@@ -112,6 +112,7 @@ class FakeHttpClient final : public Aws::Http::HttpClient {
       // as the real CRT transport does; a false return aborts before the body.
       const auto& handler = request->GetContinueRequestHandler();
       if (handler && !handler(request.get())) {
+        ++obs.continuation_denied;
         return client_error_response(request, Aws::Client::CoreErrors::USER_CANCELLED);
       }
       auto response = Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>(tag, request);

@@ -146,6 +146,7 @@ TEST(StsOwnerAcquire, LateCompletionRefusesPublication) {
   EXPECT_FALSE(result);
   EXPECT_EQ(a::StsAssumeRoleFailure::DeadlineElapsed, result.error().failure);
   EXPECT_EQ(1U, detail::fake_http_observation().late_completion.load());
+  EXPECT_EQ(1U, detail::fake_http_observation().continuation_denied.load());
   EXPECT_TRUE(made.outcome.owner->close());
 }
 
@@ -159,6 +160,7 @@ TEST(StsOwnerAcquire, CancellationDuringTransportRefuses) {
   auto result = made.outcome.owner->acquire();
   EXPECT_FALSE(result);
   EXPECT_EQ(a::StsAssumeRoleFailure::Cancelled, result.error().failure);
+  EXPECT_EQ(1U, detail::fake_http_observation().continuation_denied.load());
   EXPECT_TRUE(made.outcome.owner->close());
 }
 
@@ -256,6 +258,7 @@ TEST(ServerlessOwnerAcquire, LateCompletionRefusesPublication) {
   EXPECT_FALSE(result);
   EXPECT_EQ(a::FieldFailure::DeadlineElapsed, result.error().failure);
   EXPECT_EQ(1U, detail::fake_http_observation().late_completion.load());
+  EXPECT_EQ(1U, detail::fake_http_observation().continuation_denied.load());
   EXPECT_TRUE(made.outcome.owner->close());
 }
 
@@ -268,5 +271,6 @@ TEST(ServerlessOwnerAcquire, CancellationDuringTransportRefuses) {
   auto result = made.outcome.owner->acquire();
   EXPECT_FALSE(result);
   EXPECT_EQ(a::FieldFailure::Cancelled, result.error().failure);
+  EXPECT_EQ(1U, detail::fake_http_observation().continuation_denied.load());
   EXPECT_TRUE(made.outcome.owner->close());
 }

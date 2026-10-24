@@ -75,6 +75,16 @@ function(_odbcpp_fake_install prefix version shared core_shared debug_dir core_d
   endif()
   file(WRITE "${prefix}/lib/cmake/AWSSDK/AWSSDKConfig.cmake"
     "set(AWSSDK_FOUND TRUE)\nset(AWSSDK_VERSION \"${version}\")\nset(AWSSDK_INSTALL_AS_SHARED_LIBS ${_shared_off})\nset(AWSSDK_redshift_FOUND TRUE)\nset(AWSSDK_redshift-serverless_FOUND TRUE)\nset(AWSSDK_sts_FOUND TRUE)\nforeach(_c IN ITEMS redshift redshift-serverless sts)\n  include(\"\${CMAKE_CURRENT_LIST_DIR}/../aws-cpp-sdk-\${_c}/aws-cpp-sdk-\${_c}-config.cmake\")\nendforeach()\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/../aws-cpp-sdk-core/aws-cpp-sdk-core-config.cmake\")\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/../aws-crt-cpp/aws-crt-cpp-config.cmake\")\n")
+  # Create the (empty) archive files so file(REAL_PATH) can resolve symlinks.
+  file(MAKE_DIRECTORY "${prefix}/lib")
+  file(MAKE_DIRECTORY "${debug_dir}")
+  file(MAKE_DIRECTORY "${core_dir}")
+  foreach(_c IN ITEMS redshift redshift-serverless sts)
+    file(WRITE "${prefix}/lib/libaws-cpp-sdk-${_c}.a" "")
+    file(WRITE "${debug_dir}/libaws-cpp-sdk-${_c}-d.a" "")
+  endforeach()
+  file(WRITE "${core_dir}/libaws-cpp-sdk-core.a" "")
+  file(WRITE "${core_dir}/libaws-crt-cpp.a" "")
 endfunction()
 
 set(_a "${_root}/install-a")
@@ -127,5 +137,29 @@ _odbcpp_probe("probe-foreign-debug" "${_f}" FALSE "")
 
 # Shared core/CRT linkage (service static, core shared) is refused.
 _odbcpp_probe("probe-shared-core" "${_g}" FALSE "")
+
+# Archive symlink: the core archive inside H is symlinked to a foreign file.
+# Canonical (symlink-resolving) containment must refuse it. Symlink creation is
+# platform-dependent (Windows symlinks need elevated/developer-mode privileges),
+# so these probes are Unix-only.
+if(NOT WIN32)
+  set(_h "${_root}/install-h")
+  _odbcpp_fake_install("${_h}" "1.11.906" OFF OFF "${_h}/lib" "${_h}/lib")
+  file(WRITE "${_root}/foreign/foreign-core.a" "")
+  file(REMOVE "${_h}/lib/libaws-cpp-sdk-core.a")
+  file(CREATE_LINK "${_root}/foreign/foreign-core.a" "${_h}/lib/libaws-cpp-sdk-core.a" SYMBOLIC)
+  _odbcpp_probe("probe-archive-symlink" "${_h}" FALSE "")
+
+  # Parent-directory symlink: the core archive's parent directory is symlinked to
+  # a foreign lib directory; canonical resolution must refuse it.
+  set(_i "${_root}/install-i")
+  _odbcpp_fake_install("${_i}" "1.11.906" OFF OFF "${_i}/lib" "${_i}/subdir")
+  file(MAKE_DIRECTORY "${_root}/foreign-lib")
+  file(WRITE "${_root}/foreign-lib/libaws-cpp-sdk-core.a" "")
+  file(WRITE "${_root}/foreign-lib/libaws-crt-cpp.a" "")
+  file(REMOVE_RECURSE "${_i}/subdir")
+  file(CREATE_LINK "${_root}/foreign-lib" "${_i}/subdir" SYMBOLIC)
+  _odbcpp_probe("probe-parent-symlink" "${_i}" FALSE "")
+endif()
 
 message(STATUS "NativeAwsSdkImport guards verified")

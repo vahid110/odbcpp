@@ -141,6 +141,14 @@ Aws::String role_sdk_string(const SecretBytes& bytes) {
   });
   return out;
 }
+// Bridges the worker cancellation to the provider-neutral Cancellation contract
+// consumed by convert_temporary_validity.
+struct WorkerCancellationBridge final : public rs::core::auth::Cancellation {
+  explicit WorkerCancellationBridge(std::shared_ptr<provisioned_native::WorkerCancellation> c) : cancel_(std::move(c)) {}
+  bool stop_requested() const noexcept override { return cancel_->cancelled(); }
+ private:
+  std::shared_ptr<provisioned_native::WorkerCancellation> cancel_;
+};
 }
 std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
     const ProtectedNamedSourceSpec& spec, const Context& context, const Request& request,
@@ -150,21 +158,37 @@ std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
   if (!stage->assumes_role()) return std::nullopt;
   // Rewind the validated fds before the STS loader reads /dev/fd aliases.
   if (!stage->rewind_for_cache()) throw Refused{};
+  // Bracketed trusted-clock sample around the STS acquisition so the checked
+  // conversion can bound the UTC/monotonic skew rather than extending validity.
+  const auto before = rs::util::Clock::now();
+  const auto utc_ms = Aws::Utils::DateTime::Now().Millis();
   auto assumed = profile_role::resolve_assumed_role_credentials(
       stage->credentials_path(), stage->profile(), context.region,
-      context.source_identity, 900, request.deadline(), std::move(cancel));
+      context.source_identity, 900, request.deadline(), cancel);
   if (!assumed || !stage->unchanged()) throw Refused{};
-  // R1b: carry the assumed credential's known validity as a monotonic bound so
-  // a later DB dispatch cannot sign with already-expired assumed credentials.
   if (!assumed.value().expiration_utc) throw Refused{};
-  const auto expiry_ms = assumed.value().expiration_utc->microseconds_since_epoch / 1000;
-  const auto now_utc_ms = Aws::Utils::DateTime::Now().Millis();
-  const auto now_mono = rs::util::Clock::now();
-  const auto lifetime = std::chrono::milliseconds(expiry_ms - now_utc_ms);
-  if (lifetime <= std::chrono::milliseconds::zero()) throw Refused{};  // already expired
-  const auto expires_mono = now_mono + lifetime;
-  // The request window (deadline + headroom) must fit inside the source expiry.
-  if (request.deadline() + request.headroom() > expires_mono) throw Refused{};
+  const auto after = rs::util::Clock::now();
+  const auto now = rs::util::Clock::now();
+  // Reuse the existing temporary-validity conversion with an explicit
+  // quality/error/horizon policy. Refuses unavailable quality, overflow, stale
+  // samples, rollback, expiry and unsupported horizons; preserves the exclusive
+  // expiry contract and the admitted monotonic validity.
+  TemporaryClockSample sample;
+  sample.utc = UtcInstant{utc_ms * 1000};
+  sample.before = before;
+  sample.after = after;
+  sample.acquisition_completed = after;
+  sample.now = now;
+  sample.utc_uncertainty = std::chrono::seconds{1};
+  sample.drift_error = std::chrono::microseconds::zero();
+  sample.suspend_error = std::chrono::microseconds::zero();
+  const TemporaryTimePolicy policy{std::chrono::seconds{10}, std::chrono::seconds{10},
+      std::chrono::seconds{10}, std::chrono::seconds{3600}};
+  WorkerCancellationBridge bridge{cancel};
+  auto time = convert_temporary_validity(request.deadline(), request.headroom(),
+      *assumed.value().expiration_utc, sample, policy, &bridge);
+  if (!time) throw Refused{};
+  const auto expires_mono = time.value().expires_at;
   Aws::Auth::AWSCredentials creds{role_sdk_string(assumed.value().access_key_id),
       role_sdk_string(assumed.value().secret_access_key), role_sdk_string(assumed.value().session_token)};
   return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation, expires_mono};
