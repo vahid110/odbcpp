@@ -152,12 +152,20 @@ struct WorkerCancellationBridge final : public rs::core::auth::Cancellation {
 }
 std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
     const ProtectedNamedSourceSpec& spec, const Context& context, const Request& request,
-    std::shared_ptr<WorkerCancellation> cancel) {
+    std::shared_ptr<WorkerCancellation> cancel,
+    std::optional<std::chrono::microseconds> utc_uncertainty,
+    std::optional<std::chrono::microseconds> drift_error,
+    std::optional<std::chrono::microseconds> suspend_error) {
   // Reuse the protected stage's fd-validated read for the role resolution.
   auto stage = ProtectedNamedStage::create(spec, context, request);
   if (!stage->assumes_role()) return std::nullopt;
   // Rewind the validated fds before the STS loader reads /dev/fd aliases.
   if (!stage->rewind_for_cache()) throw Refused{};
+  // The trusted clock-quality bounds must come from an explicitly trusted
+  // sampler; this adapter has none and Aws::Utils::DateTime::Now() is not a
+  // trusted UTC source. Propagate unavailable quality as refusal before any
+  // STS send rather than declaring unsupported bounds.
+  if (!utc_uncertainty || !drift_error || !suspend_error) throw Refused{};
   // Bracketed trusted-clock sample around the STS acquisition so the checked
   // conversion can bound the UTC/monotonic skew rather than extending validity.
   const auto before = rs::util::Clock::now();
@@ -179,9 +187,9 @@ std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
   sample.after = after;
   sample.acquisition_completed = after;
   sample.now = now;
-  sample.utc_uncertainty = std::chrono::seconds{1};
-  sample.drift_error = std::chrono::microseconds::zero();
-  sample.suspend_error = std::chrono::microseconds::zero();
+  sample.utc_uncertainty = utc_uncertainty;
+  sample.drift_error = drift_error;
+  sample.suspend_error = suspend_error;
   const TemporaryTimePolicy policy{std::chrono::seconds{10}, std::chrono::seconds{10},
       std::chrono::seconds{10}, std::chrono::seconds{3600}};
   WorkerCancellationBridge bridge{cancel};

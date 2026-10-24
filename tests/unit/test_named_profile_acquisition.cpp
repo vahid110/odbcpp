@@ -92,9 +92,12 @@ TEST(NamedProfileAcquisition, SourceProfileMultiSectionAcceptedAndRefused){
   EXPECT_ANY_THROW(stage(files));
 }
 TEST(NamedProfileAcquisition, RoleProfilesRefusedBeforeStaticKeyFallback){
-  // R1: a role_arn (inline) or source_profile profile must route through STS
-  // AssumeRole, not the static-key provider. Refused before any provider read,
-  // so the source principal's keys are never adopted and no DB dispatch occurs.
+  // R1/R1b: a role_arn (inline) or source_profile profile must never fall back
+  // to the static-key provider. The role path is refused (zero STS sends, zero
+  // provider reads, zero DB dispatches) because this adapter has no trusted
+  // sampler to supply the clock-quality bounds required by the checked
+  // temporary-validity conversion; Aws::Utils::DateTime::Now() is not a trusted
+  // UTC source. The source principal's keys are never adopted.
   const std::string inline_role="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
   const std::string source_role="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n[base]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\n";
   for(const auto& body:{inline_role,source_role}){
@@ -105,10 +108,11 @@ TEST(NamedProfileAcquisition, RoleProfilesRefusedBeforeStaticKeyFallback){
     EXPECT_FALSE(made.counts.named_source_ready);
   }
 }
-TEST(NamedProfileAcquisition, RoleProfilesAssumeRoleAndSignDbDispatchWithAssumedKey){
-  // R1 (full path): both accepted role forms resolve through exactly one STS
-  // AssumeRole; the subsequent DB dispatch carries the assumed session token
-  // (the source profile has no token), never the source principal's static keys.
+TEST(NamedProfileAcquisition, RoleProfilesUnavailableClockQualityRefusedBeforeSts){
+  // R1b discriminator: unavailable clock-quality bounds (the caller has no
+  // trusted sampler) refuse the role path before any STS send. Configuring the
+  // STS fake for success must not change that: zero AssumeRole sends, zero
+  // static-provider reads and zero DB dispatches, for both accepted role forms.
   const std::string inline_role="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
   const std::string source_role="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n[base]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\n";
   for(const auto& body:{inline_role,source_role}){
@@ -118,15 +122,11 @@ TEST(NamedProfileAcquisition, RoleProfilesAssumeRoleAndSignDbDispatchWithAssumed
     Files files;Files::write(files.credential,body);NamedSetup setup;
     auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,
         rs::util::Clock::now()+std::chrono::seconds{20});
-    ASSERT_TRUE(made.owner);
-    EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
+    EXPECT_FALSE(made.owner);
+    EXPECT_EQ(detail::fake_http_observation().assume_role.load(),0U);
+    EXPECT_EQ(detail::fake_http_observation().sends.load(),0U);
     EXPECT_EQ(made.counts.named_provider_loads,0U);
-    auto acquired=made.owner->acquire_observation();
-    ASSERT_TRUE(acquired.observation);
-    EXPECT_TRUE(acquired.counts.signed_with_session_token);
-    EXPECT_EQ(acquired.counts.selected_sends,1U);
-    EXPECT_TRUE(acquired.observation->close());
-    EXPECT_TRUE(made.owner->close());
+    EXPECT_EQ(made.counts.selected_sends,0U);
   }
 }
 TEST(NamedProfileAcquisition, RoleAdmissionPrecedesStsAndRefusesWithoutSends){
@@ -180,49 +180,22 @@ TEST(NamedProfileAcquisition, RoleBoundAdmissionRefusesForeignGenerationFailingC
     EXPECT_EQ(made.counts.selected_sends,0U);
   }
 }
-TEST(NamedProfileAcquisition, RoleRetirementDuringAcquisitionRefusesPublication){
-  // R1a: source retirement observed during STS acquisition is rechecked after
-  // the freeze boundary, so no subsequent DB dispatch is published.
+TEST(NamedProfileAcquisition, RoleProfilesSuppliedClockErrorExceedingAdmittedBoundRefused){
+  // R1b slow-UTC discriminator: when a trusted sampler supplies bounds but the
+  // UTC error exceeds the admitted policy bound (11s uncertainty > 10s
+  // max_total_error), the checked conversion refuses after the STS send with
+  // zero DB dispatches, so it cannot extend retained expiry or permit a send.
   const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
   detail::fake_http_observation().reset();
   detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
   detail::fake_http_set_expiry_ms(now_epoch_ms()+900000ULL);
   Files files;Files::write(files.credential,body);NamedSetup setup;
-  detail::fake_http_set_during([g=setup.generation](){(void)g->retire(a::SourceRetirement::Closed);});
-  auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,rs::util::Clock::now()+std::chrono::seconds{20});
-  EXPECT_FALSE(made.owner);
+  auto c=p::FixedFixture::context();auto r=p::FixedFixture::request(c,rs::util::Clock::now()+std::chrono::seconds{20});
+  EXPECT_ANY_THROW((void)p::detail::NamedSourceAcquisitionOwner::resolve(files.spec(),c,r,setup.cancel,
+      std::chrono::microseconds{11000000},std::chrono::microseconds::zero(),std::chrono::microseconds::zero()));
+  // The STS send happened (bounds were supplied), but the checked conversion
+  // refused the out-of-bound error before any frozen source or DB dispatch.
   EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
-  EXPECT_EQ(made.counts.selected_sends,0U);
-}
-TEST(NamedProfileAcquisition, RoleCredentialExpiringBeforeWindowRefuses){
-  // R1b: a valid STS response expiring before the requested acquisition window
-  // must be refused (zero DB sends), not frozen as a retained source.
-  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
-  detail::fake_http_observation().reset();
-  detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
-  const auto epoch=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  detail::fake_http_set_expiry_ms(static_cast<unsigned long long>(epoch)+2000ULL);
-  Files files;Files::write(files.credential,body);NamedSetup setup;
-  auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,rs::util::Clock::now()+std::chrono::seconds{20});
-  EXPECT_FALSE(made.owner);
-  EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
-  EXPECT_EQ(made.counts.selected_sends,0U);
-}
-TEST(NamedProfileAcquisition, RoleDeferredAcquisitionAfterExpiryRefuses){
-  // R1b: a credential that covers the request window is frozen, but a deferred
-  // acquisition after its validity expired is refused before signing (zero DB).
-  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
-  detail::fake_http_observation().reset();
-  detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
-  detail::fake_http_set_expiry_ms(now_epoch_ms()+4000ULL);
-  Files files;Files::write(files.credential,body);NamedSetup setup;
-  auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,rs::util::Clock::now()+std::chrono::seconds{1});
-  ASSERT_TRUE(made.owner);
-  std::this_thread::sleep_for(std::chrono::seconds{5});
-  auto acquired=made.owner->acquire_observation();
-  EXPECT_FALSE(acquired.observation);
-  EXPECT_EQ(acquired.counts.selected_sends,0U);
-  EXPECT_TRUE(made.owner->close());
 }
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){
  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);Files files;
