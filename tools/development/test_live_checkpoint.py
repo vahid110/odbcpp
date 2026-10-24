@@ -208,5 +208,128 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('protected-lifecycle-extension',source)
 
 
+class LocalValidationTests(unittest.TestCase):
+    """Pinned synthetic coordinator assessments; no product/live acceptance."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.head = subprocess.check_output(['git', '-C', str(checkpoint.ROOT),
+            'rev-parse', 'HEAD'], text=True).strip()
+        self.evidence = self.write('raw-evidence', {'synthetic_offline_only': True})
+        self.direction = self.write('direction', {'human_direction': 'SYNTHETIC Windows first, then WSL'})
+        self.plan = dict(source_head=self.head, native_windows={}, validation_profile='windows-redshift',
+            index={'sha256': '1'*64}, profiles={'sha256': '2'*64})
+        self.receipt = dict(schema_version=1, kind='human-directed-local-validation-v1',
+            reviewed=True, status='completed', human_direction='windows-first-then-wsl',
+            human_direction_ref=self.direction, complete_applicable_offline=True,
+            ci_acceptance=False, ci_status='pending_not_accepted', source_head=self.head,
+            producer_head=self.head, profile='windows-redshift', build_exit=0, ctest_exit=0,
+            evidence=self.evidence, runtime_index_sha256='1'*64, profiles_sha256='2'*64)
+        self.refresh()
+
+    def write(self, name, value):
+        path = self.root / (name + '.json'); path.write_text(json.dumps(value))
+        return dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def refresh(self):
+        self.plan['local_validation'] = self.write('receipt', self.receipt)
+
+    def validate(self):
+        checkpoint.validate_local_validation(self.plan)
+
+    def test_pinned_coordinator_assessment_preserves_CI_pending(self):
+        self.validate()
+        self.assertIs(self.receipt['ci_acceptance'], False)
+        self.assertEqual('pending_not_accepted', self.receipt['ci_status'])
+
+    def test_default_CI_gate_still_rejects_absent_failed_pending_or_wrong_source(self):
+        plan = dict(self.plan, security_groups=[{'synthetic_offline_only': True}])
+        for ci in ({}, {'source_head': self.head, 'applicable_ci_green': False},
+                   {'source_head': self.head, 'status': 'pending'},
+                   {'source_head': '0'*40, 'applicable_ci_green': True}):
+            with self.subTest(ci=ci), self.assertRaisesRegex(checkpoint.lifecycle.Refused,
+                    'exact_source_green_applicable_CI'):
+                checkpoint.checkpoint_validation_mode(plan, ci, True)
+        self.assertEqual('ci', checkpoint.checkpoint_validation_mode(plan,
+            {'source_head': self.head, 'applicable_ci_green': True}, True))
+        plan['validation_mode'] = 'ignore_ci'
+        with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'checkpoint_validation_mode'):
+            checkpoint.checkpoint_validation_mode(plan, {}, True)
+        plan['validation_mode'] = 'human_directed_local'
+        self.assertEqual('human_directed_local', checkpoint.checkpoint_validation_mode(plan, {}, True))
+        plan['security_groups'] = []
+        with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'approved_existing_security_group_snapshot'):
+            checkpoint.checkpoint_validation_mode(plan, {}, True)
+
+    def test_missing_failed_pending_mismatched_unreviewed_assessment_is_refused(self):
+        self.plan.pop('local_validation')
+        with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'local_validation_receipt_required'):
+            self.validate()
+        for field, value in [('build_exit', 1), ('build_exit', None), ('build_exit', False),
+                             ('ctest_exit', 8), ('status', 'pending'), ('reviewed', False),
+                             ('source_head', '0'*40), ('profile', 'unixodbc-redshift'),
+                             ('ci_acceptance', True), ('ci_status', 'green'),
+                             ('complete_applicable_offline', False)]:
+            with self.subTest(field=field, value=value):
+                old = dict(self.receipt); self.receipt[field] = value; self.refresh()
+                with self.assertRaises(checkpoint.lifecycle.Refused): self.validate()
+                self.receipt = old
+
+    def test_changed_missing_or_empty_human_direction_and_evidence_are_refused(self):
+        path = Path(self.direction['path']); path.write_text('changed after review')
+        with self.assertRaises(checkpoint.lifecycle.Refused): self.validate()
+        self.receipt['human_direction_ref'] = self.write('empty-direction', {'human_direction': ''})
+        self.refresh()
+        with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'retained_human_direction_required'):
+            self.validate()
+        self.receipt['human_direction_ref'] = self.write('restored-direction', {'human_direction': 'SYNTHETIC'})
+        Path(self.evidence['path']).unlink(); self.refresh()
+        with self.assertRaises((OSError, checkpoint.lifecycle.Refused)): self.validate()
+
+    def test_assessment_must_bind_current_runtime_inventory_and_profile(self):
+        for field in ('runtime_index_sha256', 'profiles_sha256'):
+            old = self.receipt[field]; self.receipt[field] = '0'*64; self.refresh()
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'reviewed_local_runtime_inventory_and_profiles'):
+                self.validate()
+            self.receipt[field] = old
+
+    def test_control_only_source_applicability_is_narrow(self):
+        with patch.object(checkpoint.subprocess, 'check_output', return_value='tools/development/live_checkpoint.py\n'):
+            checkpoint.same_validation_product('a'*40, 'b'*40)
+        for path in ('sdk/security.cpp', 'tools/development/redshift_resource.py'):
+            with patch.object(checkpoint.subprocess, 'check_output', return_value=path+'\n'):
+                with self.assertRaises(checkpoint.lifecycle.Refused):
+                    checkpoint.same_validation_product('a'*40, 'b'*40)
+
+    def test_wsl_requires_coordinator_qualified_complete_windows_result(self):
+        self.plan.pop('native_windows')
+        self.plan['validation_profile'] = self.receipt['profile'] = 'unixodbc-redshift'; self.refresh()
+        with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'windows_qualification_required_before_WSL'):
+            self.validate()
+        windows = dict(source_head=self.head, reviewed=True, status='completed', profile='windows-redshift',
+            complete_applicable_windows_live=True, cleanup_complete=True, actual_exit=0, evidence=self.evidence)
+        self.receipt['windows_success'] = self.write('windows', windows); self.refresh(); self.validate()
+        for field, value in [('complete_applicable_windows_live', False), ('cleanup_complete', False),
+                             ('actual_exit', 1), ('actual_exit', False), ('profile', 'unixodbc-redshift')]:
+            previous = dict(windows); windows[field] = value
+            self.receipt['windows_success'] = self.write('windows', windows); self.refresh()
+            with self.assertRaises(checkpoint.lifecycle.Refused): self.validate()
+            windows = previous
+
+    def test_windows_public_path_mapping_refuses_relative_UNC_and_other_drives(self):
+        for path in ('C:relative.json', r'\\host\share\receipt.json', r'D:\receipt.json'):
+            with self.subTest(path=path), self.assertRaisesRegex(checkpoint.lifecycle.Refused,
+                    'local_validation_absolute_C_drive'):
+                checkpoint.validation_file(dict(path=path, sha256='0'*64))
+        with patch.object(checkpoint, 'pinned', return_value=Path('synthetic')) as pin:
+            checkpoint.validation_file(dict(path=r'C:\public\receipt.json', sha256='0'*64))
+            self.assertEqual(pin.call_args.args[0]['path'],
+                r'C:\public\receipt.json' if os.name == 'nt' else '/mnt/c/public/receipt.json')
+        with patch.object(checkpoint, 'pinned', return_value=Path('synthetic')) as pin:
+            checkpoint.validation_file(dict(path='/mnt/c/public/receipt.json', sha256='0'*64))
+            self.assertEqual(pin.call_args.args[0]['path'],
+                'C:/public/receipt.json' if os.name == 'nt' else '/mnt/c/public/receipt.json')
+
+
 if __name__ == '__main__':
     unittest.main()

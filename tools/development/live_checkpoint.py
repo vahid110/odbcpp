@@ -43,7 +43,7 @@ def prepare_plan(recipe_path, output):
         return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     plan = dict(recipe, schema_version=1, source_directory=str(ROOT),
                 source_head=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip())
-    for key in ('index','expected','profiles','specs','ci_receipt',
+    for key in ('index','expected','profiles','specs','ci_receipt','local_validation',
                 'checkpoint_expected','checkpoint_partitions'):
         if recipe.get(key):plan[key] = bind(recipe[key])
     plan['tools'] = {key:bind(path) for key,path in recipe['tools'].items()}
@@ -95,6 +95,101 @@ def prepare_plan(recipe_path, output):
     return plan
 
 
+LOCAL_VALIDATION_CONTROL_FILES = {
+    'tools/development/live_checkpoint.py',
+    'tools/development/test_live_checkpoint.py',
+    'tools/development/CHECKPOINT_INPUTS.md',
+}
+
+
+def same_validation_product(producer, consumer):
+    """Only this control-only exception may differ from the compiled producer."""
+    lifecycle.need(all(isinstance(head, str) and re.fullmatch('[0-9a-f]{40}', head)
+                       for head in (producer, consumer)), 'local_validation_source_heads')
+    changed = subprocess.check_output(
+        ['git', '-C', str(ROOT), 'diff', '--name-only', producer, consumer], text=True).splitlines()
+    lifecycle.need(set(changed) <= LOCAL_VALIDATION_CONTROL_FILES,
+                   'local_validation_same_product_source')
+
+
+def validation_file(ref):
+    # Public Windows artifacts may be read by the local WSL resource owner.
+    from pathlib import PureWindowsPath
+    path = ref['path']
+    value = PureWindowsPath(path)
+    if value.drive:
+        lifecycle.need(value.is_absolute() and value.drive.upper() == 'C:' and
+                       '..' not in value.parts, 'local_validation_absolute_C_drive')
+        if os.name != 'nt':
+            path = str(Path('/mnt/c').joinpath(*value.parts[1:]))
+    elif os.name == 'nt' and path.startswith('/mnt/c/'):
+        path = 'C:/' + path[len('/mnt/c/'):]
+    return pinned(dict(ref, path=path))
+
+
+def validate_local_validation(plan):
+    """Trust the coordinator's reviewed result, at the existing CI-receipt boundary.
+
+    The coordinator checks actual full XML/inventory/config/image association;
+    this entry checks the pinned assessment, scope and unchanged product source.
+    It never manufactures CI success or relaxes operational admission.
+    """
+    def load(ref):
+        return json.loads(validation_file(ref).read_text(encoding='utf-8-sig'))
+    lifecycle.need(bool(plan.get('local_validation')), 'local_validation_receipt_required')
+    receipt = load(plan['local_validation'])
+    profile = plan.get('validation_profile')
+    lifecycle.need(receipt.get('schema_version') == 1 and
+                   receipt.get('kind') == 'human-directed-local-validation-v1' and
+                   receipt.get('reviewed') is True and receipt.get('status') == 'completed' and
+                   receipt.get('human_direction') == 'windows-first-then-wsl' and
+                   receipt.get('complete_applicable_offline') is True and
+                   receipt.get('ci_acceptance') is False and
+                   receipt.get('ci_status') == 'pending_not_accepted' and
+                   receipt.get('source_head') == plan['source_head'] and
+                   receipt.get('profile') == profile and
+                   profile in (('windows-redshift',) if 'native_windows' in plan else
+                               ('unixodbc-redshift', 'linux-iodbc-redshift')) and
+                   all(type(receipt.get(key)) is int and receipt[key] == 0
+                       for key in ('build_exit', 'ctest_exit')),
+                   'reviewed_completed_human_local_validation')
+    lifecycle.need(all(receipt.get(key) for key in ('producer_head', 'human_direction_ref', 'evidence')),
+                   'local_validation_receipt_fields')
+    same_validation_product(receipt['producer_head'], plan['source_head'])
+    direction = load(receipt['human_direction_ref'])
+    lifecycle.need(isinstance(direction.get('human_direction'), str) and
+                   bool(direction['human_direction'].strip()), 'retained_human_direction_required')
+    # These are public evidence/assessment bindings, not an alternative XML or
+    # configuration engine. The coordinator preserves actual failures and skips.
+    validation_file(receipt['evidence'])
+    lifecycle.need(receipt.get('runtime_index_sha256') == plan['index']['sha256'] and
+                   receipt.get('profiles_sha256') == plan['profiles']['sha256'],
+                   'reviewed_local_runtime_inventory_and_profiles')
+    if 'native_windows' not in plan:
+        lifecycle.need(bool(receipt.get('windows_success')), 'windows_qualification_required_before_WSL')
+        windows = load(receipt['windows_success'])
+        same_validation_product(windows['source_head'], plan['source_head'])
+        lifecycle.need(windows.get('reviewed') is True and windows.get('status') == 'completed' and
+                       windows.get('profile') == 'windows-redshift' and
+                       windows.get('complete_applicable_windows_live') is True and
+                       windows.get('cleanup_complete') is True and
+                       type(windows.get('actual_exit')) is int and windows['actual_exit'] == 0,
+                       'complete_successful_windows_qualification_before_WSL')
+        validation_file(windows['evidence'])
+
+
+def checkpoint_validation_mode(plan, ci, required):
+    mode = plan.get('validation_mode', 'ci')
+    lifecycle.need(mode in ('ci', 'human_directed_local'), 'checkpoint_validation_mode')
+    if required and mode == 'ci':
+        lifecycle.need(ci.get('source_head') == plan['source_head'] and
+                       ci.get('applicable_ci_green') is True, 'exact_source_green_applicable_CI')
+    if required:
+        lifecycle.need(type(plan.get('security_groups')) is list and bool(plan['security_groups']),
+                       'approved_existing_security_group_snapshot')
+    return mode
+
+
 def read_plan(path, *, require_ci=False):
     plan = json.loads(path.read_text(encoding='utf-8-sig'))
     lifecycle.need(plan['schema_version'] == 1, 'plan_schema')
@@ -109,12 +204,7 @@ def read_plan(path, *, require_ci=False):
         pinned(ref)
     lifecycle.need(set(plan['tools']) == {'cmake','ctest','aws','psql','python'}, 'fixed_tool_inventory')
     ci = json.loads(pinned(plan['ci_receipt']).read_text(encoding='utf-8-sig')) if plan.get('ci_receipt') else {}
-    if require_ci:
-        lifecycle.need(ci.get('source_head') == plan['source_head']
-                       and ci.get('applicable_ci_green') is True,
-                       'exact_source_green_applicable_CI')
-        lifecycle.need(type(plan.get('security_groups')) is list and bool(plan['security_groups']),
-                       'approved_existing_security_group_snapshot')
+    validation_mode = checkpoint_validation_mode(plan, ci, require_ci)
     lifecycle.need(set(plan['authority_receipts']) == {'authority','applicability','cleanup_delegation'},
                    'existing_fixture_authority_receipts')
     for ref in plan['authority_receipts'].values():
@@ -149,6 +239,8 @@ def read_plan(path, *, require_ci=False):
             plan['source_head'], plan['partition'], expected)
     if 'native_windows' in plan:
         validate_native_plan(plan, index, expected)
+    if require_ci and validation_mode == 'human_directed_local':
+        validate_local_validation(plan)
     return plan
 
 
@@ -242,8 +334,11 @@ def execute(plan, plan_path, admission_path):
     lifecycle.need(state.is_absolute() and state.is_dir() and not state.is_symlink(), 'owned_private_state')
     tools = {k: str(pinned(v).resolve(strict=True)) for k, v in plan['tools'].items()}
     public_pins = {v['path']: v['sha256'] for v in plan['tools'].values()}
-    for key in ('index','expected','profiles','specs','ci_receipt'):
-        public_pins[plan[key]['path']] = plan[key]['sha256']
+    for key in ('index','expected','profiles','specs','ci_receipt','local_validation'):
+        if not plan.get(key):
+            continue
+        path = str(validation_file(plan[key])) if key == 'local_validation' else plan[key]['path']
+        public_pins[path] = plan[key]['sha256']
     if 'partition' in plan:
         for key in ('checkpoint_expected', 'checkpoint_partitions'):
             public_pins[plan[key]['path']] = plan[key]['sha256']
@@ -372,10 +467,14 @@ def main():
         result['resource_run_supported'] = os.name == 'posix'
         result['native_windows_backend'] = 'native_windows' in plan
         result['CI_and_network_snapshot_present'] = bool(plan.get('ci_receipt') and plan.get('security_groups'))
+        result['validation_mode'] = plan.get('validation_mode', 'ci')
+        result['local_validation_present'] = bool(plan.get('local_validation'))
         print(json.dumps(result));return result['configure_exit']
     if not args.admission:
         parser.error('run requires the existing protected --admission')
     result = execute(plan, args.plan, args.admission)
+    result['validation_mode'] = plan.get('validation_mode', 'ci')
+    result['local_validation_is_CI_acceptance'] = False
     # CTest failure does not interrupt cleanup or become a successful checkpoint.
     print(json.dumps(result))
     return 0 if result['lifecycle_cleanup_complete'] and result['ctest'] is not None and result['ctest']['returncode'] == 0 else 1
