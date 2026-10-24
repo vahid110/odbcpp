@@ -163,8 +163,11 @@ def prepare_profile_inputs(directory, config, factory, profiles, manifest, *, de
             connection = factory.build_profile_connection(local_config, profile)
             connection_file = owned('connection.txt', connection)
             if private['kind'] == 'OWN_DSN':
-                part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.dsn_documents(config, profile['limits'], driver['path']))
-                part['environment'].update({'ODBCINI': str(child / 'dsn' / 'odbc.ini'), 'ODBCSYSINI': str(child / 'dsn'), 'ODBCINSTINI': str(child / 'dsn' / 'odbcinst.ini')})
+                manager = profile.get('driver_manager')
+                part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.dsn_documents(config, profile['limits'], driver['path'], driver_manager=manager))
+                # unixODBC resolves ODBCINSTINI relative to ODBCSYSINI; iODBC
+                # and the in-process driver take it as a path.
+                part['environment'].update({'ODBCINI': str(child / 'dsn' / 'odbc.ini'), 'ODBCSYSINI': str(child / 'dsn'), 'ODBCINSTINI': 'odbcinst.ini' if manager == 'unixODBC' else str(child / 'dsn' / 'odbcinst.ini')})
             if private['kind'] in ('OWN_DM_FILE', 'VENDOR_DM_FILE'):
                 if driver['wchar_bytes'] == 4:
                     part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.iodbc_registration_documents(profile))
