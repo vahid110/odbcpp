@@ -31,7 +31,7 @@ def binding(*, admin_oid=None, test_oid=None):
             "COUNT(CASE WHEN usename='odbcpp_pilot_admin' AND usesuper THEN 1 END)=1 AND "
             "COUNT(CASE WHEN usename='odbcpp_pilot_test' AND NOT usesuper THEN 1 END)=1" + held + " "
             "THEN 1 ELSE 0 END AS rs_principals_held FROM pg_user_info "
-            "WHERE usename IN ('odbcpp_pilot_admin','odbcpp_pilot_test');\n"
+            "WHERE usename IN ('odbcpp_pilot_admin','odbcpp_pilot_test')\n"
             "\\gset\n\\if :rs_principals_held\n\\else\n\\quit 4\n\\endif\n")
 
 

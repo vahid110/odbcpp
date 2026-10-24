@@ -14,6 +14,28 @@ class ServerlessSql(unittest.TestCase):
         return dict(database='odbcpp_pilot', owner='odbcpp_pilot_test', owner_oid='701',
                     schema_oid='811', schema_owner_oid='700', usage='t', create='f', absent='t')
 
+    def test_binding_gset_is_its_only_dispatch_and_prints_no_intermediate_row(self):
+        # psql executes a semicolon-terminated SELECT immediately. A following
+        # empty-buffer \gset re-executes it; its first result then contaminates
+        # the exact final-zero/timeout/PowerBI frames. The SELECT must remain in
+        # the query buffer until this single \gset dispatch consumes its row.
+        # https://www.postgresql.org/docs/current/app-psql.html#APP-PSQL-META-COMMAND-GSET
+        for oids in ({}, dict(admin_oid=700, test_oid=701)):
+            with self.subTest(oids=oids):
+                binding = sql.binding(**oids)
+                buffered, commands = binding.split('\\gset\n', 1)
+                self.assertTrue(buffered.startswith('SELECT '))
+                self.assertNotIn(';', buffered)
+                self.assertNotIn('\\gset', commands)
+                self.assertNotIn('\\g\n', binding)
+                self.assertNotIn('\\echo', binding)
+                self.assertTrue(commands.startswith('\\if :rs_principals_held\n'))
+                self.assertIn('\\else\n\\quit 4\n\\endif', commands)
+                # One bind dispatch plus one final-zero dispatch; neither the
+                # original extra principal row nor a second bind is admitted.
+                stage = binding + sql.zero()
+                self.assertEqual(stage.count(';') + stage.count('\\gset'), 2)
+
     def test_name_resolution_is_separate_bounded_and_exact(self):
         query = sql.binding()
         self.assertIn('COUNT(*)=2', query)
@@ -76,6 +98,8 @@ class ServerlessSql(unittest.TestCase):
             old = fixtures.timeout_stage(record, kind, captured)
             new = fixtures.timeout_stage(record, kind, captured, resource_kind='serverless')
             self.assertEqual(new['statements'], old['statements'] + 1)
+            self.assertEqual(new['query'].count(';') + new['query'].count('\\gset'),
+                             new['statements'])
             self.assertNotIn('stv_', new['query'])
             self.assertIn('sys_query_history', new['query'])
             self.assertIn('sys_session_history', new['query'])
@@ -96,6 +120,8 @@ class ServerlessSql(unittest.TestCase):
             resource_kind='serverless')
         stage = sessions.stage_for(state, 'snapshot')
         self.assertEqual(stage['statements'], 6)
+        self.assertEqual(stage['query'].count(';') + stage['query'].count('\\gset'),
+                         stage['statements'])
         self.assertNotIn('stv_', stage['query'])
         self.assertIn('sys_session_history', stage['query'])
         self.assertIn(" OR TRY_CAST", stage['query'])
