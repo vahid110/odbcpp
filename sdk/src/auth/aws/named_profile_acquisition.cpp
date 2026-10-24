@@ -1,6 +1,7 @@
 #include "odbcpp/auth/aws/named_profile_acquisition.h"
 #include "odbcpp/auth/aws/provisioned_native_http_ingress.h"
 #include "odbcpp/auth/aws/explicit_profile_source.h"
+#include "odbcpp/auth/aws/profile_role_assumption.h"
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <array>
 #include <cerrno>
@@ -121,6 +122,8 @@ bool NamedSourceAcquisitionOwner::load(State& state) noexcept {
   // R1: a profile declaring role_arn or source_profile must route through
   // protected STS AssumeRole acquisition, never the static-key provider. Refuse
   // before any static-key read so the source principal's keys are never adopted.
+  // Defensive backstop: a role profile reaching load() means the named entry
+  // failed to resolve it; never fall back to the source principal's static keys.
   if(state.protected_stage->assumes_role()){state.reject();return false;}
   Aws::Auth::AWSCredentials value;
   {Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider{state.protected_stage->profile().c_str()};++state.metrics.named_provider_loads;
@@ -128,5 +131,30 @@ bool NamedSourceAcquisitionOwner::load(State& state) noexcept {
   if(!state.check()||!state.protected_stage->unchanged()||value.GetAWSAccessKeyId().empty()||value.GetAWSSecretKey().empty()){state.reject();return false;}
   state.source.value_.emplace(std::move(value));state.source.owns_=true;state.source_ready=true;state.metrics.named_source_ready=true;return true;
  }catch(...){state.reject();return false;}
+}
+namespace {
+Aws::String role_sdk_string(const SecretBytes& bytes) {
+  Aws::String out;
+  bytes.with_bytes([&](std::span<const std::byte> view) {
+    out.assign(reinterpret_cast<const char*>(view.data()), view.size());
+  });
+  return out;
+}
+}
+std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
+    const ProtectedNamedSourceSpec& spec, const Context& context, const Request& request,
+    std::shared_ptr<WorkerCancellation> cancel) {
+  // Reuse the protected stage's fd-validated read for the role resolution.
+  auto stage = ProtectedNamedStage::create(spec, context, request);
+  if (!stage->assumes_role()) return std::nullopt;
+  // Rewind the validated fds before the STS loader reads /dev/fd aliases.
+  if (!stage->rewind_for_cache()) throw Refused{};
+  auto assumed = profile_role::resolve_assumed_role_credentials(
+      stage->credentials_path(), stage->profile(), context.region,
+      context.source_identity, 900, request.deadline(), std::move(cancel));
+  if (!assumed || !stage->unchanged()) throw Refused{};
+  Aws::Auth::AWSCredentials creds{role_sdk_string(assumed.value().access_key_id),
+      role_sdk_string(assumed.value().secret_access_key), role_sdk_string(assumed.value().session_token)};
+  return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation};
 }
 } // namespace

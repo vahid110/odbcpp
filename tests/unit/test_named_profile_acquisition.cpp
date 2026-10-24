@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "odbcpp/auth/aws/named_profile_acquisition.h"
+#include "odbcpp/auth/aws/sts_serverless_fake_http.h"
 #include <aws/core/Globals.h>
 #include <chrono>
 #include <fstream>
@@ -9,6 +10,7 @@
 using namespace std::chrono_literals;
 namespace a=rs::core::auth;
 namespace p=a::aws::provisioned_native;
+namespace detail=a::aws::detail;
 namespace {
 const std::string valid="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\naws_session_token=synthetic-token\n";
 struct Files {
@@ -76,6 +78,29 @@ TEST(NamedProfileAcquisition, RoleProfilesRefusedBeforeStaticKeyFallback){
     EXPECT_EQ(made.counts.named_provider_loads,0U);
     EXPECT_EQ(made.counts.selected_sends,0U);
     EXPECT_FALSE(made.counts.named_source_ready);
+  }
+}
+TEST(NamedProfileAcquisition, RoleProfilesAssumeRoleAndSignDbDispatchWithAssumedKey){
+  // R1 (full path): both accepted role forms resolve through exactly one STS
+  // AssumeRole; the subsequent DB dispatch carries the assumed session token
+  // (the source profile has no token), never the source principal's static keys.
+  const std::string inline_role="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+  const std::string source_role="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n[base]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\n";
+  for(const auto& body:{inline_role,source_role}){
+    detail::fake_http_observation().reset();
+    detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
+    Files files;Files::write(files.credential,body);NamedSetup setup;
+    auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,
+        rs::util::Clock::now()+std::chrono::seconds{20});
+    ASSERT_TRUE(made.owner);
+    EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
+    EXPECT_EQ(made.counts.named_provider_loads,0U);
+    auto acquired=made.owner->acquire_observation();
+    ASSERT_TRUE(acquired.observation);
+    EXPECT_TRUE(acquired.counts.signed_with_session_token);
+    EXPECT_EQ(acquired.counts.selected_sends,1U);
+    EXPECT_TRUE(acquired.observation->close());
+    EXPECT_TRUE(made.owner->close());
   }
 }
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){

@@ -183,22 +183,36 @@ CreateOutcome NativeOwner::create(Context c,Request r,std::shared_ptr<ResponseOb
 CreateOutcome NativeOwner::create_from_named_source(Context c,Request r,std::shared_ptr<ResponseObservationSource> read,
  std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,ProtectedNamedSourceSpec spec){
  CreateOutcome out;
- try{auto pending=detail::NamedSourceAcquisitionOwner::pending(c);Failure failure=Failure::LocalFailure;
+ try{
+  // Resolve a role-assuming profile through STS before the provisioned flow
+  // takes the SDK scope (the standalone STS owner owns its own scope/InitAPI).
+  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel);Failure failure=Failure::LocalFailure;
+  if(resolved){
+   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(*resolved),{},failure);
+   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
+  }
+  auto pending=detail::NamedSourceAcquisitionOwner::pending(c);
   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(pending),{},failure,std::move(spec),&out.counts);
   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
 CreateOutcome FixedFixture::create_named(ProtectedNamedSourceSpec spec,std::shared_ptr<ResponseObservationSource> read,
- std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel){
+ std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,rs::util::Deadline deadline){
  CreateOutcome out;const char* marker=::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
  if(!marker||std::string_view(marker)!="synthetic-fake-http-only"){out.failure=Failure::Unavailable;return out;}
- try{auto c=context();auto r=request(c);auto pending=detail::NamedSourceAcquisitionOwner::pending(c);Failure failure=Failure::LocalFailure;
+ try{auto c=context();auto r=request(c,deadline);
+  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel);Failure failure=Failure::LocalFailure;
+  if(resolved){
+   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(*resolved),FixedCase::Happy,failure,{},&out.counts);
+   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
+  }
+  auto pending=detail::NamedSourceAcquisitionOwner::pending(c);
   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(pending),FixedCase::Happy,failure,std::move(spec),&out.counts);
   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
 Context FixedFixture::context(){return Context{"000000000000","eu-north-1","fixture-cluster","fixture_db","fixture_user","db.fixture.invalid","synthetic-source","g1",true};}
-Request FixedFixture::request(const Context& c){auto binding=Binding::create({Service::Redshift,c.db_endpoint,5439,c.database,c.expected_user,c.resource_arn,c.db_endpoint,"verify-full"},{SourceKind::TrustedTemporaryDbIssuer,c.source_identity,c.source_generation},Method::TemporaryDatabasePassword);if(!binding)std::terminate();auto made=Request::create(std::move(binding).value(),rs::util::Deadline{std::chrono::seconds{20}},std::chrono::seconds{1});if(!made)std::terminate();return std::move(made).value();}
+Request FixedFixture::request(const Context& c,rs::util::Deadline deadline){auto binding=Binding::create({Service::Redshift,c.db_endpoint,5439,c.database,c.expected_user,c.resource_arn,c.db_endpoint,"verify-full"},{SourceKind::TrustedTemporaryDbIssuer,c.source_identity,c.source_generation},Method::TemporaryDatabasePassword);if(!binding)std::terminate();auto made=Request::create(std::move(binding).value(),deadline,std::chrono::seconds{1});if(!made)std::terminate();return std::move(made).value();}
 CreateOutcome FixedFixture::create(FixedCase test,std::shared_ptr<ResponseObservationSource> read,std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel){
  CreateOutcome out;const char* marker=::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
  if(!marker||std::string_view(marker)!="synthetic-fake-http-only"||static_cast<unsigned>(test)>static_cast<unsigned>(FixedCase::Reentry)){out.failure=Failure::Unavailable;return out;}

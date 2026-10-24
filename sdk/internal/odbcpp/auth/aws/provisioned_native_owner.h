@@ -56,6 +56,7 @@ struct Counts {
   unsigned error_diagnostic_bytes{};
 
   unsigned named_provider_loads{};bool named_source_ready{},named_stage_released{};
+  bool signed_with_session_token{};
   unsigned initializations{},shutdowns{},bootstrap_factories{},clients{},destroyed_clients{},
       requests{},selected_sends{},foreign_requests{},null_requests{},safe_refusals{},
       frozen_provider_reads{},delegate_returns{},delegate_destructions{},active{},
@@ -109,9 +110,11 @@ enum class FixedCase { Happy, DuplicateUser, WrongUser, WrongEnvelope, ExactCap,
   ServiceThrottled, ServiceDuplicate, ServiceMissing, ServiceMalformed, ServiceUnknown, ServiceTwoErrors, ServiceNestedCode, ServiceDtd, ServiceLongCode, ServiceWrongNamespace, ServiceWrongErrorNamespace, ServiceWrongCodeNamespace, ServiceQueryNamespace,
   TransportError, TransportTimeout, TransportCancelled, Reentry };
 struct FixedFixture final {
-  static Context context();static Request request(const Context&);
+  static Context context();
+  static Request request(const Context&, rs::util::Deadline deadline = rs::util::Deadline{std::chrono::seconds{20}});
   static CreateOutcome create_named(ProtectedNamedSourceSpec,std::shared_ptr<ResponseObservationSource>,
-      std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>);
+      std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>,
+      rs::util::Deadline deadline = rs::util::Deadline{std::chrono::seconds{20}});
   // Closed fake-only bridge tests: same fixed context/body/source, finite D.
   static CreateOutcome create_for_connector(FixedCase,rs::util::Deadline,
       std::shared_ptr<ResponseObservationSource>,std::shared_ptr<ResponseSourceGeneration>,
