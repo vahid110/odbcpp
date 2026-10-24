@@ -13,6 +13,15 @@ struct PasswordCleanup {
     value.clear(); // Best effort; allocator/transport copies are not guaranteed erased.
   }
 };
+struct NativeIdpCleanup {
+  std::optional<NativeIdpSettings>& value;
+  ~NativeIdpCleanup() {
+    if (!value) return;
+    volatile char* bytes = value->token.data();
+    for (std::size_t i = 0; i < value->token.size(); ++i) bytes[i] = 0;
+    value->token.clear();
+  }
+};
 }
 rs::core::database::BackendResult<void> connect_bound_temporary_db_until(
     rs::core::database::postgres::PgDatabaseConnection& connection,
@@ -142,6 +151,79 @@ rs::core::database::BackendResult<void> connect_bound_ordinary_password_until(
     connection.disconnect();
     return local_backend_error(LocalFailure::InvalidInput,
         "Ordinary password handoff failed", BackendOperation::Connect,
+        SessionState::Disconnected);
+  }
+}
+} // namespace rs::core::auth
+
+namespace rs::core::auth {
+rs::core::database::BackendResult<void> connect_bound_native_idp_until(
+    rs::core::database::postgres::PgDatabaseConnection& connection,
+    const rs::core::database::ConnectionSettings& selected, const Request& request,
+    const Material& material) {
+  using namespace rs::core::database;
+  const auto invalid = [&]() -> BackendResult<void> {
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid bound native IdP handoff", BackendOperation::Connect,
+        connection.session_state());
+  };
+  const auto& binding = request.binding();
+  const auto& target = binding.target();
+  const auto& supplied = material.binding();
+  const auto& attributes = material.native_idp_attributes();
+  if (binding.invariant_error() || supplied.invariant_error() ||
+      binding.method() != Method::NativeIdpToken ||
+      supplied.method() != Method::NativeIdpToken ||
+      material.kind() != MaterialKind::NativeIdpToken ||
+      binding.source().kind != SourceKind::ExternalNativeIdpToken ||
+      target != supplied.target() || binding.source() != supplied.source() ||
+      material.principal() != target.principal || attributes.empty() ||
+      target.endpoint != selected.host || target.port != selected.port ||
+      target.database != selected.database || target.principal != selected.user ||
+      target.tls_identity != selected.host || target.trust_policy != "verify-full" ||
+      !selected.use_ssl || selected.ssl_ca_file.empty() ||
+      selected.ssl_ca_file.find('\0') != std::string::npos || !selected.ssl_ca_dir.empty() ||
+      !selected.password.empty() || selected.native_idp.has_value() ||
+      connection.is_connected() ||
+      request.deadline() == rs::util::Deadline::min() ||
+      request.deadline() == rs::util::Deadline::max()) return invalid();
+  if (rs::util::Clock::now() >= request.deadline()) {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+                       "Native IdP handoff deadline elapsed"};
+    error.operation = BackendOperation::Connect;
+    error.session_state = connection.session_state();
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  }
+  try {
+    ConnectionSettings settings = selected;
+    settings.native_idp.emplace();
+    NativeIdpCleanup cleanup{settings.native_idp};
+    settings.native_idp->idp_type = attributes.idp_type;
+    settings.native_idp->provider_name = attributes.provider_name;
+    settings.native_idp->token_type = attributes.token_type;
+    settings.native_idp->identity_namespace = attributes.identity_namespace;
+    bool invalid_secret = false;
+    material.with_secret([&](std::span<const std::byte> bytes) {
+      invalid_secret = bytes.empty() || bytes.size() > SecretBytes::max_bytes ||
+          std::find(bytes.begin(), bytes.end(), std::byte{0}) != bytes.end();
+      if (!invalid_secret) settings.native_idp->token.assign(
+          reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    });
+    if (invalid_secret) return invalid();
+    return connection.connect_until(settings, request.deadline());
+  } catch (const std::bad_alloc&) {
+    connection.disconnect();
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),
+                       "Native IdP handoff allocation failed"};
+    error.operation = BackendOperation::Connect;
+    error.session_state = SessionState::Disconnected;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  } catch (...) {
+    connection.disconnect();
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Native IdP handoff failed", BackendOperation::Connect,
         SessionState::Disconnected);
   }
 }

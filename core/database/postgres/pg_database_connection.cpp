@@ -34,6 +34,71 @@ BackendResult<QueryResult> PgDatabaseConnection::observe_and_decline_binary_prep
 BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& settings) {
   namespace auth = rs::core::auth;
   const auto deadline = rs::util::make_deadline(settings.timeout);
+  // Native IdP token login (Redshift): the token replaces the password and is
+  // emitted as startup parameters. Selected before I/O; never retries raw password.
+  if (settings.native_idp.has_value()) {
+    if (catalog_profile_ != PgCatalogProfile::Redshift) return local_backend_error(
+        LocalFailure::Unsupported, "Native IdP login requires Redshift",
+        BackendOperation::Connect, session_state());
+    const auto& idp = *settings.native_idp;
+    if (!settings.password.empty() || idp.token.empty() ||
+        idp.token.size() > auth::SecretBytes::max_bytes ||
+        idp.idp_type.empty() || idp.provider_name.empty() ||
+        idp.token_type.empty() || idp.identity_namespace.empty() ||
+        !settings.use_ssl || settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty() ||
+        settings.host.empty() || settings.port == 0 || settings.database.empty() ||
+        settings.user.empty() ||
+        deadline == rs::util::Deadline::min() || deadline == rs::util::Deadline::max())
+      return local_backend_error(LocalFailure::InvalidInput,
+          "Invalid native IdP connection composition", BackendOperation::Connect, session_state());
+    if (is_connected()) return local_backend_error(LocalFailure::InvalidInput,
+        "Database connection is already open", BackendOperation::Connect, session_state());
+    const auto invalid = [&]() -> BackendResult<void> {
+      return local_backend_error(LocalFailure::InvalidInput,
+          "Invalid native IdP connection composition", BackendOperation::Connect, session_state());
+    };
+    try {
+      auto binding = auth::Binding::create(
+          {auth::Service::Redshift, settings.host, settings.port, settings.database,
+           settings.user, "pg-family-driver-native-idp", settings.host, "verify-full"},
+          {auth::SourceKind::ExternalNativeIdpToken, "supplied-connection-token", "native-idp-v1"},
+          auth::Method::NativeIdpToken);
+      if (!binding) return invalid();
+      auto request = auth::Request::create(binding.value(), deadline, rs::util::Clock::duration::zero());
+      if (!request) return invalid();
+      auto secret = auth::SecretBytes::create(std::as_bytes(
+          std::span{idp.token.data(), idp.token.size()}));
+      if (!secret) return invalid();
+      auto material = auth::Material::create(binding.value(), auth::MaterialKind::NativeIdpToken,
+          settings.user, std::move(secret).value(), auth::Validity::ordinary(),
+          auth::NativeIdpAttributes{idp.idp_type, idp.provider_name, idp.token_type, idp.identity_namespace});
+      if (!material) return invalid();
+      ConnectionSettings selected{.host = settings.host, .user = settings.user,
+          .password = {}, .database = settings.database, .port = settings.port,
+          .timeout = settings.timeout, .use_ssl = settings.use_ssl,
+          .ssl_ca_file = settings.ssl_ca_file, .ssl_ca_dir = settings.ssl_ca_dir,
+          .response_limits = settings.response_limits, .result_limits = settings.result_limits,
+          .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
+          .redshift_catalog_mode = settings.redshift_catalog_mode,
+          .application_name = settings.application_name,
+          .read_only = settings.read_only,
+          .character_metadata = settings.character_metadata,
+          .detailed_table_types = settings.detailed_table_types,
+          .catalog_database_scope = settings.catalog_database_scope};
+      return auth::connect_bound_native_idp_until(*this, selected, request.value(), material.value());
+    } catch (const std::bad_alloc&) {
+      disconnect();
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),
+                         "Native IdP connection composition allocation failed"};
+      error.operation = BackendOperation::Connect;
+      error.session_state = SessionState::Disconnected;
+      error.disposition = SessionDisposition::Retire;
+      return error;
+    } catch (...) {
+      disconnect();
+      return invalid();
+    }
+  }
   // Select before I/O; outside this first explicit-CA ordinary slice keeps its
   // existing route. A selected composition failure never retries raw password.
   if (!settings.use_ssl || settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty() ||

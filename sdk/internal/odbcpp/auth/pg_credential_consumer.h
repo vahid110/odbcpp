@@ -22,4 +22,12 @@ namespace rs::core::auth {
 rs::core::database::BackendResult<void> connect_bound_ordinary_password_until(
     rs::core::database::postgres::PgDatabaseConnection&,
     const rs::core::database::ConnectionSettings&, const Request&, const Material&);
+
+// Native IdP token material handoff (Redshift only). The token is copied into
+// ConnectionSettings::native_idp together with its backend-owned attributes; the
+// password stays empty. Binding/TLS consistency is checked exactly like the
+// ordinary/temporary consumers. This validates local binding, not issuer proof.
+rs::core::database::BackendResult<void> connect_bound_native_idp_until(
+    rs::core::database::postgres::PgDatabaseConnection&,
+    const rs::core::database::ConnectionSettings&, const Request&, const Material&);
 } // namespace rs::core::auth

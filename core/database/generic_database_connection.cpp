@@ -166,6 +166,13 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   params["application_name"] = settings.application_name.value_or("odbcpp");
   params["client_encoding"] = "UTF8";
   params["DateStyle"] = "ISO, YMD";
+  if (settings.native_idp.has_value()) {
+    params["idp_type"] = settings.native_idp->idp_type;
+    params["provider_name"] = settings.native_idp->provider_name;
+    params["token_type"] = settings.native_idp->token_type;
+    params["identity_namespace"] = settings.native_idp->identity_namespace;
+    params["web_identity_token"] = settings.native_idp->token;
+  }
   std::vector<std::byte> startup;
   try {
     startup = parser_->create_startup_message(
@@ -306,6 +313,12 @@ void GenericDatabaseConnection::clear_authentication_state() noexcept {
   rs::core::security::secure_cleanse({
       reinterpret_cast<unsigned char*>(settings_.password.data()), settings_.password.size()});
   settings_.password.clear();
+  if (settings_.native_idp.has_value()) {
+    rs::core::security::secure_cleanse({
+        reinterpret_cast<unsigned char*>(settings_.native_idp->token.data()),
+        settings_.native_idp->token.size()});
+    settings_.native_idp.reset();
+  }
   if (parser_) parser_->clear_authentication_state();
 }
 
