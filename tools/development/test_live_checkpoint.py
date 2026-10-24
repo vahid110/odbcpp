@@ -1,5 +1,7 @@
 """Cloud-free normal CLI preparation/preflight and authority-boundary checks."""
 import hashlib
+import copy
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -12,9 +14,88 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.development import live_checkpoint as checkpoint
+from tools.development import redshift_fixture_factory as factory
+from tools.development import redshift_profile_inputs as profile_inputs
+from tools.development.redshift_ctest_inputs import LoggingFactory
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_composed_entry_binds_real_profile_driver_before_private_inputs_and_retires_dummy_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = root / 'dummy-driver.so'; driver.write_bytes(b'OFFLINE_DUMMY_DRIVER')
+            review = root / 'review.json'; review.write_text('{}')
+            ca = root / 'ca.pem'; ca.write_bytes(b'OFFLINE_DUMMY_CA')
+            pin = lambda path: dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            profile = dict(profile_name='offline-own-dsn', limits=dict(factory.CANONICAL_LIMITS),
+                connection_environment=['ODBCPP_TEST_DSN'], uses_private_dsn=True, variables={},
+                review=pin(review), private_input=dict(kind='OWN_DSN', password_rejection=False,
+                    driver=dict(**pin(driver), wchar_bytes=2, kind='OWN')))
+            profiles = {'own': profile}
+            dummy = dict(host='offline.invalid', port=5439, database='odbcpp_pilot',
+                admin_user='odbcpp_pilot_admin', admin_password='OFFLINE_DUMMY',
+                test_user='odbcpp_pilot_test', test_password='OFFLINE_DUMMY', ca=str(ca))
+            # Reproduce the actual missing binding with real preparation, then
+            # close its positively identified empty residue. No fake exception.
+            with self.assertRaises(profile_inputs.ProfileInputBlocked) as failure:
+                profile_inputs.prepare_profile_inputs(root / 'old-inputs', dummy,
+                    LoggingFactory(factory), profiles, {'pins': {}})
+            self.assertTrue(profile_inputs.close_profile_inputs(failure.exception.residue))
+            self.assertFalse((root / 'old-inputs').exists())
+            plan_file = root / 'plan.json'; plan_file.write_text('{}')
+            plan = dict(source_head='a' * 40, run_name='offline026', state_directory=str(root),
+                resource={'kind': 'serverless'}, timeout_fixture=dict(table='odbcpp_timeout_gate_offline026',
+                    expected_principal=None, allow_current_identity=True, resource_kind='serverless'),
+                ca_sha256=pin(ca)['sha256'], security_groups=[], authority_receipts={})
+            executable = Path(sys.executable).resolve(strict=True)
+            plan['tools'] = {key: pin(executable) for key in ('cmake', 'ctest', 'psql', 'aws', 'python')}
+            for key, value in (('profiles', profiles), ('specs', []), ('index', {}), ('expected', {}), ('ci_receipt', {})):
+                path = root / (key + '.json'); path.write_text(json.dumps(value)); plan[key] = pin(path)
+            admission = dict(reviewed=True, plan_sha256=pin(plan_file)['sha256'], source_head=plan['source_head'],
+                inventory_scope='complete_applicable', run_name=plan['run_name'], nonce='offline_nonce_026',
+                bounds={}, expires_utc=(dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)).isoformat(),
+                credential_source={}, database_config={})
+            def run(config, ops, fixtures):
+                self.assertEqual(config.public_pins[str(driver)], pin(driver)['sha256'])
+                self.assertEqual(ops.profile_manifest['pins'][str(driver)], pin(driver)['sha256'])
+                prepared = profile_inputs.prepare_profile_inputs(root / 'new-inputs', dummy,
+                    LoggingFactory(factory), ops.profiles, ops.profile_manifest)
+                self.assertIsNotNone(prepared['profiles']['own']['driver'])
+                self.assertTrue(profile_inputs.close_profile_inputs(prepared))
+                self.assertFalse((root / 'new-inputs').exists())
+                return {'offline_composition': True}
+            with patch.object(checkpoint.subprocess, 'check_output', side_effect=['a' * 40, '']), \
+                 patch.object(checkpoint, 'read_plan', return_value=plan), \
+                 patch('tools.development.redshift_resource.private_json', return_value=admission) as private, \
+                 patch.object(checkpoint.lifecycle, 'run_once', side_effect=run):
+                self.assertEqual(checkpoint.execute(plan, plan_file, root / 'not-read'), {'offline_composition': True})
+                private.assert_called_once()
+            self.assertEqual(checkpoint.profile_driver_pins(profiles, {str(driver): pin(driver)['sha256']}),
+                             {str(driver): pin(driver)['sha256']})
+            for changed in ({str(driver): '0' * 64},):
+                with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'profile_driver_pin_collision'):
+                    checkpoint.profile_driver_pins(profiles, changed)
+            conflicting = copy.deepcopy(profiles)
+            conflicting['second'] = copy.deepcopy(profile)
+            conflicting['second']['private_input']['driver']['sha256'] = '0' * 64
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'profile_driver_pin_collision'):
+                checkpoint.profile_driver_pins(conflicting, {})
+            driver.write_bytes(b'CHANGED_OFFLINE_DRIVER')
+            with patch.object(checkpoint.subprocess, 'check_output', side_effect=['a' * 40, '']), \
+                 patch.object(checkpoint, 'read_plan', return_value=plan), \
+                 patch('tools.development.redshift_resource.private_json') as private:
+                with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'public_binding_changed'):
+                    checkpoint.execute(plan, plan_file, root / 'must-not-read')
+                private.assert_not_called()
+
+    def test_native_execution_envelope_refuses_short_before_resource_acquisition(self):
+        for execution in (1200, 1559):
+            with self.subTest(execution=execution), self.assertRaisesRegex(checkpoint.lifecycle.Refused,
+                    'native_complete_suite_execution_envelope'):
+                checkpoint.validate_execution_bounds({'native_windows': {}}, checkpoint.lifecycle.Bounds(execution=execution))
+        checkpoint.validate_execution_bounds({'native_windows': {}}, checkpoint.lifecycle.Bounds(execution=1800))
+        checkpoint.validate_execution_bounds({}, checkpoint.lifecycle.Bounds(execution=1200))
+
     def test_prepare_and_real_preflight_never_open_protected_inputs(self):
         os.umask(0o077)
         with tempfile.TemporaryDirectory() as directory:
