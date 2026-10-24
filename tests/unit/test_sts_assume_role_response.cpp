@@ -220,7 +220,7 @@ TEST(StsAssumeRoleResponseTest, SafeErrorsAreClosedWithoutSourcePayloads) {
   const StsAssumeRoleFailure all[] = {StsAssumeRoleFailure::UnsupportedPartition, StsAssumeRoleFailure::InvalidAcquisition,
       StsAssumeRoleFailure::InvalidResponse, StsAssumeRoleFailure::ExpiryRange,
       StsAssumeRoleFailure::TimeConversionFailed, StsAssumeRoleFailure::Cancelled,
-      StsAssumeRoleFailure::AllocationFailed};
+      StsAssumeRoleFailure::AllocationFailed, StsAssumeRoleFailure::DeadlineElapsed};
   for (auto f : all) {
     StsAssumeRoleError e{f};
     EXPECT_FALSE(e.safe_message().empty());

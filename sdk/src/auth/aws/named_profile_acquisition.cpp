@@ -61,7 +61,7 @@ struct ProtectedNamedStage::Storage {
  Fd parent,original_credentials,original_config;
  struct stat parent_stamp{},credential_stamp{},config_stamp{};
  std::optional<NamedFdReadCursor> cursor;
- const std::thread::id creator{std::this_thread::get_id()};bool failed{};
+ const std::thread::id creator{std::this_thread::get_id()};bool failed{},assumes_role{};
  ~Storage(){if(creator!=std::this_thread::get_id())std::terminate();}
 };
 ProtectedNamedStage::ProtectedNamedStage(std::unique_ptr<Storage> s):storage_(std::move(s)){}
@@ -84,6 +84,7 @@ std::unique_ptr<ProtectedNamedStage> ProtectedNamedStage::create(const Protected
   []()->std::variant<rs::util::Deadline,profile::ReadFailure>{return profile::ReadFailure::Failed;},
   [](const auto&,const auto&)->std::variant<profile::CredentialParts,profile::LoadFailure>{return profile::LoadFailure::Failed;});
  if(!std::holds_alternative<std::unique_ptr<profile::ExplicitProfileSource>>(validation))throw Refused{};
+ s->assumes_role=std::get<std::unique_ptr<profile::ExplicitProfileSource>>(validation)->assumes_role();
  s->cursor.emplace(s->original_credentials.value,s->original_config.value);
  if(s->cursor->failed())throw Refused{};
  auto out=std::unique_ptr<ProtectedNamedStage>{new ProtectedNamedStage{std::move(s)}};if(!out->unchanged())throw Refused{};return out;
@@ -112,10 +113,15 @@ const std::string& ProtectedNamedStage::credentials_path()const noexcept{return 
 const std::string& ProtectedNamedStage::config_path()const noexcept{return storage_->cursor->config_path();}
 const std::string& ProtectedNamedStage::directory()const noexcept{return storage_->dir;}
 const std::string& ProtectedNamedStage::profile()const noexcept{return storage_->spec.profile;}
+bool ProtectedNamedStage::assumes_role()const noexcept{return storage_->assumes_role;}
 FrozenNamedSource NamedSourceAcquisitionOwner::pending(const Context& c){FrozenNamedSource out{Aws::Auth::AWSCredentials{},c.source_identity,c.source_generation};out.value_.reset();out.owns_=false;return out;}
 bool NamedSourceAcquisitionOwner::load(State& state) noexcept {
  try{
   if(!state.initialized||state.source_ready||!state.protected_stage||!state.check()||!state.protected_stage->rewind_for_provider()||!state.check()){state.reject();return false;}
+  // R1: a profile declaring role_arn or source_profile must route through
+  // protected STS AssumeRole acquisition, never the static-key provider. Refuse
+  // before any static-key read so the source principal's keys are never adopted.
+  if(state.protected_stage->assumes_role()){state.reject();return false;}
   Aws::Auth::AWSCredentials value;
   {Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider{state.protected_stage->profile().c_str()};++state.metrics.named_provider_loads;
    value=provider.Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetAWSCredentials();}

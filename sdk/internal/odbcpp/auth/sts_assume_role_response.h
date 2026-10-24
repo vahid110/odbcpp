@@ -14,7 +14,7 @@ namespace rs::core::auth {
 enum class StsAssumeRolePartition { Aws, AwsCn, AwsUsGov };
 enum class StsAssumeRoleFailure {
   UnsupportedPartition, InvalidAcquisition, InvalidResponse,
-  ExpiryRange, TimeConversionFailed, Cancelled, AllocationFailed
+  ExpiryRange, TimeConversionFailed, Cancelled, AllocationFailed, DeadlineElapsed
 };
 struct StsAssumeRoleError {
   StsAssumeRoleFailure failure;

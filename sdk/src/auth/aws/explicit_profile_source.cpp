@@ -29,7 +29,7 @@ std::string_view trim(std::string_view s) noexcept {
   while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
   return s;
 }
-bool policy(std::span<const std::byte> bytes, std::string_view profile) noexcept {
+bool policy(std::span<const std::byte> bytes, std::string_view profile, bool& assumes_role) noexcept {
   if (bytes.empty() || bytes.size() > 16 * 1024) return false;
   std::string_view input{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
   for (unsigned char c : input) {
@@ -82,6 +82,7 @@ bool policy(std::span<const std::byte> bytes, std::string_view profile) noexcept
       // grammar and any resulting STS assumption.
       if (key == "role_arn" && !value.starts_with("arn:")) return false;
       if (key == "source_profile") { if (value == profile) return false; source_name.assign(value); }
+      if (key == "role_arn" || key == "source_profile") assumes_role = true;
       target[index] = true;
     } else {
       std::size_t index;
@@ -143,11 +144,14 @@ Result<std::unique_ptr<ExplicitProfileSource>> ExplicitProfileSource::create(
       request.binding().source().identity != spec.source_identity) return Failure::SourceMismatch;
   if (generation->retired_) return Failure::SourceRetired;
   bool valid = false;
-  owned.with_bytes([&](auto bytes){ valid = policy(bytes, spec.profile); });
+  bool assumes_role = false;
+  owned.with_bytes([&](auto bytes){ valid = policy(bytes, spec.profile, assumes_role); });
   if (!valid) return Failure::InvalidPolicy;
   try {
-    return std::unique_ptr<ExplicitProfileSource>{new ExplicitProfileSource{
+    auto made = std::unique_ptr<ExplicitProfileSource>{new ExplicitProfileSource{
         std::move(spec), std::move(request), std::move(generation), std::move(reader), std::move(loader)}};
+    made->assumes_role_ = assumes_role;
+    return made;
   } catch (const std::bad_alloc&) { return Failure::AllocationFailed; }
 }
 Failure ExplicitProfileSource::latch(Failure failure) noexcept {

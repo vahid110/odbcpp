@@ -74,6 +74,7 @@ odbcpp/auth/aws/provisioned_sdk_runtime.h|sdk/internal/odbcpp/auth/aws/provision
 odbcpp/auth/aws/sts_assume_role_owner.h|sdk/internal/odbcpp/auth/aws/sts_assume_role_owner.h
 odbcpp/auth/aws/serverless_credentials_owner.h|sdk/internal/odbcpp/auth/aws/serverless_credentials_owner.h
 odbcpp/auth/aws/profile_role_assumption.h|sdk/internal/odbcpp/auth/aws/profile_role_assumption.h
+odbcpp/auth/aws/sts_serverless_fake_http.h|sdk/internal/odbcpp/auth/aws/sts_serverless_fake_http.h
 odbcpp/auth/provisioned_query_transport.h|sdk/internal/odbcpp/auth/provisioned_query_transport.h
 odbcpp/auth/pg_credential_consumer.h|sdk/internal/odbcpp/auth/pg_credential_consumer.h
 odbcpp/transport/cancellation_wait.h|sdk/internal/odbcpp/transport/cancellation_wait.h

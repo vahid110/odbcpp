@@ -1,5 +1,6 @@
 #include "odbcpp/auth/aws/serverless_credentials_owner.h"
 #include "odbcpp/auth/aws/provisioned_native_http_ingress.h"
+#include "odbcpp/auth/aws/sts_serverless_fake_http.h"
 #include <aws/core/Globals.h>
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/core/client/ClientConfiguration.h>
@@ -26,6 +27,21 @@ bool main_entry() noexcept {
   return false;
 #endif
 }
+bool lower_or_digit(char c) noexcept { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); }
+bool region_valid(std::string_view value) noexcept {
+  if (value.empty() || value.size() > 128 || value.front() == '-' || value.back() == '-') return false;
+  char previous = 0;
+  for (char c : value) {
+    if ((!lower_or_digit(c) && c != '-') || (c == '-' && previous == '-')) return false;
+    previous = c;
+  }
+  return true;
+}
+// Approved HTTPS service endpoint, derived from the validated region. Pinned
+// via endpointOverride so SDK endpoint environment overrides cannot redirect.
+std::string serverless_endpoint(const std::string& region) {
+  return "https://redshift-serverless." + region + ".amazonaws.com";
+}
 std::string sdk_string(const SecretBytes& bytes) {
   std::string out;
   bytes.with_bytes([&](std::span<const std::byte> view) {
@@ -47,7 +63,7 @@ struct ServerlessCredentialsOwner::State {
   rs::util::Deadline deadline;
   std::shared_ptr<provisioned_native::WorkerCancellation> cancellation;
   std::thread::id creator;
-  bool sdk_scope{false}, initialized{false}, consumed{false}, active{false};
+  bool sdk_scope{false}, initialized{false}, entering{false}, consumed{false}, active{false};
   Aws::SDKOptions options;
   std::string staged_directory, staged_config, staged_credentials;
   State(ServerlessTarget t, SecretBytes ak, SecretBytes sk, SecretBytes tok,
@@ -56,6 +72,7 @@ struct ServerlessCredentialsOwner::State {
         session_token(std::move(tok)), deadline(d), cancellation(std::move(c)),
         creator(std::this_thread::get_id()) {}
   ~State() {
+    if (entering) std::terminate();
     if (initialized) Aws::ShutdownAPI(options);
     if (sdk_scope) provisioned_native::detail::release_sdk_scope();
     if (!staged_config.empty()) ::unlink(staged_config.c_str());
@@ -77,20 +94,34 @@ bool ServerlessCredentialsOwner::close() noexcept {
 
 OwnerOutcome ServerlessCredentialsOwner::create(ServerlessTarget target, SecretBytes access_key, SecretBytes secret_key,
     SecretBytes session_token, rs::util::Deadline deadline, std::shared_ptr<provisioned_native::WorkerCancellation> cancel) {
+  return create_impl(std::move(target), std::move(access_key), std::move(secret_key), std::move(session_token),
+      deadline, std::move(cancel), OwnerInitFixture::None);
+}
+
+OwnerOutcome ServerlessCredentialsOwner::create_impl(ServerlessTarget target, SecretBytes access_key, SecretBytes secret_key,
+    SecretBytes session_token, rs::util::Deadline deadline, std::shared_ptr<provisioned_native::WorkerCancellation> cancel,
+    OwnerInitFixture injected) {
   OwnerOutcome out;
   if (!main_entry()) { out.failure = OwnerFailure::MainEntryRequired; return out; }
   if (!cancel || deadline == rs::util::Deadline::min() || deadline == rs::util::Deadline::max()) {
     out.failure = OwnerFailure::InvalidTarget; return out;
   }
+  // R3: reject an already-expired finite deadline before any initialization.
+  if (rs::util::remaining(deadline) == std::chrono::milliseconds::zero()) {
+    out.failure = OwnerFailure::DeadlineElapsed; return out;
+  }
   if (access_key.empty() || secret_key.empty()) { out.failure = OwnerFailure::InvalidSource; return out; }
-  if (target.region.empty() || target.workgroup.empty() || target.database.empty() ||
+  if (!region_valid(target.region) || target.workgroup.empty() || target.database.empty() ||
       target.duration_seconds < 900 || target.duration_seconds > 3600) {
     out.failure = OwnerFailure::InvalidTarget; return out;
   }
+  std::unique_ptr<State> state;
   try {
-    if (!provisioned_native::detail::take_sdk_scope()) { out.failure = OwnerFailure::Unavailable; return out; }
-    auto state = std::make_unique<State>(std::move(target), std::move(access_key), std::move(secret_key),
+    // R5: allocate State before taking the process-wide SDK scope.
+    if (injected == OwnerInitFixture::AllocationFailure) throw std::bad_alloc{};
+    state = std::make_unique<State>(std::move(target), std::move(access_key), std::move(secret_key),
         std::move(session_token), deadline, std::move(cancel));
+    if (!provisioned_native::detail::take_sdk_scope()) { out.failure = OwnerFailure::Unavailable; return out; }
     state->sdk_scope = true;
     if (Aws::GetDefaultClientBootstrap() != nullptr) { out.failure = OwnerFailure::Unavailable; return out; }
     char pattern[] = "/tmp/odbcpp_native_serverless_XXXXXX";
@@ -106,7 +137,8 @@ OwnerOutcome ServerlessCredentialsOwner::create(ServerlessTarget target, SecretB
         ::setenv("AWS_SHARED_CREDENTIALS_FILE", state->staged_credentials.c_str(), 1) ||
         ::setenv("AWS_EC2_METADATA_DISABLED", "true", 1)) { out.failure = OwnerFailure::LocalFailure; return out; }
     for (const char* key : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
-                            "AWS_PROFILE", "AWS_DEFAULT_PROFILE"}) {
+                            "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+                            "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_REDSHIFT_SERVERLESS"}) {
       if (::unsetenv(key)) { out.failure = OwnerFailure::LocalFailure; return out; }
     }
     state->options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Off;
@@ -119,12 +151,22 @@ OwnerOutcome ServerlessCredentialsOwner::create(ServerlessTarget target, SecretB
         return Aws::MakeShared<Aws::Crt::Io::ClientBootstrap>(tag, group, resolver);
       } catch (...) { std::terminate(); }
     };
+    if (detail::fake_http_enabled()) {
+      const std::string endpoint = serverless_endpoint(state->target.region);
+      state->options.httpOptions.httpClientFactory_create_fn = [authority = endpoint.substr(8)]() noexcept {
+        try { return detail::make_fake_http_factory(authority, false); } catch (...) { std::terminate(); }
+      };
+    }
+    // R4: mark entry before InitAPI.
+    state->entering = true;
+    if (injected == OwnerInitFixture::AfterEntry) throw std::bad_alloc{};
     Aws::InitAPI(state->options);
+    state->entering = false;
     state->initialized = true;
     out.owner.reset(new ServerlessCredentialsOwner(std::move(state)));
     return out;
-  } catch (const std::bad_alloc&) { out.failure = OwnerFailure::LocalFailure; return out; }
-  catch (...) { out.failure = OwnerFailure::LocalFailure; return out; }
+  } catch (const std::bad_alloc&) { if (state && state->entering) std::terminate(); out.failure = OwnerFailure::LocalFailure; return out; }
+  catch (...) { if (state && state->entering) std::terminate(); out.failure = OwnerFailure::LocalFailure; return out; }
 }
 
 FieldOutcome<ExtractedDbFields> ServerlessCredentialsOwner::acquire() {
@@ -136,6 +178,9 @@ FieldOutcome<ExtractedDbFields> ServerlessCredentialsOwner::acquire() {
   struct Guard { bool& active; ~Guard() { active = false; } } guard{s.active};
   try {
     if (s.cancellation && s.cancellation->cancelled()) return FieldError{FieldFailure::Cancelled};
+    // R3: refuse a deadline that expired between create and acquire (zero sends).
+    if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
+      return FieldError{FieldFailure::DeadlineElapsed};
     const std::string ak = sdk_string(s.access_key);
     const std::string sk = sdk_string(s.secret_key);
     const std::string tok = sdk_string(s.session_token);
@@ -151,14 +196,22 @@ FieldOutcome<ExtractedDbFields> ServerlessCredentialsOwner::acquire() {
     config.proxyUserName.clear();
     config.proxyPassword.clear();
     config.retryStrategy = Aws::MakeShared<Aws::Client::DefaultRetryStrategy>(tag, 0, 0);
-    config.requestTimeoutMs = 1000;
-    config.connectTimeoutMs = 1000;
+    // R2: pin the approved endpoint; SDK endpoint env overrides are excluded.
+    config.endpointOverride = serverless_endpoint(s.target.region).c_str();
+    // R3: remaining-budget transport controls under the original deadline.
+    const auto budget = rs::util::remaining(s.deadline);
+    config.requestTimeoutMs = static_cast<long>(budget.count());
+    config.connectTimeoutMs = static_cast<long>(budget.count());
     Aws::RedshiftServerless::RedshiftServerlessClient client(provider, config);
     Aws::RedshiftServerless::Model::GetCredentialsRequest request;
     request.SetDbName(s.target.database.c_str());
     request.SetWorkgroupName(s.target.workgroup.c_str());
     request.SetDurationSeconds(static_cast<int>(s.target.duration_seconds));
     const auto result = client.GetCredentials(request);
+    // R3: refuse a late successful completion under the same original deadline.
+    if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
+      return FieldError{FieldFailure::DeadlineElapsed};
+    if (s.cancellation && s.cancellation->cancelled()) return FieldError{FieldFailure::Cancelled};
     if (!result.IsSuccess()) return FieldError{FieldFailure::InvalidShape};
     const auto millis = result.GetResult().GetExpiration().Millis();
     if (millis <= 0 || millis > (std::numeric_limits<std::int64_t>::max)() / 1000)
@@ -173,6 +226,24 @@ FieldOutcome<ExtractedDbFields> ServerlessCredentialsOwner::acquire() {
         UtcInstant{static_cast<std::int64_t>(millis) * 1000}};
   } catch (const std::bad_alloc&) { return FieldError{FieldFailure::AllocationFailed}; }
   catch (...) { return FieldError{FieldFailure::InvalidShape}; }
+}
+
+OwnerOutcome ServerlessOwnerFixture::create_init_failure(OwnerInitFixture fault) {
+  OwnerOutcome out;
+  const char* marker = ::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
+  if (!marker || std::string_view(marker) != "synthetic-fake-http-only" ||
+      static_cast<unsigned>(fault) > static_cast<unsigned>(OwnerInitFixture::AfterEntry)) {
+    out.failure = OwnerFailure::Unavailable; return out;
+  }
+  auto secret = [](std::string_view text) {
+    auto made = SecretBytes::create(std::as_bytes(std::span{text.data(), text.size()}));
+    if (!made) std::terminate();
+    return std::move(made).value();
+  };
+  ServerlessTarget target{"eu-north-1", "fixture-workgroup", "fixture_db", 900};
+  return ServerlessCredentialsOwner::create_impl(std::move(target), secret("synthetic-access-key"),
+      secret("synthetic-secret-key"), secret(""), rs::util::Clock::now() + std::chrono::seconds{20},
+      std::make_shared<provisioned_native::WorkerCancellation>(), fault);
 }
 
 } // namespace rs::core::auth::aws::serverless

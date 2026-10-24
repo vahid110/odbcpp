@@ -167,7 +167,7 @@ endif()
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_odbc_trace_reload)$")
+  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_sts_serverless_owner|test_odbc_trace_reload)$")
     continue() # Optional SDK consumers and dynamic-load tests are explicitly registered below.
   endif()
   add_test_executable(${test_name} ${test_file})
@@ -303,6 +303,15 @@ add_test(
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoProfileValidation.cmake)
 set_tests_properties(test_crypto_profile_validation
   PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_native_aws_sdk_import
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestNativeAwsSdkImport.cmake)
+set_tests_properties(test_native_aws_sdk_import
+  PROPERTIES LABELS "unit;architecture" TIMEOUT 120)
 
 add_test(
   NAME test_crypto_manifest

@@ -35,6 +35,7 @@ const char* owner_failure_name(sts::OwnerFailure failure) noexcept {
     case sts::OwnerFailure::WrongThread:return "WrongThread";
     case sts::OwnerFailure::LocalFailure:return "LocalFailure";
     case sts::OwnerFailure::ProviderDenied:return "ProviderDenied";
+    case sts::OwnerFailure::DeadlineElapsed:return "DeadlineElapsed";
   }
   return "Unknown";
 }
@@ -53,6 +54,7 @@ const char* field_failure_name(a::FieldFailure failure) noexcept {
     case a::FieldFailure::InvalidTimestamp:return "InvalidTimestamp";
     case a::FieldFailure::Cancelled:return "Cancelled";
     case a::FieldFailure::AllocationFailed:return "AllocationFailed";
+    case a::FieldFailure::DeadlineElapsed:return "DeadlineElapsed";
   }
   return "Unknown";
 }

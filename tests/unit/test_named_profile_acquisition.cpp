@@ -64,6 +64,20 @@ TEST(NamedProfileAcquisition, SourceProfileMultiSectionAcceptedAndRefused){
   Files::write(files.credential,cycle);
   EXPECT_ANY_THROW(stage(files));
 }
+TEST(NamedProfileAcquisition, RoleProfilesRefusedBeforeStaticKeyFallback){
+  // R1: a role_arn (inline) or source_profile profile must route through STS
+  // AssumeRole, not the static-key provider. Refused before any provider read,
+  // so the source principal's keys are never adopted and no DB dispatch occurs.
+  const std::string inline_role="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+  const std::string source_role="[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n[base]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\n";
+  for(const auto& body:{inline_role,source_role}){
+    Files files;Files::write(files.credential,body);NamedSetup setup;auto made=setup.make(files.spec());
+    EXPECT_FALSE(made.owner);EXPECT_TRUE(made.failure);
+    EXPECT_EQ(made.counts.named_provider_loads,0U);
+    EXPECT_EQ(made.counts.selected_sends,0U);
+    EXPECT_FALSE(made.counts.named_source_ready);
+  }
+}
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){
  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);Files files;
   if(kind==0)ASSERT_EQ(::chmod(files.dir.c_str(),0755),0);

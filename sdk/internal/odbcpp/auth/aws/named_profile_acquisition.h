@@ -39,6 +39,7 @@ class ProtectedNamedStage final {
   const std::string& config_path() const noexcept;
   const std::string& directory() const noexcept;
   const std::string& profile() const noexcept;
+  bool assumes_role() const noexcept;
  private:
   struct Storage;
   explicit ProtectedNamedStage(std::unique_ptr<Storage>);
