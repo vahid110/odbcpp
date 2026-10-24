@@ -22,6 +22,8 @@ No credentials or connection strings appear here.
 | `66c777e` | Opt-in live fixture warm-up (`ODBCPP_REDSHIFT_WARMUP_SECONDS`) |
 | `cbb6d8e`..`9fe775b` | Driver-manager GoogleTests (`it_driver_manager_unicode`) |
 | `a1d9639` | Offline audit tests: wide `SQL_USER_NAME`, combining-sequence chunks, ANSI DSN echo |
+| `4d523d3` | Driver-manager test: buffer sized from the connection string, plus the ANSI Latin-1 keyword case |
+| `31e5410` | Owner decisions: U+FFFD in posted diagnostics, and SQLColAttributeW zero-capacity 01004 |
 
 ### Verified so far
 - **Full offline presets, 0 failures:**
@@ -30,6 +32,7 @@ No credentials or connection strings appear here.
   - WSL iODBC 4/4: 120/120
   - macOS iODBC 4/4 (REDSHIFT, `macos-iodbc-redshift-offline`, at `a1d9639`): 119 passed, 1 skipped, 0 failed of 120; GoogleTest 2388 cases, 0 failures, 2 skips (`test_odbc_trace_reload`: the macOS loader keeps the driver image resident). All 8 `NativeChainEvaluationTest` cases ran and passed.
   - macOS unixODBC 2/2 (REDSHIFT, `unixodbc-redshift-offline`, at `a1d9639`): the same counts and skips.
+  - Both macOS presets again at `31e5410`, after the owner decisions: CTest 119 passed, 1 skipped, 0 failed; GoogleTest 2389 cases, 0 failures, the same 2 skips.
 - **Live, Redshift Serverless `odbcpp-redshift-pilot` (eu-north-1), verified TLS:**
   - 10 cases each on Windows, unixODBC and iODBC: 10/10 at `66c777e`.
   - macOS iODBC 4/4 and macOS unixODBC 2/2, at `a1d9639`: 10/10 each. Warm-up: ready after 1 attempt in 328-649 ms, so no cold start.
@@ -45,10 +48,10 @@ No credentials or connection strings appear here.
   - provisioned Redshift;
   - the full Linux and Windows suites in CI. The PR Windows and Ubuntu jobs build only and run no tests.
 
-### Open owner decisions
-- SQLColAttributeW zero-capacity non-NULL buffer. The existing assertion at `tests/unit/test_backend_contract.cpp` (from #63) requires `SQL_SUCCESS`; the Microsoft truncation rule points to `01004`.
-- SQLGetDescRec(W) zero-capacity, left unchanged because A and W currently behave the same.
-- F1's second route: the driver echoes ANSI input bytes (for example a Latin-1 DSN in `DSN '...' not found`) into its own messages without `replace_invalid_utf8`. `SQLGetDiagRecW` then returns `SQL_ERROR` with SQLSTATE and native error written. `AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateAndNative` asserts today's behavior. Fixing it means deciding the driver's ANSI encoding policy, together with the unixODBC ANSI-connect finding in the PR.
+### Owner decisions (decided 2026-10-24, implemented in `31e5410`)
+- **F1, ANSI encoding policy:** every diagnostic posting path stores valid UTF-8, with each invalid byte replaced by U+FFFD. Wide diagnostic readers therefore always succeed, and ANSI readers receive the replacement as UTF-8 bytes. The statement diagnostic header is not a record and keeps the old unconvertible-text behaviour. `AnsiDsnEchoReplacesInvalidBytesSoWideDiagnosticsSucceed` and `EveryPostingPathReplacesInvalidUtf8SoWideReadsSucceed` assert it.
+- **SQLColAttributeW zero capacity:** a non-NULL zero-capacity buffer with non-empty text returns 01004, like ANSI `SQLColAttribute` and `SQLDescribeColW`. The #63 assertion was updated.
+- **Unchanged, because A and W already agree:** `SQLGetInfo(W)` and `SQLGetDescRec(W)` keep zero-capacity `SQL_SUCCESS`. Changing them would be a separate decision.
 
 ## Continuing on macOS
 iODBC with 4-byte SQLWCHAR uses the presets `macos-iodbc-redshift` and `macos-iodbc-redshift-offline`.

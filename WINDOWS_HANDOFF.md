@@ -19,19 +19,30 @@ section. Follow `AGENTS.md` and `DEVELOPMENT_WORKFLOW.md`.
   - `a1d9639` (offline, `test_backend_contract`):
     - `WideUserNameInfoCountsBytesAndKeepsSupplementaryScalarsWhole`
     - `WideGetDataChunksSplitCombiningSequencesAtScalarBoundaries`
-    - `AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateAndNative`. You already added its Windows branch in `2b53ff6`.
+    - `AnsiDsnEchoReplacesInvalidBytesSoWideDiagnosticsSucceed`. It was renamed in `31e5410`; its Windows branch from `2b53ff6` is unchanged.
   - `4d523d3` (`it_driver_manager_unicode`):
     - a buffer fix in `WideDriverConnectTruncatedOutputReportsFullLength`;
     - the new case `AnsiLatin1KeywordWarningStateStaysReadable`.
 
+- **Owner decisions, implemented in `31e5410`:**
+  - Diagnostic posting replaces invalid UTF-8 with U+FFFD.
+  - `SQLColAttributeW` returns 01004 for a non-NULL zero-capacity buffer.
+  - The changed tests are in `test_backend_contract` and `test_diagnostics_apis`. Both macOS presets pass at `31e5410`.
+
 ## Your part
 Record each command's actual exit code; don't infer a pass. Work on the exact PR head; record `git rev-parse HEAD`.
 
-### 1. Offline: run the new tests on every Windows-side profile (required)
-The new `a1d9639` tests have run only on macOS, apart from the Windows DSN-echo branch you checked.
+### 1. Offline: run the new and changed tests on every Windows-side profile (required)
+The `a1d9639` and `31e5410` tests have run only on macOS, apart from the Windows DSN-echo branch you checked. `31e5410` changes product code, so this step is a full offline preset run, not just the affected executables.
 - Native Windows: `windows-redshift-offline`.
 - WSL: `unixodbc-redshift-offline` and `linux-iodbc-redshift-offline`.
-- Report the CTest and GoogleTest totals, and name the three new cases explicitly.
+- Report the CTest and GoogleTest totals.
+- Name these cases explicitly:
+  - the three `a1d9639` cases;
+  - `EveryPostingPathReplacesInvalidUtf8SoWideReadsSucceed`;
+  - `SQLErrorW_MalformedPostedTextIsReplacedAndLegacyRecordsDrain`;
+  - `SQLGetDiagRec_MalformedPostedTextIsReplacedForWideAndAnsiReaders`;
+  - `ColumnAttributeNullCharacterPreservesValidationAndNumericDomains`.
 - If you only run the affected executables, report that as partial, not full-preset evidence.
 
 ### 2. Driver-manager suite: run the new case everywhere (required)
@@ -56,8 +67,8 @@ This is release blocker 2 for Windows and Linux. macOS has done it.
 - **Network:** security group `sg-06227a706295e3f05` currently allows only `79.234.95.139/32` on 5439. If your public IP differs, ask the human before adding a rule, and remove it afterwards.
 - Report per manager: passed, failed and skipped, with skip reasons.
 
-### 4. Don't implement the two open policy decisions
-The F1 ANSI encoding policy and the `SQLColAttributeW` zero-capacity behaviour are waiting for the human. Your step 2 result feeds the F1 decision. Don't change product code for them in this handoff.
+### 4. The two policy decisions are made and implemented (`31e5410`)
+Don't re-litigate them. If a Windows run contradicts them (for example, the Windows driver manager handles U+FFFD text or ColAttribute truncation differently), report it with an ODBC trace and leave the product code alone.
 
 ### 5. Report and remove this handoff
 - **PR body:** fetch it fresh, keep every existing section, and add your results under "Test results".
