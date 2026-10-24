@@ -470,13 +470,29 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
     set_tests_properties(it_redshift_columns_omitted_table PROPERTIES LABELS "integration;redshift;columns" TIMEOUT 120)
   endif()
 endif()
+# Native IdP token login (direct-token) live test: opt-in, separately admitted
+# against a real Redshift + Identity Center token. Compile/link is ordinary
+# evidence; execution is absent from the default CTest graph.
+option(ODBCPP_REDSHIFT_NATIVE_IDP_LIVE_TESTS "Run separately admitted Redshift native IdP direct-token live tests" OFF)
+if(TARGET_DATABASE STREQUAL "REDSHIFT")
+  add_executable(it_redshift_native_idp_live EXCLUDE_FROM_ALL
+    tests/integration/it_redshift_native_idp_live.cpp)
+  target_link_libraries(it_redshift_native_idp_live PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+  apply_compiler_settings(it_redshift_native_idp_live)
+  set_target_properties(it_redshift_native_idp_live PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  if(ODBCPP_REDSHIFT_NATIVE_IDP_LIVE_TESTS)
+    add_test(NAME it_redshift_native_idp_live COMMAND it_redshift_native_idp_live)
+    set_tests_properties(it_redshift_native_idp_live PROPERTIES
+      LABELS "integration;redshift;native-idp;live" TIMEOUT 120)
+  endif()
+endif()
 # Opt-in native, auth and pinned-fixture images are registered explicitly; the
 # Driver Manager suite never links odbcpp_core.
 set(_integration_tests_registered_elsewhere
   it_redshift_routine_schema_patterns it_redshift_columns_omitted_table
   it_redshift_powerbi_relationship it_driver_manager_unicode it_auth_pg_material_tls
   it_redshift_native_auth it_redshift_serverless_sts_auth
-  it_redshift_serverless_jwt_iam_auth ${_mysql_fixture_test_names})
+  it_redshift_serverless_jwt_iam_auth it_redshift_native_idp_live ${_mysql_fixture_test_names})
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
@@ -487,6 +503,10 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   # it against the PostgreSQL fixture would turn a green PostgreSQL job into a
   # false Redshift compatibility claim.
   if(test_name STREQUAL "it_redshift_real" AND
+     NOT TARGET_DATABASE STREQUAL "REDSHIFT")
+    continue()
+  endif()
+  if(test_name STREQUAL "it_redshift_native_idp" AND
      NOT TARGET_DATABASE STREQUAL "REDSHIFT")
     continue()
   endif()

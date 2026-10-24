@@ -1,0 +1,131 @@
+#include <gtest/gtest.h>
+
+#include "odbcpp/database/backend_provider.h"
+#include "odbcpp/database/i_database_connection.h"
+#include "odbcpp/transport/i_transport.h"
+#include "odbcpp/transport/start_tls_transport.h"
+#include "odbcpp/transport/tls_configurable_transport.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// Offline native-IdP integration: the compiled Redshift provider resolves a
+// direct-token ConnectionOptions into ConnectionSettings.native_idp, the session
+// emits the native startup keys and no password, and the scripted wire returns
+// AuthenticationOk. No database service is used.
+namespace {
+namespace d = rs::core::database;
+namespace t = rs::core::transport;
+
+class NativeIdpWire final : public t::ITransport, public t::IStartTlsTransport,
+    public t::ITlsConfigurableTransport {
+ public:
+  NativeIdpWire() {
+    // AuthenticationOk ('R', code 0) then ReadyForQuery ('Z', idle).
+    const unsigned char literal[]{'R', 0, 0, 0, 8, 0, 0, 0, 0, 'Z', 0, 0, 0, 5, 'I'};
+    for (const auto byte : literal) input.push_back(std::byte{byte});
+  }
+  rs::util::Result<void> connect(std::string_view, std::uint16_t, rs::util::Deadline) override {
+    return {};
+  }
+  rs::util::Result<void> connect_plain(std::string_view host, std::uint16_t port,
+                                       rs::util::Deadline deadline) override {
+    return connect(host, port, deadline);
+  }
+  rs::util::Result<void> upgrade_to_tls(std::string_view, rs::util::Deadline) override {
+    return {};
+  }
+  bool peer_identity_verified() noexcept override { return true; }
+  void set_ca_locations(const std::string&, const std::string&) override { ++configured; }
+  rs::util::Result<t::IOResult> send(std::span<const std::byte> bytes, rs::util::Deadline) override {
+    sent.insert(sent.end(), bytes.begin(), bytes.end());
+    if (sent.size() == 8) ssl_pending = true;  // SSLRequest is exactly eight bytes.
+    return t::IOResult{bytes.size(), false};
+  }
+  rs::util::Result<t::IOResult> recv(std::span<std::byte> out, rs::util::Deadline) override {
+    if (ssl_pending) { ssl_pending = false; out[0] = std::byte{'S'}; return t::IOResult{1, false}; }
+    if (at == input.size()) return {rs::util::DbErrorCode::NetworkError, "scripted wire exhausted"};
+    out[0] = input[at++];
+    return t::IOResult{1, false};
+  }
+  void close() noexcept override { ++closed; }
+  bool contains(std::string_view text) const {
+    const auto needle = std::as_bytes(std::span{text.data(), text.size()});
+    return std::search(sent.begin(), sent.end(), needle.begin(), needle.end()) != sent.end();
+  }
+  std::vector<std::byte> sent, input;
+  std::size_t at = 0;
+  bool ssl_pending = false;
+  unsigned configured = 0, closed = 0;
+};
+
+d::ConnectionOptions native_idp_options() {
+  d::ConnectionOptions options;
+  options.host = "fixed.invalid";
+  options.database = "db";
+  options.user = "iamidc:user";
+  options.use_ssl = true;
+  options.ssl_ca_file = "/synthetic/ca";
+  options.plugin_name = "IdpTokenAuthPlugin";
+  options.token = "synthetic-jwt-token";
+  options.provider_name = "odbcpp_idc";
+  options.token_type = "ACCESS_TOKEN";
+  options.identity_namespace = "awsidc";
+  return options;
+}
+
+TEST(RedshiftNativeIdpIntegration, ResolveConnectAndStartupKeysThroughCompiledProvider) {
+  const auto& provider = d::configured_backend_provider();
+  if (provider.identity().id != "redshift") {
+    GTEST_SKIP() << "native IdP requires the Redshift provider";
+  }
+  auto resolved = provider.resolve_connection_options(native_idp_options());
+  ASSERT_TRUE(resolved) << resolved.error_message();
+  ASSERT_TRUE(resolved->native_idp.has_value());
+  EXPECT_TRUE(resolved->password.empty());
+  EXPECT_EQ("AwsIdc", resolved->native_idp->idp_type);
+
+  auto wire = std::make_unique<NativeIdpWire>();
+  auto* observed = wire.get();
+  auto session = provider.create_session(std::move(wire));
+  ASSERT_NE(nullptr, session);
+  struct Cleanup { d::IDatabaseConnection& session; ~Cleanup() { session.disconnect(); } } cleanup{*session};
+
+  const auto connected = session->connect(*resolved);
+  ASSERT_TRUE(connected) << connected.backend_error().safe_summary();
+  ASSERT_TRUE(session->is_connected());
+  EXPECT_GE(observed->configured, 1U);
+  // Native startup keys present, in order, with the token and no password.
+  EXPECT_TRUE(observed->contains("idp_type"));
+  EXPECT_TRUE(observed->contains("AwsIdc"));
+  EXPECT_TRUE(observed->contains("provider_name"));
+  EXPECT_TRUE(observed->contains("odbcpp_idc"));
+  EXPECT_TRUE(observed->contains("token_type"));
+  EXPECT_TRUE(observed->contains("ACCESS_TOKEN"));
+  EXPECT_TRUE(observed->contains("identity_namespace"));
+  EXPECT_TRUE(observed->contains("awsidc"));
+  EXPECT_TRUE(observed->contains("web_identity_token"));
+  EXPECT_TRUE(observed->contains("synthetic-jwt-token"));
+  session->disconnect();
+  EXPECT_FALSE(session->is_connected());
+}
+
+TEST(RedshiftNativeIdpIntegration, PostgreSQLProviderRefusesNativeIdpResolution) {
+  const auto& provider = d::configured_backend_provider();
+  if (provider.identity().id != "redshift") {
+    GTEST_SKIP() << "PostgreSQL refusal covered by the unit suite";
+  }
+  // The compiled Redshift provider derives the wire type; an unsupported plugin
+  // is rejected before any session is created.
+  auto options = native_idp_options();
+  options.plugin_name = "Okta";
+  auto refused = provider.resolve_connection_options(std::move(options));
+  ASSERT_FALSE(refused);
+}
+}  // namespace
