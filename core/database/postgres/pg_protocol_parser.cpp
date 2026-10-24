@@ -577,6 +577,7 @@ AuthenticationRequest PgProtocolParser::parse_auth_request(const std::vector<std
     case 10: req.type = AuthenticationRequest::Type::SASL; break;
     case 11: req.type = AuthenticationRequest::Type::SASLContinue; break;
     case 12: req.type = AuthenticationRequest::Type::SASLFinal; break;
+    case 14: req.type = AuthenticationRequest::Type::Idp; break;
     default: throw std::runtime_error("Unsupported auth method: " + std::to_string(code));
   }
   if (code >= 10 && code <= 12) {
@@ -708,6 +709,26 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       scram_client_->verify_server_final(final);
       scram_server_verified_ = true;
       return {};
+    }
+    case AuthenticationRequest::Type::Idp: {
+      // Redshift native IdP token exchange (AUTH_REQ_IDP). The token is the
+      // credential and must only travel over a verified TLS channel.
+      if (!peer_identity_verified) {
+        throw std::runtime_error("Native IdP token authentication requires verified TLS");
+      }
+      if (max_wire_bytes < 6 || password.size() > max_wire_bytes - 6) throw RequestWireLimitExceeded{};
+      size_t total_len = 1 + 4 + password.size() + 1;
+      std::vector<std::byte> buf(total_len);
+      auto* data = reinterpret_cast<unsigned char*>(buf.data());
+      data[0] = 'i';
+      uint32_t len = static_cast<uint32_t>(4 + password.size() + 1);
+      data[1] = (len >> 24) & 0xFF;
+      data[2] = (len >> 16) & 0xFF;
+      data[3] = (len >> 8) & 0xFF;
+      data[4] = len & 0xFF;
+      std::memcpy(data + 5, password.data(), password.size());
+      data[5 + password.size()] = 0;
+      return buf;
     }
     default:
       throw std::runtime_error("Unsupported auth type");

@@ -170,7 +170,8 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     params["idp_type"] = settings.native_idp->idp_type;
     params["provider_name"] = settings.native_idp->provider_name;
     params["token_type"] = settings.native_idp->token_type;
-    params["identity_namespace"] = settings.native_idp->identity_namespace;
+    if (!settings.native_idp->identity_namespace.empty())
+      params["identity_namespace"] = settings.native_idp->identity_namespace;
     params["web_identity_token"] = settings.native_idp->token;
   }
   std::vector<std::byte> startup;
@@ -1247,8 +1248,12 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
           continue; // Authentication successful
         }
       
+        // Native IdP token auth uses the token as the credential; otherwise the
+        // ordinary password. The native token is sent in response to AUTH_REQ_IDP.
+        const std::string& auth_password = settings_.native_idp.has_value()
+            ? settings_.native_idp->token : settings_.password;
         auto auth_response = parser_->create_auth_response(
-            auth_req, settings_.password, settings_.user,
+            auth_req, auth_password, settings_.user,
             peer_identity_verified_, settings_.input_limits.max_auth_wire_bytes);
         struct ResponseCleanup {
           std::vector<std::byte>& bytes;

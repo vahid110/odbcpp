@@ -587,15 +587,18 @@ TEST(NativeIdpResolution, MissingConflictAndUnsupportedPluginRefuse) {
       BackendConnectionDefaults{"rs", 5439, std::nullopt, false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
   ConnectionOptions base; base.plugin_name = "IdpTokenAuthPlugin"; base.token = "jwt-token";
   base.provider_name = "odbcpp_idc"; base.token_type = "ACCESS_TOKEN"; base.identity_namespace = "awsidc";
-  for (unsigned which = 0; which < 5; ++which) {
+  for (unsigned which = 0; which < 4; ++which) {
     auto missing = base;
     if (which == 0) missing.token.reset();
     if (which == 1) missing.plugin_name.reset();
     if (which == 2) missing.provider_name.reset();
     if (which == 3) missing.token_type.reset();
-    if (which == 4) missing.identity_namespace.reset();
     EXPECT_FALSE(rs.resolve_connection_options(missing));
   }
+  // identity_namespace is optional (BrowserIdcAuthPlugin omits it).
+  auto no_namespace = base; no_namespace.identity_namespace.reset();
+  ASSERT_TRUE(rs.resolve_connection_options(no_namespace));
+  EXPECT_TRUE(rs.resolve_connection_options(no_namespace)->native_idp->identity_namespace.empty());
   auto conflict = base; conflict.password = "pw";
   EXPECT_FALSE(rs.resolve_connection_options(conflict));
   auto unknown = base; unknown.plugin_name = "Okta";

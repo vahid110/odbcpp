@@ -27,8 +27,12 @@ class NativeIdpWire final : public t::ITransport, public t::IStartTlsTransport,
     public t::ITlsConfigurableTransport {
  public:
   NativeIdpWire() {
+    // AUTH_REQ_IDP ('R', code 14) asks for the native IdP token, then
     // AuthenticationOk ('R', code 0) then ReadyForQuery ('Z', idle).
-    const unsigned char literal[]{'R', 0, 0, 0, 8, 0, 0, 0, 0, 'Z', 0, 0, 0, 5, 'I'};
+    const unsigned char literal[]{
+        'R', 0, 0, 0, 8, 0, 0, 0, 14,
+        'R', 0, 0, 0, 8, 0, 0, 0, 0,
+        'Z', 0, 0, 0, 5, 'I'};
     for (const auto byte : literal) input.push_back(std::byte{byte});
   }
   rs::util::Result<void> connect(std::string_view, std::uint16_t, rs::util::Deadline) override {
@@ -57,6 +61,20 @@ class NativeIdpWire final : public t::ITransport, public t::IStartTlsTransport,
   void close() noexcept override { ++closed; }
   bool contains(std::string_view text) const {
     const auto needle = std::as_bytes(std::span{text.data(), text.size()});
+    return std::search(sent.begin(), sent.end(), needle.begin(), needle.end()) != sent.end();
+  }
+  bool contains_idp_token_packet(std::string_view token) const {
+    // PasswordMessage-style frame carrying 'i' + u32 length + token + NUL.
+    std::vector<std::byte> needle;
+    needle.push_back(std::byte{'i'});
+    const std::uint32_t len = static_cast<std::uint32_t>(4 + token.size() + 1);
+    needle.push_back(static_cast<std::byte>((len >> 24) & 0xFF));
+    needle.push_back(static_cast<std::byte>((len >> 16) & 0xFF));
+    needle.push_back(static_cast<std::byte>((len >> 8) & 0xFF));
+    needle.push_back(static_cast<std::byte>(len & 0xFF));
+    const auto token_bytes = std::as_bytes(std::span{token.data(), token.size()});
+    needle.insert(needle.end(), token_bytes.begin(), token_bytes.end());
+    needle.push_back(std::byte{0});
     return std::search(sent.begin(), sent.end(), needle.begin(), needle.end()) != sent.end();
   }
   std::vector<std::byte> sent, input;
@@ -112,8 +130,38 @@ TEST(RedshiftNativeIdpIntegration, ResolveConnectAndStartupKeysThroughCompiledPr
   EXPECT_TRUE(observed->contains("awsidc"));
   EXPECT_TRUE(observed->contains("web_identity_token"));
   EXPECT_TRUE(observed->contains("synthetic-jwt-token"));
+  // AUTH_REQ_IDP was answered with the 'i' packet carrying the token.
+  EXPECT_TRUE(observed->contains_idp_token_packet("synthetic-jwt-token"));
   session->disconnect();
   EXPECT_FALSE(session->is_connected());
+}
+
+TEST(RedshiftNativeIdpIntegration, BrowserIdcOmitsIdentityNamespaceStartupKey) {
+  const auto& provider = d::configured_backend_provider();
+  if (provider.identity().id != "redshift") {
+    GTEST_SKIP() << "native IdP requires the Redshift provider";
+  }
+  auto options = native_idp_options();
+  options.plugin_name = "BrowserIdcAuthPlugin";
+  options.identity_namespace.reset();
+  auto resolved = provider.resolve_connection_options(std::move(options));
+  ASSERT_TRUE(resolved) << resolved.error_message();
+  ASSERT_TRUE(resolved->native_idp.has_value());
+  EXPECT_TRUE(resolved->native_idp->identity_namespace.empty());
+
+  auto wire = std::make_unique<NativeIdpWire>();
+  auto* observed = wire.get();
+  auto session = provider.create_session(std::move(wire));
+  ASSERT_NE(nullptr, session);
+  struct Cleanup { d::IDatabaseConnection& session; ~Cleanup() { session.disconnect(); } } cleanup{*session};
+
+  const auto connected = session->connect(*resolved);
+  ASSERT_TRUE(connected) << connected.backend_error().safe_summary();
+  ASSERT_TRUE(session->is_connected());
+  EXPECT_TRUE(observed->contains("idp_type"));
+  EXPECT_TRUE(observed->contains("AwsIdc"));
+  EXPECT_FALSE(observed->contains("identity_namespace"));
+  EXPECT_TRUE(observed->contains_idp_token_packet("synthetic-jwt-token"));
 }
 
 TEST(RedshiftNativeIdpIntegration, PostgreSQLProviderRefusesNativeIdpResolution) {

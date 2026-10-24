@@ -52,14 +52,13 @@ std::optional<Admission> admission() {
   auto token_type = env_text("ODBCPP_NATIVE_IDP_TOKEN_TYPE", 1024);
   auto namespace_id = env_text("ODBCPP_NATIVE_IDP_NAMESPACE", 1024);
   auto ca_file = env_text("ODBCPP_NATIVE_IDP_CA", 4096);
-  if (!issuer || !region || !host || !database || !user || !provider || !token_type ||
-      !namespace_id || !ca_file)
+  if (!issuer || !region || !host || !database || !user || !provider || !token_type || !ca_file)
     return std::nullopt;
   Admission selected;
   selected.issuer_url = std::move(*issuer); selected.region = std::move(*region);
   selected.host = std::move(*host); selected.database = std::move(*database);
   selected.user = std::move(*user); selected.provider = std::move(*provider);
-  selected.token_type = std::move(*token_type); selected.namespace_id = std::move(*namespace_id);
+  selected.token_type = std::move(*token_type); selected.namespace_id = namespace_id.value_or(std::string{});
   selected.ca_file = std::move(*ca_file);
   if (const auto listen = env_text("ODBCPP_NATIVE_IDC_LISTEN_PORT", 5)) {
     unsigned value = 0;

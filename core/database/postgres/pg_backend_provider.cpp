@@ -151,12 +151,11 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
     if (idp_type.empty())
       return {rs::util::DbErrorCode::InvalidParameter, "Unsupported native IdP plugin"};
     if (!options.provider_name || options.provider_name->empty() ||
-        !options.token_type || options.token_type->empty() ||
-        !options.identity_namespace || options.identity_namespace->empty())
+        !options.token_type || options.token_type->empty())
       return {rs::util::DbErrorCode::InvalidParameter,
-              "Native IdP login requires provider_name, token_type and identity_namespace"};
+              "Native IdP login requires provider_name and token_type"};
     settings.native_idp = NativeIdpSettings{*options.token, idp_type, *options.provider_name,
-                                            *options.token_type, *options.identity_namespace};
+                                            *options.token_type, options.identity_namespace.value_or(std::string{})};
   }
   settings.use_ssl = options.use_ssl.value_or(connection_defaults_.use_ssl);
   settings.ssl_ca_file = options.ssl_ca_file.value_or(std::string{});

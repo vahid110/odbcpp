@@ -44,7 +44,7 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
     if (!settings.password.empty() || idp.token.empty() ||
         idp.token.size() > auth::SecretBytes::max_bytes ||
         idp.idp_type.empty() || idp.provider_name.empty() ||
-        idp.token_type.empty() || idp.identity_namespace.empty() ||
+        idp.token_type.empty() ||
         !settings.use_ssl || settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty() ||
         settings.host.empty() || settings.port == 0 || settings.database.empty() ||
         settings.user.empty() ||
