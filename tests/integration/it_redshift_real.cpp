@@ -174,10 +174,9 @@ public:
         break;
       }
       ++attempts;
-      {
-        WarmUpOdbcBoundary boundary(*connection);  // Released before any pause.
-        ready = warm_up::attempt([] { return warm_up::Clock::now(); }, end, 30, boundary);
-      }
+      // The boundary is released before the verdict and before any pause.
+      ready = warm_up::attempt_and_release([] { return warm_up::Clock::now(); }, end, 30,
+          [&connection] { return WarmUpOdbcBoundary(*connection); });
       if (!ready && std::chrono::steady_clock::now() + std::chrono::seconds{2} < end) {
         std::this_thread::sleep_for(std::chrono::seconds{2});
       }

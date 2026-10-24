@@ -117,6 +117,74 @@ struct FailingConnect : RecordingBoundary {
   }
 };
 
+// Connect and execute succeed instantly; fetch takes `fetch_takes`; destroying
+// the boundary (handle cleanup and disconnect) advances the clock by `cleanup`.
+struct SlowCleanupBoundary {
+  SlowCleanupBoundary(FakeClock& fake_clock, milliseconds fetch, milliseconds release,
+                      bool connects, int& released_count)
+      : clock(fake_clock), fetch_takes(fetch), cleanup(release), connect_succeeds(connects),
+        released(released_count) {}
+  SlowCleanupBoundary(const SlowCleanupBoundary&) = delete;
+  SlowCleanupBoundary& operator=(const SlowCleanupBoundary&) = delete;
+  ~SlowCleanupBoundary() {
+    clock.now += cleanup;
+    ++released;
+  }
+
+  bool connect(std::uintptr_t) { return connect_succeeds; }
+  bool execute(std::uintptr_t) { return true; }
+  bool fetch(std::uintptr_t) {
+    clock.now += fetch_takes;
+    return true;
+  }
+
+  FakeClock& clock;
+  milliseconds fetch_takes;
+  milliseconds cleanup;
+  bool connect_succeeds;
+  int& released;
+};
+
+// The fetch finishes 1 ms before the deadline; the verdict is taken only after
+// cleanup, so cleanup that reaches or passes the deadline refuses readiness.
+TEST(RedshiftWarmUpTest, ReadinessIsJudgedAfterCleanupAgainstTheOriginalDeadline) {
+  struct Case {
+    milliseconds cleanup;
+    bool ready;
+  };
+  for (const auto& expected : {Case{milliseconds{0}, true}, Case{milliseconds{1}, false},
+                               Case{milliseconds{999}, false}, Case{milliseconds{5000}, false}}) {
+    SCOPED_TRACE(expected.cleanup.count());
+    FakeClock clock;
+    const auto deadline = clock.now + seconds{10};
+    int released = 0;
+    EXPECT_EQ(expected.ready, warm_up::attempt_and_release(clock.reader(), deadline, 30, [&] {
+      return SlowCleanupBoundary(clock, milliseconds{9999}, expected.cleanup, true, released);
+    }));
+    EXPECT_EQ(1, released);
+  }
+}
+
+TEST(RedshiftWarmUpTest, CleanupBeforeTheDeadlinePreservesReadiness) {
+  FakeClock clock;
+  const auto deadline = clock.now + seconds{10};
+  int released = 0;
+  EXPECT_TRUE(warm_up::attempt_and_release(clock.reader(), deadline, 30, [&] {
+    return SlowCleanupBoundary(clock, milliseconds{9000}, milliseconds{999}, true, released);
+  }));
+  EXPECT_EQ(1, released);
+  EXPECT_LT(clock.now, deadline);
+}
+
+TEST(RedshiftWarmUpTest, FailedAttemptStillReleasesTheBoundary) {
+  FakeClock clock;
+  int released = 0;
+  EXPECT_FALSE(warm_up::attempt_and_release(clock.reader(), clock.now + seconds{10}, 30, [&] {
+    return SlowCleanupBoundary(clock, milliseconds{0}, milliseconds{0}, false, released);
+  }));
+  EXPECT_EQ(1, released);
+}
+
 TEST(RedshiftWarmUpTest, FailedConnectStopsTheAttempt) {
   FakeClock clock;
   FailingConnect boundary{clock};

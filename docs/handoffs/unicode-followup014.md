@@ -24,6 +24,8 @@ No credentials or connection strings appear here.
 | `a1d9639` | Offline audit tests: wide `SQL_USER_NAME`, combining-sequence chunks, ANSI DSN echo |
 | `4d523d3` | Driver-manager test: buffer sized from the connection string, plus the ANSI Latin-1 keyword case |
 | `31e5410` | Owner decisions: U+FFFD in posted diagnostics, and SQLColAttributeW zero-capacity 01004 |
+| `508ace3` | Independent review R1/R2 (test code only): Unicode decoding of driver-manager overrides; one deadline for every warm-up phase |
+| `b56afb3` | Follow-up review, remaining R2 item (test code only): warm-up readiness judged after the attempt's cleanup |
 
 ### Verified so far
 - **Full offline presets, 0 failures:**
@@ -56,6 +58,28 @@ No credentials or connection strings appear here.
     - WSL iODBC 3.52.16 (private ini registration): 6 passed, 2 skipped (the same iODBC defects).
   - The same runs at `e1b7665` (before `31e5410`) had the same counts; the Windows offline GoogleTest total was 2391 and WSL 2386 each, one fewer because of the new `31e5410` test.
 - **Windows Driver Manager behaviour:** it keeps driver-connect warnings. `AnsiLatin1KeywordWarningStateStaysReadable` passes, so the unknown-keyword 01S00 reaches the application through both `SQLGetDiagRec` and `SQLGetDiagRecW`, and `WideDriverConnectTruncatedOutputReportsFullLength` passes, so 01004 and the full output length arrive. The F1 ANSI-echo route therefore hides no SQLSTATE on Windows.
+- **macOS at `508ace3` (independent-review revision R1/R2), the same macOS 15.3.2 arm64 host, Apple Clang:**
+  - **Full offline presets, 0 failures:** `macos-iodbc-redshift-offline` and `unixodbc-redshift-offline`, each 121 CTest (120 passed, 1 skipped: `test_odbc_trace_reload`, macOS loader). GoogleTest 2395 cases with 2 skips. All 6 `RedshiftWarmUpTest` cases ran and passed.
+  - **R1 before and after**, disposable PostgreSQL 17 with role `café`, `UID=café`, the same driver in every run:
+    - iODBC before: 6 failed with 22018, 2 skipped. After: 7 passed, 2 skipped, both with the non-ASCII and the ASCII override.
+    - unixODBC before: 7 failed with 22018, 1 passed. After: 9/9 with both.
+  - **Live Redshift through the managers,** with `SSLCAFILE` under a directory named `café`: iODBC 7 passed, 2 skipped; unixODBC 9/9.
+    - `ConnectionTest` and `UnicodeRoundTrip` with warm-up passed on both builds: ready after 1 attempt in 415-451 ms.
+- **Windows and WSL for the review revisions:**
+  - At `508ace3`, R1 before and after on WSL, with a disposable PostgreSQL 18.6, role `café` and `UID=café`, the same driver in every run:
+    - unixODBC before: 7 of 8 failed with 22018. After: 9/9, with both the non-ASCII and the ASCII override.
+    - iODBC before: 6 of 8 failed, 2 skipped. After: 7 passed, 2 skipped.
+  - At `508ace3`, live through the Windows Driver Manager with `SSLCAFILE` under `café`: 9/9.
+  - At exact head `b56afb3`, full offline presets, 0 failures:
+    - `windows-redshift-offline`: CTest 123/123, GoogleTest 2401 passed, 6 skipped.
+    - `unixodbc-redshift-offline` and `linux-iodbc-redshift-offline`: CTest 121/121 each, GoogleTest 2396 passed, 8 skipped (macOS-only) on each.
+    - All 9 `RedshiftWarmUpTest` cases ran on each.
+  - At `b56afb3`, a live Windows warm-up check: 2/2, ready after 1 attempt.
+  - A mutation check on WSL: with the old verdict-before-cleanup restored in a scratch header, `ReadinessIsJudgedAfterCleanupAgainstTheOriginalDeadline` fails.
+- **macOS at exact head `b56afb3`:**
+  - Both REDSHIFT offline presets: 121 CTest (120 passed, 1 skipped: `test_odbc_trace_reload`); GoogleTest 2398 cases, 0 failures, 2 skips. All 9 `RedshiftWarmUpTest` cases ran.
+  - The 10 direct live cases: 10/10 on iODBC 4/4 and on unixODBC 2/2, warm-up ready after 1 attempt each. This is the first run of the 10 cases after `31e5410`. Windows and WSL last ran them at `66c777e`.
+- **PR checks at `b56afb3`:** all passed (`macos-iodbc-ucs4`, the PR Windows and Ubuntu builds, CodeQL).
 - **Not run anywhere yet:**
   - provisioned Redshift;
   - the full Linux and Windows suites in PR CI. The PR Windows and Ubuntu jobs build only and run no tests; the full suites run only in the manually dispatched checkpoint.

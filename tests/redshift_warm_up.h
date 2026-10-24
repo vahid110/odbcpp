@@ -37,4 +37,18 @@ bool attempt(Now now, Clock::time_point deadline, std::uintptr_t cap, Boundary& 
   return now() < deadline;
 }
 
+// One attempt including its cleanup. `make_boundary()` creates the boundary,
+// which is always destroyed (handles freed, disconnect) before the verdict;
+// readiness also requires the deadline to hold after that cleanup.
+template <class Now, class MakeBoundary>
+bool attempt_and_release(Now now, Clock::time_point deadline, std::uintptr_t cap,
+                         MakeBoundary make_boundary) {
+  bool ready = false;
+  {
+    auto boundary = make_boundary();
+    ready = attempt(now, deadline, cap, boundary);
+  }
+  return ready && now() < deadline;
+}
+
 }  // namespace odbcpp::test::redshift_warm_up
