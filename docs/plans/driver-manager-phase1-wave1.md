@@ -200,9 +200,61 @@ Two helpers inside `odbcpp::test::diag_rec` handle general patterns, after asser
 
 No driver defect was found in wave 1.
 
+## Wave 2
+
+### `it_metadata_real` (PostgreSQL, run)
+
+`dm_it_metadata_real` links only the manager. What stays direct-only, or changes for manager builds:
+- **Direct-only case:** `PreparedMetadataRefreshesAfterLocalSchemaMutationAndReset`, which needs the backend session view.
+- **Redshift sizing reconnect:** only reachable on Redshift. Direct builds check the driver's own parser round-trip and pass the string to `SQLConnect`. Manager builds append `MAXVARCHARSIZE=0` and use `SQLDriverConnect`.
+- **Redshift timeout blocker:** it fails with a stated reason if reached in a manager build, as in `it_bind_col_real`.
+
+Its deviations are asserted from the table like wave 1's. New entries, each attributed from the driver trace:
+
+| id | manager | observed | origin |
+|---|---|---|---|
+| V | both | after `SQLMoreResults` fails, the next statement is refused with `24000` | Manager state table: the cursor is still open after a failed `SQLMoreResults`, although the driver ended the batch. The case asserts the refusal, closes the cursor with `SQLFreeStmt(SQL_CLOSE)` and continues unchanged. |
+| O (widened) | unixODBC | after any call on an open cursor fails with the driver's `24000`, unixODBC forgets the cursor and refuses `SQLFetch`/`SQLCloseCursor` itself | Manager. Seen in `SQLStatistics`, `SQLGetTypeInfoW`, `SQLProcedures`, `SQLProcedureColumns` and `SQLSpecialColumns`, and in wave 1's re-prepare. |
+| W | unixODBC | its own `SQLRowCount` refusal (`HY010`) writes -1 into the output | Manager; the driver isn't called. |
+| X | unixODBC | the IRD of a statement whose cursor is closed is refused with `HY007` | Manager; the driver isn't called. |
+| U | iODBC | `SQLSpecialColumns(..., SQL_NULLABLE)` returns the non-nullable index | Manager: the driver receives `Nullable=SQL_NO_NULLS` for every call. |
+| P (widened) | iODBC | ANSI `SQLColAttribute` truncated name and type-name lengths are the copied length | Manager. |
+| S (widened) | iODBC | `SQLNumResultCols(stmt, NULL)` succeeds | Manager: the driver gets iODBC's own variable, so it never sees the NULL. |
+| Y | both | after the driver closes a session internally on a query timeout, `SQLConnect` is refused with `08002` | Manager: it still has the connection open. The case asserts the refusal and ends. |
+| C, L, H | iODBC | `S1002` (mapped to `07009`); widened ANSI catalog names; statement header fields | As in wave 1. |
+
+| profile | direct | manager |
+|---|---|---|
+| iODBC 3.52.16 | 75/75 pass | 74/74 pass |
+| unixODBC 2.3.14 | 75/75 pass | 74/74 pass |
+
+### `it_redshift_real` (live Redshift, built, not run)
+
+`dm_it_redshift_real` builds and links against iODBC and unixODBC in the `macos-iodbc-redshift` and `unixodbc-redshift` configurations. It hasn't been run: it needs a live Redshift session, which the human schedules.
+
+What manager builds use in place of the driver internals:
+- The fixtures read their configured connection string through `tests/test_connection_string.h`. Direct builds call the driver's parser through it. Manager builds use a copy of the same rules: trimmed upper-cased keys, braced values with `}}`, first occurrence kept, and errors for an embedded NUL or an unterminated brace.
+- The SDK's `Clock`, `Deadline` and `ResultCell`/`ResultRow`/`ResultRows` are aliases of `std` types, so local aliases with the same definitions replace them.
+- The SDK's default `ResultLimits`/`InputLimits` come from `tests/test_sdk_limits.h`. Direct builds pin every field to the SDK with `static_assert`, so the copies can't drift.
+
+Ten cases stay direct-only:
+- three primary-key-mode cases that resolve the DSN through the driver;
+- five that open a backend session;
+- one that observes raw backend metadata;
+- the `SQLCancelHandle` case, on iODBC only, since iODBC 3.52 neither declares nor exports it.
+
+That leaves 147 manager cases on iODBC and 148 on unixODBC, against 157 direct.
+
+### Totals after wave 2 (PostgreSQL fixture, `2ddbe2d`)
+
+| profile | direct, 7 suites | manager, 7 suites |
+|---|---|---|
+| iODBC 3.52.16 | 386/386 pass | 373/373 pass |
+| unixODBC 2.3.14 | 386/386 pass | 373/373 pass |
+
 ## Not done in this wave
 
 - **Windows ODBC and Linux unixODBC/iODBC runs.** The PR builds compile `dm_*` on all three platforms, but the suites ran only on macOS.
 - **unixODBC manager tracing.** Homebrew unixODBC 2.3.14 wrote no trace file even with a minimal private `odbcinst.ini`. The driver-side trace was used instead.
-- **Wave 2:** `it_metadata_real` and `it_redshift_real`, which needs live Redshift admission.
+- **The live `dm_it_redshift_real` run,** which waits for a scheduled Redshift session.
 - **Windows ODBC expectations.** Windows has no entries yet. Its first run will show where it differs from the direct driver.
