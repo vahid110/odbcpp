@@ -75,6 +75,15 @@ std::string idc_token_json() {
   // expirationTime string plus the native subject token.
   return "{\"token\":\"synthetic-idc-token\",\"expirationTime\":\"2030-03-17T17:46:40Z\"}";
 }
+std::string register_client_json() {
+  // SSOOIDC RegisterClient returns a client id/secret pair.
+  return "{\"clientId\":\"synthetic-client-id\",\"clientSecret\":\"synthetic-client-secret\","
+      "\"clientSecretExpiresAt\":1900000000,\"clientIdIssuedAt\":1900000000}";
+}
+std::string create_token_json() {
+  // SSOOIDC CreateToken returns the native subject access token + TTL seconds.
+  return "{\"accessToken\":\"synthetic-idc-token\",\"expiresIn\":3600,\"tokenType\":\"Bearer\"}";
+}
 
 // Reads the form-encoded STS query body and restores the stream for the caller.
 bool is_web_identity(const std::shared_ptr<Aws::Http::HttpRequest>& request) {
@@ -150,7 +159,11 @@ class FakeHttpClient final : public Aws::Http::HttpClient {
       if (request->HasHeader(Aws::Http::AUTHORIZATION_HEADER)) ++obs.signed_requests;
       const bool web_identity = sts_ && is_web_identity(request);
       if (web_identity) ++obs.web_identity;
-      const bool idc = !sts_ && request->GetHeaderValue("X-Amz-Target").find("GetIdentityCenterAuthToken") != Aws::String::npos;
+      const auto target = request->GetHeaderValue("X-Amz-Target");
+      const auto path = request->GetUri().GetPath();
+      const bool idc = !sts_ && target.find("GetIdentityCenterAuthToken") != Aws::String::npos;
+      const bool register_client = path.find("/client/register") != Aws::String::npos;
+      const bool create_token = path.find("/token") != Aws::String::npos;
       if (sts_) ++obs.assume_role; else if (idc) ++obs.get_idc_token; else ++obs.get_credentials;
       const auto scenario = static_cast<FakeHttpScenario>(config().scenario.load());
       if (scenario == FakeHttpScenario::Denied) { ++obs.denied; return client_error_response(request, Aws::Client::CoreErrors::ACCESS_DENIED); }
@@ -186,7 +199,12 @@ class FakeHttpClient final : public Aws::Http::HttpClient {
       response->SetResponseCode(Aws::Http::HttpResponseCode::OK);
       response->AddHeader("content-type", sts_ ? "text/xml" : "application/x-amz-json-1.1");
       const unsigned long long expiry_ms = config().expiry_ms.load();
-      std::string body = sts_ ? sts_xml(expiry_ms, web_identity) : (idc ? idc_token_json() : serverless_json(expiry_ms));
+      std::string body;
+      if (sts_) body = sts_xml(expiry_ms, web_identity);
+      else if (idc) body = idc_token_json();
+      else if (register_client) body = register_client_json();
+      else if (create_token) body = create_token_json();
+      else body = serverless_json(expiry_ms);
       response->GetResponseBody().write(body.data(), static_cast<std::streamsize>(body.size()));
       return response;
     } catch (...) { std::terminate(); }
@@ -229,6 +247,10 @@ FakeHttpObservation& fake_http_observation() noexcept {
 bool fake_http_enabled() noexcept {
   const char* marker = ::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
   return marker && std::string_view(marker) == "synthetic-fake-http-only";
+}
+std::string& fake_browser_auth_code() noexcept {
+  static std::string value;
+  return value;
 }
 void fake_http_configure(FakeHttpScenario scenario, unsigned delay_ms,
     std::shared_ptr<provisioned_native::WorkerCancellation> cancel) {

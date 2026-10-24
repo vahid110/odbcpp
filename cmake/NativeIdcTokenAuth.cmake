@@ -38,10 +38,12 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_serverless_fake_http.h" "${_native_stage}/odbcpp/auth/aws/sts_serverless_fake_http.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/browser_idc_owner.h" "${_native_stage}/odbcpp/auth/aws/browser_idc_owner.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
 add_library(odbcpp_auth_aws_idc STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/idc_token_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/browser_idc_owner.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_native_owner.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_sdk_runtime.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_native_http_ingress.cpp"
@@ -58,15 +60,25 @@ target_compile_definitions(odbcpp_auth_aws_idc PRIVATE
   AWS_SDK_USE_CRT_HTTP HAVE_H2_CLIENT PLATFORM_APPLE AWS_ENABLE_DISPATCH_QUEUE
   AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
 target_link_libraries(odbcpp_auth_aws_idc PRIVATE
-  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless)
+  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless
+  aws-cpp-sdk-sso-oidc OpenSSL::Crypto)
 apply_compiler_settings(odbcpp_auth_aws_idc)
+
+# macOS browser launch (LaunchServices + CoreFoundation).
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_link_libraries(odbcpp_auth_aws_idc PRIVATE "-framework CoreFoundation" "-framework CoreServices")
+endif()
 
 # Offline owner test (fake HTTP) and the separately admitted live login test.
 add_executable(test_idc_token_owner EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_idc_token_owner.cpp")
+add_executable(test_browser_idc_owner EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/unit/test_browser_idc_owner.cpp")
 add_executable(it_redshift_native_idc_token_live EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/integration/it_redshift_native_idc_token_live.cpp")
-foreach(_consumer test_idc_token_owner it_redshift_native_idc_token_live)
+add_executable(it_redshift_browser_idc_live EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/integration/it_redshift_browser_idc_live.cpp")
+foreach(_consumer test_idc_token_owner test_browser_idc_owner it_redshift_native_idc_token_live it_redshift_browser_idc_live)
   target_include_directories(${_consumer} PRIVATE
     "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
   target_include_directories(${_consumer} SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
@@ -77,12 +89,17 @@ foreach(_consumer test_idc_token_owner it_redshift_native_idc_token_live)
   apply_compiler_settings(${_consumer})
   set_target_properties(${_consumer} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endforeach()
-# The live login also drives the compiled provider session (resolve -> connect).
+# The live logins also drive the compiled provider session (resolve -> connect).
 target_link_libraries(it_redshift_native_idc_token_live PRIVATE odbcpp::core)
-# Offline fake-HTTP test runs under the reviewed network-denied marker only.
+target_link_libraries(it_redshift_browser_idc_live PRIVATE odbcpp::core)
+# Offline fake-HTTP tests run under the reviewed network-denied marker only.
 add_test(NAME test_idc_token_owner COMMAND test_idc_token_owner)
 set_tests_properties(test_idc_token_owner PROPERTIES
   ENVIRONMENT "ODBCPP_AUTH_SDK_OFFLINE_FIXTURE=synthetic-fake-http-only"
   LABELS "unit;redshift;idc" TIMEOUT 60)
-# No add_test for the live binary: a manually selected build is not SDK source
+add_test(NAME test_browser_idc_owner COMMAND test_browser_idc_owner)
+set_tests_properties(test_browser_idc_owner PROPERTIES
+  ENVIRONMENT "ODBCPP_AUTH_SDK_OFFLINE_FIXTURE=synthetic-fake-http-only"
+  LABELS "unit;redshift;idc" TIMEOUT 60)
+# No add_test for the live binaries: a manually selected build is not SDK source
 # permission, AWS/SQL coverage or runtime admission.

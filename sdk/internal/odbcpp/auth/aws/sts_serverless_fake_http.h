@@ -54,6 +54,10 @@ void fake_http_set_during(std::function<void()>);
 // Set the synthetic credential expiry (epoch milliseconds) so a credential that
 // expires before the request window can be exercised.
 void fake_http_set_expiry_ms(unsigned long long expiry_ms);
+// Offline test seam for the BrowserIdcAuthPlugin owner: when the fake-HTTP
+// marker is active, the browser+loopback step is skipped and this canned
+// authorization code is consumed instead.
+std::string& fake_browser_auth_code() noexcept;
 std::shared_ptr<Aws::Http::HttpClientFactory> make_fake_http_factory(
     std::string expected_authority, bool sts);
 } // namespace rs::core::auth::aws::detail

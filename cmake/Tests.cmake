@@ -148,7 +148,8 @@ endwhile()
 set(_unit_tests_registered_elsewhere
   test_named_profile_acquisition test_provisioned_native_owner
   test_provisioned_pg_connector test_provisioned_sdk_runtime
-  test_sts_serverless_owner test_jwt_iam_auth test_idc_token_owner test_odbc_trace_reload)
+  test_sts_serverless_owner test_jwt_iam_auth test_idc_token_owner
+  test_browser_idc_owner test_odbc_trace_reload)
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
@@ -493,7 +494,7 @@ set(_integration_tests_registered_elsewhere
   it_redshift_powerbi_relationship it_driver_manager_unicode it_auth_pg_material_tls
   it_redshift_native_auth it_redshift_serverless_sts_auth
   it_redshift_serverless_jwt_iam_auth it_redshift_native_idp_live it_redshift_native_idc_token_live
-  ${_mysql_fixture_test_names})
+  it_redshift_browser_idc_live   ${_mysql_fixture_test_names})
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
