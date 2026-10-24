@@ -14,6 +14,12 @@ set(_root "${BINARY_DIR}/aws-sdk-import-fixtures-${_nonce}")
 file(REMOVE_RECURSE "${_root}")
 file(MAKE_DIRECTORY "${_root}")
 
+# Config-only stub for ZLIB: the synthetic SDK fixtures never link zlib, so the
+# probes must not depend on a host zlib install (notably absent on Windows CI).
+file(MAKE_DIRECTORY "${_root}/stub")
+file(WRITE "${_root}/stub/FindZLIB.cmake"
+  "if(NOT TARGET ZLIB::ZLIB)\n  add_library(ZLIB::ZLIB INTERFACE IMPORTED)\nendif()\nset(ZLIB_FOUND TRUE)\nset(ZLIB_INCLUDE_DIRS \"\")\nset(ZLIB_LIBRARIES ZLIB::ZLIB)\n")
+
 # Create a synthetic SDK install with the given version and linkage. Only the
 # discovery/guard inputs are modelled; no real SDK files or binaries exist.
 function(_odbcpp_fake_install prefix version shared)
@@ -61,7 +67,7 @@ function(_odbcpp_probe name prefix expect_success extra_setup)
   set(_dir "${_root}/${name}")
   file(MAKE_DIRECTORY "${_dir}")
   file(WRITE "${_dir}/CMakeLists.txt"
-    "cmake_minimum_required(VERSION 3.20)\nproject(${name} LANGUAGES CXX)\nset(ODBCPP_AWS_SDK_INSTALL \"${prefix}\" CACHE PATH \"\" FORCE)\n${extra_setup}include(\"${SOURCE_DIR}/cmake/NativeAwsSdkImport.cmake\")\nmessage(STATUS \"${name}: IMPORT OK\")\n")
+    "cmake_minimum_required(VERSION 3.20)\nproject(${name} NONE)\nset(ODBCPP_AWS_SDK_INSTALL \"${prefix}\" CACHE PATH \"\" FORCE)\nlist(PREPEND CMAKE_MODULE_PATH \"${_root}/stub\")\n${extra_setup}include(\"${SOURCE_DIR}/cmake/NativeAwsSdkImport.cmake\")\nmessage(STATUS \"${name}: IMPORT OK\")\n")
   execute_process(COMMAND "${CMAKE_COMMAND}" -S "${_dir}" -B "${_dir}/build"
     RESULT_VARIABLE _result OUTPUT_VARIABLE _stdout ERROR_VARIABLE _stderr TIMEOUT 60)
   file(WRITE "${_dir}/configure.log" "${_stdout}\n${_stderr}")
