@@ -6,7 +6,8 @@ from WSL using `python3 -m tools.development.redshift_operator_session
 The parent must already be owner-only `0700`; `NEW_RUN` must not exist. The fixed
 bootstrap `operator-bootstrap024/credentials.ini` must contain only the existing
 pilot's long-term profile, with owner-only `0600` file / `0700` parent custody.
-The issuer verifies the pinned CLI and pilot identity, requests 6600 seconds,
+The issuer verifies the pinned CLI and pilot identity, requests 43200 seconds
+(12 hours),
 then verifies the temporary identity. It makes at most three STS CLI invocations,
 without retries or ambient providers. Success leaves private `credentials.ini`
 and secret-free `metadata.json`; failure leaves metadata and reports any
@@ -14,6 +15,9 @@ unverified process cleanup rather than erasing potentially active inputs.
 Per-call exit, timeout and reap facts remain in the metadata after raw output
 retirement. Late/failed metadata publication revokes success, retires exact owned
 credentials, and records public failure facts in `failure.json` when writable.
+Only credential validity is extended. Issuance remains bounded to 90 seconds;
+operational runs retain their own finite admissions, deadlines and caps. There
+is no duration option or automatic renewal.
 Keep the bootstrap protected for future explicit issuance; retire each issued
 credential file only after its consumers are reaped. This grants no resource or
 live-test admission. Offline controls: `python3 -m unittest

@@ -34,7 +34,7 @@ ACCOUNT = '385207570137'
 ARN = 'arn:aws:iam::385207570137:user/odbcpp-redshift-pilot'
 REGION = 'eu-north-1'
 ENDPOINT = 'https://sts.eu-north-1.amazonaws.com'
-SESSION_SECONDS = 6600
+SESSION_SECONDS = 43200
 TOTAL_SECONDS = 90
 
 
@@ -283,7 +283,10 @@ def _credentials(data, now, started):
         expiry = datetime.fromisoformat(value['Expiration'].replace('Z', '+00:00'))
         need(expiry.utcoffset() is not None and expiry.utcoffset().total_seconds() == 0,
              'invalid_expiry')
-        need(now < expiry and 0 < (expiry - started).total_seconds() <= SESSION_SECONDS + 90,
+        # The observed result must match the fixed twelve-hour request within
+        # the existing finite issuance window, not merely be unexpired.
+        need(now < expiry and SESSION_SECONDS - TOTAL_SECONDS <=
+             (expiry - started).total_seconds() <= SESSION_SECONDS + TOTAL_SECONDS,
              'invalid_expiry')
     except (ValueError, TypeError):
         raise Refused('invalid_expiry') from None

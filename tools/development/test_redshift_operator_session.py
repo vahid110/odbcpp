@@ -33,7 +33,7 @@ class OperatorTests(unittest.TestCase):
         self.output = self.base / 'issued'
         self.identity = {'Account': session.ACCOUNT, 'Arn': session.ARN,
                          'UserId': 'AIDA' + 'X'*17}
-        self.expiration = (datetime.now(timezone.utc) + timedelta(seconds=6600)).isoformat()
+        self.expiration = (datetime.now(timezone.utc) + timedelta(seconds=43200)).isoformat()
         self.credentials = {'AccessKeyId': 'ASIA' + 'T'*16,
                             'SecretAccessKey': 'temporary-secret', 'SessionToken': 'private-token',
                             'Expiration': self.expiration}
@@ -89,7 +89,9 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual([call[0][2] for call in self.calls],
                          ['get-caller-identity', 'get-session-token', 'get-caller-identity'])
         self.assertIn('--duration-seconds', self.calls[1][0])
-        self.assertIn('6600', self.calls[1][0])
+        self.assertEqual(self.calls[1][0][self.calls[1][0].index('--duration-seconds')+1], '43200')
+        self.assertEqual(result['requested_seconds'], 43200)
+        self.assertEqual(session.TOTAL_SECONDS, 90)
         for argv, env, seconds in self.calls:
             self.assertEqual(argv[0], str(self.aws))
             self.assertIn(session.ENDPOINT, argv)
@@ -131,13 +133,38 @@ class OperatorTests(unittest.TestCase):
         self.failed_clean('invalid_expiry', 2)
 
     def test_excessive_duration_and_naive_expiry_refused(self):
-        for index, expiry in enumerate([(datetime.now(timezone.utc)+timedelta(hours=12)).isoformat(),
+        for index, expiry in enumerate([(datetime.now(timezone.utc)+timedelta(hours=36)).isoformat(),
                                        '2026-10-24T20:00:00']):
             with self.subTest(expiry=expiry):
                 self.output = self.base / ('expiry' + str(index))
                 self.calls.clear()
                 self.credentials['Expiration'] = expiry
                 self.failed_clean('invalid_expiry', 2)
+
+    def test_observed_expiry_exact_lower_and_upper_boundaries(self):
+        started = datetime(2026, 10, 24, 15, 0, tzinfo=timezone.utc)
+        for seconds in (43110, 43200, 43290):
+            with self.subTest(seconds=seconds):
+                value = dict(self.credentials, Expiration=(started + timedelta(seconds=seconds)).isoformat())
+                payload, expiry = session._credentials(json.dumps({'Credentials': value}),
+                                                       started + timedelta(seconds=20), started)
+                self.assertIn(b'aws_session_token=private-token', payload)
+                self.assertEqual(expiry, value['Expiration'].replace('+00:00', 'Z'))
+
+    def test_observed_expiry_outside_duration_boundaries_refused(self):
+        started = datetime(2026, 10, 24, 15, 0, tzinfo=timezone.utc)
+        for seconds in (0, -1, 6600, 43109.999, 43290.001):
+            with self.subTest(seconds=seconds):
+                value = dict(self.credentials, Expiration=(started + timedelta(seconds=seconds)).isoformat())
+                with self.assertRaisesRegex(session.Refused, 'invalid_expiry'):
+                    session._credentials(json.dumps({'Credentials': value}),
+                                         started + timedelta(seconds=20), started)
+
+    def test_short_legacy_session_never_reaches_temporary_identity(self):
+        self.credentials['Expiration'] = (datetime.now(timezone.utc) + timedelta(seconds=6600)).isoformat()
+        self.failed_clean('invalid_expiry', 2)
+        argv = self.calls[1][0]
+        self.assertEqual(argv[argv.index('--duration-seconds')+1], '43200')
 
     def test_duplicate_json_keys_refused(self):
         self.transform = lambda index, response: '{"Account":"385207570137","Account":"x"}'
