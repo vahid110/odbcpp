@@ -1,5 +1,28 @@
 # Supported local commands
 
+The Windows coordinator may explicitly issue a finite local pilot AWS session
+from WSL using `python3 -m tools.development.redshift_operator_session
+--output-directory /home/vahid/.local/state/odbcpp/operator-sessions/NEW_RUN`.
+The parent must already be owner-only `0700`; `NEW_RUN` must not exist. The fixed
+bootstrap `operator-bootstrap024/credentials.ini` must contain only the existing
+pilot's long-term profile, with owner-only `0600` file / `0700` parent custody.
+The issuer verifies the pinned CLI and pilot identity, requests 43200 seconds
+(12 hours),
+then verifies the temporary identity. It makes at most three STS CLI invocations,
+without retries or ambient providers. Success leaves private `credentials.ini`
+and secret-free `metadata.json`; failure leaves metadata and reports any
+unverified process cleanup rather than erasing potentially active inputs.
+Per-call exit, timeout and reap facts remain in the metadata after raw output
+retirement. Late/failed metadata publication revokes success, retires exact owned
+credentials, and records public failure facts in `failure.json` when writable.
+Only credential validity is extended. Issuance remains bounded to 90 seconds;
+operational runs retain their own finite admissions, deadlines and caps. There
+is no duration option or automatic renewal.
+Keep the bootstrap protected for future explicit issuance; retire each issued
+credential file only after its consumers are reaped. This grants no resource or
+live-test admission. Offline controls: `python3 -m unittest
+tools.development.test_redshift_operator_session tools.redshift.test_pilot_runtime`.
+
 Run from the chosen source checkout. CMake 3.21+, CTest, Python 3.9+, Git and the
 platform compiler are required; Unix profiles use Ninja. `cmake --list-presets`
 and `ctest --list-presets` discover the checked-in commands. Each configure preset
