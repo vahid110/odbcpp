@@ -320,6 +320,65 @@ TEST(PgProtocolParserTest, ErrorResponseRequiresCompleteUniqueFields) {
                std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, TerminalSeverityUsesNativeUnlocalizedField) {
+  PgProtocolParser parser;
+  struct Case { const char* localized; const char* native; bool terminal; };
+  const Case cases[]{
+      {"ERROR", nullptr, false}, {"FATAL", nullptr, true},
+      {"PANIC", nullptr, true}, {"localized severity", nullptr, false},
+      {"localized severity", "FATAL", true},
+      {"localized severity", "PANIC", true},
+      {"FATAL", "ERROR", false}, {"ERROR", "FATAL", true}};
+  for (const auto& item : cases) {
+    SCOPED_TRACE(item.localized);
+    Message error{'E', {}};
+    append_cstring(error.payload, std::string("S") + item.localized);
+    if (item.native) {
+      append_cstring(error.payload, std::string("V") + item.native);
+    }
+    append_cstring(error.payload, "C57P01");
+    append_cstring(error.payload, "Mterminal marker");
+    error.payload.push_back(std::byte{0});
+    EXPECT_EQ(item.terminal, parser.is_terminal_error_response(error));
+    EXPECT_EQ("57P01", parser.extract_error_sqlstate(error));
+    EXPECT_EQ("terminal marker", parser.extract_error_message(error));
+  }
+  EXPECT_FALSE(parser.is_terminal_error_response(Message{'Z', {std::byte{'I'}}}));
+}
+
+TEST(PgProtocolParserTest, TerminalSeverityRejectsMalformedNativeFields) {
+  PgProtocolParser parser;
+  for (const char* severity : {"", "NOTICE", "fatal"}) {
+    SCOPED_TRACE(severity);
+    Message error{'E', {}};
+    append_cstring(error.payload, "SFATAL");
+    append_cstring(error.payload, std::string("V") + severity);
+    append_cstring(error.payload, "C57P01");
+    append_cstring(error.payload, "Mterminal marker");
+    error.payload.push_back(std::byte{0});
+    EXPECT_THROW(parser.is_terminal_error_response(error), std::runtime_error);
+  }
+  Message error{'E', {}};
+  append_cstring(error.payload, "SFATAL");
+  append_cstring(error.payload, "VFATAL");
+  append_cstring(error.payload, "C57P01");
+  append_cstring(error.payload, "Mterminal marker");
+  error.payload.push_back(std::byte{0});
+  auto duplicate = error;
+  duplicate.payload.pop_back();
+  append_cstring(duplicate.payload, "VPANIC");
+  duplicate.payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.is_terminal_error_response(duplicate), std::runtime_error);
+  error.payload.pop_back();
+  EXPECT_THROW(parser.is_terminal_error_response(error), std::runtime_error);
+  Message empty_severity{'E', {}};
+  append_cstring(empty_severity.payload, "S");
+  append_cstring(empty_severity.payload, "C57P01");
+  append_cstring(empty_severity.payload, "Mterminal marker");
+  empty_severity.payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.is_terminal_error_response(empty_severity), std::runtime_error);
+}
+
 TEST(PgProtocolParserTest, ErrorTextIsPublishedAsValidUtf8) {
   PgProtocolParser parser;
   const std::string replacement("\xEF\xBF\xBD");

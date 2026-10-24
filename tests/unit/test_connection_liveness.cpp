@@ -38,8 +38,10 @@ struct TerminalResponseFacts {
 class TerminalResponseWire final : public rs::core::transport::ITransport {
  public:
   TerminalResponseWire(std::shared_ptr<TerminalResponseFacts> facts,
-                       std::string fields, bool recoverable = false)
-      : facts_(std::move(facts)), fields_(std::move(fields)), recoverable_(recoverable) {
+                       std::string fields, bool recoverable = false,
+                       std::string prior_fields = {})
+      : facts_(std::move(facts)), fields_(std::move(fields)),
+        prior_fields_(std::move(prior_fields)), recoverable_(recoverable) {
     frame('R', std::string(4, '\0'));
     frame('Z', "I");
   }
@@ -55,6 +57,9 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         frame('C', std::string_view("BEGIN\0", 6));
         frame('Z', "T");
       } else if (!error_sent_) {
+        if (!prior_fields_.empty()) {
+          frame('E', prior_fields_);
+        }
         frame('E', fields_);
         error_sent_ = true;
         if (recoverable_) {
@@ -92,7 +97,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     }
   }
   std::shared_ptr<TerminalResponseFacts> facts_;
-  std::string fields_;
+  std::string fields_, prior_fields_;
   std::vector<std::byte> input_;
   std::size_t offset_{};
   bool recoverable_{}, error_sent_{};
@@ -151,6 +156,67 @@ TEST(TerminalErrorResponseTest, OrdinaryErrorDrainsReadyAndRemainsReusable) {
   EXPECT_EQ(0u, facts->reads_after_error);
   EXPECT_EQ(0u, facts->closes);
   EXPECT_TRUE(connection.execute_query("SELECT recover", deadline));
+}
+
+TEST(TerminalErrorResponseTest, OnlyTerminalErrorMayFollowOrdinaryError) {
+  using namespace rs::core::database;
+  constexpr char ordinary[] = "SERROR\0C22012\0Mearlier ordinary error\0";
+  for (const bool terminal : {false, true}) {
+    SCOPED_TRACE(terminal);
+    const auto facts = std::make_shared<TerminalResponseFacts>();
+    GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+        std::make_unique<TerminalResponseWire>(facts,
+            terminal ? std::string(fatal_response_fields, sizeof(fatal_response_fields)) :
+                       std::string(ordinary, sizeof(ordinary)), false,
+            std::string(ordinary, sizeof(ordinary))));
+    ConnectionSettings settings;
+    settings.port = 5432; settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto result = connection.execute_query("SELECT error",
+        rs::util::make_deadline(std::chrono::seconds(2)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(terminal ? rs::util::DbErrorCode::NetworkError :
+        rs::util::DbErrorCode::ProtocolError), result.error());
+    if (terminal) {
+      EXPECT_EQ(std::optional<std::string>("57P01"), result.backend_error().native_state);
+      EXPECT_NE(std::string::npos, result.error_message().find("native terminal marker"));
+    }
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(0u, facts->reads_after_error);
+    EXPECT_EQ(1u, facts->closes);
+  }
+}
+
+TEST(TerminalErrorResponseTest, PanicAndMalformedTerminalFramesRetireWithoutNextRead) {
+  using namespace rs::core::database;
+  constexpr char panic[] = "Slokalisiert\0VPANIC\0C57P02\0Mpanic marker\0";
+  const std::string valid(panic, sizeof(panic));
+  for (const bool malformed : {false, true}) {
+    SCOPED_TRACE(malformed);
+    auto fields = valid;
+    if (malformed) {
+      fields.pop_back();
+    }
+    const auto facts = std::make_shared<TerminalResponseFacts>();
+    GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+        std::make_unique<TerminalResponseWire>(facts, fields));
+    ConnectionSettings settings;
+    settings.port = 5432; settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto result = connection.execute_query("SELECT error",
+        rs::util::make_deadline(std::chrono::seconds(2)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(malformed ? rs::util::DbErrorCode::ProtocolError :
+        rs::util::DbErrorCode::NetworkError), result.error());
+    if (!malformed) {
+      EXPECT_EQ(std::optional<std::string>("57P02"), result.backend_error().native_state);
+    }
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(0u, facts->reads_after_error);
+    EXPECT_EQ(1u, facts->closes);
+  }
 }
 
 // Retain the actual configured product provider and its diagnostic policy;
