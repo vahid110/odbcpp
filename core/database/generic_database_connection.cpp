@@ -649,7 +649,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           msg_result->front() == std::byte{'E'}) cancellation_operation_->error_observed({});
       auto msg = parser_->parse_message(*msg_result);
       if (query_error && msg.tag != 'N' && msg.tag != 'S' &&
-          msg.tag != 'A' && msg.tag != 'Z') {
+          msg.tag != 'A' && msg.tag != 'Z' && msg.tag != 'E') {
         throw std::runtime_error(
             "PostgreSQL result frame arrived after ErrorResponse");
       }
@@ -797,10 +797,26 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
               status_result.error(), status_result.error_message()};
         }
       }
-      if (parser_->is_error_response(msg) && !query_error) {
+      if (parser_->is_error_response(msg)) {
+        const bool terminal = parser_->is_terminal_error_response(msg);
+        if (query_error && !terminal) {
+          throw std::runtime_error(
+              "PostgreSQL result frame arrived after ErrorResponse");
+        }
         query_error = parser_->extract_error_message(msg);
         query_error_sqlstate = parser_->extract_error_sqlstate(msg);
         if (cancellation_phase_active_ && cancellation_operation_) cancellation_operation_->error_observed(query_error_sqlstate);
+        if (terminal) {
+          BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NetworkError),
+                             "Query error: " + *query_error};
+          error.native_state = std::move(query_error_sqlstate);
+          // A native terminal error ends this physical session. Do not wait for
+          // ReadyForQuery or EOF, and do not publish any preceding partial rows.
+          mark_transport_failed();
+          error.session_state = SessionState::Disconnected;
+          error.disposition = SessionDisposition::Retire;
+          return error;
+        }
       }
       if (msg.tag == 'C' || msg.tag == 'E' || msg.tag == 'I') {
         saw_completion = true;

@@ -156,9 +156,81 @@ class RelationshipCustodyTests(unittest.TestCase):
             statements += stage['statements'] + 3
             self.assertEqual(stage['query'].count('\\if :pbi_held'), stage['query'].count('\\endif'))
             state = advance(state, kind)
-        self.assertEqual(62, statements)
+        self.assertEqual(70, statements)
         self.assertLessEqual(statements, fixture.public_plan()['statement_upper_bound_including_operations_wrappers'])
-        self.assertEqual(68, statements + fixture.public_plan()['login_upper_bound'])
+        self.assertEqual(76, statements + fixture.public_plan()['login_upper_bound'])
+
+    def test_guard_queries_never_mix_catalog_shape_rows_or_locks(self):
+        state = fixture.new_state()
+        expected_counts = dict(inspect=3, create_parent=9, create_fact=12,
+                               verify=8, drop_fact=10, drop_parent=10)
+        for kind in fixture.KINDS:
+            stage = fixture.stage_for(state, kind)
+            with self.subTest(kind=kind):
+                expressions = []
+                for line in stage['query'].splitlines():
+                    if line.startswith('SELECT'):
+                        domains = [bool('pg_catalog.' in line or 'FROM pg_user ' in line),
+                                   'svv_columns' in line, 'svv_transactions' in line,
+                                   any('FROM ' + fixture._q(key) in line for key in fixture.NAMES)]
+                        self.assertLessEqual(sum(domains), 1, line)
+                    if line.startswith('SELECT CASE WHEN '):
+                        expressions.append(line.removeprefix('SELECT CASE WHEN ').removesuffix(
+                            ' THEN 1 ELSE 0 END AS pbi_held'))
+                if kind == 'create_fact':
+                    self.assertEqual(expressions[-3:], [fixture._held(state, 'parent'),
+                        fixture._shape_guard('parent'), fixture._rows_guard('parent')])
+                if kind.startswith('drop_'):
+                    key = kind[5:]
+                    self.assertEqual(expressions[-4:-1], [fixture._held(state, key),
+                        fixture._shape_guard(key), fixture._rows_guard(key)])
+                    self.assertEqual(expressions[-1], '(SELECT COUNT(*)=0 FROM svv_transactions WHERE relation=' +
+                        str(state[key]['oid']) + " AND lockable_object_type='relation' AND txn_db='" + fixture.DATABASE + "')")
+                self.assertEqual(stage['statements'], expected_counts[kind])
+                self.assertLessEqual(stage['statements'], 12)
+            state = advance(state, kind)
+        self.assertEqual(fixture.public_plan()['stage_statement_bounds'], expected_counts)
+
+    def test_each_split_guard_refuses_mutation_and_ack_with_balanced_branches(self):
+        def active_lines(query, rejected_guard):
+            active, stack, guard_number = True, [], -1
+            emitted = []
+            for line in query.splitlines():
+                if line.startswith('SELECT CASE WHEN '):
+                    guard_number += 1
+                elif line == '\\if :pbi_held':
+                    accepted = guard_number != rejected_guard
+                    stack.append((active, accepted))
+                    active = active and accepted
+                elif line == '\\else':
+                    self.assertTrue(stack)
+                    parent, accepted = stack[-1]
+                    active = parent and not accepted
+                elif line == '\\endif':
+                    self.assertTrue(stack)
+                    active = stack.pop()[0]
+                elif active:
+                    emitted.append(line)
+            self.assertFalse(stack)
+            return emitted
+
+        state = fixture.new_state()
+        for kind in fixture.KINDS:
+            stage = fixture.stage_for(state, kind)
+            if kind.startswith(('create_', 'drop_')):
+                count = stage['query'].count('\\if :pbi_held')
+                accepted = active_lines(stage['query'], None)
+                self.assertEqual(sum('RSPBI1|CREATE_ACK' in line or 'RSPBI1|DROP_ACK' in line
+                                     for line in accepted), 1)
+                for rejected in range(count):
+                    with self.subTest(kind=kind, rejected=rejected):
+                        lines = active_lines(stage['query'], rejected)
+                        self.assertFalse(any(line.startswith(('CREATE TABLE', 'INSERT INTO',
+                            'GRANT SELECT', 'DROP TABLE')) for line in lines))
+                        self.assertFalse(any('RSPBI1|CREATE_ACK' in line or 'RSPBI1|DROP_ACK' in line
+                                             for line in lines))
+                        self.assertEqual(lines.count('\\echo RSPBI1|REFUSED'), 1)
+            state = advance(state, kind)
 
     def test_no_timeout_reset_or_resource_executor(self):
         plan = fixture.public_plan()

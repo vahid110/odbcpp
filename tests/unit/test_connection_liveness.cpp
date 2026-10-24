@@ -11,6 +11,8 @@
 #include "odbcpp/transport/start_tls_transport.h"
 #include "odbcpp/transport/tls_configurable_transport.h"
 #include "tests/mock_protocol_parser.h"
+#include "odbc/odbc_api.h"
+#include "odbc/odbc_handles.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -26,6 +28,260 @@ struct ConnectionAuthenticationTestAccess {
 };
 }
 namespace {
+struct TerminalResponseFacts {
+  unsigned sends{}, reads{}, reads_after_error{}, closes{};
+};
+
+// A terminal ErrorResponse is the last available frame. No Z and no EOF are
+// supplied. Any attempted following read is counted and returns a synthetic
+// timeout instead of sleeping, so the regression fails without a wall-clock wait.
+class TerminalResponseWire final : public rs::core::transport::ITransport {
+ public:
+  TerminalResponseWire(std::shared_ptr<TerminalResponseFacts> facts,
+                       std::string fields, bool recoverable = false,
+                       std::string prior_fields = {})
+      : facts_(std::move(facts)), fields_(std::move(fields)),
+        prior_fields_(std::move(prior_fields)), recoverable_(recoverable) {
+    frame('R', std::string(4, '\0'));
+    frame('Z', "I");
+  }
+  rs::util::Result<void> connect(std::string_view, uint16_t, rs::util::Deadline) override {
+    return {};
+  }
+  rs::util::Result<rs::core::transport::IOResult> send(
+      std::span<const std::byte> bytes, rs::util::Deadline) override {
+    if (++facts_->sends > 1) {
+      input_.clear(); offset_ = 0;
+      const std::string_view request(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      if (bytes.size() > 5 && bytes.front() == std::byte{'Q'} && request.substr(5).starts_with("BEGIN")) {
+        frame('C', std::string_view("BEGIN\0", 6));
+        frame('Z', "T");
+      } else if (!error_sent_) {
+        if (!prior_fields_.empty()) {
+          frame('E', prior_fields_);
+        }
+        frame('E', fields_);
+        error_sent_ = true;
+        if (recoverable_) {
+          frame('Z', "I");
+        }
+      } else {
+        frame('C', std::string_view("SELECT 0\0", 9));
+        frame('Z', "I");
+      }
+    }
+    return rs::core::transport::IOResult{bytes.size(), false};
+  }
+  rs::util::Result<rs::core::transport::IOResult> recv(
+      std::span<std::byte> bytes, rs::util::Deadline) override {
+    ++facts_->reads;
+    if (offset_ == input_.size()) {
+      ++facts_->reads_after_error;
+      return {rs::util::DbErrorCode::Timeout, "held-open terminal response has no next frame"};
+    }
+    // Fragment every header and field to exercise the real bounded reader.
+    bytes.front() = input_[offset_++];
+    return rs::core::transport::IOResult{1, false};
+  }
+  void close() noexcept override { ++facts_->closes; }
+
+ private:
+  void frame(char tag, std::string_view payload) {
+    input_.push_back(static_cast<std::byte>(tag));
+    const auto size = static_cast<std::uint32_t>(payload.size() + 4);
+    for (const auto shift : {24, 16, 8, 0}) {
+      input_.push_back(static_cast<std::byte>((size >> shift) & 255));
+    }
+    for (const unsigned char byte : payload) {
+      input_.push_back(static_cast<std::byte>(byte));
+    }
+  }
+  std::shared_ptr<TerminalResponseFacts> facts_;
+  std::string fields_, prior_fields_;
+  std::vector<std::byte> input_;
+  std::size_t offset_{};
+  bool recoverable_{}, error_sent_{};
+};
+
+constexpr char fatal_response_fields[] = "SFATAL\0C57P01\0Mnative terminal marker\0";
+
+TEST(TerminalErrorResponseTest, FatalWithoutReadyOrEofRetiresAcrossQueryKinds) {
+  using namespace rs::core::database;
+  for (const int kind : {0, 1, 2}) {
+    SCOPED_TRACE(kind);
+    const auto facts = std::make_shared<TerminalResponseFacts>();
+    GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+        std::make_unique<TerminalResponseWire>(facts,
+            std::string(fatal_response_fields, sizeof(fatal_response_fields))));
+    ConnectionSettings settings;
+    settings.port = 5432; settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+    auto result = kind == 0 ? connection.execute_query("SELECT fatal", deadline) :
+        kind == 1 ? connection.execute_prepared("SELECT fatal", std::span<const QueryParameter>{}, deadline) :
+                    connection.describe_statement("SELECT fatal", {}, deadline);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NetworkError), result.error());
+    EXPECT_EQ(std::optional<std::string>("57P01"), result.backend_error().native_state);
+    EXPECT_NE(std::string::npos, result.error_message().find("native terminal marker"));
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_EQ(SessionState::Disconnected, result.session_snapshot().state);
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(0u, facts->reads_after_error);
+    EXPECT_EQ(1u, facts->closes);
+    const auto sends = facts->sends;
+    EXPECT_FALSE(connection.execute_query("must not dispatch", deadline));
+    EXPECT_EQ(sends, facts->sends);
+    connection.disconnect();
+    EXPECT_EQ(1u, facts->closes);
+  }
+}
+
+TEST(TerminalErrorResponseTest, OrdinaryErrorDrainsReadyAndRemainsReusable) {
+  using namespace rs::core::database;
+  const auto facts = std::make_shared<TerminalResponseFacts>();
+  constexpr char fields[] = "SERROR\0C22012\0Mrecoverable marker\0";
+  GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+      std::make_unique<TerminalResponseWire>(facts, std::string(fields, sizeof(fields)), true));
+  ConnectionSettings settings;
+  settings.port = 5432; settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings));
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+  auto result = connection.execute_query("SELECT error", deadline);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(std::optional<std::string>("22012"), result.backend_error().native_state);
+  EXPECT_EQ(SessionState::Idle, result.session_snapshot().state);
+  EXPECT_EQ(SessionDisposition::Reusable, result.session_snapshot().disposition);
+  EXPECT_TRUE(connection.is_connected());
+  EXPECT_EQ(0u, facts->reads_after_error);
+  EXPECT_EQ(0u, facts->closes);
+  EXPECT_TRUE(connection.execute_query("SELECT recover", deadline));
+}
+
+TEST(TerminalErrorResponseTest, OnlyTerminalErrorMayFollowOrdinaryError) {
+  using namespace rs::core::database;
+  constexpr char ordinary[] = "SERROR\0C22012\0Mearlier ordinary error\0";
+  for (const bool terminal : {false, true}) {
+    SCOPED_TRACE(terminal);
+    const auto facts = std::make_shared<TerminalResponseFacts>();
+    GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+        std::make_unique<TerminalResponseWire>(facts,
+            terminal ? std::string(fatal_response_fields, sizeof(fatal_response_fields)) :
+                       std::string(ordinary, sizeof(ordinary)), false,
+            std::string(ordinary, sizeof(ordinary))));
+    ConnectionSettings settings;
+    settings.port = 5432; settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto result = connection.execute_query("SELECT error",
+        rs::util::make_deadline(std::chrono::seconds(2)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(terminal ? rs::util::DbErrorCode::NetworkError :
+        rs::util::DbErrorCode::ProtocolError), result.error());
+    if (terminal) {
+      EXPECT_EQ(std::optional<std::string>("57P01"), result.backend_error().native_state);
+      EXPECT_NE(std::string::npos, result.error_message().find("native terminal marker"));
+    }
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(0u, facts->reads_after_error);
+    EXPECT_EQ(1u, facts->closes);
+  }
+}
+
+TEST(TerminalErrorResponseTest, PanicAndMalformedTerminalFramesRetireWithoutNextRead) {
+  using namespace rs::core::database;
+  constexpr char panic[] = "Slokalisiert\0VPANIC\0C57P02\0Mpanic marker\0";
+  const std::string valid(panic, sizeof(panic));
+  for (const bool malformed : {false, true}) {
+    SCOPED_TRACE(malformed);
+    auto fields = valid;
+    if (malformed) {
+      fields.pop_back();
+    }
+    const auto facts = std::make_shared<TerminalResponseFacts>();
+    GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+        std::make_unique<TerminalResponseWire>(facts, fields));
+    ConnectionSettings settings;
+    settings.port = 5432; settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto result = connection.execute_query("SELECT error",
+        rs::util::make_deadline(std::chrono::seconds(2)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(malformed ? rs::util::DbErrorCode::ProtocolError :
+        rs::util::DbErrorCode::NetworkError), result.error());
+    if (!malformed) {
+      EXPECT_EQ(std::optional<std::string>("57P02"), result.backend_error().native_state);
+    }
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(0u, facts->reads_after_error);
+    EXPECT_EQ(1u, facts->closes);
+  }
+}
+
+// Retain the actual configured product provider and its diagnostic policy;
+// replace only its injected physical transport with an in-process wire.
+class TerminalResponseProvider final : public rs::core::database::IBackendProvider {
+ public:
+  explicit TerminalResponseProvider(std::shared_ptr<TerminalResponseFacts> facts)
+      : facts_(std::move(facts)) {}
+  const rs::core::database::BackendIdentity& identity() const noexcept override { return product_.identity(); }
+  const rs::core::database::BackendConnectionDefaults& connection_defaults() const noexcept override { return product_.connection_defaults(); }
+  const rs::core::database::ISqlDialect& sql_dialect() const noexcept override { return product_.sql_dialect(); }
+  rs::core::database::BackendCapabilities capabilities() const noexcept override { return product_.capabilities(); }
+  std::span<const rs::core::database::TypeDefinition> type_catalog(std::string_view version) const noexcept override { return product_.type_catalog(version); }
+  rs::core::database::TransactionCapabilities transaction_capabilities() const noexcept override { return product_.transaction_capabilities(); }
+  rs::util::Result<rs::core::database::ConnectionSettings> resolve_connection_options(rs::core::database::ConnectionOptions options) const override { return product_.resolve_connection_options(std::move(options)); }
+  std::optional<std::string> normalize_error_sqlstate(const rs::core::database::BackendError& error, rs::core::database::ErrorContext context) const override { return product_.normalize_error_sqlstate(error, context); }
+  std::unique_ptr<rs::core::database::IDatabaseConnection> create_session(std::unique_ptr<rs::core::transport::ITransport>) const override {
+    return product_.create_session(std::make_unique<TerminalResponseWire>(facts_,
+        std::string(fatal_response_fields, sizeof(fatal_response_fields))));
+  }
+ private:
+  std::shared_ptr<TerminalResponseFacts> facts_;
+  const rs::core::database::IBackendProvider& product_ = rs::core::database::configured_backend_provider();
+};
+
+TEST(TerminalErrorResponseTest, FatalAfterBeginKeepsPassiveDeadHandleAndExplicitDisconnect) {
+  const auto facts = std::make_shared<TerminalResponseFacts>();
+  SQLHENV env{}; SQLHDBC dbc{}; SQLHSTMT stmt{};
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &env));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION,
+      reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<TerminalResponseProvider>(facts));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+  SQLCHAR input[] = "SERVER=synthetic.invalid;SSL=0";
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, input, SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(2), 0));
+  SQLCHAR query[] = "SELECT pg_terminate_backend(pg_backend_pid())";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, query, SQL_NTS));
+  SQLCHAR state[6]{}; SQLCHAR message[256]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, state, nullptr, message, sizeof(message), nullptr));
+  EXPECT_STREQ("08S01", reinterpret_cast<char*>(state));
+  EXPECT_NE(std::string::npos, std::string(reinterpret_cast<char*>(message)).find("native terminal marker"));
+  const auto reads = facts->reads;
+  const auto sends = facts->sends;
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+  EXPECT_EQ(reads, facts->reads);
+  EXPECT_EQ(sends, facts->sends);
+  EXPECT_EQ(0u, facts->reads_after_error);
+  EXPECT_EQ(1u, facts->closes);
+  // SQLDisconnect drops any statements still owned by the connection.
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  EXPECT_EQ(1u, facts->closes);
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, env));
+}
+
 // Wire fixtures supply PostgreSQL endpoint policy explicitly, outside SDK defaults.
 rs::core::database::ConnectionSettings pg_fixture_settings() {
   rs::core::database::ConnectionSettings settings;

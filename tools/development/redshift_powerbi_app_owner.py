@@ -13,11 +13,28 @@ from tools.development.redshift_ctest_lifecycle import need
 from tools.development import redshift_powerbi_partition as fixtures
 
 
-def public_plan():
-    # Existing minimal app22/202SQL/22logins, plus one baseline-zero helper
+def public_plan(resource_kind='provisioned'):
+    need(resource_kind in ('provisioned', 'serverless'), 'app_owner_resource_kind')
+    if resource_kind == 'serverless':
+        from tools.development.redshift_powerbi_session_ops import plan
+        result = plan(resource_kind)
+        result['branches']['baseline_zero'] = {'helpers': 1, 'SQL': 6}
+        result['total_helpers'] += 1
+        result['total_SQL'] += 6
+        result['total_logins'] += 1
+        result['total_inclusive'] += 7
+        result['serverless_principal_binding_sites'].append('baseline_zero')
+        result['serverless_principal_binding_SQL'] += 1
+        result.update(native_control_processes_maximum=8, maximum_app_launches=3,
+                      global_guards_unchanged={'helpers': 40, 'inclusive_SQL': 450})
+        return result
+    # Derive the minimal app reserve, plus one baseline-zero helper
     # (one SQL +3 wrapper SQL +1 login). Network is separately charged.
-    return {'total_helpers': 23, 'total_SQL': 206, 'total_logins': 23,
-            'total_inclusive': 229, 'network_helpers_separate': 1,
+    from tools.development.redshift_powerbi_session_ops import plan
+    base = plan(resource_kind)
+    return {'total_helpers': base['total_helpers'] + 1, 'total_SQL': base['total_SQL'] + 4,
+            'total_logins': base['total_logins'] + 1,
+            'total_inclusive': base['total_inclusive'] + 5, 'network_helpers_separate': 1,
             'maximum_cleanup_targets': 16, 'native_control_processes_maximum': 8,
             'maximum_app_launches': 3,
             'scope': 'one baseline, positive relationship import and reopen; one driver',
@@ -53,6 +70,8 @@ verbs; its run verb is launched separately on the interactive Windows desktop.
 No caller SQL, command, feature assertion or horizon extension is accepted.
 """
     deadlines.validate(ops.now())
+    resource_kind = getattr(ops, 'resource_kind', 'provisioned')
+    need(resource_kind in ('provisioned', 'serverless'), 'app_owner_resource_kind')
     need(ops.powerbi_session_partition is True and ops.native is not None,
          'closed_app_resource_composition')
     need(deadlines.execution <= ops.session_execution_end and
@@ -64,6 +83,8 @@ No caller SQL, command, feature assertion or horizon extension is accepted.
               'local_launcher_exit_verified': False,
               'native_readers_known': True, 'principal_cleanup': None,
               'fixture_cleanup': None, 'final_zero': None, 'paused_verified': False,
+              'resource_kind': resource_kind, 'owned_activity_quiescent': False,
+              'physical_compute_idle_verified': False,
               'private_inputs_closed': False, 'working_inputs_retired': False,
               'cleanup_complete': False, 'execution_errors': [], 'cleanup_errors': []}
     fixture_state = None
@@ -190,14 +211,30 @@ No caller SQL, command, feature assertion or horizon extension is accepted.
                 ops, fixture_state or ops.fixture_state, deadlines.cleanup))
             cleanup_call('final_zero', lambda: ops.final_zero(deadlines.cleanup))
         recovery_end = min(deadlines.owner, ops.now() + deadlines.recovery_seconds)
-        paused = cleanup_call('paused_verified', lambda: ops.pause_until(recovery_end))
-        if paused is not True:
-            error('cleanup_errors', 'pause_verification', RuntimeError())
+        if resource_kind == 'serverless':
+            principal = result['principal_cleanup'] or {}
+            fixture = result['fixture_cleanup'] or {}
+            zero = result['final_zero'] or {}
+            if (ops.readers_known and result['native_readers_known'] and
+                    principal.get('complete') is True and
+                    principal.get('cap_cleanup', {}).get('complete') is True and
+                    fixture.get('complete') is True and zero.get('complete') is True):
+                quiet = cleanup_call('owned_activity_quiescent', lambda: ops.verify_idle(recovery_end))
+                if quiet is not True:
+                    error('cleanup_errors', 'serverless_quiescence_verification', RuntimeError())
+            else:
+                error('cleanup_errors', 'serverless_owned_activity_unknown', RuntimeError())
+            resource_closed = result['owned_activity_quiescent'] is True
+        else:
+            paused = cleanup_call('paused_verified', lambda: ops.pause_until(recovery_end))
+            if paused is not True:
+                error('cleanup_errors', 'pause_verification', RuntimeError())
+            resource_closed = paused is True
         if ops.readers_known:
             closed = cleanup_call('private_inputs_closed', lambda: ops.close_inputs(deadlines.owner))
             if closed is not True:
                 error('cleanup_errors', 'input_closure', RuntimeError())
-            if working_inputs is not None and paused is True and closed is True:
+            if working_inputs is not None and resource_closed and closed is True:
                 cleanup_call('working_inputs_retired', lambda: working_inputs.retire(True))
         if working_inputs is not None:
             try:
@@ -212,7 +249,7 @@ No caller SQL, command, feature assertion or horizon extension is accepted.
         final_zero = result['final_zero'] or {}
         result['cleanup_complete'] = bool(
             not result['cleanup_errors'] and result['native_readers_known'] and ops.readers_known
-            and result['paused_verified'] is True and result['private_inputs_closed'] is True
+            and resource_closed and result['private_inputs_closed'] is True
             and result['working_inputs_retired'] is True and result['within_original_owner']
             and (not result['resource_available'] or
                  (principal.get('complete') is True and fixture.get('complete') is True

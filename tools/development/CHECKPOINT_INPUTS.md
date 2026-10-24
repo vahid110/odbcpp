@@ -56,13 +56,38 @@ as public inventory, profiles, specs, tools or receipt inputs.
 | `index`, `expected` | Public complete applicable registrar index and independently sourced ordered expected inventory |
 | `profiles`, `specs` | Public current profile definitions and corresponding ordered runtime specs; no connection values |
 | `tools` | Absolute `cmake`, `ctest`, `aws`, `psql`, `python` executables on the resource host |
-| `ci_receipt` | Optional during preparation; required for run: exact `source_head` and `applicable_ci_green: true`, with retained CI evidence |
+| `ci_receipt` | Default run gate: exact `source_head` and `applicable_ci_green: true`, with retained CI evidence. A missing/pending/failed CI receipt never becomes green through local validation |
+| `validation_mode`, `validation_profile`, `local_validation` | Omit for the default CI gate. The explicit human-directed local exception below requires all three, a pinned public local receipt and its actual complete offline evidence |
 | `authority_receipts` | Existing `authority`, `applicability`, `cleanup_delegation` receipt paths for standing fixture authority |
-| `resource` | Existing `account`, `arn`, `cluster`, `created`, `region` fixed to `eu-north-1`, `profile`, `node_type`; no infrastructure expansion |
+| `resource` | Legacy/default `provisioned`: existing `account`, `arn`, `cluster`, `created`, `region` fixed to `eu-north-1`, `profile`, `node_type`. Explicit `kind: serverless` uses the strict existing workgroup/namespace binding below; no infrastructure expansion |
 | `security_groups` | Approved current public security-group describe snapshot, required for run and compared exactly before resume; preflight may report it pending |
 | `ca_sha256` | Approved CA hash; actual CA/hostname/config remain protected |
 | `timeout_fixture` | `table` and `expected_principal` (`database`, `owner`, `owner_oid`, `schema_oid`, `schema_owner_oid`) from current approved identities; no historical OID defaults |
 | `native_windows` | Omit for POSIX-owning binaries; native fields below for Windows |
+
+Serverless resource keys are exactly `kind`, `account`, `arn`, `region`, `profile`,
+`workgroup`, `workgroup_id`, `namespace`, `namespace_id`, `namespace_created`,
+`base_capacity`, `max_capacity`, `endpoint`, `port`, `security_group_ids`, and
+`max_query_execution_time`. Only the existing `odbcpp-redshift-pilot` workgroup
+and namespace are accepted, with their independently recorded exact IDs and
+creation timestamp, existing endpoint/security group, 4/4 RPU caps and 30-second
+query cap. Acquisition checks current identity, TLS, current single-address
+network ingress and all resource bindings; it never creates, updates, resumes
+or pauses Serverless. `AVAILABLE` metadata is not SQL readiness or physical
+compute-idle evidence. Serverless cleanup separately verifies owned readers,
+principals, queries and fixture cleanup, then publishes
+`owned_activity_quiescent`; `paused_verified` and
+`physical_compute_idle_verified` remain false.
+
+For Serverless, `timeout_fixture` contains exactly `table`,
+`expected_principal: null`, `allow_current_identity: true`, and
+`resource_kind: "serverless"`. An admitted read-only identity/privilege query
+binds the current existing database/test principal/schema OIDs before any
+fixture mutation. Missing or changed identities refuse; historical provisioned
+OIDs, automatic principal creation and guessed passwords are not substitutes.
+The normalized protected config still has the same eight keys; a historical
+Serverless config containing `ca_file`, `schema` or `table` must be explicitly
+normalized and privately pinned before use.
 
 `prepare` obtains actual source directory/head from its checkout. The normal run
 requires that checkout clean at that exact head. For Windows, public recipe
@@ -102,3 +127,78 @@ remain. Billing stays manual. Complete fixture data/SQL is checked in with
 extraction provenance; old source074/089/092 files and consumed history are evidence
 only. Actual provider/TLS/driver execution acceptance of this refactor is pending
 the next separately authorized checkpoint. Offline proof grants no live authority.
+
+## Explicit human-directed Windows-first local validation
+
+An explicit human sequencing direction may replace the normal green-CI prerequisite
+with a pinned, reviewed coordinator local-qualification receipt. This uses the same
+trusted assessment boundary as the existing CI receipt; the launcher does not
+reimplement CI's XML/inventory/configuration analysis. CI remains pending, not
+accepted. All source/image, private-input, identity/TLS/network, cap, deadline,
+fixture, one-use operational admission and cleanup checks remain unchanged.
+
+Set recipe `validation_mode: "human_directed_local"`, `validation_profile` to
+`windows-redshift` (with `native_windows`) or `unixodbc-redshift` /
+`linux-iodbc-redshift` (without it), and `local_validation` to the public receipt
+path. `prepare` pins it. Missing/null CI is permitted only in this explicit mode;
+an unknown ignore flag, monkeypatch or fabricated green-CI record is not supported.
+The coordinator produces this receipt only after actual local success:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "human-directed-local-validation-v1",
+  "reviewed": true,
+  "status": "completed",
+  "human_direction": "windows-first-then-wsl",
+  "human_direction_ref": {"path": "/absolute/public/human-direction.json", "sha256": "<hash>"},
+  "complete_applicable_offline": true,
+  "ci_acceptance": false,
+  "ci_status": "pending_not_accepted",
+  "source_head": "<actual clean checkpoint control head>",
+  "producer_head": "<actual clean binary build/test head>",
+  "profile": "windows-redshift",
+  "build_exit": 0,
+  "ctest_exit": 0,
+  "runtime_index_sha256": "<same index hash as plan>",
+  "profiles_sha256": "<same profiles hash as plan>",
+  "evidence": {"path": "/absolute/public/local-assessment.json", "sha256": "<hash>"}
+}
+```
+
+The pinned human record retains the actual human direction, rather than a magic
+mode string standing in for authorization. The pinned coordinator assessment
+retains successful actual terminal build/full applicable offline CTest, complete
+unfiltered inventory, top-level native XML/body totals and explicit skips, actual
+commands/environment, owning source/cache/product/DM/SQLWCHAR/crypto profile,
+current images and cleanup evidence. Original failures remain retained. Root
+checks these associations before issuing `reviewed: true`; the launcher checks
+the pinned review, completed integer0 outcomes, source/profile and runtime index /
+profile bindings. Nested intentional negative-control XML retains its enclosing
+CTest semantics. A focused subset or arbitrary synthetic cache is not sufficient
+for the coordinator to issue a real qualification receipt. Public synthetic unit
+test receipts test this contract and never qualify a product or admit resources.
+
+`producer_head` may differ only when Git proves the complete source difference
+confined to `live_checkpoint.py`, `test_live_checkpoint.py` and this document.
+This allows the reviewed control-only change after a frozen build; a C++, build,
+header, fixture or other runtime-control change needs fresh local validation.
+Current live owning-image/driver bytes are still checked by the normal plan.
+Windows and local WSL source checkouts must be clean at the admitted control head.
+
+Before WSL, the local receipt also needs `windows_success: {path, sha256}` pointing
+to the coordinator's completed Windows qualification receipt. That record has
+`reviewed: true`, `status: "completed"`, `profile: "windows-redshift"`, actual
+`source_head`, `complete_applicable_windows_live: true`, `cleanup_complete: true`,
+integer `actual_exit: 0`, and a pinned `evidence` assessment. The coordinator's
+assessment binds the complete Windows native and relationship partition union,
+actual body results and physical cleanup; one unrelated or native-only successful
+run is insufficient. The same product-source rule permits an earlier control
+revision. For this Windows sequencing check only, changes confined to the POSIX
+`redshift_profile_inputs.py` stager and its `test_redshift_profile_inputs.py`
+regression are also permitted: WindowsOperations overrides input opening and
+staging and does not execute that stager. This exception does not permit reuse
+of an older WSL compiled-producer/local-validation receipt after a stager change;
+fresh WSL local validation and live fixture qualification are still required.
+This is sequencing evidence, never new operational authority. Full CI,
+all required platform/profile and release gates remain debt until actually passed.

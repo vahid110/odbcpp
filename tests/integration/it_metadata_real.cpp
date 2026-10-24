@@ -345,8 +345,9 @@ private:
     }
     bool identity(SQLHSTMT statement, const std::string& prefix) {
         std::array<std::string, 4> fields;
-        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), starttime FROM stv_sessions "
-            "WHERE process=pg_backend_pid() AND user_name=current_user AND db_name=current_database()") ||
+        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), start_time FROM sys_session_history "
+            "WHERE session_id=pg_backend_pid() AND CAST(user_id AS INTEGER)=CURRENT_USER_ID "
+            "AND database_name=current_database() AND status='active'") ||
             !row(statement, fields) || !end_row(statement)) return false;
         if (!timeout_positive_id(fields[2]) || fields[3].empty()) return fail("session birth identity");
         property(prefix + "_owner_raw_size", std::to_string(fields[0].size()));
@@ -2217,9 +2218,12 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
 
     // Redshift DDL advertisements are separate from PostgreSQL limits and from
     // actual result dimensions; no PostgreSQL server_version_num query is used.
-    constexpr std::array<ExpectedType, 17> redshift_types{{
+    constexpr std::array<ExpectedType, 20> redshift_types{{
         {"boolean", SQL_BIT, 1}, {"bigint", SQL_BIGINT, 19},
         {"varbyte", SQL_LONGVARBINARY, 16777216},
+        {"geometry", SQL_LONGVARBINARY, 1048447},
+        {"geography", SQL_LONGVARBINARY, 1048447},
+        {"super", SQL_LONGVARCHAR, 16777216},
         {"char", SQL_CHAR, 4096}, {"numeric", SQL_NUMERIC, 38},
         {"decimal", SQL_DECIMAL, 38}, {"integer", SQL_INTEGER, 10},
         {"smallint", SQL_SMALLINT, 5}, {"real", SQL_REAL, 7},
@@ -2239,6 +2243,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     EXPECT_EQ(static_cast<SQLLEN>(expected_types.size()), row_count);
 
     for (std::size_t index = 0; index < expected_types.size(); ++index) {
+        SCOPED_TRACE(expected_types[index].name);
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
         if (index == 0) {
             EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, SQL_INTEGER));
@@ -2254,9 +2259,15 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         EXPECT_EQ(expected_types[index].data_type, data_type);
 
         const auto type = expected_types[index].data_type;
+        // SUPER and EWKB expose result families without a SQL literal or
+        // length parameter; VARBYTE still advertises its length parameter.
+        const bool super_type = redshift &&
+            std::string_view(expected_types[index].name) == "super";
+        const bool varbyte_type = redshift &&
+            std::string_view(expected_types[index].name) == "varbyte";
         const bool character_type = type == SQL_CHAR ||
             type == SQL_VARCHAR || type == SQL_LONGVARCHAR;
-        const bool quoted_type = character_type || type == SQL_VARBINARY ||
+        const bool quoted_type = (character_type && !super_type) || type == SQL_VARBINARY ||
             type == SQL_DATE || type == SQL_TIME || type == SQL_TIMESTAMP ||
             type == SQL_TYPE_DATE || type == SQL_TYPE_TIME ||
             type == SQL_TYPE_TIMESTAMP;
@@ -2278,7 +2289,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
                   text_cell(hstmt, 4));
         EXPECT_EQ(quoted_type ? std::optional<std::string>("'") : std::nullopt,
                   text_cell(hstmt, 5));
-        if (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARBINARY) {
+        if (type == SQL_CHAR || type == SQL_VARCHAR || varbyte_type) {
             EXPECT_EQ(std::optional<std::string>("length"), text_cell(hstmt, 6));
         } else if (type == SQL_NUMERIC || type == SQL_DECIMAL) {
             EXPECT_EQ(std::optional<std::string>("precision,scale"),
