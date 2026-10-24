@@ -425,6 +425,39 @@ class OperatorTests(unittest.TestCase):
         finally:
             owned.close()
 
+    def test_input_close_fault_attempts_both_owners_and_retires_all_issued_inputs(self):
+        original_close = session.os.close
+        original_held_close = session.HeldFile.close
+        for index, (label, target) in enumerate((('tool', self.aws), ('bootstrap', self.bootstrap))):
+            with self.subTest(label=label):
+                self.output = self.base / ('close' + str(index))
+                self.calls.clear()
+                injected = []
+                owner_closes = []
+                def fail(fd):
+                    path = os.readlink('/proc/self/fd/' + str(fd))
+                    original_close(fd)
+                    if not injected and path == str(target):
+                        injected.append(fd)
+                        raise OSError('private-close-diagnostic')
+                def record(held):
+                    owner_closes.append(held.path)
+                    return original_held_close(held)
+                with patch.object(session.os, 'close', fail), \
+                        patch.object(session.HeldFile, 'close', record):
+                    result = self.run_issue()
+                self.assertFalse(result['verified'])
+                self.assertEqual(result['status'], 'input_close_failed')
+                self.assertEqual(result['input_close_failures'], [label])
+                self.assertEqual(owner_closes.count(str(self.aws)), 1)
+                self.assertEqual(owner_closes.count(str(self.bootstrap)), 1)
+                self.assertEqual(len(injected), 1)
+                self.assertEqual(len(self.calls), 3)
+                self.assertTrue(result['readers_reaped'])
+                self.assertTrue(result['temporary_outputs_retired'])
+                self.assertEqual({path.name for path in self.output.iterdir()}, {'metadata.json'})
+                self.assertNotIn('private-close-diagnostic', json.dumps(result))
+
 
 if __name__ == '__main__':
     unittest.main()

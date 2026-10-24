@@ -112,11 +112,18 @@ class HeldFile:
         return digest.hexdigest()
 
     def close(self):
+        clean = True
         for attr in ('fd', 'parent'):
             fd = getattr(self, attr, None)
             setattr(self, attr, None)
             if fd is not None:
-                os.close(fd)
+                try:
+                    os.close(fd)
+                except Exception:
+                    # A failed close may already have consumed the descriptor.
+                    # Never retry it; still attempt the other acquisition once.
+                    clean = False
+        need(clean, 'input_close_failed')
 
 
 class Output:
@@ -425,10 +432,16 @@ def issue(directory):
     finally:
         try:
             # Close non-output acquisitions before the final acceptance check.
-            if tool is not None:
-                tool.close()
-            if source is not None:
-                source.close()
+            close_failures = []
+            for label, held in (('tool', tool), ('bootstrap', source)):
+                if held is not None:
+                    try:
+                        held.close()
+                    except Exception:
+                        close_failures.append(label)
+            metadata['input_close_failures'] = close_failures
+            if close_failures:
+                success, reason = False, 'input_close_failed'
             _finish(output, metadata, success, reason, deadline)
         finally:
             output.close()
