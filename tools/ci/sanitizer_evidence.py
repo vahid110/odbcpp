@@ -382,8 +382,8 @@ def inventory():
     names = [entry['name'] for entry in entries]
     if not names or len(names) != len(set(names)):
         raise ValueError('exact nonempty all-unit CTest inventory required')
-    # Four explicitly optional SDK consumers are excluded by the frozen CMake unit loop.
-    optional = {'test_named_profile_acquisition', 'test_provisioned_native_owner', 'test_provisioned_pg_connector', 'test_provisioned_sdk_runtime'}
+    # Five explicitly optional SDK consumers are excluded by the frozen CMake unit loop.
+    optional = {'test_named_profile_acquisition', 'test_provisioned_native_owner', 'test_provisioned_pg_connector', 'test_provisioned_sdk_runtime', 'test_sts_serverless_owner'}
     require_unit_sources(names, [p.stem for p in Path('tests/unit').glob('*.cpp') if p.stem not in optional])
     write('ctest-inventory.json', listing)
     objects = {p.relative_to(BUILD).as_posix(): {'bytes': p.stat().st_size, 'sha256': sha(p)} for p in sorted(BUILD.rglob('*.o'))}

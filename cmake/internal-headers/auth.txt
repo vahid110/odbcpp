@@ -9,6 +9,7 @@ odbcpp/auth/aws_db_xml_response.h
 odbcpp/auth/redshift_serverless_response.h
 odbcpp/auth/redshift_provisioned_response.h
 odbcpp/auth/redshift_withiam_response.h
+odbcpp/auth/sts_assume_role_response.h
 odbcpp/auth/checked_response_boundary.h
 odbcpp/auth/checked_response_stream.h
 odbcpp/auth/checked_aws_db_json_response.h
