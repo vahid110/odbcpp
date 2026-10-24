@@ -155,7 +155,8 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
       return {rs::util::DbErrorCode::InvalidParameter,
               "Native IdP login requires provider_name and token_type"};
     settings.native_idp = NativeIdpSettings{*options.token, idp_type, *options.provider_name,
-                                            *options.token_type, options.identity_namespace.value_or(std::string{})};
+                                            *options.token_type, options.identity_namespace.value_or(std::string{}),
+                                            *options.plugin_name};
   }
   settings.use_ssl = options.use_ssl.value_or(connection_defaults_.use_ssl);
   settings.ssl_ca_file = options.ssl_ca_file.value_or(std::string{});

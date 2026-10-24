@@ -47,7 +47,6 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         idp.token_type.empty() ||
         !settings.use_ssl || settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty() ||
         settings.host.empty() || settings.port == 0 || settings.database.empty() ||
-        settings.user.empty() ||
         deadline == rs::util::Deadline::min() || deadline == rs::util::Deadline::max())
       return local_backend_error(LocalFailure::InvalidInput,
           "Invalid native IdP connection composition", BackendOperation::Connect, session_state());
@@ -60,7 +59,8 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
     try {
       auto binding = auth::Binding::create(
           {auth::Service::Redshift, settings.host, settings.port, settings.database,
-           settings.user, "pg-family-driver-native-idp", settings.host, "verify-full"},
+           auth::native_idp_binding_principal(settings.user), "pg-family-driver-native-idp",
+           settings.host, "verify-full"},
           {auth::SourceKind::ExternalNativeIdpToken, "supplied-connection-token", "native-idp-v1"},
           auth::Method::NativeIdpToken);
       if (!binding) return invalid();
@@ -70,8 +70,10 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
           std::span{idp.token.data(), idp.token.size()}));
       if (!secret) return invalid();
       auto material = auth::Material::create(binding.value(), auth::MaterialKind::NativeIdpToken,
-          settings.user, std::move(secret).value(), auth::Validity::ordinary(),
-          auth::NativeIdpAttributes{idp.idp_type, idp.provider_name, idp.token_type, idp.identity_namespace});
+          auth::native_idp_binding_principal(settings.user), std::move(secret).value(),
+          auth::Validity::ordinary(),
+          auth::NativeIdpAttributes{idp.idp_type, idp.provider_name, idp.token_type,
+                                    idp.identity_namespace, idp.plugin_name});
       if (!material) return invalid();
       ConnectionSettings selected{.host = settings.host, .user = settings.user,
           .password = {}, .database = settings.database, .port = settings.port,

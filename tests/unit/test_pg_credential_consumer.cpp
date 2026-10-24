@@ -483,7 +483,7 @@ a::Material native_idp_material(const a::Binding& binding=native_idp_binding(),
   if(!secret) { throw std::logic_error("native-IdP fixture secret"); }
   auto result=a::Material::create(binding,a::MaterialKind::NativeIdpToken,std::move(principal),
       std::move(secret).value(),a::Validity::ordinary(),
-      a::NativeIdpAttributes{"AwsIdc","odbcpp_idc","ACCESS_TOKEN","awsidc"});
+      a::NativeIdpAttributes{"AwsIdc","odbcpp_idc","ACCESS_TOKEN","awsidc","IdpTokenAuthPlugin"});
   if(!result) { throw std::logic_error("native-IdP fixture material"); }
   return std::move(result).value();
 }
@@ -493,7 +493,7 @@ d::ConnectionSettings native_idp_consumer_settings() {
 }
 d::ConnectionSettings native_idp_settings() {
   auto selected=native_idp_consumer_settings();
-  selected.native_idp=d::NativeIdpSettings{"synthetic-jwt-token","AwsIdc","odbcpp_idc","ACCESS_TOKEN","awsidc"};
+  selected.native_idp=d::NativeIdpSettings{"synthetic-jwt-token","AwsIdc","odbcpp_idc","ACCESS_TOKEN","awsidc",""};
   return selected;
 }
 bool contains_text(const std::vector<std::byte>& bytes,std::string_view text) {
@@ -515,6 +515,7 @@ TEST(PgNativeIdpCredentialConsumer, NativeIdpTokenEmitsStartupKeysAndNoPassword)
   EXPECT_TRUE(contains_text(wire->sent,"token_type"));EXPECT_TRUE(contains_text(wire->sent,"ACCESS_TOKEN"));
   EXPECT_TRUE(contains_text(wire->sent,"identity_namespace"));EXPECT_TRUE(contains_text(wire->sent,"awsidc"));
   EXPECT_TRUE(contains_text(wire->sent,"web_identity_token"));EXPECT_TRUE(contains_text(wire->sent,"synthetic-jwt-token"));
+  EXPECT_TRUE(contains_text(wire->sent,std::string_view("plugin_name\0IdpTokenAuthPlugin\0",31)));
   EXPECT_TRUE(selected.password.empty());EXPECT_TRUE(d::detail::ConnectionAuthenticationTestAccess::password(pg).empty());
   pg.disconnect();EXPECT_FALSE(pg.is_connected());
 }
@@ -592,4 +593,51 @@ TEST(PgNativeIdpRegression, OrdinaryPasswordStartupEmitsNoNativeIdpKeys) {
   EXPECT_FALSE(contains_text(observed->sent,"provider_name"));
   EXPECT_FALSE(contains_text(observed->sent,"token_type"));
   pg.disconnect();
+}
+TEST(PgNativeIdpDriverComposition, EmptyUserIsOmittedAndPluginNameIsSent) {
+  // AWS drivers send plugin_name and omit an unset user: the token carries the identity.
+  auto wire=std::make_unique<DriverCompatibilityWire>();auto* observed=wire.get();
+  Pg pg(std::move(wire),std::nullopt,d::postgres::PgCatalogProfile::Redshift);
+  auto selected=native_idp_settings();selected.user.clear();
+  selected.native_idp->plugin_name="BrowserIdcAuthPlugin";
+  const auto result=pg.connect(selected);ASSERT_TRUE(result);
+  EXPECT_FALSE(contains_text(observed->sent,std::string_view("user\0",5)));
+  EXPECT_FALSE(contains_text(observed->sent,a::native_idp_binding_principal("")));
+  EXPECT_TRUE(contains_text(observed->sent,std::string_view("plugin_name\0BrowserIdcAuthPlugin\0",33)));
+  EXPECT_TRUE(contains_text(observed->sent,std::string_view("database\0",9)));
+  pg.disconnect();EXPECT_FALSE(pg.is_connected());
+}
+TEST(PgNativeIdpDriverComposition, SuppliedUserIsSentAndUnsetPluginNameIsOmitted) {
+  auto wire=std::make_unique<DriverCompatibilityWire>();auto* observed=wire.get();
+  Pg pg(std::move(wire),std::nullopt,d::postgres::PgCatalogProfile::Redshift);
+  const auto result=pg.connect(native_idp_settings());ASSERT_TRUE(result);
+  EXPECT_TRUE(contains_text(observed->sent,std::string_view("user\0iamidc:user\0",17)));
+  EXPECT_FALSE(contains_text(observed->sent,"plugin_name"));
+  pg.disconnect();
+}
+TEST(PgNativeIdpCredentialConsumer, EmptyUserBindsFixedPrincipalAndForwardsPluginName) {
+  auto binding=a::Binding::create(
+      {a::Service::Redshift,"fixed.invalid",5439,"db",a::native_idp_binding_principal(""),"fixed-resource",
+       "fixed.invalid","verify-full"},
+      {a::SourceKind::ExternalNativeIdpToken,"external-source","generation"},a::Method::NativeIdpToken);
+  ASSERT_TRUE(binding);
+  const auto requested=native_idp_request(binding.value());
+  std::string_view token="synthetic-jwt-token";
+  auto secret=a::SecretBytes::create(std::as_bytes(std::span{token.data(),token.size()}));ASSERT_TRUE(secret);
+  auto value=a::Material::create(binding.value(),a::MaterialKind::NativeIdpToken,a::native_idp_binding_principal(""),
+      std::move(secret).value(),a::Validity::ordinary(),
+      a::NativeIdpAttributes{"AwsIdc","odbcpp_idc","ACCESS_TOKEN","","BrowserIdcAuthPlugin"});
+  ASSERT_TRUE(value);
+  auto transport=std::make_unique<DriverCompatibilityWire>();auto* wire=transport.get();
+  Pg pg(std::move(transport),std::nullopt,d::postgres::PgCatalogProfile::Redshift);
+  auto selected=native_idp_consumer_settings();selected.user.clear();
+  ASSERT_TRUE(a::connect_bound_native_idp_until(pg,selected,requested,value.value()));
+  EXPECT_TRUE(contains_text(wire->sent,std::string_view("plugin_name\0BrowserIdcAuthPlugin\0",33)));
+  EXPECT_FALSE(contains_text(wire->sent,std::string_view("user\0",5)));
+  EXPECT_FALSE(contains_text(wire->sent,"identity_namespace"));
+  pg.disconnect();
+  // A non-empty user must still match the bound principal exactly.
+  Fixture f;auto mismatched=native_idp_consumer_settings();
+  EXPECT_FALSE(a::connect_bound_native_idp_until(f.pg,mismatched,requested,value.value()));
+  EXPECT_TRUE(f.wire->deadlines.empty());EXPECT_EQ(0U,f.wire->configured);
 }

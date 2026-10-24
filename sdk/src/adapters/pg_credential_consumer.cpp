@@ -179,7 +179,8 @@ rs::core::database::BackendResult<void> connect_bound_native_idp_until(
       target != supplied.target() || binding.source() != supplied.source() ||
       material.principal() != target.principal || attributes.empty() ||
       target.endpoint != selected.host || target.port != selected.port ||
-      target.database != selected.database || target.principal != selected.user ||
+      target.database != selected.database ||
+      target.principal != native_idp_binding_principal(selected.user) ||
       target.tls_identity != selected.host || target.trust_policy != "verify-full" ||
       !selected.use_ssl || selected.ssl_ca_file.empty() ||
       selected.ssl_ca_file.find('\0') != std::string::npos || !selected.ssl_ca_dir.empty() ||
@@ -203,6 +204,7 @@ rs::core::database::BackendResult<void> connect_bound_native_idp_until(
     settings.native_idp->provider_name = attributes.provider_name;
     settings.native_idp->token_type = attributes.token_type;
     settings.native_idp->identity_namespace = attributes.identity_namespace;
+    settings.native_idp->plugin_name = attributes.plugin_name;
     bool invalid_secret = false;
     material.with_secret([&](std::span<const std::byte> bytes) {
       invalid_secret = bytes.empty() || bytes.size() > SecretBytes::max_bytes ||

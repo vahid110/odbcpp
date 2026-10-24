@@ -572,11 +572,14 @@ TEST(NativeIdpResolution, ProviderDerivesIdpTypeAndMapsTokenMaterial) {
   EXPECT_EQ("odbcpp_idc", resolved->native_idp->provider_name);
   EXPECT_EQ("ACCESS_TOKEN", resolved->native_idp->token_type);
   EXPECT_EQ("awsidc", resolved->native_idp->identity_namespace);
+  EXPECT_EQ("IdpTokenAuthPlugin", resolved->native_idp->plugin_name);
   EXPECT_TRUE(resolved->password.empty());
-  // Case-insensitive selector and BrowserIdc map to the same wire type.
+  // Case-insensitive selector and BrowserIdc map to the same wire type; the
+  // configured plugin spelling is forwarded unchanged, as the AWS drivers do.
   options.plugin_name = "browseridcauthplugin";
   auto browser = rs.resolve_connection_options(options); ASSERT_TRUE(browser);
   EXPECT_EQ("AwsIdc", browser->native_idp->idp_type);
+  EXPECT_EQ("browseridcauthplugin", browser->native_idp->plugin_name);
   // PostgreSQL provider refuses native IdP.
   auto refused = pg.resolve_connection_options(options); ASSERT_FALSE(refused);
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), refused.error());

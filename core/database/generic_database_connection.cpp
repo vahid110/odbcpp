@@ -172,6 +172,8 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     params["token_type"] = settings.native_idp->token_type;
     if (!settings.native_idp->identity_namespace.empty())
       params["identity_namespace"] = settings.native_idp->identity_namespace;
+    if (!settings.native_idp->plugin_name.empty())
+      params["plugin_name"] = settings.native_idp->plugin_name;
     params["web_identity_token"] = settings.native_idp->token;
   }
   std::vector<std::byte> startup;

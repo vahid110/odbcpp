@@ -286,17 +286,19 @@ TEST(AuthCoreMaterialTest, OrdinaryPasswordIsNotTemporaryMaterialOrIssuerProof) 
   ASSERT_TRUE(authority->take(std::move(receipt)));
 }
 TEST(AuthCoreNativeIdpTest, AttributesAreAllOrNothingAndRoundTrip) {
-  const NativeIdpAttributes attrs{"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc"};
-  const NativeIdpAttributes same{"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc"};
+  const NativeIdpAttributes attrs{"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc", "IdpTokenAuthPlugin"};
+  const NativeIdpAttributes same{"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc", "IdpTokenAuthPlugin"};
   EXPECT_FALSE(attrs.empty());
   EXPECT_EQ(attrs, same);
-  const NativeIdpAttributes partial{"AwsIdc", "", "", ""};
+  const NativeIdpAttributes partial{"AwsIdc", "", "", "", ""};
   EXPECT_FALSE(partial.empty());
+  const NativeIdpAttributes plugin_only{"", "", "", "", "BrowserIdcAuthPlugin"};
+  EXPECT_FALSE(plugin_only.empty());
   const NativeIdpAttributes none;
   EXPECT_TRUE(none.empty());
 }
 NativeIdpAttributes native_attrs() {
-  return {"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc"};
+  return {"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc", "IdpTokenAuthPlugin"};
 }
 Binding native_binding() {
   auto r = Binding::create(target(), {SourceKind::ExternalNativeIdpToken, "source-1", "generation-1"},

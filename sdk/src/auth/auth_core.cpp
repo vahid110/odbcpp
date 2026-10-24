@@ -31,8 +31,10 @@ bool text(std::string_view s) noexcept {
 bool native_idp_attributes_valid(const NativeIdpAttributes& a) noexcept {
   // idp_type/provider_name/token_type are required; identity_namespace is
   // optional (Redshift sends it only for IdpTokenAuthPlugin, not BrowserIdc).
+  // plugin_name is optional; the AWS drivers send it whenever a plugin is set.
   return text(a.idp_type) && text(a.provider_name) && text(a.token_type) &&
-      (a.identity_namespace.empty() || text(a.identity_namespace));
+      (a.identity_namespace.empty() || text(a.identity_namespace)) &&
+      (a.plugin_name.empty() || text(a.plugin_name));
 }
 bool finite(rs::util::Deadline t) noexcept {
   return t != rs::util::Deadline::min() && t != rs::util::Deadline::max();

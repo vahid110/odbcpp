@@ -137,9 +137,10 @@ enum class MaterialKind { OrdinaryPassword, TemporaryDatabasePassword, NativeIdp
 // `token_type`/`identity_namespace`). All-or-nothing: valid iff every field is
 // non-empty printable text. A future IdP is a new set of values, not a schema change.
 struct NativeIdpAttributes {
-  std::string idp_type, provider_name, token_type, identity_namespace;
+  std::string idp_type, provider_name, token_type, identity_namespace, plugin_name;
   bool empty() const noexcept {
-    return idp_type.empty() && provider_name.empty() && token_type.empty() && identity_namespace.empty();
+    return idp_type.empty() && provider_name.empty() && token_type.empty() &&
+        identity_namespace.empty() && plugin_name.empty();
   }
   bool operator==(const NativeIdpAttributes&) const = default;
 };

@@ -470,7 +470,9 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
     if (bytes > max_wire_bytes || size > max_wire_bytes - bytes) throw RequestWireLimitExceeded{};
     bytes += size;
   };
-  add(6); add(user.size()); add(10); add(database.size());
+  // An empty user is omitted (native IdP login: the token carries the identity).
+  if (!user.empty()) { add(6); add(user.size()); }
+  add(10); add(database.size());
   for (const auto& [key, value] : params) {
     add(key.size()); add(1); add(value.size()); add(1);
   }
@@ -479,7 +481,7 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
   if (float_digits) add(std::string_view("extra_float_digits").size() + 1 + 2);
   if (bytes > std::numeric_limits<std::uint32_t>::max()) throw RequestWireLimitExceeded{};
   std::vector<std::pair<std::string, std::string>> kv;
-  kv.push_back({"user", user});
+  if (!user.empty()) kv.push_back({"user", user});
   kv.push_back({"database", database});
   for (const auto& p : params) {
     kv.push_back(p);
