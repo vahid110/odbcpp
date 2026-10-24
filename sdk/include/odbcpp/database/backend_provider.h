@@ -42,6 +42,7 @@ struct ConnectionOptionSupport {
   bool detailed_table_types = false;
   bool catalog_database_scope = false;
   bool catalog_mode = false;
+  bool native_idp = false;
 };
 
 struct ConnectionOptions {

@@ -50,7 +50,7 @@ PgBackendProvider::PgBackendProvider(
 
 ConnectionOptionSupport PgBackendProvider::supported_connection_options() const noexcept {
   if (catalog_profile_ != PgCatalogProfile::Redshift) return {};
-  return {true, true, true, true, true, true};
+  return {true, true, true, true, true, true, true};
 }
 
 std::span<const TypeDefinition> PgBackendProvider::type_catalog(std::string_view server_version) const noexcept {
