@@ -2065,6 +2065,11 @@ SQLRETURN ODBCConnection::connect(
           params.at("USESYSTEMTRUSTSTORE"), "UseSystemTrustStore");
     }
     if (params.count("REDSHIFTCATALOGMODE")) options.redshift_catalog_mode = params.at("REDSHIFTCATALOGMODE");
+    if (params.count("PLUGINNAME")) options.plugin_name = params.at("PLUGINNAME");
+    if (params.count("TOKEN")) options.token = params.at("TOKEN");
+    if (params.count("TOKENTYPE")) options.token_type = params.at("TOKENTYPE");
+    if (params.count("PROVIDERNAME")) options.provider_name = params.at("PROVIDERNAME");
+    if (params.count("IDENTITYNAMESPACE")) options.identity_namespace = params.at("IDENTITYNAMESPACE");
     // Parse only the effective choice; an explicit application value, including
     // zero, must not evaluate a shadowed malformed keyword.
     const auto selected_login_timeout = [&]() -> SQLUINTEGER {

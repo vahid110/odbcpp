@@ -555,3 +555,54 @@ TEST(MetadataDatabaseScope, ProviderDefaultsOwningSelectionIsolationAndInvalidIn
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), invalid.error());
   options.catalog_database_scope.reset(); ASSERT_TRUE(pg.resolve_connection_options(options));
 }
+
+TEST(NativeIdpResolution, ProviderDerivesIdpTypeAndMapsTokenMaterial) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider rs{BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"rs", 5439, std::nullopt, false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider pg{BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"pg", 5432, "postgres", false}};
+  ConnectionOptions options; options.host = "cluster.example";
+  options.plugin_name = "IdpTokenAuthPlugin"; options.token = "jwt-token";
+  options.provider_name = "odbcpp_idc"; options.token_type = "ACCESS_TOKEN"; options.identity_namespace = "awsidc";
+  auto resolved = rs.resolve_connection_options(options); ASSERT_TRUE(resolved);
+  ASSERT_TRUE(resolved->native_idp.has_value());
+  EXPECT_EQ("jwt-token", resolved->native_idp->token);
+  EXPECT_EQ("AwsIdc", resolved->native_idp->idp_type);
+  EXPECT_EQ("odbcpp_idc", resolved->native_idp->provider_name);
+  EXPECT_EQ("ACCESS_TOKEN", resolved->native_idp->token_type);
+  EXPECT_EQ("awsidc", resolved->native_idp->identity_namespace);
+  EXPECT_TRUE(resolved->password.empty());
+  // Case-insensitive selector and BrowserIdc map to the same wire type.
+  options.plugin_name = "browseridcauthplugin";
+  auto browser = rs.resolve_connection_options(options); ASSERT_TRUE(browser);
+  EXPECT_EQ("AwsIdc", browser->native_idp->idp_type);
+  // PostgreSQL provider refuses native IdP.
+  auto refused = pg.resolve_connection_options(options); ASSERT_FALSE(refused);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), refused.error());
+}
+TEST(NativeIdpResolution, MissingConflictAndUnsupportedPluginRefuse) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider rs{BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"rs", 5439, std::nullopt, false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  ConnectionOptions base; base.plugin_name = "IdpTokenAuthPlugin"; base.token = "jwt-token";
+  base.provider_name = "odbcpp_idc"; base.token_type = "ACCESS_TOKEN"; base.identity_namespace = "awsidc";
+  for (unsigned which = 0; which < 5; ++which) {
+    auto missing = base;
+    if (which == 0) missing.token.reset();
+    if (which == 1) missing.plugin_name.reset();
+    if (which == 2) missing.provider_name.reset();
+    if (which == 3) missing.token_type.reset();
+    if (which == 4) missing.identity_namespace.reset();
+    EXPECT_FALSE(rs.resolve_connection_options(missing));
+  }
+  auto conflict = base; conflict.password = "pw";
+  EXPECT_FALSE(rs.resolve_connection_options(conflict));
+  auto unknown = base; unknown.plugin_name = "Okta";
+  EXPECT_FALSE(rs.resolve_connection_options(unknown));
+  auto nul = base; nul.token = std::string("a\0b", 3);
+  EXPECT_FALSE(rs.resolve_connection_options(nul));
+  // No native-IdP options leaves native_idp unset.
+  ASSERT_TRUE(rs.resolve_connection_options({}));
+  EXPECT_FALSE(rs.resolve_connection_options({})->native_idp.has_value());
+}

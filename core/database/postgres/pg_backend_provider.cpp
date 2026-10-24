@@ -22,6 +22,13 @@ class PgSqlDialect final : public ISqlDialect {
  private:
   const SqlDialectProfile profile_;
 };
+// Native IdP wire type derived from the plugin selector. Empty means unsupported.
+std::string native_idp_type_for_plugin(std::string_view plugin) {
+  std::string upper(plugin);
+  for (auto& c : upper) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+  if (upper == "IDPTOKENAUTHPLUGIN" || upper == "BROWSERIDCAUTHPLUGIN") return "AwsIdc";
+  return {};
+}
 } // namespace
 
 const ISqlDialect& PgBackendProvider::sql_dialect() const noexcept {
@@ -69,7 +76,10 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   if (!no_nul(options.host) || !no_nul(options.database) ||
       !no_nul(options.user) || !no_nul(options.password) ||
       !no_nul(options.ssl_ca_file) || !no_nul(options.ssl_ca_dir) ||
-      !no_nul(options.application_name)) {
+      !no_nul(options.application_name) ||
+      !no_nul(options.plugin_name) || !no_nul(options.provider_name) ||
+      !no_nul(options.token_type) || !no_nul(options.identity_namespace) ||
+      !no_nul(options.token)) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "Connection option contains an embedded NUL byte"};
   }
@@ -125,6 +135,29 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
       connection_defaults_.database.value_or(std::string{}));
   settings.user = options.user.value_or(std::string{});
   settings.password = options.password.value_or(std::string{});
+  const bool native_idp_requested = options.plugin_name.has_value() ||
+      options.provider_name.has_value() || options.token_type.has_value() ||
+      options.identity_namespace.has_value() || options.token.has_value();
+  if (native_idp_requested) {
+    if (catalog_profile_ != PgCatalogProfile::Redshift)
+      return {rs::util::DbErrorCode::UnsupportedFeature, "Native IdP login requires Redshift"};
+    if (!settings.password.empty())
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "Native IdP login cannot be combined with a password"};
+    if (!options.plugin_name || options.plugin_name->empty() || !options.token || options.token->empty())
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "Native IdP login requires plugin_name and token"};
+    const auto idp_type = native_idp_type_for_plugin(*options.plugin_name);
+    if (idp_type.empty())
+      return {rs::util::DbErrorCode::InvalidParameter, "Unsupported native IdP plugin"};
+    if (!options.provider_name || options.provider_name->empty() ||
+        !options.token_type || options.token_type->empty() ||
+        !options.identity_namespace || options.identity_namespace->empty())
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "Native IdP login requires provider_name, token_type and identity_namespace"};
+    settings.native_idp = NativeIdpSettings{*options.token, idp_type, *options.provider_name,
+                                            *options.token_type, *options.identity_namespace};
+  }
   settings.use_ssl = options.use_ssl.value_or(connection_defaults_.use_ssl);
   settings.ssl_ca_file = options.ssl_ca_file.value_or(std::string{});
   settings.ssl_ca_dir = options.ssl_ca_dir.value_or(std::string{});
