@@ -19,7 +19,7 @@ function(add_test_executable test_name test_file)
     target_link_libraries(${test_name} PRIVATE odbcpp_auth_pg_consumer GTest::gtest_main)
     target_include_directories(${test_name} PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}"
       "${ODBCPP_INTERNAL_INCLUDE_auth}" "${ODBCPP_INTERNAL_INCLUDE_backend}")
-  elseif(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
+  elseif(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_sts_assume_role_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
     target_link_libraries(${test_name} PRIVATE odbcpp_auth_core GTest::gtest_main)
     target_include_directories(${test_name} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
   else()
@@ -167,7 +167,7 @@ endif()
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_odbc_trace_reload)$")
+  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_sts_serverless_owner|test_odbc_trace_reload)$")
     continue() # Optional SDK consumers and dynamic-load tests are explicitly registered below.
   endif()
   add_test_executable(${test_name} ${test_file})
@@ -303,6 +303,15 @@ add_test(
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoProfileValidation.cmake)
 set_tests_properties(test_crypto_profile_validation
   PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_native_aws_sdk_import
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestNativeAwsSdkImport.cmake)
+set_tests_properties(test_native_aws_sdk_import
+  PROPERTIES LABELS "unit;architecture" TIMEOUT 120)
 
 add_test(
   NAME test_crypto_manifest
@@ -443,7 +452,7 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   if(test_name STREQUAL "it_driver_manager_unicode")
     continue() # Registered below against the Driver Manager, never odbcpp_core.
   endif()
-  if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
+  if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_redshift_serverless_sts_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running

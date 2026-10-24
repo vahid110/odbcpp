@@ -13,7 +13,7 @@ using FieldAtom = std::variant<TextBytes, NumberLexeme, NullAtom, BooleanAtom, O
 enum class FieldFailure {
   UnsupportedOperation, InvalidShape, ResourceLimit, InvalidFieldName, UnknownField,
   MissingField, DuplicateField, WrongType, InvalidUser, InvalidPassword,
-  InvalidTimestamp, Cancelled, AllocationFailed
+  InvalidTimestamp, Cancelled, AllocationFailed, DeadlineElapsed
 };
 struct FieldError {
   FieldFailure failure;

@@ -363,6 +363,10 @@ class IngressHttp final:public Aws::Http::HttpClient {
       if(!read_ok || !state_.metrics.request_exact || !*input || input->tellg()!=original || !state_.check()) { state_.reject();return safe_response(request,state_); }
       state_.attempt=true;
       if(state_.fixed==FixedCase::Reentry){auto refused=MakeRequest(request,read,write);if(!refused||!refused->HasClientError())std::terminate();return safe_response(request,state_);}
+      // Observe the session token on the signed request. An assumed-role source
+      // carries a session token; a static-key source does not, so this is the
+      // offline discriminator for "DB dispatch signed by the assumed key".
+      state_.metrics.signed_with_session_token=!request->GetHeaderValue("x-amz-security-token").empty();
       ++state_.metrics.selected_sends;
       auto captured=rs::core::auth::aws::detail::ProvisionedNativeCaptureOwner::run(request,state_,read,write);
       state_.wire=std::move(captured.wire);state_.sync();
