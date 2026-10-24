@@ -36,11 +36,13 @@ class ServerlessSql(unittest.TestCase):
                 stage = binding + sql.zero()
                 self.assertEqual(stage.count(';') + stage.count('\\gset'), 3)
 
-    def test_zero_dispatches_each_sys_view_separately_without_narrowing_scope(self):
+    def test_zero_uses_empty_direct_session_probe_then_false_query_without_narrowing_scope(self):
         statements = [statement.strip() for statement in sql.zero().split(';') if statement.strip()]
         self.assertEqual(len(statements), 2)
+        self.assertEqual(statements[0], 'SELECT session_id FROM sys_session_history WHERE ' + sql.scope() + ' LIMIT 1')
+        self.assertEqual(statements[1], sql.exists_sql(queries=True))
+        self.assertNotIn('EXISTS', statements[0])
         for index, (view, queries) in enumerate((('sys_session_history', False), ('sys_query_history', True))):
-            self.assertEqual(statements[index], sql.exists_sql(queries=queries))
             self.assertEqual(statements[index].count(view), 1)
             self.assertNotIn('sys_query_history' if not queries else 'sys_session_history', statements[index])
             for guard in ("TRIM(database_name)='odbcpp_pilot'", 'session_id<>pg_backend_pid()',
@@ -115,6 +117,8 @@ class ServerlessSql(unittest.TestCase):
             self.assertNotIn('stv_', new['query'])
             self.assertIn('sys_query_history', new['query'])
             self.assertIn('sys_session_history', new['query'])
+            self.assertNotIn('SELECT EXISTS(SELECT 1 FROM sys_session_history', new['query'])
+            self.assertIn('SELECT session_id FROM sys_session_history WHERE ' + sql.scope() + ' LIMIT 1', new['query'])
             if kind == 'timeout_after':
                 birth_query = new['query'].split('RSFIX2|TIMEOUT_GATE|BIRTHS\n', 1)[1].split(';', 1)[0]
                 self.assertIn("WHERE status='active' AND session_id IN (41,42)", birth_query)
@@ -125,6 +129,23 @@ class ServerlessSql(unittest.TestCase):
                     self.assertIn(label, new['query'])
                 self.assertIn('c.relowner=701', new['query'])
                 self.assertIn('n.oid=811 AND n.nspowner=700', new['query'])
+            identity = ['odbcpp_fixture|odbcpp_timeout_gate_offline015|900|701|r|811|700']
+            fields = (dict(IDENTITY=identity, SESSIONS=[], QUERIES=['f'], LOCKS=['0'], BIRTHS=[])
+                      if kind == 'timeout_after' else dict(DROP=[], DROP_LOCKS=[], DROP_SHAPE=[],
+                          DROP_ROWS=[], DROP_ACK=[], IDENTITY=[], OID_ABSENT=['0'],
+                          SCHEMA_PRESENT=['811|700'], SESSIONS=[], QUERIES=['f']))
+            frames = {('TIMEOUT_GATE', key): value for key, value in fields.items()}
+            self.assertTrue(fixtures.validate_timeout_frames(record, kind, frames, resource_kind='serverless'))
+            for label, invalid in (('SESSIONS', ['701']), ('SESSIONS', ['f']),
+                                   ('QUERIES', []), ('QUERIES', ['t'])):
+                changed = dict(frames)
+                changed[('TIMEOUT_GATE', label)] = invalid
+                with self.subTest(kind=kind, label=label, invalid=invalid), self.assertRaises(fixtures.FactoryRefused):
+                    fixtures.validate_timeout_frames(record, kind, changed, resource_kind='serverless')
+            # The original provisioned boolean frame contract remains exact.
+            provisioned = dict(frames)
+            provisioned[('TIMEOUT_GATE', 'SESSIONS')] = ['f']
+            self.assertTrue(fixtures.validate_timeout_frames(record, kind, provisioned))
 
     def test_powerbi_sys_snapshot_retains_closed_frames_and_extra_statement(self):
         state = sessions.new_state(workload_id='offline015', input_profile_sha256='a' * 64,

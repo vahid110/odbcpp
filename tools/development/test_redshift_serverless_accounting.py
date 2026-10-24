@@ -62,7 +62,7 @@ class CountingOps(module.Operations):
         if name=='current_identity':
             payload='database,owner,owner_oid,schema_oid,schema_owner_oid\nodbcpp_pilot,odbcpp_pilot_test,701,702,700\n'
         elif name=='principal_zero':
-            payload='f\nf\n'
+            payload='f\n'
         elif name=='principal_pids':
             payload=''.join(f'{200+i}|odbcpp_pilot_test|odbcpp_pilot|2026-10-24 12:00:00\n'
                             for i in range(self.maximum_cleanup_targets))

@@ -20,6 +20,34 @@ def load_factory():
 
 
 class Fixtures(unittest.TestCase):
+    def test_serverless_timeout_cleanup_forwards_empty_session_contract_and_retains_failure(self):
+        for rows in ([], ['1073791076'], ['f']):
+            with self.subTest(session_rows=rows):
+                f = load_factory()
+                record = dict(database='odbcpp_pilot', schema='odbcpp_fixture', schema_oid=811,
+                    schema_owner_oid=700, table='odbcpp_timeout_gate_offline024', oid=900,
+                    owner='odbcpp_pilot_test', owner_oid=701, kind='r',
+                    columns=[dict(name='value', type='integer', nullable=False, default=None)],
+                    rows=dict(count=1, min=1, max=1), create_ack=True, cleanup_delegated=True,
+                    receipts={key: dict(path=str(Path.cwd() / 'synthetic' / key), sha256='a' * 64)
+                        for key in ('creation','identity','shape_rows','authority','applicability','cleanup_delegation')})
+                fields = dict(DROP=[], DROP_LOCKS=[], DROP_SHAPE=[], DROP_ROWS=[], DROP_ACK=[],
+                    IDENTITY=[], OID_ABSENT=['0'], SCHEMA_PRESENT=['811|700'], SESSIONS=rows, QUERIES=['f'])
+                payload = ''.join('RSFIX2|TIMEOUT_GATE|' + key + '\n' + ''.join(row + '\n' for row in value)
+                                  for key, value in fields.items())
+                state = dict(plan=f.closed_fixture_plan(), events=[], helpers=0, SQL=0,
+                    records={key: f.new_fixture_record(key) for key in fixtures.KEYS},
+                    timeout=dict(grant='UNTOUCHED', object='OWNED', record=record),
+                    database_create=dict(state='UNTOUCHED'))
+                ops = SimpleNamespace(resource_kind='serverless', factory=f, principals_quiescent=True,
+                    readers_known=True, sql_unknown=False, sql_fenced=False, now=lambda: 0.0,
+                    record=Mock(), sql=Mock(return_value=payload))
+                result = fixtures.cleanup(ops, state, 100)
+                self.assertEqual(result['complete'], rows == [])
+                self.assertEqual(state['timeout']['object'], 'DROPPED' if rows == [] else 'DROP_UNKNOWN')
+                self.assertEqual(ops.sql.call_count, 1)
+                self.assertIn('SELECT session_id FROM sys_session_history', ops.sql.call_args.args[0]['query'])
+
     def resume_case(self):
         identity = {'table': 'held_timeout', 'oid': '123', 'owner_oid': '101',
                     'schema_oid': '107830', 'schema_owner_oid': '100', 'shape': 't'}

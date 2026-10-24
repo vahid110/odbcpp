@@ -67,9 +67,14 @@ def exists_sql(*, queries=False):
     return 'SELECT EXISTS(SELECT 1 FROM ' + view + ' WHERE ' + scope(queries=queries) + ')'
 
 
+def session_zero_sql():
+    """Empty result proves session absence; any returned integer refuses zero."""
+    return 'SELECT session_id FROM sys_session_history WHERE ' + scope() + ' LIMIT 1'
+
+
 def zero():
-    # Dispatch each SYS view independently in the same bounded psql helper.
-    # Compound scalar subqueries repeatedly exceeded the 15-second statement
-    # limit during startup; separate reads preserve every ownership predicate
-    # without a history cutoff, retry or deadline extension.
-    return exists_sql() + ';\n' + exists_sql(queries=True) + ';'
+    # The session scalar EXISTS repeatedly exceeded the statement limit; the
+    # direct same-scope session query completed during admitted diagnosis.
+    # A successful complete helper returns only the query-view false row when
+    # the session result is empty. Preserve all predicates and original limits.
+    return session_zero_sql() + ';\n' + exists_sql(queries=True) + ';'

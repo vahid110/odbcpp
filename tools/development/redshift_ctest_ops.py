@@ -709,7 +709,10 @@ class Operations:
                  session_sql.zero()) if serverless else ZERO
         raw, _ = self._sql({'query': query, 'statements': 3 if serverless else 1, 'role': 'admin',
                             'stage': 'principal_zero'}, deadline)
-        need(raw == 'f\nf\n' if serverless else raw.strip() == 'f|f',
+        # The first Serverless statement returns integer session IDs (or no
+        # rows); the second returns one boolean. ON_ERROR_STOP/exit0 is required
+        # by _sql, so one exact false row proves both completed with no session.
+        need(raw == 'f\n' if serverless else raw.strip() == 'f|f',
              'exact_principal_session_query_zero')
         return {'complete': True}
 

@@ -58,16 +58,16 @@ def adapter(directory):
 
 
 class AdapterTests(unittest.TestCase):
-    def test_serverless_zero_requires_exact_false_rows_from_two_distinct_dispatches(self):
-        for payload in ('f\nf\n', 'f|f\n', 'f\n', '', 't\nf\n', 'f\nt\n',
-                        'f\nf\nf\n', '100|102|1\nf\nf\n', 'f\nf', ' f\nf\n'):
+    def test_serverless_zero_requires_no_session_rows_then_exact_query_false(self):
+        for payload in ('f\n', 'f\nf\n', 'f|f\n', '', 't\n', '1073791076\nf\n',
+                        '1073791076\nt\n', '1073791076\n', '100|102|1\nf\n', 'f', ' f\n'):
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
                 ops = adapter(directory)
                 ops.resource_kind = 'serverless'
                 ops.timeout_factory = SimpleNamespace(EXPECTED_PRINCIPAL={
                     'schema_owner_oid': '700', 'owner_oid': '701'})
                 ops._sql = mock.Mock(return_value=(payload, 123))
-                if payload == 'f\nf\n':
+                if payload == 'f\n':
                     self.assertEqual(ops.final_zero(300), {'complete': True})
                 else:
                     with self.assertRaisesRegex(Refused, 'exact_principal_session_query_zero'):
@@ -75,6 +75,8 @@ class AdapterTests(unittest.TestCase):
                 stage = ops._sql.call_args.args[0]
                 self.assertEqual(stage['statements'], 3)
                 self.assertEqual(stage['query'].count(';') + stage['query'].count('\\gset'), 3)
+                self.assertIn('SELECT session_id FROM sys_session_history', stage['query'])
+                self.assertNotIn('SELECT EXISTS(SELECT 1 FROM sys_session_history', stage['query'])
 
     def test_serverless_cleanup_rebinds_oid_and_captured_birth_before_termination(self):
         targets = ((42, ops_module.ORDINARY, ops_module.DATABASE, '2026-10-24 12:00:00.123'),)
