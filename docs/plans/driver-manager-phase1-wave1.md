@@ -85,7 +85,7 @@ Each failing case is counted once, by its first failure, which usually masks lat
 - **manager:** the manager answered, or changed what the driver returned. The driver trace proves which.
 - **driver:** the driver's own answer.
 
-No driver defect was confirmed in this wave. K is the only item that may need a driver or expectation decision.
+No driver defect was confirmed in this wave. K, at first an open question, is decided by the ODBC reference in the driver's favour.
 
 | id | profile | cases | observed | origin and evidence | kind |
 |---|---|---:|---|---|---|
@@ -100,7 +100,7 @@ No driver defect was confirmed in this wave. K is the only item that may need a 
 | H | iODBC | 1 | `SQLGetDiagField(SQL_HANDLE_STMT, 0, SQL_DIAG_ROW_COUNT)` returns `SQL_INVALID_HANDLE`, then the process segfaults at exit | **Manager.** iODBC calls the driver with `HandleType=SQL_HANDLE_DBC` and the statement handle, and the driver correctly rejects it. The exit crash didn't reproduce under ASan; its cause is undetermined. | manager defect; crash undetermined |
 | I | iODBC | 3 | Driver-connect output lengths are truncated (3 instead of 16) and the 01004/01S00 warning records are missing; with zero output capacity, iODBC crashes inside its own `SQLDriverConnectW` | **Manager**, matching the PR #96 iODBC findings. The driver returns the full lengths and records. | manager defect |
 | J | iODBC | 2 | Segfault in the test body after manager calls | Didn't reproduce under ASan; there the first failure is A. The crash cause is undetermined and not attributed. | undetermined |
-| K | iODBC | 1 | `SQLNativeSql(..., NULL output, BufferLength -7)` returns `HY090` | **Manager validation:** the driver isn't called. The spec allows HY090 for `BufferLength < 0`. The driver accepts that call when the output pointer is NULL, so the direct expectation needs a decision. | needs review |
+| K | iODBC | 1 | `SQLNativeSql(..., NULL output, BufferLength -7)` returns `HY090` | **Manager:** iODBC rejects the call without calling the driver. The ODBC reference raises HY090 only when "*BufferLength* was less than 0 and the argument *OutStatementText* was not a null pointer", so the driver's success is the spec answer, and the direct expectation stays. | manager defect |
 | L | iODBC | 1 | ANSI `SQLNativeSql` of UTF-8 text returns `42000` | Probably iODBC's ANSI-to-Unicode conversion under the C locale. Not confirmed: the driver trace doesn't record the text. | probable manager |
 | M | unixODBC | 1 | `SQLGetData` before execute returns `HY010`, not `24000` | **Manager, per the ODBC state tables** (the statement is still in states S1 to S3). | profile expectation |
 | N | unixODBC | 1 | `SQL_API_ODBC3_ALL_FUNCTIONS` also reports 10 ODBC 2.x function IDs (1, 2, 3, 14, 15, 22, 23, 42, 46, 50) | **Manager:** unixODBC maps those ODBC 2.x functions onto the driver's ODBC 3 functions. | profile expectation |
