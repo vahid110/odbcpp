@@ -149,9 +149,60 @@ Of the 174 iODBC cases whose first failure was bucket A, 169 now pass entirely. 
 
 No driver defect surfaced in the previously hidden assertions.
 
+## Phase 3 for wave 1: every deviation asserted
+
+Every remaining deviation is now an entry in `tests/test_dm_expectations.h`, keyed by the manager's exact `SQL_DM_VER`. Each site asserts it, so wave 1 passes on both managers while still checking what each manager does. Any manager without an entry, such as Windows ODBC or another iODBC or unixODBC version, defaults to "same as direct", so a new or changed behaviour fails visibly.
+
+Results on the same fixture. Each manager case ran in its own process:
+
+| profile | direct | manager |
+|---|---|---|
+| iODBC 3.52.16 | 311 pass (one new case), 0 skip | 299 pass, 0 fail, 0 skip |
+| unixODBC 2.3.14 | 311 pass, 0 skip | 299 pass, 0 fail, 0 skip |
+
+### How a site asserts a deviation
+
+The site helpers return the direct answer in direct builds and for any manager without an entry:
+- `dm::value(id, direct, deviated)`: the expected value at the site.
+- `dm::text(id, direct)`: the manager's own value, kept in the table entry.
+- `dm::deviates(id)`: whether this manager has the entry.
+
+Where a deviation makes the rest of a case unreachable through that manager, the case asserts the deviating result, then calls `dm::stops_case(id)`. That records `dm_case_stopped_by=<bucket>` in the case's XML and ends the case. The case is not skipped: it passes, having asserted the manager's behaviour.
+
+Two helpers inside `odbcpp::test::diag_rec` handle general patterns, after asserting the deviation:
+- The NULL-buffer diagnostic.
+- iODBC's ODBC 2.x SQLSTATEs on records it raises (`S1010`, `S1003`, `S1090`, `S1093`, `S1105`, `S1001`). These map to ODBC 3.x through the ODBC reference's SQLSTATE mapping table, so the test's own SQLSTATE check still applies.
+
+### Cases that end early, with the reason in XML
+
+- **iODBC, 11 cases:**
+  - D, 5 cases: `SQL_ARD_TYPE` is rejected, and the rest needs the ARD-typed value.
+  - B, 2 cases: an explicit length is replaced by `SQL_NTS`.
+  - L, 2 cases: the ANSI statement is widened byte by byte.
+  - O, 1 case: the state table after a failed re-prepare.
+  - G, 1 case: iODBC frees the connection while refusing to free it, so any further call would read freed memory.
+- **unixODBC, 2 cases:** O, the state table after a failed re-prepare, including one where the open cursor is forgotten.
+
+### Root causes found in this phase
+
+- **The crashes (bucket J) and the `it_diagnostics` exit crash.** iODBC 3.52.16 answers `SQL_ATTR_LOGIN_TIMEOUT` before connect itself. It writes **8 bytes** into the application's 4-byte `SQLUINTEGER`; the attribute is 32-bit.
+  - A probe with sentinel-filled buffers showed the exact width. The faulting addresses (`0x100000000` and similar) are pointers whose low 32 bits were zeroed. AddressSanitizer missed it because it doesn't instrument libiodbc's own stores.
+  - The fixtures' timeout-budget helpers read this attribute into a stack variable before every connect.
+  - They now read it through zeroed 8-byte storage (`odbcpp::test::get_login_timeout`) and take the declared 4 bytes, which stays correct for the driver's 4-byte write.
+  - A new case, `ConnectionAttributeIntegrationTest.LoginTimeoutOutputWidth`, asserts the width on every build: 4 bytes direct, 8 under the iODBC entry.
+  - With that, every former crash runs to completion except G, whose iODBC double free is asserted by ending the case early.
+- **Bucket L confirmed and widened.** The driver receives the application's buffers and target types unchanged. But the stored data is the Latin-1 reading of the UTF-8 statement literal: iODBC widens the ANSI statement byte by byte in the C locale. `GetDataRetrievesWideTextInWholeCodePoints` and `CharacterToBinaryReturnsRawUtf8Bytes` therefore move from E to L, and assert exactly that stored value (`dm::latin1_widened`). E keeps only the bound indicator rewrite, which the dlopen probe showed.
+- **New buckets:**
+  - **S (iODBC):** `SQLNumResultCols` passes the driver iODBC's own variable, and copies its 0 to the application even when the driver fails.
+  - **T (unixODBC):** unixODBC answers `SQL_XOPEN_CLI_YEAR` itself: "1995" for the ANSI call and "1994" for the wide call.
+  - **R:** also on unixODBC, which accepts the NULL output and clears the diagnostics, where iODBC leaves the previous `HY095`.
+  - **K:** iODBC raises `S1001` (mapped to `HY001`), not `HY090`.
+
+No driver defect was found in wave 1.
+
 ## Not done in this wave
 
 - **Windows ODBC and Linux unixODBC/iODBC runs.** The PR builds compile `dm_*` on all three platforms, but the suites ran only on macOS.
 - **unixODBC manager tracing.** Homebrew unixODBC 2.3.14 wrote no trace file even with a minimal private `odbcinst.ini`. The driver-side trace was used instead.
 - **Wave 2:** `it_metadata_real` and `it_redshift_real`, which needs live Redshift admission.
-- **Asserting deviations per profile.** That's Phase 3: the expectation table, with the evidence above as its source.
+- **Windows ODBC expectations.** Windows has no entries yet. Its first run will show where it differs from the direct driver.

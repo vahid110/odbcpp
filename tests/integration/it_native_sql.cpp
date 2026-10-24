@@ -74,7 +74,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -183,6 +183,13 @@ TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
   const auto length = static_cast<SQLINTEGER>(sql.size());
   const auto wide_length = static_cast<SQLINTEGER>(wide.size());
 
+  // The manager passes the driver SQL_NTS instead of the explicit length, so
+  // the text before the NUL runs and the rest of the case cannot be reached.
+  if (odbcpp::test::dm::stops_case(
+          odbcpp::test::dm::Deviation::ExplicitTextLengthReplacedByNts)) {
+    EXPECT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, narrow, length));
+    return;
+  }
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, narrow, length));
   EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLExecDirectW(statement_, wide.data(), wide_length));
@@ -263,6 +270,18 @@ TEST_F(NativeSqlIntegrationTest, NativeSqlRejectsEmbeddedNulWithoutChangingOutpu
   SQLWCHAR wide_output[] = {'k', 'e', 'e', 'p', 0};
   SQLINTEGER length = 91;
 
+  // The manager passes the driver SQL_NTS instead of the explicit length, so
+  // the driver translates "SELECT 1" and truncates it into the 5-byte output.
+  if (odbcpp::test::dm::stops_case(
+          odbcpp::test::dm::Deviation::ExplicitTextLengthReplacedByNts)) {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLNativeSql(connection_, reinterpret_cast<SQLCHAR*>(sql.data()),
+                           static_cast<SQLINTEGER>(sql.size()), output,
+                           static_cast<SQLINTEGER>(sizeof(output)), &length));
+    EXPECT_STREQ("SELE", reinterpret_cast<const char*>(output));
+    EXPECT_EQ(8, length);
+    return;
+  }
   EXPECT_EQ(SQL_ERROR,
             SQLNativeSql(connection_, reinterpret_cast<SQLCHAR*>(sql.data()),
                          static_cast<SQLINTEGER>(sql.size()), output,
@@ -289,9 +308,21 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
   SQLCHAR input[] = "SELECT {fn UCASE('mixed')}, {d '2024-02-29'}";
   constexpr char expected[] = "SELECT UPPER('mixed'), DATE '2024-02-29'";
   SQLINTEGER length = -1;
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLNativeSql(connection_, input, SQL_NTS, nullptr, -7, &length));
-  EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(expected) - 1), length);
+  // The ODBC reference raises HY090 for a negative BufferLength only with a
+  // non-null output; the manager also rejects it for a NULL output.
+  const SQLRETURN negative_result =
+      SQLNativeSql(connection_, input, SQL_NTS, nullptr, -7, &length);
+  if (odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::NegativeBufferLengthRejectedWithNullOutput)) {
+    EXPECT_EQ(SQL_ERROR, negative_result);
+    EXPECT_EQ(odbcpp::test::dm::text(
+                  odbcpp::test::dm::Deviation::NegativeBufferLengthRejectedWithNullOutput,
+                  "HY090"),
+              diagnostic_state(SQL_HANDLE_DBC, connection_));
+  } else {
+    ASSERT_EQ(SQL_SUCCESS, negative_result);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(expected) - 1), length);
+  }
 
   std::array<SQLCHAR, sizeof(expected)> output{};
   ASSERT_EQ(SQL_SUCCESS,
@@ -371,9 +402,14 @@ TEST_F(NativeSqlIntegrationTest, LengthOutputsHandleUnalignedBuffers) {
   };
 
   SQLINTEGER expected = -1;
-  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(
+  // The manager gives the driver a 0-length scratch buffer for the NULL
+  // output, so the driver correctly reports truncation.
+  const auto null_output_result = odbcpp::test::dm::value(
+      odbcpp::test::dm::Deviation::NullOutputBufferSubstituted,
+      SQLRETURN{SQL_SUCCESS}, SQLRETURN{SQL_SUCCESS_WITH_INFO});
+  ASSERT_EQ(null_output_result, SQLNativeSql(
       connection_, input, SQL_NTS, nullptr, 0, &expected));
-  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(
+  ASSERT_EQ(null_output_result, SQLNativeSql(
       connection_, input, SQL_NTS, nullptr, 0, length));
   EXPECT_EQ(expected, read_length());
 
@@ -471,6 +507,14 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
   constexpr char expected[] =
       "SELECT 'a%b' LIKE 'a\xC3\xA9%b' ESCAPE '\xC3\xA9'";
   SQLCHAR output[sizeof(expected)]{};
+  // The manager widens ANSI text byte by byte, so the driver sees a
+  // two-character escape and rejects it; the case cannot continue.
+  if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+    EXPECT_EQ(SQL_ERROR, SQLNativeSql(connection_, unicode, SQL_NTS, output,
+                                      sizeof(output), nullptr));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+    return;
+  }
   ASSERT_EQ(SQL_SUCCESS,
             SQLNativeSql(connection_, unicode, SQL_NTS, output,
                          sizeof(output), nullptr));
@@ -634,6 +678,14 @@ TEST_F(NativeSqlIntegrationTest, BackendTranslationErrorsPreservePreparedSqlAndR
                            static_cast<SQLINTEGER>(unicode->size()))
           : SQLExecDirect(statement_, reinterpret_cast<SQLCHAR*>(narrow.data()), SQL_NTS));
       EXPECT_EQ(state, diagnostic_state(SQL_HANDLE_STMT, statement_));
+      // The manager's state table returns the statement to "allocated" after
+      // the failed prepare, so it refuses SQLExecute without calling the driver.
+      if (odbcpp::test::dm::stops_case(
+              odbcpp::test::dm::Deviation::StateTableAfterFailedCall)) {
+        EXPECT_EQ(SQL_ERROR, SQLExecute(statement_));
+        EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+        return;
+      }
       ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
       ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
       SQLINTEGER value = -1;

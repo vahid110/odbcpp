@@ -8,6 +8,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -58,6 +59,20 @@ inline std::string configured_server_name() {
 inline SQLCHAR* configured_server_name_data() {
   static std::string value = configured_server_name();
   return reinterpret_cast<SQLCHAR*>(value.data());
+}
+
+// SQL_ATTR_LOGIN_TIMEOUT is a 32-bit SQLUINTEGER, but iODBC 3.52.16 writes
+// 8 bytes for it before connect (asserted by
+// ConnectionAttributeIntegrationTest.LoginTimeoutOutputWidth). Fixture budget
+// helpers read it through zeroed wider storage so a manager cannot overwrite
+// the caller's neighbouring stack slot; the declared 4 bytes are the value.
+inline SQLRETURN get_login_timeout(SQLHDBC connection, SQLUINTEGER* value) {
+  alignas(SQLULEN) unsigned char storage[sizeof(SQLULEN)]{};
+  const SQLRETURN result = SQLGetConnectAttr(
+      connection, SQL_ATTR_LOGIN_TIMEOUT, storage,
+      static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), nullptr);
+  std::memcpy(value, storage, sizeof(SQLUINTEGER));
+  return result;
 }
 
 }  // namespace odbcpp::test

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
@@ -65,7 +66,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -315,20 +316,32 @@ TEST_F(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
     SQLLEN row_count = -1;
     SQLINTEGER dynamic_code = -1;
     SQLCHAR dynamic_function[32]{};
-    ASSERT_EQ(SQL_SUCCESS,
+    // iODBC 3.52.16 forwards statement header fields with SQL_HANDLE_DBC and
+    // the statement handle, so the driver rejects the handle.
+    const SQLRETURN header_result = odbcpp::test::dm::value(
+        odbcpp::test::dm::Deviation::StatementDiagHeaderWrongHandleType,
+        SQLRETURN{SQL_SUCCESS}, SQLRETURN{SQL_INVALID_HANDLE});
+    const bool header_readable = header_result == SQL_SUCCESS;
+    ASSERT_EQ(header_result,
               SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
                               SQL_DIAG_ROW_COUNT, &row_count, 0, nullptr));
-    EXPECT_EQ(3, row_count);
-    ASSERT_EQ(SQL_SUCCESS,
+    if (header_readable) {
+        EXPECT_EQ(3, row_count);
+    }
+    ASSERT_EQ(header_result,
               SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
                               SQL_DIAG_DYNAMIC_FUNCTION_CODE, &dynamic_code,
                               0, nullptr));
-    EXPECT_EQ(SQL_DIAG_INSERT, dynamic_code);
-    ASSERT_EQ(SQL_SUCCESS,
+    if (header_readable) {
+        EXPECT_EQ(SQL_DIAG_INSERT, dynamic_code);
+    }
+    ASSERT_EQ(header_result,
               SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
                               SQL_DIAG_DYNAMIC_FUNCTION, dynamic_function,
                               sizeof(dynamic_function), nullptr));
-    EXPECT_STREQ("INSERT", reinterpret_cast<char*>(dynamic_function));
+    if (header_readable) {
+        EXPECT_STREQ("INSERT", reinterpret_cast<char*>(dynamic_function));
+    }
 
     ASSERT_EQ(SQL_SUCCESS,
               SQLExecDirect(statement,
@@ -337,11 +350,13 @@ TEST_F(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
                                 "ORDER BY value")),
                             SQL_NTS));
     SQLLEN cursor_row_count = -1;
-    ASSERT_EQ(SQL_SUCCESS,
+    ASSERT_EQ(header_result,
               SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
                               SQL_DIAG_CURSOR_ROW_COUNT, &cursor_row_count,
                               0, nullptr));
-    EXPECT_EQ(3, cursor_row_count);
+    if (header_readable) {
+        EXPECT_EQ(3, cursor_row_count);
+    }
 
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
     EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));

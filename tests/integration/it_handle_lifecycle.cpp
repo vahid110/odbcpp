@@ -74,7 +74,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -107,6 +107,34 @@ std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle,
 
 SQLCHAR* test_dsn() {
   return odbcpp::test::configured_connection_string_data();
+}
+
+// The driver-connect output length the application sees for a truncated
+// output of `capacity` characters. iODBC 3.52.16 reports the characters it
+// copied instead of the total (DriverConnectOutputs, bucket I).
+std::size_t connect_output_length(std::size_t total, std::size_t capacity) {
+  return odbcpp::test::dm::value(odbcpp::test::dm::Deviation::DriverConnectOutputs,
+                                 total, std::min(total, capacity - 1));
+}
+
+// The driver's driver-connect warnings, in the order the application reads
+// them. iODBC 3.52.16 drops them (bucket I); unixODBC 2.3.14 returns the
+// records it copied during the connect in reverse order (bucket Q).
+void expect_connect_warnings(SQLHDBC connection, std::vector<std::string> states) {
+  using odbcpp::test::dm::Deviation;
+  if (odbcpp::test::dm::deviates(Deviation::DriverConnectOutputs)) {
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_NO_DATA, odbcpp::test::diag_rec(SQL_HANDLE_DBC, connection, 1, state,
+                                                  nullptr, nullptr, 0, nullptr));
+    return;
+  }
+  if (odbcpp::test::dm::deviates(Deviation::ConnectRecordsReversed)) {
+    std::reverse(states.begin(), states.end());
+  }
+  for (std::size_t index = 0; index < states.size(); ++index) {
+    EXPECT_EQ(states[index], diagnostic_state(SQL_HANDLE_DBC, connection,
+                                              static_cast<SQLSMALLINT>(index + 1)));
+  }
 }
 
 SQLCHAR* test_server_name() {
@@ -218,6 +246,14 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
 TEST_F(HandleLifecycleIntegrationTest,
        ConnectedConnectionCannotBeFreedOrConnectedAgain) {
   EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+  // iODBC 3.52.16 frees the connection although it reports SQL_ERROR (ASan:
+  // double free on the next free). Any further call would read freed memory,
+  // so the case ends here and TearDown must not free the handle again.
+  if (odbcpp::test::dm::stops_case(
+          odbcpp::test::dm::Deviation::FreeConnectedConnectionInvalidatesHandle)) {
+    connection_ = SQL_NULL_HDBC;
+    return;
+  }
   EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
   EXPECT_EQ(SQL_ERROR,
@@ -494,6 +530,42 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
 }
 
+// SQL_ATTR_LOGIN_TIMEOUT is a 32-bit SQLUINTEGER and the driver writes 4
+// bytes. iODBC 3.52.16 answers it itself before connect and writes 8
+// (LoginTimeoutWritesEightBytes), which overwrote the neighbouring stack slot
+// in the fixture budget helpers until they read it through wider storage.
+TEST_F(ConnectionAttributeIntegrationTest, LoginTimeoutOutputWidth) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  alignas(SQLULEN) unsigned char storage[2 * sizeof(SQLULEN)];
+  std::memset(storage, 0xab, sizeof(storage));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, storage,
+                              static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)),
+                              nullptr));
+  std::size_t written = 0;
+  for (std::size_t index = 0; index < sizeof(storage); ++index) {
+    if (storage[index] != 0xab) {
+      written = index + 1;
+    }
+  }
+  EXPECT_EQ(odbcpp::test::dm::value(
+                odbcpp::test::dm::Deviation::LoginTimeoutWritesEightBytes,
+                sizeof(SQLUINTEGER), sizeof(SQLULEN)),
+            written);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 class DriverConnectIntegrationTest : public ::testing::Test {
  protected:
     const std::chrono::steady_clock::time_point fixture_end_ =
@@ -612,9 +684,10 @@ TEST_F(DriverConnectIntegrationTest,
                              &output_length,
                              SQL_DRIVER_NOPROMPT));
   EXPECT_STREQ("DSN", reinterpret_cast<const char*>(output));
-  EXPECT_EQ(std::strlen(reinterpret_cast<const char*>(test_dsn())),
+  EXPECT_EQ(connect_output_length(std::strlen(reinterpret_cast<const char*>(test_dsn())),
+                                  sizeof(output)),
             static_cast<std::size_t>(output_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  expect_connect_warnings(connection, {"01004"});
 
   SQLCHAR untouched[]{'k', 'e', 'e', 'p', 0};
   output_length = 77;
@@ -678,8 +751,10 @@ TEST_F(DriverConnectIntegrationTest,
                 connection, nullptr, test_dsn(), input_length,
                 ansi_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, ansi_terminator[0]);
-  EXPECT_EQ(input_length, output_length);
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(connect_output_length(static_cast<std::size_t>(input_length),
+                                  sizeof(ansi_terminator)),
+            static_cast<std::size_t>(output_length));
+  expect_connect_warnings(connection, {"01004"});
   release_connection(connection);
 
   output_length = -1;
@@ -703,8 +778,10 @@ TEST_F(DriverConnectIntegrationTest,
                 const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
                 wide_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, wide_terminator[0]);
-  EXPECT_EQ(wide_input_length, output_length);
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(connect_output_length(static_cast<std::size_t>(wide_input_length),
+                                  std::size(wide_terminator)),
+            static_cast<std::size_t>(output_length));
+  expect_connect_warnings(connection, {"01004"});
   release_connection(connection);
 
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
@@ -733,9 +810,9 @@ TEST_F(DriverConnectIntegrationTest,
                 SQL_NTS, ansi_output, 1, &ansi_output_length,
                 SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, ansi_output[0]);
-  EXPECT_EQ(input.size(), static_cast<std::size_t>(ansi_output_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
-  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection, 2));
+  EXPECT_EQ(connect_output_length(input.size(), sizeof(ansi_output)),
+            static_cast<std::size_t>(ansi_output_length));
+  expect_connect_warnings(connection, {"01004", "01S00"});
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
 
@@ -749,10 +826,9 @@ TEST_F(DriverConnectIntegrationTest,
                               wide_output, 1, &wide_output_length,
                               SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, wide_output[0]);
-  EXPECT_EQ(wide_input.size() - 1,
+  EXPECT_EQ(connect_output_length(wide_input.size() - 1, std::size(wide_output)),
             static_cast<std::size_t>(wide_output_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
-  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection, 2));
+  expect_connect_warnings(connection, {"01004", "01S00"});
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));

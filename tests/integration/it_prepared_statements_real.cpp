@@ -83,7 +83,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -3561,7 +3561,11 @@ TEST_F(PreparedStatementIntegrationTest,
     SQLSMALLINT result_columns = 66;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &result_columns));
     expect_state("42000");
-    EXPECT_EQ(66, result_columns);
+    // iODBC 3.52.16 passes the driver its own column count and copies it to
+    // the application even when the driver fails.
+    EXPECT_EQ(odbcpp::test::dm::value(
+                  odbcpp::test::dm::Deviation::ColumnCountWrittenOnError, 66, 0),
+              result_columns);
     EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
         hstmt, 1, &data_type, &parameter_size, &decimal_digits,
         &nullable));
@@ -5154,6 +5158,15 @@ TEST_F(PreparedStatementIntegrationTest,
         hstmt, (SQLCHAR*)"SELECT 12", SQL_NTS), "24000");
     expect_state(SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 13", SQL_NTS), "24000");
+    // unixODBC 2.3.14 treats the statement as merely allocated after the
+    // failed re-prepare, although the driver's cursor is still open: it
+    // refuses SQLExecute and SQLCloseCursor itself, so the case ends here.
+    if (odbcpp::test::dm::stops_case(
+            odbcpp::test::dm::Deviation::FailedPrepareForgetsOpenCursor)) {
+        expect_state(SQLExecute(hstmt), "HY010");
+        EXPECT_EQ(SQL_ERROR, SQLCloseCursor(hstmt));
+        return;
+    }
     expect_state(SQLExecute(hstmt), "24000");
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));

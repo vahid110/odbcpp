@@ -80,7 +80,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -225,7 +225,8 @@ class GetInfoIntegrationTest : public ::testing::Test {
 
   bool expected_support(SQLUSMALLINT id) const {
     return id == SQL_API_SQLCANCEL ? expect_sqlcancel_
-                                   : odbcpp::test::expected_support(id);
+                                   : odbcpp::test::expected_support(id) ||
+                                         odbcpp::test::dm::manager_reports_function(id);
   }
 
   bool redshift_profile_{false};
@@ -240,7 +241,9 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
           {SQL_DRIVER_NAME, ODBCPP_EXPECT_DRIVER_FILENAME},
           {SQL_DRIVER_VER, "01.00.0000"},
           {SQL_DRIVER_ODBC_VER, "03.80"},
-          {SQL_ODBC_VER, "03.80"},
+          // The manager answers SQL_ODBC_VER with its own version.
+          {SQL_ODBC_VER, odbcpp::test::dm::text(
+              odbcpp::test::dm::Deviation::ManagerOdbcVersion, "03.80")},
           {SQL_DBMS_NAME, redshift_profile_ ? "Amazon Redshift" : "PostgreSQL"},
           {SQL_IDENTIFIER_QUOTE_CHAR, "\""},
           {SQL_CATALOG_NAME_SEPARATOR, "."},
@@ -280,11 +283,24 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
               SQLGetInfoW(connection_, type, wide_value, sizeof(wide_value),
                           &wide_bytes))
         << type;
-    EXPECT_EQ(static_cast<SQLSMALLINT>(expected.size() * sizeof(SQLWCHAR)),
+    // iODBC 3.52.16 reports its wide SQL_ODBC_VER length in characters.
+    const bool length_in_characters =
+        type == SQL_ODBC_VER &&
+        odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::OdbcVersionWideLengthInCharacters);
+    EXPECT_EQ(static_cast<SQLSMALLINT>(
+                  expected.size() * (length_in_characters ? 1 : sizeof(SQLWCHAR))),
               wide_bytes)
         << type;
-    for (std::size_t index = 0; index < expected.size(); ++index) {
-      EXPECT_EQ(static_cast<SQLWCHAR>(expected[index]), wide_value[index])
+    // unixODBC 2.3.14 answers SQL_XOPEN_CLI_YEAR itself, differently for
+    // the wide call.
+    const std::string_view wide_expected =
+        type == SQL_XOPEN_CLI_YEAR
+            ? std::string_view(odbcpp::test::dm::text(
+                  odbcpp::test::dm::Deviation::ManagerWideXopenCliYear, expected.data()))
+            : expected;
+    for (std::size_t index = 0; index < wide_expected.size(); ++index) {
+      EXPECT_EQ(static_cast<SQLWCHAR>(wide_expected[index]), wide_value[index])
           << type << " at " << index;
     }
     EXPECT_EQ(static_cast<SQLWCHAR>(0), wide_value[expected.size()]) << type;
@@ -629,7 +645,11 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
                        sizeof(driver_name), &required));
   EXPECT_EQ(0, std::memcmp(driver_name, ODBCPP_EXPECT_DRIVER_FILENAME, 4));
   EXPECT_EQ(0, driver_name[4]);
-  EXPECT_EQ(sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1, static_cast<std::size_t>(required));
+  // iODBC 3.52.16 reports the ANSI characters it copied, not the total.
+  EXPECT_EQ(odbcpp::test::dm::value(odbcpp::test::dm::Deviation::AnsiGetInfoStringLengths,
+                                    sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1,
+                                    sizeof(driver_name) - 1),
+            static_cast<std::size_t>(required));
   EXPECT_EQ("01004", diagnostic_state(connection_));
 
   SQLWCHAR wide_driver_name[5]{};
@@ -646,7 +666,11 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
   required = -1;
   EXPECT_EQ(SQL_SUCCESS,
             SQLGetInfo(connection_, SQL_DRIVER_NAME, nullptr, 0, &required));
-  EXPECT_EQ(sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1, static_cast<std::size_t>(required));
+  // iODBC 3.52.16 hands the ANSI caller the driver's wide byte count.
+  EXPECT_EQ(odbcpp::test::dm::value(odbcpp::test::dm::Deviation::AnsiGetInfoStringLengths,
+                                    sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1,
+                                    (sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1) * sizeof(SQLWCHAR)),
+            static_cast<std::size_t>(required));
   wide_required = -1;
   EXPECT_EQ(SQL_SUCCESS,
             SQLGetInfoW(connection_, SQL_DRIVER_NAME, nullptr, 0,
@@ -728,9 +752,25 @@ TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
                             &supported));
   EXPECT_EQ(SQL_FALSE, supported);
   EXPECT_EQ("HY095", diagnostic_state(connection_));
-  EXPECT_EQ(SQL_ERROR,
+  // The manager accepts a NULL output without calling the driver. iODBC
+  // 3.52.16 leaves the previous call's diagnostic; unixODBC 2.3.14 clears it.
+  const bool null_output_accepted = odbcpp::test::dm::deviates(
+      odbcpp::test::dm::Deviation::GetFunctionsAcceptsNullOutput);
+  EXPECT_EQ(null_output_accepted ? SQL_SUCCESS : SQL_ERROR,
             SQLGetFunctions(connection_, SQL_API_SQLCONNECT, nullptr));
-  EXPECT_EQ("HY009", diagnostic_state(connection_));
+  if (!null_output_accepted) {
+    EXPECT_EQ("HY009", diagnostic_state(connection_));
+  } else {
+    const std::string left = odbcpp::test::dm::text(
+        odbcpp::test::dm::Deviation::GetFunctionsAcceptsNullOutput, "");
+    if (left.empty()) {
+      SQLCHAR state[6]{};
+      EXPECT_EQ(SQL_NO_DATA, odbcpp::test::diag_rec(SQL_HANDLE_DBC, connection_, 1, state,
+                                                    nullptr, nullptr, 0, nullptr));
+    } else {
+      EXPECT_EQ(left, diagnostic_state(connection_));
+    }
+  }
 }
 
 TEST_F(GetInfoIntegrationTest, FunctionSupportHandlesUnalignedOutput) {
