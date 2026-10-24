@@ -36,6 +36,11 @@
 namespace rs::odbc {
 namespace detail { struct MetadataEpochIdentity {}; struct PendingInputSessionIdentity {}; }
 using rs::core::database::SqlTranslationError;
+
+std::string ODBCHandle::valid_diagnostic_text(const std::string& message) {
+  return rs::util::replace_invalid_utf8(message);
+}
+
 namespace {
 
 std::atomic<std::uint64_t> next_connection_id{1};

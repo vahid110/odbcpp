@@ -2869,11 +2869,17 @@ static SQLRETURN SQLColAttributeW_impl(
   const auto text_result =
       stmt->col_attribute_text(column_number, field_identifier, text);
   if (text_result != SQL_SUCCESS) return text_result;
-  // Zero-capacity non-NULL success is an asserted existing W policy.
-  return write_wide_bytes_output(
+  const auto result = write_wide_bytes_output(
       stmt, text, static_cast<SQLWCHAR*>(character_attribute),
       character_attribute ? buffer_length : 0, string_length,
       "Column attribute was truncated");
+  // Zero capacity cannot hold the terminator; empty text is not truncated.
+  if (result == SQL_SUCCESS && character_attribute && buffer_length == 0 &&
+      !text.empty()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED, "Column attribute was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return result;
 }
 
 static SQLRETURN SQLPrepare_impl(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {

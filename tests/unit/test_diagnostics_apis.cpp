@@ -476,7 +476,7 @@ TEST_F(DiagnosticsTest, SQLErrorSelectsHandlesAndAdvancesOnlyOnSuccess) {
                        0, nullptr));
 }
 
-TEST_F(DiagnosticsTest, SQLErrorW_UnconvertibleRecordDoesNotBlockLaterLegacyRecords) {
+TEST_F(DiagnosticsTest, SQLErrorW_MalformedPostedTextIsReplacedAndLegacyRecordsDrain) {
     auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
         rs::odbc::ODBCStatement>(hstmt);
     ASSERT_NE(nullptr, statement);
@@ -484,27 +484,27 @@ TEST_F(DiagnosticsTest, SQLErrorW_UnconvertibleRecordDoesNotBlockLaterLegacyReco
     statement->set_error("22018", malformed, 71);
     statement->add_diagnostic("01000", 72, "second diagnostic");
 
-    // The record's wide text policy is unchanged: SQL_ERROR, with SQLSTATE and
-    // native error written and the message buffer and length untouched.
+    // Owner decision: posting replaces each invalid byte with U+FFFD, so the
+    // wide reader succeeds with the SQLSTATE, native error and replaced text.
     SQLWCHAR wide_state[6]{};
     SQLINTEGER native_error = -1;
     std::array<SQLWCHAR, 32> message{};
     message.fill(0x5a5a);
     SQLSMALLINT length = -1;
-    EXPECT_EQ(SQL_ERROR,
+    ASSERT_EQ(SQL_SUCCESS,
               SQLErrorW(nullptr, nullptr, hstmt, wide_state, &native_error,
                         message.data(), static_cast<SQLSMALLINT>(message.size()),
                         &length));
     EXPECT_EQ(71, native_error);
-    EXPECT_EQ(-1, length);
-    EXPECT_EQ(0x5a5a, message[0]);
+    EXPECT_EQ(4, length);
+    const SQLWCHAR replaced[]{0xfffd, '(', 0xfffd, '(', 0};
+    EXPECT_EQ(0, std::memcmp(message.data(), replaced, sizeof(replaced)));
     constexpr char first_state[] = "22018";
     for (std::size_t index = 0; index < sizeof(first_state); ++index) {
         EXPECT_EQ(static_cast<SQLWCHAR>(first_state[index]), wide_state[index]);
     }
 
-    // Retrying can never convert that record, so the legacy cursor moves on
-    // and still reaches the next record and then SQL_NO_DATA.
+    // The legacy cursor reaches the next record and then SQL_NO_DATA.
     ASSERT_EQ(SQL_SUCCESS,
               SQLErrorW(nullptr, nullptr, hstmt, wide_state, &native_error,
                         message.data(), static_cast<SQLSMALLINT>(message.size()),
@@ -535,6 +535,51 @@ TEST_F(DiagnosticsTest, SQLErrorW_UnconvertibleRecordDoesNotBlockLaterLegacyReco
     EXPECT_EQ(SQL_NO_DATA,
               SQLErrorW(nullptr, nullptr, hstmt, wide_state, nullptr, nullptr, 0,
                         nullptr));
+}
+
+TEST_F(DiagnosticsTest, EveryPostingPathReplacesInvalidUtf8SoWideReadsSucceed) {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, statement);
+    // A valid supplementary scalar followed by one invalid byte.
+    const std::string text("\xf0\x9f\x98\x80\xff", 5);
+    statement->set_error("HY000", text, 91);
+    statement->add_diagnostic("01000", 92, text);
+    statement->add_attributed_diagnostic("01S01", text, 1, 2, 93);
+    ASSERT_EQ(3u, statement->get_diagnostic_count());
+
+    constexpr SQLSMALLINT units = sizeof(SQLWCHAR) == 2 ? 3 : 2;
+    for (SQLSMALLINT record = 1; record <= 3; ++record) {
+        SCOPED_TRACE(record);
+        // A state-only query no longer fails on the stored text.
+        SQLWCHAR state[6]{};
+        SQLINTEGER native = -1;
+        SQLSMALLINT length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, record, state, &native,
+                                              nullptr, 0, &length));
+        EXPECT_EQ(90 + record, native);
+        EXPECT_EQ(units, length);
+
+        SQLWCHAR message[8];
+        std::fill(std::begin(message), std::end(message), SQLWCHAR('x'));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, record, state, &native,
+                                              message, 8, &length));
+        if constexpr (sizeof(SQLWCHAR) == 2) {
+            const SQLWCHAR expected[]{0xd83d, 0xde00, 0xfffd, 0};
+            EXPECT_EQ(0, std::memcmp(message, expected, sizeof(expected)));
+        } else {
+            const SQLWCHAR expected[]{static_cast<SQLWCHAR>(0x1f600), 0xfffd, 0};
+            EXPECT_EQ(0, std::memcmp(message, expected, sizeof(expected)));
+        }
+
+        SQLCHAR narrow[16]{};
+        SQLSMALLINT narrow_length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, record, nullptr, nullptr,
+                                             narrow, sizeof(narrow), &narrow_length));
+        EXPECT_EQ(7, narrow_length);
+        EXPECT_STREQ("\xf0\x9f\x98\x80\xef\xbf\xbd", reinterpret_cast<char*>(narrow));
+    }
+    EXPECT_EQ(3u, statement->get_diagnostic_count());
 }
 
 TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidParameters) {
@@ -850,7 +895,7 @@ TEST_F(DiagnosticsTest, SQLGetDiagRec_WideZeroCapacityAndUnicodeRetryBoundaries)
     EXPECT_EQ(1u, statement->get_diagnostic_count());
 }
 
-TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidUtf8WideReadPreservesAnsiAndOtherRecords) {
+TEST_F(DiagnosticsTest, SQLGetDiagRec_MalformedPostedTextIsReplacedForWideAndAnsiReaders) {
     auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
         rs::odbc::ODBCStatement>(hstmt);
     ASSERT_NE(nullptr, statement);
@@ -858,38 +903,42 @@ TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidUtf8WideReadPreservesAnsiAndOtherRe
     statement->set_error("22018", malformed, 71);
     statement->add_diagnostic("01000", 72, "second diagnostic");
 
+    // Owner decision: posting stores U+FFFD for each invalid byte, so every
+    // reader converts; ANSI receives the replacement as UTF-8 bytes.
     std::array<SQLWCHAR, 5> wide_message{};
     wide_message.fill(0x5a5a);
     SQLWCHAR wide_state[6]{};
     SQLINTEGER native_error = -1;
     SQLSMALLINT required = -1;
-    EXPECT_EQ(SQL_ERROR,
+    EXPECT_EQ(SQL_SUCCESS,
               SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, 1, wide_state,
                              &native_error, wide_message.data(), 5, &required));
-    EXPECT_EQ((std::array<SQLWCHAR, 5>{0x5a5a, 0x5a5a, 0x5a5a, 0x5a5a, 0x5a5a}),
-              wide_message);
-    EXPECT_EQ(-1, required);
+    EXPECT_EQ((std::array<SQLWCHAR, 5>{0xfffd, '(', 0xfffd, '(', 0}), wide_message);
+    EXPECT_EQ(4, required);
     EXPECT_EQ(71, native_error);
     EXPECT_EQ(2u, statement->get_diagnostic_count());
     constexpr char expected_state[] = "22018";
     for (std::size_t index = 0; index < sizeof(expected_state); ++index) {
         EXPECT_EQ(static_cast<SQLWCHAR>(expected_state[index]), wide_state[index]);
     }
-    EXPECT_EQ(SQL_ERROR,
+    required = -1;
+    EXPECT_EQ(SQL_SUCCESS,
               SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
                              nullptr, 0, &required));
+    EXPECT_EQ(4, required);
     EXPECT_EQ(2u, statement->get_diagnostic_count());
 
+    const std::string replaced("\xEF\xBF\xBD(\xEF\xBF\xBD(");
     SQLCHAR state[6]{};
-    std::array<SQLCHAR, 5> ansi_message{};
+    std::array<SQLCHAR, 9> ansi_message{};
     EXPECT_EQ(SQL_SUCCESS,
               SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, &native_error,
-                            ansi_message.data(), 5, &required));
-    EXPECT_EQ(0, std::memcmp(ansi_message.data(), malformed.data(), 4));
-    EXPECT_EQ(0, ansi_message[4]);
+                            ansi_message.data(), 9, &required));
+    EXPECT_EQ(0, std::memcmp(ansi_message.data(), replaced.data(), replaced.size()));
+    EXPECT_EQ(0, ansi_message[8]);
     EXPECT_STREQ("22018", reinterpret_cast<const char*>(state));
     EXPECT_EQ(71, native_error);
-    EXPECT_EQ(4, required);
+    EXPECT_EQ(8, required);
 
     std::array<SQLWCHAR, 18> second_message{};
     EXPECT_EQ(SQL_SUCCESS,
@@ -901,7 +950,7 @@ TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidUtf8WideReadPreservesAnsiAndOtherRe
     for (std::size_t index = 0; index < sizeof(second_expected); ++index) {
         EXPECT_EQ(static_cast<SQLWCHAR>(second_expected[index]), second_message[index]);
     }
-    EXPECT_EQ(SQL_ERROR,
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
               SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
                              wide_message.data(), 0, nullptr));
     EXPECT_EQ(2u, statement->get_diagnostic_count());
@@ -1219,9 +1268,11 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidWideTextPreservesHeaderAndRecords
     statement->set_statement_diagnostic_header(
         31, 19, malformed, SQL_DIAG_SELECT_CURSOR);
     statement->set_last_return_code(SQL_ERROR);
-    for (SQLSMALLINT record : {SQLSMALLINT{0}, SQLSMALLINT{1}}) {
-        const auto identifier = static_cast<SQLSMALLINT>(record == 0
-            ? SQL_DIAG_DYNAMIC_FUNCTION : SQL_DIAG_MESSAGE_TEXT);
+    // Owner decision: posted record text is replaced with U+FFFD, so only the
+    // header field (set directly by the fixture) still carries invalid bytes.
+    const std::string replaced("\xEF\xBF\xBD(\xEF\xBF\xBD(");
+    for (SQLSMALLINT record : {SQLSMALLINT{0}}) {
+        const auto identifier = static_cast<SQLSMALLINT>(SQL_DIAG_DYNAMIC_FUNCTION);
         SCOPED_TRACE(record);
         for (SQLSMALLINT capacity : {SQLSMALLINT{0}, SQLSMALLINT{32}}) {
             std::array<SQLWCHAR, 32> output{};
@@ -1244,7 +1295,7 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidWideTextPreservesHeaderAndRecords
             ASSERT_TRUE(second.has_value());
             EXPECT_EQ("22018", first->sqlstate);
             EXPECT_EQ(71, first->native_error);
-            EXPECT_EQ(malformed, first->message_text);
+            EXPECT_EQ(replaced, first->message_text);
             EXPECT_EQ("01000", second->sqlstate);
             EXPECT_EQ(72, second->native_error);
             EXPECT_EQ("valid second", second->message_text);
@@ -1261,11 +1312,19 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidWideTextPreservesHeaderAndRecords
             EXPECT_EQ(4, length);
             EXPECT_EQ(0, std::memcmp(ansi.data(), malformed.data(), malformed.size()));
             EXPECT_EQ(0, ansi[4]);
+            std::array<SQLCHAR, 9> record_text{};
             EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(
                 SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
-                ansi.data(), static_cast<SQLSMALLINT>(ansi.size()), &length));
-            EXPECT_EQ(4, length);
-            EXPECT_EQ(0, std::memcmp(ansi.data(), malformed.data(), malformed.size()));
+                record_text.data(), static_cast<SQLSMALLINT>(record_text.size()), &length));
+            EXPECT_EQ(8, length);
+            EXPECT_EQ(0, std::memcmp(record_text.data(), replaced.data(), replaced.size()));
+            output.fill(0);
+            EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+                SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+                output.data(), static_cast<SQLSMALLINT>(sizeof(output)), &length));
+            EXPECT_EQ(4 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+            EXPECT_EQ(static_cast<SQLWCHAR>(0xfffd), output[0]);
+            EXPECT_EQ(static_cast<SQLWCHAR>('('), output[1]);
             output.fill(0);
             EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
                 SQL_HANDLE_STMT, hstmt, 2, SQL_DIAG_MESSAGE_TEXT,
@@ -1288,14 +1347,14 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_InvalidWideTextPreservesHeaderAndRecords
     EXPECT_EQ(13 * sizeof(SQLWCHAR), length);
     EXPECT_EQ(static_cast<SQLWCHAR>('S'), recovered[0]);
     EXPECT_EQ(0, recovered[13]);
-    EXPECT_EQ(SQL_ERROR, SQLGetDiagFieldW(
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
         SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
         nullptr, 0, &length));
-    EXPECT_EQ(13 * sizeof(SQLWCHAR), length);
+    EXPECT_EQ(4 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
     EXPECT_EQ(2u, statement->get_diagnostic_count());
     const auto first = statement->get_diagnostic_record(1);
     ASSERT_TRUE(first.has_value());
-    EXPECT_EQ(malformed, first->message_text);
+    EXPECT_EQ(replaced, first->message_text);
     EXPECT_EQ("SELECT CURSOR", statement->get_diagnostic_header().dynamic_function);
 }
 

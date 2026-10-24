@@ -4425,9 +4425,15 @@ TEST_F(BackendContractTest, WideMetadataZeroCapacityNonNullBuffersReportTruncati
             SQLDescribeColW(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));
   EXPECT_EQ(units, length);
 
-  // SQLColAttributeW non-NULL zero capacity keeps its asserted existing
-  // policy (ColumnAttributeNullCharacterPreservesValidationAndNumericDomains).
+  // Owner decision: SQLColAttributeW follows the truncation rule, like ANSI.
   SQLSMALLINT bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, name, 0, &bytes, nullptr));
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(bytes_expected, bytes);
+  EXPECT_EQ(SQLWCHAR('x'), name[0]);
+
+  bytes = -1;
   ASSERT_EQ(SQL_SUCCESS,
             SQLColAttributeW(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
   EXPECT_EQ(bytes_expected, bytes);
@@ -4812,9 +4818,9 @@ TEST_F(BackendContractTest, WideGetDataChunksSplitCombiningSequencesAtScalarBoun
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
 }
 
-TEST_F(BackendContractTest, AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateAndNative) {
+TEST_F(BackendContractTest, AnsiDsnEchoReplacesInvalidBytesSoWideDiagnosticsSucceed) {
   // An ANSI application in a legacy code page passes Latin-1 bytes (é = 0xE9).
-  // The driver echoes the DSN into its own message without UTF-8 replacement.
+  // Unix echoes the DSN into its message; posting replaces the byte with U+FFFD.
   SQLCHAR dsn[] = "caf\xe9";
   ASSERT_EQ(SQL_ERROR, SQLConnect(dbc, dsn, SQL_NTS, nullptr, 0, nullptr, 0));
   EXPECT_EQ(0, seen->created);
@@ -4840,22 +4846,25 @@ TEST_F(BackendContractTest, AnsiDsnEchoKeepsRawBytesAndWideDiagnosticsKeepStateA
   EXPECT_EQ(narrow_length, length);
 #else
   EXPECT_STREQ("08001", reinterpret_cast<char*>(narrow_state));
-  EXPECT_STREQ("DSN 'caf\xe9' not found", reinterpret_cast<char*>(narrow_message));
+  EXPECT_STREQ("DSN 'caf\xef\xbf\xbd' not found", reinterpret_cast<char*>(narrow_message));
+  EXPECT_EQ(22, narrow_length);
 
-  // The wide reader keeps the asserted unconvertible-record policy: SQL_ERROR,
-  // with SQLSTATE and native error written and message and length untouched.
+  // Owner decision: the record is valid UTF-8, so the wide reader succeeds.
   SQLWCHAR wide_state[6]{};
   SQLINTEGER native = -1;
   SQLWCHAR message[64];
   std::fill(std::begin(message), std::end(message), SQLWCHAR(0x5a5a));
   SQLSMALLINT length = -1;
-  EXPECT_EQ(SQL_ERROR, SQLGetDiagRecW(SQL_HANDLE_DBC, dbc, 1, wide_state, &native,
-                                      message, 64, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_DBC, dbc, 1, wide_state, &native,
+                                        message, 64, &length));
   const SQLWCHAR expected_state[]{'0', '8', '0', '0', '1', 0};
   EXPECT_EQ(0, std::memcmp(wide_state, expected_state, sizeof(expected_state)));
   EXPECT_EQ(0, native);
-  EXPECT_EQ(-1, length);
-  EXPECT_EQ(0x5a5a, message[0]);
+  EXPECT_EQ(20, length);
+  EXPECT_EQ(SQLWCHAR('f'), message[7]);
+  EXPECT_EQ(SQLWCHAR(0xfffd), message[8]);
+  EXPECT_EQ(SQLWCHAR('\''), message[9]);
+  EXPECT_EQ(SQLWCHAR(0), message[20]);
 #endif
 }
 
@@ -16093,9 +16102,11 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNu
       EXPECT_EQ("HY090", state());
       EXPECT_EQ(before, output);
     }
-    EXPECT_EQ(wide ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO,
+    // Owner decision: a real zero-capacity buffer truncates for ANSI and wide.
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
         attribute(1, SQL_DESC_NAME, output.data(), 0, &length, &unused_numeric));
-    EXPECT_EQ(before, output); // Preserve the existing real zero-capacity policies.
+    EXPECT_EQ("01004", state());
+    EXPECT_EQ(before, output);
     const auto unit = wide ? sizeof(SQLWCHAR) : std::size_t{1};
     EXPECT_EQ(6 * unit, static_cast<std::size_t>(length));
     EXPECT_EQ(SQL_SUCCESS_WITH_INFO, attribute(1, SQL_DESC_NAME, output.data(),

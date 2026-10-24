@@ -81,6 +81,10 @@ public:
   
   HandleType get_type() const { return type_; }
   
+  // Records hold valid UTF-8 only: echoed ANSI input or server text may carry
+  // invalid bytes, which become U+FFFD so W readers always convert.
+  static std::string valid_diagnostic_text(const std::string& message);
+
   // Diagnostic record management
   void clear_diagnostics() {
     std::lock_guard lock(diagnostics_mutex_);
@@ -91,7 +95,7 @@ public:
   
   void add_diagnostic(const std::string& sqlstate, SQLINTEGER native_error, const std::string& message) {
     std::lock_guard lock(diagnostics_mutex_);
-    diagnostic_records_.emplace_back(sqlstate, native_error, message);
+    diagnostic_records_.emplace_back(sqlstate, native_error, valid_diagnostic_text(message));
   }
   
   // Rowset diagnostics are ODBC records, not a source-sized scratch array.
@@ -101,7 +105,7 @@ public:
     std::lock_guard lock(diagnostics_mutex_);
     if (diagnostic_records_.size() >= static_cast<std::size_t>(
             (std::numeric_limits<SQLSMALLINT>::max)())) return;
-    diagnostic_records_.emplace_back(state, native_error, message);
+    diagnostic_records_.emplace_back(state, native_error, valid_diagnostic_text(message));
     diagnostic_records_.back().row_number = row;
     diagnostic_records_.back().column_number = static_cast<SQLINTEGER>(column);
   }
@@ -109,7 +113,7 @@ public:
   void set_error(const std::string& sqlstate, const std::string& message, SQLINTEGER native_error = 0) {
     std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
-    diagnostic_records_.emplace_back(sqlstate, native_error, message);
+    diagnostic_records_.emplace_back(sqlstate, native_error, valid_diagnostic_text(message));
     legacy_diagnostic_record_ = 1;
   }
   
