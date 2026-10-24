@@ -1,4 +1,5 @@
 #include "../test_live_package_inputs.h"
+#include "../redshift_warm_up.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
@@ -22,9 +23,11 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 
 namespace {
 using odbcpp::test::live_package_inputs::fixture_smallint_length;
+namespace warm_up = odbcpp::test::redshift_warm_up;
 // A whole-second ODBC timeout must never round an expired/subsecond budget
 // up into a fresh operation. This is fixture admission, not a driver timeout.
 constexpr std::uintptr_t checkpoint_timeout_seconds(std::chrono::milliseconds remaining) {
@@ -79,37 +82,62 @@ constexpr auto schema_diagnostic_oversize=[] {
 static_assert(safe_schema_refusal_label(std::string_view(schema_diagnostic_oversize.data(),
     schema_diagnostic_oversize.size()))=="unknown");
 
-// One bounded connect plus SELECT 1; every handle is released before returning.
-bool warm_up_attempt(std::string connection_string, std::uintptr_t seconds) {
-  SQLHENV environment = SQL_NULL_HENV;
-  SQLHDBC connection = SQL_NULL_HDBC;
-  SQLHSTMT statement = SQL_NULL_HSTMT;
-  bool connected = false;
-  bool ready = false;
-  const auto timeout = reinterpret_cast<SQLPOINTER>(seconds);
-  if (SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment) == SQL_SUCCESS &&
-      SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
-          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0) == SQL_SUCCESS &&
-      SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection) == SQL_SUCCESS &&
-      SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, timeout, 0) == SQL_SUCCESS &&
-      SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT, timeout, 0) == SQL_SUCCESS) {
-    const auto connect = SQLDriverConnect(connection, nullptr,
-        reinterpret_cast<SQLCHAR*>(connection_string.data()), SQL_NTS, nullptr, 0, nullptr,
+// The ODBC side of one warm-up attempt. Each phase applies only the seconds it
+// is given; the destructor releases every handle on every path.
+class WarmUpOdbcBoundary {
+public:
+  explicit WarmUpOdbcBoundary(std::string connection_string)
+      : connection_string_(std::move(connection_string)) {}
+  WarmUpOdbcBoundary(const WarmUpOdbcBoundary&) = delete;
+  WarmUpOdbcBoundary& operator=(const WarmUpOdbcBoundary&) = delete;
+  ~WarmUpOdbcBoundary() {
+    if (statement_ != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, statement_);
+    if (connected_) SQLDisconnect(connection_);
+    if (connection_ != SQL_NULL_HDBC) SQLFreeHandle(SQL_HANDLE_DBC, connection_);
+    if (environment_ != SQL_NULL_HENV) SQLFreeHandle(SQL_HANDLE_ENV, environment_);
+  }
+
+  bool connect(std::uintptr_t seconds) {
+    const auto timeout = reinterpret_cast<SQLPOINTER>(seconds);
+    if (SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment_) != SQL_SUCCESS ||
+        SQLSetEnvAttr(environment_, SQL_ATTR_ODBC_VERSION,
+            reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0) != SQL_SUCCESS ||
+        SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_) != SQL_SUCCESS ||
+        SQLSetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT, timeout, 0) != SQL_SUCCESS ||
+        SQLSetConnectAttr(connection_, SQL_ATTR_CONNECTION_TIMEOUT, timeout, 0) != SQL_SUCCESS) {
+      return false;
+    }
+    const auto result = SQLDriverConnect(connection_, nullptr,
+        reinterpret_cast<SQLCHAR*>(connection_string_.data()), SQL_NTS, nullptr, 0, nullptr,
         SQL_DRIVER_NOPROMPT);
-    connected = connect == SQL_SUCCESS || connect == SQL_SUCCESS_WITH_INFO;
+    connected_ = result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
+    return connected_;
   }
-  if (connected && SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement) == SQL_SUCCESS &&
-      SQLSetStmtAttr(statement, SQL_ATTR_QUERY_TIMEOUT, timeout, 0) == SQL_SUCCESS) {
-    ready = SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")),
-                          SQL_NTS) == SQL_SUCCESS &&
-            SQLFetch(statement) == SQL_SUCCESS;
+
+  bool execute(std::uintptr_t seconds) {
+    return apply_budget(seconds, true) &&
+           SQLExecDirect(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")),
+                         SQL_NTS) == SQL_SUCCESS;
   }
-  if (statement != SQL_NULL_HSTMT) SQLFreeHandle(SQL_HANDLE_STMT, statement);
-  if (connected) SQLDisconnect(connection);
-  if (connection != SQL_NULL_HDBC) SQLFreeHandle(SQL_HANDLE_DBC, connection);
-  if (environment != SQL_NULL_HENV) SQLFreeHandle(SQL_HANDLE_ENV, environment);
-  return ready;
-}
+
+  bool fetch(std::uintptr_t seconds) {
+    return apply_budget(seconds, false) && SQLFetch(statement_) == SQL_SUCCESS;
+  }
+
+private:
+  bool apply_budget(std::uintptr_t seconds, bool allocate) {
+    const auto timeout = reinterpret_cast<SQLPOINTER>(seconds);
+    return SQLSetConnectAttr(connection_, SQL_ATTR_CONNECTION_TIMEOUT, timeout, 0) == SQL_SUCCESS &&
+           (!allocate || SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_) == SQL_SUCCESS) &&
+           SQLSetStmtAttr(statement_, SQL_ATTR_QUERY_TIMEOUT, timeout, 0) == SQL_SUCCESS;
+  }
+
+  std::string connection_string_;
+  SQLHENV environment_{SQL_NULL_HENV};
+  SQLHDBC connection_{SQL_NULL_HDBC};
+  SQLHSTMT statement_{SQL_NULL_HSTMT};
+  bool connected_{false};
+};
 
 // Opt-in through ODBCPP_REDSHIFT_WARMUP_SECONDS (1..300). Runs once per process
 // before any fixture window starts, so an idle Serverless workgroup's cold start
@@ -142,14 +170,14 @@ public:
     int attempts = 0;
     bool ready = false;
     while (!ready) {
-      const auto remaining =
-          std::chrono::duration_cast<std::chrono::seconds>(end - std::chrono::steady_clock::now());
-      if (remaining.count() <= 0) {
+      if (warm_up::phase_seconds(end, warm_up::Clock::now(), 30) == 0) {
         break;
       }
       ++attempts;
-      ready = warm_up_attempt(*connection,
-          static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining.count(), 30)));
+      {
+        WarmUpOdbcBoundary boundary(*connection);  // Released before any pause.
+        ready = warm_up::attempt([] { return warm_up::Clock::now(); }, end, 30, boundary);
+      }
       if (!ready && std::chrono::steady_clock::now() + std::chrono::seconds{2} < end) {
         std::this_thread::sleep_for(std::chrono::seconds{2});
       }

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -33,27 +34,154 @@ static_assert(sizeof(SQLWCHAR) == ODBCPP_EXPECT_DM_SQLWCHAR_SIZE,
 // overrides it for local runs. Connection strings are never printed.
 namespace {
 
-std::string environment_value(const char* variable) {
-#ifdef _WIN32
-  char* value = nullptr;
-  std::size_t size = 0;
-  const auto status = _dupenv_s(&value, &size, variable);
-  const std::unique_ptr<char, decltype(&std::free)> owned(value, &std::free);
-  if (status != 0) {
-    throw std::runtime_error(std::string("failed to read environment variable: ") + variable);
+// One Unicode scalar as UTF-8.
+void append_utf8(std::string& output, std::uint32_t code_point) {
+  if (code_point < 0x80) {
+    output.push_back(static_cast<char>(code_point));
+  } else if (code_point < 0x800) {
+    output.push_back(static_cast<char>(0xc0 | (code_point >> 6)));
+    output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+  } else if (code_point < 0x10000) {
+    output.push_back(static_cast<char>(0xe0 | (code_point >> 12)));
+    output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+  } else {
+    output.push_back(static_cast<char>(0xf0 | (code_point >> 18)));
+    output.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
   }
-  return value ? value : "";
-#else
-  const char* value = std::getenv(variable);
-  return value ? value : "";
-#endif
 }
 
+// Strict UTF-8 to Unicode scalars. Overlong forms, surrogates, values above
+// U+10FFFF, stray continuation bytes and truncated sequences are refused.
+std::optional<std::u32string> decode_utf8(std::string_view input) {
+  std::u32string output;
+  for (std::size_t index = 0; index < input.size();) {
+    const auto lead = static_cast<unsigned char>(input[index]);
+    if (lead < 0x80) {
+      output.push_back(lead);
+      ++index;
+      continue;
+    }
+    std::size_t length = 0;
+    std::uint32_t code_point = 0;
+    std::uint32_t minimum = 0;
+    if ((lead & 0xe0) == 0xc0) {
+      length = 2;
+      code_point = lead & 0x1f;
+      minimum = 0x80;
+    } else if ((lead & 0xf0) == 0xe0) {
+      length = 3;
+      code_point = lead & 0x0f;
+      minimum = 0x800;
+    } else if ((lead & 0xf8) == 0xf0) {
+      length = 4;
+      code_point = lead & 0x07;
+      minimum = 0x10000;
+    } else {
+      return std::nullopt;
+    }
+    if (input.size() - index < length) return std::nullopt;
+    for (std::size_t offset = 1; offset < length; ++offset) {
+      const auto next = static_cast<unsigned char>(input[index + offset]);
+      if ((next & 0xc0) != 0x80) return std::nullopt;
+      code_point = (code_point << 6) | (next & 0x3f);
+    }
+    if (code_point < minimum || code_point > 0x10ffff ||
+        (code_point >= 0xd800 && code_point <= 0xdfff)) {
+      return std::nullopt;
+    }
+    output.push_back(static_cast<char32_t>(code_point));
+    index += length;
+  }
+  return output;
+}
+
+#ifdef _WIN32
+// Strict UTF-16 to Unicode scalars; unpaired surrogates are refused.
+std::optional<std::u32string> decode_utf16(std::wstring_view input) {
+  std::u32string output;
+  for (std::size_t index = 0; index < input.size(); ++index) {
+    const auto unit = static_cast<std::uint32_t>(input[index]);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return std::nullopt;
+    if (unit < 0xd800 || unit > 0xdbff) {
+      output.push_back(static_cast<char32_t>(unit));
+      continue;
+    }
+    if (index + 1 == input.size()) return std::nullopt;
+    const auto low = static_cast<std::uint32_t>(input[++index]);
+    if (low < 0xdc00 || low > 0xdfff) return std::nullopt;
+    output.push_back(static_cast<char32_t>(0x10000 + ((unit - 0xd800) << 10) + (low - 0xdc00)));
+  }
+  return output;
+}
+#endif
+
+constexpr std::string_view kDefaultConnection =
+    "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
+    "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=off;";
+
+// The override is Unicode text: UTF-8 bytes on POSIX and the UTF-16
+// environment block on Windows, never the ANSI code page. Both W and A inputs
+// are built from these complete scalars. The content is never printed.
+std::u32string connection_text() {
+#ifdef _WIN32
+  wchar_t* value = nullptr;
+  std::size_t size = 0;
+  const auto status = _wdupenv_s(&value, &size, L"ODBCPP_DM_UNICODE_CONNECTION");
+  const std::unique_ptr<wchar_t, decltype(&std::free)> owned(value, &std::free);
+  if (status != 0) {
+    throw std::runtime_error("failed to read ODBCPP_DM_UNICODE_CONNECTION");
+  }
+  const auto decoded = value && *value ? decode_utf16(value) : decode_utf8(kDefaultConnection);
+#else
+  const char* value = std::getenv("ODBCPP_DM_UNICODE_CONNECTION");
+  const auto decoded = decode_utf8(value && *value ? std::string_view(value) : kDefaultConnection);
+#endif
+  if (!decoded) {
+    throw std::runtime_error("ODBCPP_DM_UNICODE_CONNECTION is not valid Unicode text");
+  }
+  return *decoded;
+}
+
+// The ANSI form an application would pass: the active code page on Windows,
+// UTF-8 elsewhere. Text the code page cannot represent is refused.
 std::string connection_string() {
-  const auto configured = environment_value("ODBCPP_DM_UNICODE_CONNECTION");
-  if (!configured.empty()) return configured;
-  return "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
-         "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=off;";
+  const auto text = connection_text();
+#ifdef _WIN32
+  std::wstring units;
+  for (const auto character : text) {
+    const auto code_point = static_cast<std::uint32_t>(character);
+    if (code_point > 0xffff) {
+      units.push_back(static_cast<wchar_t>(0xd800 + ((code_point - 0x10000) >> 10)));
+      units.push_back(static_cast<wchar_t>(0xdc00 + ((code_point - 0x10000) & 0x3ff)));
+    } else {
+      units.push_back(static_cast<wchar_t>(code_point));
+    }
+  }
+  if (units.empty()) return {};
+  // CP_UTF8 accepts neither best-fit flags nor a default-character report.
+  const bool utf8_code_page = GetACP() == CP_UTF8;
+  BOOL used_default = FALSE;
+  const auto flags = utf8_code_page ? 0 : WC_NO_BEST_FIT_CHARS;
+  auto* const report = utf8_code_page ? nullptr : &used_default;
+  const int size = WideCharToMultiByte(CP_ACP, flags, units.data(), static_cast<int>(units.size()),
+                                       nullptr, 0, nullptr, report);
+  std::string output(static_cast<std::size_t>(size > 0 ? size : 0), '\0');
+  if (size <= 0 ||
+      WideCharToMultiByte(CP_ACP, flags, units.data(), static_cast<int>(units.size()),
+                          output.data(), size, nullptr, report) != size ||
+      used_default) {
+    throw std::runtime_error(
+        "ODBCPP_DM_UNICODE_CONNECTION is not representable in the ANSI code page");
+  }
+  return output;
+#else
+  std::string output;
+  for (const auto character : text) append_utf8(output, static_cast<std::uint32_t>(character));
+  return output;
+#endif
 }
 
 // UTF-32 to the manager's SQLWCHAR form, surrogate pairs for 2-byte units.
@@ -95,21 +223,7 @@ std::string utf8(const std::vector<SQLWCHAR>& units) {
                                 (static_cast<std::uint32_t>(units[++index]) - 0xdc00)
                           : 0xfffd;
     }
-    if (code_point < 0x80) {
-      output.push_back(static_cast<char>(code_point));
-    } else if (code_point < 0x800) {
-      output.push_back(static_cast<char>(0xc0 | (code_point >> 6)));
-      output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
-    } else if (code_point < 0x10000) {
-      output.push_back(static_cast<char>(0xe0 | (code_point >> 12)));
-      output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
-      output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
-    } else {
-      output.push_back(static_cast<char>(0xf0 | (code_point >> 18)));
-      output.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3f)));
-      output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
-      output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
-    }
+    append_utf8(output, code_point);
   }
   return output;
 }
@@ -177,8 +291,7 @@ SQLRETURN allocate_environment(SQLHENV* environment) {
 }
 
 std::vector<SQLWCHAR> wide_connection_string() {
-  const auto input = connection_string();
-  return wide_text(std::u32string(input.begin(), input.end()));
+  return wide_text(connection_text());
 }
 
 class DriverManagerUnicodeTest : public ::testing::Test {
@@ -493,6 +606,45 @@ TEST(DriverManagerUnicodeConnectTest, AnsiLatin1KeywordWarningStateStaysReadable
   }
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+// No connection: the override path decodes complete scalars before building W
+// input. U+00E9 is one unit; U+1F600 is a surrogate pair for 2-byte SQLWCHAR
+// and one unit for 4-byte SQLWCHAR; exactly one terminator follows.
+TEST(DriverManagerUnicodeHarnessTest, OverrideTextDecodesCompleteScalarsIntoManagerUnits) {
+  const auto decoded = decode_utf8("DATABASE=caf\xc3\xa9\xf0\x9f\x98\x80;");
+  ASSERT_TRUE(decoded.has_value());
+  EXPECT_EQ(std::u32string(U"DATABASE=café\U0001F600;"), *decoded);
+
+  std::vector<SQLWCHAR> expected;
+  for (const char character : std::string_view("DATABASE=caf")) {
+    expected.push_back(static_cast<SQLWCHAR>(character));
+  }
+  expected.push_back(static_cast<SQLWCHAR>(0xe9));
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    expected.push_back(static_cast<SQLWCHAR>(0xd83d));
+    expected.push_back(static_cast<SQLWCHAR>(0xde00));
+  } else {
+    expected.push_back(static_cast<SQLWCHAR>(0x1f600));
+  }
+  expected.push_back(static_cast<SQLWCHAR>(';'));
+  expected.push_back(0);
+  const auto units = wide_text(*decoded);
+  EXPECT_EQ(expected, units);
+  EXPECT_EQ(1, std::count(units.begin(), units.end(), SQLWCHAR{0}));
+
+  // Truncated, overlong, surrogate, above U+10FFFF and stray continuation.
+  for (const std::string_view invalid :
+       {"\xc3", "\xc0\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xa9"}) {
+    EXPECT_FALSE(decode_utf8(invalid).has_value()) << "invalid " << invalid.size() << "-byte input";
+  }
+#ifdef _WIN32
+  const auto wide = decode_utf16(L"café\U0001F600");
+  ASSERT_TRUE(wide.has_value());
+  EXPECT_EQ(std::u32string(U"café\U0001F600"), *wide);
+  EXPECT_FALSE(decode_utf16(std::wstring(1, static_cast<wchar_t>(0xd83d))).has_value());
+  EXPECT_FALSE(decode_utf16(std::wstring(1, static_cast<wchar_t>(0xde00))).has_value());
+#endif
 }
 
 }  // namespace
