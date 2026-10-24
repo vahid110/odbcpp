@@ -16,7 +16,8 @@ set(ODBCPP_PARTITION_auth
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/checked_aws_db_xml_response.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/redshift_serverless_response.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/redshift_provisioned_response.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/redshift_withiam_response.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/redshift_withiam_response.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/sts_assume_role_response.cpp")
 odbcpp_stage_internal_includes(auth)
 add_library(odbcpp_auth_core STATIC ${ODBCPP_PARTITION_auth})
 target_compile_features(odbcpp_auth_core PRIVATE cxx_std_20)

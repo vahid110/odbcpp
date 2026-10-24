@@ -39,6 +39,7 @@ class ProtectedNamedStage final {
   const std::string& config_path() const noexcept;
   const std::string& directory() const noexcept;
   const std::string& profile() const noexcept;
+  bool assumes_role() const noexcept;
  private:
   struct Storage;
   explicit ProtectedNamedStage(std::unique_ptr<Storage>);
@@ -48,6 +49,13 @@ class NamedSourceAcquisitionOwner final {
  public:
   static bool load(State&) noexcept;
   static FrozenNamedSource pending(const Context&);
+  // Resolves a named profile into a frozen signing source before the caller
+  // takes the provisioned SDK scope. A role_arn / source_profile profile is
+  // routed through STS AssumeRole (the standalone STS owner owns its own
+  // scope/InitAPI and cannot nest). Returns nullopt for a static-key profile
+  // (the caller uses the normal load path); throws Refused on any refusal.
+  static std::optional<FrozenNamedSource> resolve(const ProtectedNamedSourceSpec&, const Context&,
+      const Request&, std::shared_ptr<WorkerCancellation>);
 };
 }
 } // namespace

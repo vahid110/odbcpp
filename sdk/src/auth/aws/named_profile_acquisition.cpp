@@ -1,7 +1,9 @@
 #include "odbcpp/auth/aws/named_profile_acquisition.h"
 #include "odbcpp/auth/aws/provisioned_native_http_ingress.h"
 #include "odbcpp/auth/aws/explicit_profile_source.h"
+#include "odbcpp/auth/aws/profile_role_assumption.h"
 #include <aws/core/auth/AWSCredentialsProvider.h>
+#include <aws/core/utils/DateTime.h>
 #include <array>
 #include <cerrno>
 #include <fcntl.h>
@@ -61,7 +63,7 @@ struct ProtectedNamedStage::Storage {
  Fd parent,original_credentials,original_config;
  struct stat parent_stamp{},credential_stamp{},config_stamp{};
  std::optional<NamedFdReadCursor> cursor;
- const std::thread::id creator{std::this_thread::get_id()};bool failed{};
+ const std::thread::id creator{std::this_thread::get_id()};bool failed{},assumes_role{};
  ~Storage(){if(creator!=std::this_thread::get_id())std::terminate();}
 };
 ProtectedNamedStage::ProtectedNamedStage(std::unique_ptr<Storage> s):storage_(std::move(s)){}
@@ -84,6 +86,7 @@ std::unique_ptr<ProtectedNamedStage> ProtectedNamedStage::create(const Protected
   []()->std::variant<rs::util::Deadline,profile::ReadFailure>{return profile::ReadFailure::Failed;},
   [](const auto&,const auto&)->std::variant<profile::CredentialParts,profile::LoadFailure>{return profile::LoadFailure::Failed;});
  if(!std::holds_alternative<std::unique_ptr<profile::ExplicitProfileSource>>(validation))throw Refused{};
+ s->assumes_role=std::get<std::unique_ptr<profile::ExplicitProfileSource>>(validation)->assumes_role();
  s->cursor.emplace(s->original_credentials.value,s->original_config.value);
  if(s->cursor->failed())throw Refused{};
  auto out=std::unique_ptr<ProtectedNamedStage>{new ProtectedNamedStage{std::move(s)}};if(!out->unchanged())throw Refused{};return out;
@@ -112,15 +115,58 @@ const std::string& ProtectedNamedStage::credentials_path()const noexcept{return 
 const std::string& ProtectedNamedStage::config_path()const noexcept{return storage_->cursor->config_path();}
 const std::string& ProtectedNamedStage::directory()const noexcept{return storage_->dir;}
 const std::string& ProtectedNamedStage::profile()const noexcept{return storage_->spec.profile;}
+bool ProtectedNamedStage::assumes_role()const noexcept{return storage_->assumes_role;}
 FrozenNamedSource NamedSourceAcquisitionOwner::pending(const Context& c){FrozenNamedSource out{Aws::Auth::AWSCredentials{},c.source_identity,c.source_generation};out.value_.reset();out.owns_=false;return out;}
 bool NamedSourceAcquisitionOwner::load(State& state) noexcept {
  try{
   if(!state.initialized||state.source_ready||!state.protected_stage||!state.check()||!state.protected_stage->rewind_for_provider()||!state.check()){state.reject();return false;}
+  // R1: a profile declaring role_arn or source_profile must route through
+  // protected STS AssumeRole acquisition, never the static-key provider. Refuse
+  // before any static-key read so the source principal's keys are never adopted.
+  // Defensive backstop: a role profile reaching load() means the named entry
+  // failed to resolve it; never fall back to the source principal's static keys.
+  if(state.protected_stage->assumes_role()){state.reject();return false;}
   Aws::Auth::AWSCredentials value;
   {Aws::Auth::ProfileConfigFileAWSCredentialsProvider provider{state.protected_stage->profile().c_str()};++state.metrics.named_provider_loads;
    value=provider.Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetAWSCredentials();}
   if(!state.check()||!state.protected_stage->unchanged()||value.GetAWSAccessKeyId().empty()||value.GetAWSSecretKey().empty()){state.reject();return false;}
   state.source.value_.emplace(std::move(value));state.source.owns_=true;state.source_ready=true;state.metrics.named_source_ready=true;return true;
  }catch(...){state.reject();return false;}
+}
+namespace {
+Aws::String role_sdk_string(const SecretBytes& bytes) {
+  Aws::String out;
+  bytes.with_bytes([&](std::span<const std::byte> view) {
+    out.assign(reinterpret_cast<const char*>(view.data()), view.size());
+  });
+  return out;
+}
+}
+std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
+    const ProtectedNamedSourceSpec& spec, const Context& context, const Request& request,
+    std::shared_ptr<WorkerCancellation> cancel) {
+  // Reuse the protected stage's fd-validated read for the role resolution.
+  auto stage = ProtectedNamedStage::create(spec, context, request);
+  if (!stage->assumes_role()) return std::nullopt;
+  // Rewind the validated fds before the STS loader reads /dev/fd aliases.
+  if (!stage->rewind_for_cache()) throw Refused{};
+  auto assumed = profile_role::resolve_assumed_role_credentials(
+      stage->credentials_path(), stage->profile(), context.region,
+      context.source_identity, 900, request.deadline(), std::move(cancel));
+  if (!assumed || !stage->unchanged()) throw Refused{};
+  // R1b: carry the assumed credential's known validity as a monotonic bound so
+  // a later DB dispatch cannot sign with already-expired assumed credentials.
+  if (!assumed.value().expiration_utc) throw Refused{};
+  const auto expiry_ms = assumed.value().expiration_utc->microseconds_since_epoch / 1000;
+  const auto now_utc_ms = Aws::Utils::DateTime::Now().Millis();
+  const auto now_mono = rs::util::Clock::now();
+  const auto lifetime = std::chrono::milliseconds(expiry_ms - now_utc_ms);
+  if (lifetime <= std::chrono::milliseconds::zero()) throw Refused{};  // already expired
+  const auto expires_mono = now_mono + lifetime;
+  // The request window (deadline + headroom) must fit inside the source expiry.
+  if (request.deadline() + request.headroom() > expires_mono) throw Refused{};
+  Aws::Auth::AWSCredentials creds{role_sdk_string(assumed.value().access_key_id),
+      role_sdk_string(assumed.value().secret_access_key), role_sdk_string(assumed.value().session_token)};
+  return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation, expires_mono};
 }
 } // namespace

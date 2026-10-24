@@ -107,6 +107,7 @@ std::string_view FieldError::safe_message() const noexcept {
     case FieldFailure::InvalidTimestamp: return "Credential response timestamp refused";
     case FieldFailure::Cancelled: return "Credential response extraction cancelled";
     case FieldFailure::AllocationFailed: return "Credential response allocation unavailable";
+    case FieldFailure::DeadlineElapsed: return "Credential response deadline elapsed";
   }
   return "Credential response field type invalid";
 }

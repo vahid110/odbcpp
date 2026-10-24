@@ -46,6 +46,19 @@ bool bound(const Context& c,const Request& r) noexcept {
   s.identity==c.source_identity && s.generation==c.source_generation && s.kind==SourceKind::TrustedTemporaryDbIssuer &&
   r.binding().method()==Method::TemporaryDatabasePassword;
 }
+// Pre-acquisition admission for the named role path: the bound request/context,
+// observer, source generation and cancellation must be admitted before any STS
+// send, mirroring prepare()'s own admission ordering.
+std::optional<Failure> named_admission(const Context& c,const Request& r,
+ const std::shared_ptr<ResponseObservationSource>& read,const std::shared_ptr<ResponseSourceGeneration>& gen,
+ const std::shared_ptr<WorkerCancellation>& cancel) noexcept {
+ if(!main_entry()) return Failure::MainEntryRequired;
+ if(!bound(c,r)||!read||!gen||!cancel) return Failure::InvalidContext;
+ if(!std::holds_alternative<std::monostate>(gen->checkpoint())) return Failure::Refused;
+ if(cancel->cancelled()) return Failure::Refused;
+ try { if(read->cancellation_requested()) return Failure::Refused; } catch(...) { return Failure::Refused; }
+ return std::nullopt;
+}
 void empty_file(const std::string& path){int fd=::open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);if(fd<0)throw std::runtime_error("Staging refused");if(::close(fd))throw std::runtime_error("Staging refused");}
 }
 Context::Context(std::string a,std::string r,std::string c,std::string d,std::string u,std::string e,std::string s,std::string g,bool fake)
@@ -59,10 +72,10 @@ std::variant<Context,Failure> Context::create(std::string a,std::string r,std::s
    !name(c)||!name(d)||!name(u)||!name(e)||!name(s)||!name(g)) return Failure::InvalidContext;
  return Context{std::move(a),std::move(r),std::move(c),std::move(d),std::move(u),std::move(e),std::move(s),std::move(g),false};
 }
-FrozenNamedSource::FrozenNamedSource(Aws::Auth::AWSCredentials value,std::string identity,std::string generation)
- :value_(std::move(value)),identity_(std::move(identity)),generation_(std::move(generation)){}
+FrozenNamedSource::FrozenNamedSource(Aws::Auth::AWSCredentials value,std::string identity,std::string generation,std::optional<rs::util::Deadline> expires)
+ :value_(std::move(value)),identity_(std::move(identity)),generation_(std::move(generation)),expires(expires){}
 FrozenNamedSource::FrozenNamedSource(FrozenNamedSource&& other) noexcept
- :value_(std::move(other.value_)),identity_(std::move(other.identity_)),generation_(std::move(other.generation_)),owns_(std::exchange(other.owns_,false)){other.value_.reset();}
+ :value_(std::move(other.value_)),identity_(std::move(other.identity_)),generation_(std::move(other.generation_)),owns_(std::exchange(other.owns_,false)),expires(other.expires){other.value_.reset();}
 namespace detail {
 bool take_sdk_scope() noexcept {return !occupied.exchange(true);}
 void release_sdk_scope() noexcept {occupied.store(false);}
@@ -183,22 +196,40 @@ CreateOutcome NativeOwner::create(Context c,Request r,std::shared_ptr<ResponseOb
 CreateOutcome NativeOwner::create_from_named_source(Context c,Request r,std::shared_ptr<ResponseObservationSource> read,
  std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,ProtectedNamedSourceSpec spec){
  CreateOutcome out;
- try{auto pending=detail::NamedSourceAcquisitionOwner::pending(c);Failure failure=Failure::LocalFailure;
+ try{
+  // Admission before any STS send: bound request/context, observer, source
+  // generation and cancellation, preserved across the acquisition/freeze.
+  if(auto f=named_admission(c,r,read,gen,cancel)){out.failure=*f;return out;}
+  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel);Failure failure=Failure::LocalFailure;
+  if(auto f=named_admission(c,r,read,gen,cancel)){out.failure=*f;return out;}
+  if(resolved){
+   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(*resolved),{},failure);
+   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
+  }
+  auto pending=detail::NamedSourceAcquisitionOwner::pending(c);
   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(pending),{},failure,std::move(spec),&out.counts);
   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
 CreateOutcome FixedFixture::create_named(ProtectedNamedSourceSpec spec,std::shared_ptr<ResponseObservationSource> read,
- std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel){
+ std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,rs::util::Deadline deadline){
  CreateOutcome out;const char* marker=::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
  if(!marker||std::string_view(marker)!="synthetic-fake-http-only"){out.failure=Failure::Unavailable;return out;}
- try{auto c=context();auto r=request(c);auto pending=detail::NamedSourceAcquisitionOwner::pending(c);Failure failure=Failure::LocalFailure;
+ try{auto c=context();auto r=request(c,deadline);
+  if(auto f=named_admission(c,r,read,gen,cancel)){out.failure=*f;return out;}
+  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel);Failure failure=Failure::LocalFailure;
+  if(auto f=named_admission(c,r,read,gen,cancel)){out.failure=*f;return out;}
+  if(resolved){
+   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(*resolved),FixedCase::Happy,failure,{},&out.counts);
+   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
+  }
+  auto pending=detail::NamedSourceAcquisitionOwner::pending(c);
   auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(pending),FixedCase::Happy,failure,std::move(spec),&out.counts);
   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
 Context FixedFixture::context(){return Context{"000000000000","eu-north-1","fixture-cluster","fixture_db","fixture_user","db.fixture.invalid","synthetic-source","g1",true};}
-Request FixedFixture::request(const Context& c){auto binding=Binding::create({Service::Redshift,c.db_endpoint,5439,c.database,c.expected_user,c.resource_arn,c.db_endpoint,"verify-full"},{SourceKind::TrustedTemporaryDbIssuer,c.source_identity,c.source_generation},Method::TemporaryDatabasePassword);if(!binding)std::terminate();auto made=Request::create(std::move(binding).value(),rs::util::Deadline{std::chrono::seconds{20}},std::chrono::seconds{1});if(!made)std::terminate();return std::move(made).value();}
+Request FixedFixture::request(const Context& c,rs::util::Deadline deadline){auto binding=Binding::create({Service::Redshift,c.db_endpoint,5439,c.database,c.expected_user,c.resource_arn,c.db_endpoint,"verify-full"},{SourceKind::TrustedTemporaryDbIssuer,c.source_identity,c.source_generation},Method::TemporaryDatabasePassword);if(!binding)std::terminate();auto made=Request::create(std::move(binding).value(),deadline,std::chrono::seconds{1});if(!made)std::terminate();return std::move(made).value();}
 CreateOutcome FixedFixture::create(FixedCase test,std::shared_ptr<ResponseObservationSource> read,std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel){
  CreateOutcome out;const char* marker=::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
  if(!marker||std::string_view(marker)!="synthetic-fake-http-only"||static_cast<unsigned>(test)>static_cast<unsigned>(FixedCase::Reentry)){out.failure=Failure::Unavailable;return out;}
@@ -257,6 +288,8 @@ Outcome NativeOwner::acquire_observation(){
  if(s.consumed){out.failure=Failure::Consumed;out.counts=s.metrics;return out;}
  s.active=true;struct Active{bool& flag;~Active(){flag=false;}}active{s.active};s.consumed=true;
  if(!s.source_ready){s.reject();out.failure=Failure::InvalidSource;out.counts=s.metrics;return out;}
+ // R1b: refuse before signing if the frozen assumed source's validity expired.
+ if(s.source.expires && rs::util::Clock::now() > *s.source.expires){s.reject();out.failure=Failure::Refused;out.counts=s.metrics;return out;}
  if(!s.check()){out.failure=Failure::Refused;out.counts=s.metrics;return out;}
  try{
   std::optional<detail::RuntimeRoute> route;if(s.runtime)route.emplace(state_);

@@ -29,13 +29,21 @@ std::string_view trim(std::string_view s) noexcept {
   while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
   return s;
 }
-bool policy(std::span<const std::byte> bytes, std::string_view profile) noexcept {
+bool policy(std::span<const std::byte> bytes, std::string_view profile, bool& assumes_role) noexcept {
   if (bytes.empty() || bytes.size() > 16 * 1024) return false;
   std::string_view input{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
   for (unsigned char c : input) {
     if (c != '\n' && c != '\r' && c != '\t' && (c < 32 || c > 126)) return false;
   }
-  bool section = false; unsigned lines = 0; std::array<bool,3> seen{};
+  // Sections: the target [profile] plus an optional source [source_profile].
+  // Target keys are static access/secret(/session) with an optional role_arn and
+  // source_profile; source keys are static access/secret(/session) only.
+  enum class Which { None, Target, Source };
+  Which which = Which::None;
+  unsigned lines = 0;
+  std::array<bool,5> target{}; std::array<bool,3> source{};
+  std::string source_name;
+  bool target_found = false, source_found = false;
   while (!input.empty()) {
     if (++lines > 64) return false;
     const auto end = input.find('\n'); auto line = input.substr(0, end);
@@ -44,24 +52,55 @@ bool policy(std::span<const std::byte> bytes, std::string_view profile) noexcept
     if (line.find('\r') != std::string_view::npos || line.size() > 4096) return false;
     line = trim(line); if (line.empty()) continue;
     if (line.front() == '[') {
-      if (section || line.size() != profile.size() + 2 || line.back() != ']' ||
-          line.substr(1, line.size()-2) != profile) return false;
-      section = true; continue;
+      if (line.back() != ']') return false;
+      auto name = line.substr(1, line.size() - 2);
+      if (name.empty() || name.size() > 256) return false;
+      for (unsigned char c : name) if (c <= 0x20 || c >= 0x7f || c == '[' || c == ']') return false;
+      if (!target_found) {
+        if (name != profile) return false;
+        target_found = true; which = Which::Target; continue;
+      }
+      if (source_name.empty() || name != source_name || source_found) return false;
+      source_found = true; which = Which::Source; continue;
     }
-    if (!section) return false;
+    if (which == Which::None) return false;
     const auto equals = line.find('='); if (equals == std::string_view::npos) return false;
-    auto key = trim(line.substr(0, equals)); auto value = trim(line.substr(equals+1));
-    std::size_t index;
-    if (key == "aws_access_key_id") index = 0;
-    else if (key == "aws_secret_access_key") index = 1;
-    else if (key == "aws_session_token") index = 2;
-    else return false;
-    if (seen[index] || value.empty() || value.size() > 2048) return false;
+    auto key = trim(line.substr(0, equals)); auto value = trim(line.substr(equals + 1));
+    if (value.empty() || value.size() > 2048) return false;
     // Values are opaque visible ASCII; no comments, quoting or substitutions.
     for (unsigned char c : value) { if (c < 33 || c > 126 || c == '#' || c == ';') return false; }
-    seen[index] = true;
+    if (which == Which::Target) {
+      std::size_t index;
+      if (key == "aws_access_key_id") index = 0;
+      else if (key == "aws_secret_access_key") index = 1;
+      else if (key == "aws_session_token") index = 2;
+      else if (key == "role_arn") index = 3;
+      else if (key == "source_profile") index = 4;
+      else return false;
+      if (target[index]) return false;
+      // role_arn must look like an ARN; the SDK provider owns full ARN/role
+      // grammar and any resulting STS assumption.
+      if (key == "role_arn" && !value.starts_with("arn:")) return false;
+      if (key == "source_profile") { if (value == profile) return false; source_name.assign(value); }
+      if (key == "role_arn" || key == "source_profile") assumes_role = true;
+      target[index] = true;
+    } else {
+      std::size_t index;
+      if (key == "aws_access_key_id") index = 0;
+      else if (key == "aws_secret_access_key") index = 1;
+      else if (key == "aws_session_token") index = 2;
+      else return false;
+      if (source[index]) return false;
+      source[index] = true;
+    }
   }
-  return section && seen[0] && seen[1];
+  if (!target_found) return false;
+  const bool inline_form = target[0] || target[1];
+  const bool source_form = target[4];
+  if (inline_form == source_form) return false;
+  if (inline_form) return target[0] && target[1];
+  if (!target[3]) return false; // source_profile requires role_arn
+  return source_found && source[0] && source[1];
 }
 }
 std::string_view safe_message(Failure) noexcept { return "Explicit profile source refused"; }
@@ -105,11 +144,14 @@ Result<std::unique_ptr<ExplicitProfileSource>> ExplicitProfileSource::create(
       request.binding().source().identity != spec.source_identity) return Failure::SourceMismatch;
   if (generation->retired_) return Failure::SourceRetired;
   bool valid = false;
-  owned.with_bytes([&](auto bytes){ valid = policy(bytes, spec.profile); });
+  bool assumes_role = false;
+  owned.with_bytes([&](auto bytes){ valid = policy(bytes, spec.profile, assumes_role); });
   if (!valid) return Failure::InvalidPolicy;
   try {
-    return std::unique_ptr<ExplicitProfileSource>{new ExplicitProfileSource{
+    auto made = std::unique_ptr<ExplicitProfileSource>{new ExplicitProfileSource{
         std::move(spec), std::move(request), std::move(generation), std::move(reader), std::move(loader)}};
+    made->assumes_role_ = assumes_role;
+    return made;
   } catch (const std::bad_alloc&) { return Failure::AllocationFailed; }
 }
 Failure ExplicitProfileSource::latch(Failure failure) noexcept {

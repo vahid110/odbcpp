@@ -88,6 +88,9 @@ class ExplicitProfileSource final {
   Result<FrozenCredentials> load(const Cancellation* cancelled = nullptr);
   const SourceSpec& source() const noexcept { return source_; }
   std::optional<Failure> failure() const noexcept { return first_; }
+  // True when the selected profile declares role_arn or source_profile. Such a
+  // profile requires STS AssumeRole acquisition, not the static-key provider.
+  bool assumes_role() const noexcept { return assumes_role_; }
  private:
   ExplicitProfileSource(SourceSpec, Request, std::shared_ptr<SourceGeneration>, Reader, Loader);
   std::optional<Failure> checkpoint(const Cancellation*) noexcept;
@@ -100,6 +103,6 @@ class ExplicitProfileSource final {
   std::thread::id thread_;
   std::optional<rs::util::Deadline> highwater_;
   std::optional<Failure> first_;
-  bool consumed_{false}, active_{false};
+  bool consumed_{false}, active_{false}, assumes_role_{false};
 };
 } // namespace rs::core::auth::aws::profile
