@@ -30,6 +30,7 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import PurePosixPath, PureWindowsPath
 import re
+from tools.development import redshift_session_sql as session_sql
 
 DATABASE = 'odbcpp_pilot'
 ADMIN = 'odbcpp_pilot_admin'
@@ -88,25 +89,30 @@ def _pin(value):
 
 
 def new_state(*, workload_id, input_profile_sha256, admitted_ms,
-              execution_deadline_ms, cleanup_deadline_ms):
+              execution_deadline_ms, cleanup_deadline_ms, resource_kind='provisioned'):
     """Original absolute UTC-ms horizons, supplied from existing finite admission."""
     need(type(workload_id) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', workload_id) is not None and
          _digest(input_profile_sha256), 'workload_identity')
     need(all(_integer(v, high=2**63 - 1) for v in (admitted_ms, execution_deadline_ms, cleanup_deadline_ms)) and
          admitted_ms < execution_deadline_ms < cleanup_deadline_ms and
          cleanup_deadline_ms - execution_deadline_ms <= 900000, 'original_deadlines')
-    return {'phase': 'NEW', 'workload_id': workload_id, 'input_profile_sha256': input_profile_sha256,
+    need(resource_kind in ('provisioned', 'serverless'), 'session_resource_kind')
+    result = {'phase': 'NEW', 'workload_id': workload_id, 'input_profile_sha256': input_profile_sha256,
             'admitted_ms': admitted_ms, 'execution_deadline_ms': execution_deadline_ms,
             'cleanup_deadline_ms': cleanup_deadline_ms, 'original': None, 'measurement': None,
             'temporary_cap': None, 'snapshot': None, 'observations': [], 'seen_sessions': [],
             'attempts': [], 'last_completed_ms': admitted_ms, 'pending': None}
+    if resource_kind == 'serverless':
+        result['resource_kind'] = resource_kind
+    return result
 
 
 def _validate(state):
     keys = {'phase', 'workload_id', 'input_profile_sha256', 'admitted_ms', 'execution_deadline_ms',
             'cleanup_deadline_ms', 'original', 'measurement', 'temporary_cap', 'snapshot',
             'observations', 'seen_sessions', 'attempts', 'last_completed_ms', 'pending'}
-    need(type(state) is dict and set(state) == keys, 'state_schema')
+    need(type(state) is dict and set(state) in (keys, keys | {'resource_kind'}) and
+         state.get('resource_kind', 'provisioned') in ('provisioned', 'serverless'), 'state_schema')
     new_state(**{key: state[key] for key in ('workload_id', 'input_profile_sha256', 'admitted_ms',
                                            'execution_deadline_ms', 'cleanup_deadline_ms')})
     need(state['phase'] in ('NEW', 'OBSERVED', 'DECIDED', 'ALTER_UNKNOWN', 'CAP_ACTIVE',
@@ -215,7 +221,10 @@ def stage_for(state, kind):
              (state['temporary_cap'] is None or state['phase'] == 'CAP_ACTIVE'), 'quiesce_phase')
     else:
         need(state['phase'] == 'QUIESCENT' and state['temporary_cap'] is not None, 'restore_requires_quiescence')
-    lines, count = [], 0
+    serverless = state.get('resource_kind', 'provisioned') == 'serverless'
+    principal_oids = ({key: state['original'][key] for key in ('admin_oid', 'test_oid')}
+                      if state['original'] is not None else {})
+    lines, count = ([session_sql.binding(**principal_oids)], 1) if serverless else ([], 0)
 
     def sql(query, label=None):
         nonlocal count
@@ -232,11 +241,14 @@ def stage_for(state, kind):
         sql("SELECT usesysid,TRIM(usename),usesuper,TRIM(useconnlimit) FROM pg_user_info WHERE usename IN ('" +
             ADMIN + "','" + TEST + "') ORDER BY usename LIMIT 3", prefix + 'USERS')
         sql("SELECT datid,TRIM(datname),TRIM(datconnlimit) FROM pg_database_info WHERE datname='" + DATABASE + "' LIMIT 2", prefix + 'DATABASE')
-        sql('SELECT COUNT(*) FROM stv_sessions WHERE ' + _scope(), prefix + 'COUNT')
-        sql('SELECT process,TRIM(user_name),TRIM(db_name),starttime::VARCHAR FROM stv_sessions WHERE ' +
+        sql('SELECT COUNT(*) FROM ' + ('sys_session_history WHERE ' + session_sql.scope(broad=True)
+            if serverless else 'stv_sessions WHERE ' + _scope()), prefix + 'COUNT')
+        sql(session_sql.rows(broad=True, limit=17) if serverless else
+            'SELECT process,TRIM(user_name),TRIM(db_name),starttime::VARCHAR FROM stv_sessions WHERE ' +
             _scope() + ' ORDER BY process LIMIT 17', prefix + 'SESSIONS')
 
-    sql("SELECT process,TRIM(user_name),TRIM(db_name),starttime::VARCHAR FROM stv_sessions WHERE process=pg_backend_pid() LIMIT 2", 'SELF')
+    sql(session_sql.rows(self_only=True, limit=2) if serverless else
+        "SELECT process,TRIM(user_name),TRIM(db_name),starttime::VARCHAR FROM stv_sessions WHERE process=pg_backend_pid() LIMIT 2", 'SELF')
     if kind not in MUTATIONS:
         census('')
     else:
@@ -251,17 +263,20 @@ def stage_for(state, kind):
                 " AND usename='" + TEST + "' AND NOT usesuper AND TRIM(useconnlimit)='" + expected_cap +
                 "') AND EXISTS(SELECT 1 FROM pg_database_info WHERE datid=" + str(original['database_oid']) +
                 " AND datname='" + DATABASE + "' AND TRIM(datconnlimit)='" + original['database_cap'] + "')")
+        if serverless:
+            held += ' AND :rs_admin_oid=' + str(original['admin_oid']) + ' AND :rs_test_oid=' + str(original['test_oid'])
         guard(held)
         # Separate STV and PG-info guards retain the existing leader/compute
         # separation rather than joining system relations in a new query.
-        guard('(SELECT COUNT(*)=0 FROM stv_sessions WHERE ' + _scope() + ')')
+        guard('(SELECT COUNT(*)=0 FROM ' + ('sys_session_history WHERE ' + session_sql.scope(broad=True)
+              if serverless else 'stv_sessions WHERE ' + _scope()) + ')')
         sql('ALTER USER "' + TEST + '" CONNECTION LIMIT ' + target_cap)
         lines.append('\\echo RSPBIS1|' + ('ALTER_ACK' if kind == 'set_cap' else 'RESTORE_ACK'))
         census('POST_')
         lines.extend(('\\else\n\\echo RSPBIS1|REFUSED\n\\endif',
                       '\\else\n\\echo RSPBIS1|REFUSED\n\\endif'))
     query = '\n'.join(lines) + '\n'
-    need(len(query.encode('utf-8')) <= 16384 and count == (12 if kind in MUTATIONS else 5), 'stage_bounds')
+    need(len(query.encode('utf-8')) <= 16384 and count == (12 if kind in MUTATIONS else 5) + int(serverless), 'stage_bounds')
     return {'stage': 'powerbi_sessions_' + kind, 'keys': ('POWERBI_SESSIONS',),
             'role': 'admin', 'query': query, 'statements': count}
 
@@ -408,8 +423,9 @@ def complete(state, payload, *, native_exit, now_ms):
     return result
 
 
-def public_plan():
-    return {'readiness': 'NOT_EXECUTABLE_UNTIL_ROOT_INTEGRATION', 'schema_version': 1,
+def public_plan(resource_kind='provisioned'):
+    need(resource_kind in ('provisioned', 'serverless'), 'session_plan_resource_kind')
+    result = {'readiness': 'NOT_EXECUTABLE_UNTIL_ROOT_INTEGRATION', 'schema_version': 1,
             'safe_user_columns': ['usesysid', 'usename', 'usesuper', 'useconnlimit'],
             'safe_database_columns': ['datid', 'datname', 'datconnlimit'],
             'event_samples': list(EVENTS), 'max_test_sessions': 16, 'census_row_limit': 17,
@@ -427,3 +443,11 @@ def public_plan():
                                     'Separately reviewed partition-specific16-target exact PID/birth cleanup before launch',
                                     'Complete combined fixture/network/sample/restoration reserve within unchanged40/450 guards'],
             'scope': 'Operational custody only; no native feature results, credentials, execution, termination or resource-cleanup claim'}
+    if resource_kind == 'serverless':
+        result['resource_kind'] = resource_kind
+        for key in result['stage_SQL']:
+            result['stage_SQL'][key] += 1
+        for key, extra in (('maximum_changed_path', 7), ('maximum_unchanged_path', 5)):
+            for field in ('SQL_before_wrappers', 'SQL', 'inclusive'):
+                result[key][field] += extra
+    return result

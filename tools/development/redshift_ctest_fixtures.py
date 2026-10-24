@@ -120,6 +120,8 @@ def _prepare_timeout(ops, state, deadline):
     f = ops.timeout_factory
     initial = f.permission(_timeout_get(ops, state, 'permission_initial', deadline),
                            absent='t')
+    if getattr(f, 'allow_current_identity', False) and f.EXPECTED_PRINCIPAL is None:
+        f.bind_current_principal(initial)
     _need(all(initial[k] == v for k, v in f.EXPECTED_PRINCIPAL.items()),
           'timeout_exact_initial_identity', state)
     t['facts']['permission'] = initial
@@ -366,7 +368,8 @@ def cleanup(ops, state, deadline):
     t = state['timeout']
     def close_timeout():
         if t['object'] == 'OWNED':
-            stage = ops.factory.timeout_stage(t['record'], 'timeout_cleanup')
+            stage = ops.factory.timeout_stage(t['record'], 'timeout_cleanup',
+                **({'resource_kind': 'serverless'} if getattr(ops, 'resource_kind', 'provisioned') == 'serverless' else {}))
             _sql_allowed(ops, state, deadline)
             t['object'] = 'DROP_UNKNOWN'
             frames = ops.factory.whole_frames(_sql(ops, state, stage, deadline))

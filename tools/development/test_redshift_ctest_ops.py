@@ -58,6 +58,41 @@ def adapter(directory):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_serverless_cleanup_rebinds_oid_and_captured_birth_before_termination(self):
+        targets = ((42, ops_module.ORDINARY, ops_module.DATABASE, '2026-10-24 12:00:00.123'),)
+        stage = ops_module.termination_stage(targets, resource_kind='serverless',
+            principal_oids={'admin_oid': 700, 'test_oid': 701})
+        self.assertEqual(stage['statements'], 3)
+        query = stage['query']
+        for expected in ('pg_user_info', 'sys_session_history', 'session_id=42',
+                         'session_id<>pg_backend_pid()', '=:rs_test_oid',
+                         "start_time=TIMESTAMP '2026-10-24 12:00:00.123'"):
+            self.assertIn(expected, query)
+        self.assertNotIn('stv_', query)
+        self.assertIn("usename='odbcpp_pilot_test' THEN usesysid END)=701", query)
+        self.assertLess(query.index('AS still_owned'), query.index('pg_terminate_backend(42)'))
+        for changed in ((42, 'foreign', ops_module.DATABASE, targets[0][3]),
+                        (42, ops_module.ORDINARY, 'foreign', targets[0][3]),
+                        (42, ops_module.ORDINARY, ops_module.DATABASE, "2026-10-24 12:00:00';DROP")):
+            with self.subTest(changed=changed), self.assertRaises(Refused):
+                ops_module.termination_stage((changed,), resource_kind='serverless',
+                    principal_oids={'admin_oid': 700, 'test_oid': 701})
+
+    def test_serverless_idle_requires_zero_and_known_readers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops = adapter(directory)
+            ops.resource_kind = 'serverless'
+            ops.principals_quiescent = True
+            calls = []
+            ops.final_zero = lambda end: calls.append('zero')
+            ops.native.verify_idle = lambda end: calls.append('metadata') or True
+            self.assertTrue(ops.verify_idle(300))
+            self.assertEqual(calls, ['zero', 'metadata'])
+            ops.readers_known = False
+            with self.assertRaises(Refused):
+                ops.verify_idle(300)
+            self.assertEqual(calls, ['zero', 'metadata'])
+
     def available_adapter(self, directory):
         ops = adapter(directory)
         terminal = Path(directory) / 'terminal.json'

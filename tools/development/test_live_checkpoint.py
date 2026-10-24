@@ -51,6 +51,20 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(plan['source_directory'],str(checkpoint.ROOT))
             self.assertEqual(plan['synthetic_unicode_marker'],'odbcpp_u_\u00e9\u8868')
             self.assertNotIn('credential_source',plan)
+            from tools.development.test_redshift_serverless_resource import resource
+            serverless=dict(plan,resource=resource(),timeout_fixture=dict(
+                table='odbcpp_timeout_gate_synthetic',expected_principal=None,
+                allow_current_identity=True,resource_kind='serverless'))
+            serverless_path=root/'serverless-plan.json'
+            serverless_path.write_text(json.dumps(serverless))
+            self.assertEqual(checkpoint.read_plan(serverless_path)['resource']['kind'],'serverless')
+            for timeout in ({},dict(serverless['timeout_fixture'],expected_principal={'owner_oid':101}),
+                            dict(serverless['timeout_fixture'],allow_current_identity=False)):
+                serverless['timeout_fixture']=timeout
+                serverless_path.write_text(json.dumps(serverless))
+                with self.assertRaisesRegex(checkpoint.lifecycle.Refused,
+                                            'serverless_current_principal_discovery_required'):
+                    checkpoint.read_plan(serverless_path)
             wrong_region=json.loads(plan_path.read_text())
             wrong_region['resource']['region']='eu-central-1'
             wrong_path=root/'wrong-region.json';wrong_path.write_text(json.dumps(wrong_region))

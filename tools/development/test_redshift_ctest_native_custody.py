@@ -21,6 +21,33 @@ def namespace(oid='1200', owner='101'):
 
 
 class Census(unittest.TestCase):
+    def test_serverless_census_binds_actual_owner_and_refuses_later_change(self):
+        ops = self.ops([payload([]), payload([namespace(owner='701')])])
+        ops.resource_kind = 'serverless'
+        ops.timeout_factory = SimpleNamespace(EXPECTED_PRINCIPAL=dict(
+            database='odbcpp_pilot', owner='odbcpp_pilot_test', owner_oid='701'))
+        state = census.before(ops, 50.0)
+        self.assertEqual(state['owner_oid'], 701)
+        result = census.after(ops, state, 50.0)
+        self.assertFalse(result['complete'])
+        self.assertTrue(result['all_new_objects_ordinary_owned'])
+        self.assertFalse(result['automatic_DROP'])
+        ops = self.ops([payload([]), payload([])])
+        ops.resource_kind = 'serverless'
+        ops.timeout_factory = SimpleNamespace(EXPECTED_PRINCIPAL=dict(
+            database='odbcpp_pilot', owner='odbcpp_pilot_test', owner_oid='701'))
+        state = census.before(ops, 50.0)
+        ops.timeout_factory.EXPECTED_PRINCIPAL['owner_oid'] = '702'
+        with self.assertRaisesRegex(census.CensusError, 'owner_changed'):
+            census.after(ops, state, 50.0)
+
+    def test_serverless_census_refuses_unbound_current_identity_before_sql(self):
+        ops = self.ops([])
+        ops.resource_kind = 'serverless'
+        ops.timeout_factory = SimpleNamespace(EXPECTED_PRINCIPAL=None)
+        with self.assertRaisesRegex(census.CensusError, 'owner_unbound'):
+            census.before(ops, 50.0)
+
     def ops(self, outputs):
         values = iter(outputs)
         return SimpleNamespace(

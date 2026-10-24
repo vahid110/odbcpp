@@ -345,8 +345,9 @@ private:
     }
     bool identity(SQLHSTMT statement, const std::string& prefix) {
         std::array<std::string, 4> fields;
-        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), starttime FROM stv_sessions "
-            "WHERE process=pg_backend_pid() AND user_name=current_user AND db_name=current_database()") ||
+        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), start_time FROM sys_session_history "
+            "WHERE session_id=pg_backend_pid() AND CAST(user_id AS INTEGER)=CURRENT_USER_ID "
+            "AND database_name=current_database() AND status='active'") ||
             !row(statement, fields) || !end_row(statement)) return false;
         if (!timeout_positive_id(fields[2]) || fields[3].empty()) return fail("session birth identity");
         property(prefix + "_owner_raw_size", std::to_string(fields[0].size()));
