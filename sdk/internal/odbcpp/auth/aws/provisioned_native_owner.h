@@ -31,9 +31,10 @@ class FrozenNamedSource final {
  private:
   friend class NativeOwner;friend class ProvisionedSdkRuntime;friend struct FixedFixture;friend struct detail::State;
   friend class detail::NamedSourceAcquisitionOwner; // Future protected load, NOT implemented.
-  FrozenNamedSource(Aws::Auth::AWSCredentials,std::string,std::string);
+  FrozenNamedSource(Aws::Auth::AWSCredentials,std::string,std::string,std::optional<rs::util::Deadline> expires=std::nullopt);
   // Explicit reset destroys SDK-allocated strings before ShutdownAPI.
   std::optional<Aws::Auth::AWSCredentials> value_;std::string identity_,generation_;bool owns_{true};
+  std::optional<rs::util::Deadline> expires;
 };
 class WorkerCancellation final {
  public: void cancel() noexcept { cancelled_.store(true); }

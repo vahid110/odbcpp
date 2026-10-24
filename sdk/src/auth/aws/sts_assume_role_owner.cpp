@@ -221,6 +221,8 @@ StsOutcome<StsAssumeRoleResponseUtc> StsAssumeRoleOwner::acquire() {
     config.endpointOverride = sts_endpoint(s.target.partition, s.target.region).c_str();
     // R3: remaining-budget transport controls under the original deadline.
     const auto budget = rs::util::remaining(s.deadline);
+    if (budget == std::chrono::milliseconds::zero())
+      return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
     config.requestTimeoutMs = static_cast<long>(budget.count());
     config.connectTimeoutMs = static_cast<long>(budget.count());
     Aws::STS::STSClient client(provider, config);
@@ -228,6 +230,15 @@ StsOutcome<StsAssumeRoleResponseUtc> StsAssumeRoleOwner::acquire() {
     request.SetRoleArn(arn.c_str());
     request.SetRoleSessionName(s.target.role_session_name.c_str());
     request.SetDurationSeconds(s.target.duration_seconds);
+    // R3: attach the original deadline/cancellation to the SDK continuation so
+    // the synchronous call is observed during transport, not only before/after.
+    request.SetContinueRequestHandler([cancel = s.cancellation, deadline = s.deadline](const Aws::Http::HttpRequest*) {
+      return (!cancel || !cancel->cancelled()) && rs::util::remaining(deadline) > std::chrono::milliseconds::zero();
+    });
+    // R3: recheck immediately before invocation; reject a budget consumed by
+    // source/provider/config preparation rather than dispatching with zero.
+    if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
+      return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
     const auto result = client.AssumeRole(request);
     // R3: refuse a late successful completion under the same original deadline.
     if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())

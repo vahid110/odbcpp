@@ -121,6 +121,21 @@ TEST(StsOwnerAcquire, ExpiryBetweenCreateAndAcquireRefuses) {
   EXPECT_TRUE(made.outcome.owner->close());
 }
 
+// R3: a deadline that expires during preparation (client construction latency)
+// is rejected before invocation with zero sends and no zero transport timeout.
+TEST(StsOwnerAcquire, ExpiryDuringPreparationRefusesWithZeroSends) {
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+  detail::fake_http_set_prep_delay(60);
+  auto made = make_sts(deadline_ms(20));
+  ASSERT_TRUE(made.outcome.owner);
+  auto result = made.outcome.owner->acquire();
+  EXPECT_FALSE(result);
+  EXPECT_EQ(a::StsAssumeRoleFailure::DeadlineElapsed, result.error().failure);
+  EXPECT_EQ(0U, detail::fake_http_observation().sends.load());
+  EXPECT_TRUE(made.outcome.owner->close());
+}
+
 // R3: a late successful HTTP completion is not published under the deadline.
 TEST(StsOwnerAcquire, LateCompletionRefusesPublication) {
   detail::fake_http_observation().reset();
@@ -216,6 +231,20 @@ TEST(ServerlessOwnerAcquire, ExpiredAdmissionRefusesWithZeroSends) {
   EXPECT_FALSE(made.outcome.owner);
   EXPECT_EQ(sl::OwnerFailure::DeadlineElapsed, made.outcome.failure);
   EXPECT_EQ(0U, detail::fake_http_observation().sends.load());
+}
+
+// R3: a deadline that expires during preparation is rejected with zero sends.
+TEST(ServerlessOwnerAcquire, ExpiryDuringPreparationRefusesWithZeroSends) {
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+  detail::fake_http_set_prep_delay(60);
+  auto made = make_sl(deadline_ms(20));
+  ASSERT_TRUE(made.outcome.owner);
+  auto result = made.outcome.owner->acquire();
+  EXPECT_FALSE(result);
+  EXPECT_EQ(a::FieldFailure::DeadlineElapsed, result.error().failure);
+  EXPECT_EQ(0U, detail::fake_http_observation().sends.load());
+  EXPECT_TRUE(made.outcome.owner->close());
 }
 
 TEST(ServerlessOwnerAcquire, LateCompletionRefusesPublication) {

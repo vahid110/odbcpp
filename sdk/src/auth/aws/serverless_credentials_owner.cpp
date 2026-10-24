@@ -200,6 +200,8 @@ FieldOutcome<ExtractedDbFields> ServerlessCredentialsOwner::acquire() {
     config.endpointOverride = serverless_endpoint(s.target.region).c_str();
     // R3: remaining-budget transport controls under the original deadline.
     const auto budget = rs::util::remaining(s.deadline);
+    if (budget == std::chrono::milliseconds::zero())
+      return FieldError{FieldFailure::DeadlineElapsed};
     config.requestTimeoutMs = static_cast<long>(budget.count());
     config.connectTimeoutMs = static_cast<long>(budget.count());
     Aws::RedshiftServerless::RedshiftServerlessClient client(provider, config);
@@ -207,6 +209,15 @@ FieldOutcome<ExtractedDbFields> ServerlessCredentialsOwner::acquire() {
     request.SetDbName(s.target.database.c_str());
     request.SetWorkgroupName(s.target.workgroup.c_str());
     request.SetDurationSeconds(static_cast<int>(s.target.duration_seconds));
+    // R3: attach the original deadline/cancellation to the SDK continuation so
+    // the synchronous call is observed during transport, not only before/after.
+    request.SetContinueRequestHandler([cancel = s.cancellation, deadline = s.deadline](const Aws::Http::HttpRequest*) {
+      return (!cancel || !cancel->cancelled()) && rs::util::remaining(deadline) > std::chrono::milliseconds::zero();
+    });
+    // R3: recheck immediately before invocation; reject a budget consumed by
+    // source/provider/config preparation rather than dispatching with zero.
+    if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
+      return FieldError{FieldFailure::DeadlineElapsed};
     const auto result = client.GetCredentials(request);
     // R3: refuse a late successful completion under the same original deadline.
     if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())

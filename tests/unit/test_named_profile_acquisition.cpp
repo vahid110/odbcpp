@@ -25,6 +25,11 @@ class Reader final:public a::ResponseObservationSource {
  a::ResponseClockRead read_monotonic()override{++reads;if(callback)callback();return now;}
  bool cancellation_requested()override{return false;}
 };
+class CancellingReader final:public a::ResponseObservationSource {
+ public:rs::util::Deadline now{10s};
+  a::ResponseClockRead read_monotonic()override{return now;}
+  bool cancellation_requested()override{return true;}
+};
 struct NamedSetup {
  std::shared_ptr<Reader> reader=std::make_shared<Reader>();std::shared_ptr<p::WorkerCancellation> cancel=std::make_shared<p::WorkerCancellation>();
  std::shared_ptr<a::ResponseSourceGeneration> generation;
@@ -102,6 +107,78 @@ TEST(NamedProfileAcquisition, RoleProfilesAssumeRoleAndSignDbDispatchWithAssumed
     EXPECT_TRUE(acquired.observation->close());
     EXPECT_TRUE(made.owner->close());
   }
+}
+TEST(NamedProfileAcquisition, RoleAdmissionPrecedesStsAndRefusesWithoutSends){
+  // R1a: the bound request/context, observer, source generation and cancellation
+  // must be admitted before any STS send. Null/retired generation, null/cancelled
+  // observer, cancelled worker and mismatched source identity all refuse with
+  // zero STS sends, zero static-provider reads and zero DB dispatches.
+  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);
+    detail::fake_http_observation().reset();
+    detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
+    Files files;Files::write(files.credential,body);NamedSetup setup;
+    std::shared_ptr<a::ResponseObservationSource> read=setup.reader;
+    std::shared_ptr<a::ResponseSourceGeneration> gen=setup.generation;
+    std::shared_ptr<p::WorkerCancellation> cancel=setup.cancel;
+    auto spec=files.spec();
+    if(kind==0)(void)gen->retire(a::SourceRetirement::Closed);
+    if(kind==1)gen=nullptr;
+    if(kind==2)read=nullptr;
+    if(kind==3)cancel->cancel();
+    if(kind==4)read=std::make_shared<CancellingReader>();
+    if(kind==5)spec.source_identity="foreign";
+    auto made=p::FixedFixture::create_named(std::move(spec),read,gen,cancel,rs::util::Clock::now()+std::chrono::seconds{20});
+    EXPECT_FALSE(made.owner);
+    EXPECT_EQ(detail::fake_http_observation().assume_role.load(),0U);
+    EXPECT_EQ(detail::fake_http_observation().sends.load(),0U);
+    EXPECT_EQ(made.counts.named_provider_loads,0U);
+    EXPECT_EQ(made.counts.selected_sends,0U);
+  }
+}
+TEST(NamedProfileAcquisition, RoleRetirementDuringAcquisitionRefusesPublication){
+  // R1a: source retirement observed during STS acquisition is rechecked after
+  // the freeze boundary, so no subsequent DB dispatch is published.
+  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
+  Files files;Files::write(files.credential,body);NamedSetup setup;
+  detail::fake_http_set_during([g=setup.generation](){(void)g->retire(a::SourceRetirement::Closed);});
+  auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,rs::util::Clock::now()+std::chrono::seconds{20});
+  EXPECT_FALSE(made.owner);
+  EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
+  EXPECT_EQ(made.counts.selected_sends,0U);
+}
+TEST(NamedProfileAcquisition, RoleCredentialExpiringBeforeWindowRefuses){
+  // R1b: a valid STS response expiring before the requested acquisition window
+  // must be refused (zero DB sends), not frozen as a retained source.
+  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
+  const auto epoch=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  detail::fake_http_set_expiry_ms(static_cast<unsigned long long>(epoch)+2000ULL);
+  Files files;Files::write(files.credential,body);NamedSetup setup;
+  auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,rs::util::Clock::now()+std::chrono::seconds{20});
+  EXPECT_FALSE(made.owner);
+  EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
+  EXPECT_EQ(made.counts.selected_sends,0U);
+}
+TEST(NamedProfileAcquisition, RoleDeferredAcquisitionAfterExpiryRefuses){
+  // R1b: a credential that covers the request window is frozen, but a deferred
+  // acquisition after its validity expired is refused before signing (zero DB).
+  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
+  const auto epoch=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  detail::fake_http_set_expiry_ms(static_cast<unsigned long long>(epoch)+4000ULL);
+  Files files;Files::write(files.credential,body);NamedSetup setup;
+  auto made=p::FixedFixture::create_named(files.spec(),setup.reader,setup.generation,setup.cancel,rs::util::Clock::now()+std::chrono::seconds{1});
+  ASSERT_TRUE(made.owner);
+  std::this_thread::sleep_for(std::chrono::seconds{5});
+  auto acquired=made.owner->acquire_observation();
+  EXPECT_FALSE(acquired.observation);
+  EXPECT_EQ(made.counts.selected_sends,0U);
+  EXPECT_TRUE(made.owner->close());
 }
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){
  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);Files files;

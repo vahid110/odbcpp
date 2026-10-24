@@ -33,6 +33,15 @@ FakeHttpObservation& fake_http_observation() noexcept;
 bool fake_http_enabled() noexcept;
 void fake_http_configure(FakeHttpScenario, unsigned delay_ms,
     std::shared_ptr<provisioned_native::WorkerCancellation>);
+// Simulate preparation (client construction) latency so a deadline that expires
+// during preparation can be exercised deterministically.
+void fake_http_set_prep_delay(unsigned delay_ms);
+// Invoke a test hook during transport (before the continuation check), so
+// source retirement/cancellation observed mid-acquisition can be exercised.
+void fake_http_set_during(std::function<void()>);
+// Set the synthetic credential expiry (epoch milliseconds) so a credential that
+// expires before the request window can be exercised.
+void fake_http_set_expiry_ms(unsigned long long expiry_ms);
 std::shared_ptr<Aws::Http::HttpClientFactory> make_fake_http_factory(
     std::string expected_authority, bool sts);
 } // namespace rs::core::auth::aws::detail

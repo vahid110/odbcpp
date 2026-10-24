@@ -3,6 +3,7 @@
 #include "odbcpp/auth/aws/explicit_profile_source.h"
 #include "odbcpp/auth/aws/profile_role_assumption.h"
 #include <aws/core/auth/AWSCredentialsProvider.h>
+#include <aws/core/utils/DateTime.h>
 #include <array>
 #include <cerrno>
 #include <fcntl.h>
@@ -153,8 +154,19 @@ std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
       stage->credentials_path(), stage->profile(), context.region,
       context.source_identity, 900, request.deadline(), std::move(cancel));
   if (!assumed || !stage->unchanged()) throw Refused{};
+  // R1b: carry the assumed credential's known validity as a monotonic bound so
+  // a later DB dispatch cannot sign with already-expired assumed credentials.
+  if (!assumed.value().expiration_utc) throw Refused{};
+  const auto expiry_ms = assumed.value().expiration_utc->microseconds_since_epoch / 1000;
+  const auto now_utc_ms = Aws::Utils::DateTime::Now().Millis();
+  const auto now_mono = rs::util::Clock::now();
+  const auto lifetime = std::chrono::milliseconds(expiry_ms - now_utc_ms);
+  if (lifetime <= std::chrono::milliseconds::zero()) throw Refused{};  // already expired
+  const auto expires_mono = now_mono + lifetime;
+  // The request window (deadline + headroom) must fit inside the source expiry.
+  if (request.deadline() + request.headroom() > expires_mono) throw Refused{};
   Aws::Auth::AWSCredentials creds{role_sdk_string(assumed.value().access_key_id),
       role_sdk_string(assumed.value().secret_access_key), role_sdk_string(assumed.value().session_token)};
-  return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation};
+  return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation, expires_mono};
 }
 } // namespace
