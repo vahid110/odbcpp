@@ -1362,19 +1362,26 @@ tests/unit/test_mysql_tls_negotiation.cpp,108,TEST,MySqlTlsNegotiationTest,Parti
 tests/unit/test_mysql_tls_negotiation.cpp,121,TEST,MySqlTlsNegotiationTest,AllTransportFailuresRetireWithoutLeakingNativeDetail,,no-odbc-entry,none,FakeTransport,yes,body,DbErrorCode make_deadline negotiate_verified_tls,0
 tests/unit/test_mysql_tls_negotiation.cpp,134,TEST,MySqlTlsNegotiationTest,BadProgressAndTruncatedGreetingFailClosed,,no-odbc-entry,none,FakeTransport,yes,helpers,make_deadline negotiate_verified_tls,0
 tests/unit/test_mysql_tls_negotiation.cpp,150,TEST,MySqlTlsNegotiationTest,AdmissionAndHeaderChecksOccurBeforeTlsOrCredentialExchange,,no-odbc-entry,none,FakeTransport,yes,body,DbErrorCode Deadline make_deadline negotiate_verified_tls,0
-tests/unit/test_named_profile_acquisition.cpp,34,TEST,NamedProfileAcquisition,SameSdkScopeLoadsExactlyOnceAndFreezesSource,,no-odbc-entry,none,,,helpers,Deadline,0
-tests/unit/test_named_profile_acquisition.cpp,40,TEST,NamedProfileAcquisition,StrictPolicyRefusesBeforeInitialization,,no-odbc-entry,none,,,helpers,Deadline,0
-tests/unit/test_named_profile_acquisition.cpp,46,TEST,NamedProfileAcquisition,PrivateFdValidationRefusesUnsafeSources,,no-odbc-entry,none,,,,,0
-tests/unit/test_named_profile_acquisition.cpp,57,TEST,NamedProfileAcquisition,StageSnapshotRefusesChangedOriginalOrReopenedPath,,no-odbc-entry,none,,,,,0
-tests/unit/test_named_profile_acquisition.cpp,65,TEST,NamedProfileAcquisition,ExactSourceGenerationAndProfileNeverFallback,,no-odbc-entry,none,,,helpers,Deadline,0
-tests/unit/test_named_profile_acquisition.cpp,69,TEST,NamedProfileAcquisition,OriginalDeadlineCancellationAndRetirementRefusePublication,,no-odbc-entry,none,,,body,Deadline,0
-tests/unit/test_named_profile_acquisition.cpp,83,TEST,NamedProfileAcquisition,OutstandingSecretBorrowPreventsOwnerReleaseAndSingleConsume,,no-odbc-entry,none,,,helpers,Deadline,0
-tests/unit/test_named_profile_acquisition.cpp,89,TEST,NamedProfileAcquisition,StageOwnershipCleanupDoesNotDeleteSourceAndNoRawErrors,,no-odbc-entry,none,,,body,Deadline,0
-tests/unit/test_named_profile_acquisition.cpp,99,TEST,NamedProfileFdCursor,CacheThenProviderRewindsBothSharedOffsetsOnce,,no-odbc-entry,none,,,,,0
-tests/unit/test_named_profile_acquisition.cpp,109,TEST,NamedProfileFdCursor,ProviderBeforeCacheAndInvalidDescriptorsNeverReset,,no-odbc-entry,none,,,,,0
-tests/unit/test_named_profile_acquisition.cpp,120,TEST,NamedProfileFdCursor,FailedPartialResetCannotRetryOrPublishAProviderPhase,,no-odbc-entry,none,,,,,0
-tests/unit/test_named_profile_acquisition.cpp,131,TEST,NamedProfileFdCursor,ExceptionAndReentryLatchBeforeAnotherDescriptorReset,,no-odbc-entry,none,,,,,0
-tests/unit/test_named_profile_acquisition.cpp,141,TEST,NamedProfileFdCursor,RepeatedCacheOrUnknownPhaseIsPermanentWithoutMoreReads,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,61,TEST,NamedProfileAcquisition,SameSdkScopeLoadsExactlyOnceAndFreezesSource,,no-odbc-entry,none,,,helpers,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,67,TEST,NamedProfileAcquisition,StrictPolicyRefusesBeforeInitialization,,no-odbc-entry,none,,,helpers,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,73,TEST,NamedProfileAcquisition,RoleArnProfileAcceptedButForeignArnRefused,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,79,TEST,NamedProfileAcquisition,SourceProfileMultiSectionAcceptedAndRefused,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,94,TEST,NamedProfileAcquisition,RoleProfilesRefusedBeforeStaticKeyFallback,,no-odbc-entry,none,,,helpers,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,111,TEST,NamedProfileAcquisition,RoleProfilesUnavailableClockQualityRefusedBeforeSts,,no-odbc-entry,none,,,body,Clock Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,132,TEST,NamedProfileAcquisition,RoleAdmissionPrecedesStsAndRefusesWithoutSends,,no-odbc-entry,none,,,body,Clock Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,160,TEST,NamedProfileAcquisition,RoleBoundAdmissionRefusesForeignGenerationFailingClockAndRetirement,,no-odbc-entry,none,,,body,Clock Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,183,TEST,NamedProfileAcquisition,RoleProfilesSuppliedClockErrorExceedingAdmittedBoundRefused,,no-odbc-entry,none,,,body,Clock Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,200,TEST,NamedProfileAcquisition,PrivateFdValidationRefusesUnsafeSources,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,211,TEST,NamedProfileAcquisition,StageSnapshotRefusesChangedOriginalOrReopenedPath,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,219,TEST,NamedProfileAcquisition,ExactSourceGenerationAndProfileNeverFallback,,no-odbc-entry,none,,,helpers,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,223,TEST,NamedProfileAcquisition,OriginalDeadlineCancellationAndRetirementRefusePublication,,no-odbc-entry,none,,,body,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,237,TEST,NamedProfileAcquisition,OutstandingSecretBorrowPreventsOwnerReleaseAndSingleConsume,,no-odbc-entry,none,,,helpers,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,243,TEST,NamedProfileAcquisition,StageOwnershipCleanupDoesNotDeleteSourceAndNoRawErrors,,no-odbc-entry,none,,,body,Deadline,0
+tests/unit/test_named_profile_acquisition.cpp,253,TEST,NamedProfileFdCursor,CacheThenProviderRewindsBothSharedOffsetsOnce,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,263,TEST,NamedProfileFdCursor,ProviderBeforeCacheAndInvalidDescriptorsNeverReset,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,274,TEST,NamedProfileFdCursor,FailedPartialResetCannotRetryOrPublishAProviderPhase,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,285,TEST,NamedProfileFdCursor,ExceptionAndReentryLatchBeforeAnotherDescriptorReset,,no-odbc-entry,none,,,,,0
+tests/unit/test_named_profile_acquisition.cpp,295,TEST,NamedProfileFdCursor,RepeatedCacheOrUnknownPhaseIsPermanentWithoutMoreReads,,no-odbc-entry,none,,,,,0
 tests/unit/test_native_types.cpp,14,TEST,NativeTypeTest,PostgresFamilyNormalizesFixedScalarMetadata,,no-odbc-entry,none,,,body,ScalarType,0
 tests/unit/test_native_types.cpp,31,TEST,NativeTypeTest,PreservesNumericAndTemporalModifiers,,no-odbc-entry,none,,,body,ScalarType,0
 tests/unit/test_native_types.cpp,58,TEST,NativeTypeTest,PreservesCharacterBinaryAndUnknownFallbackSizes,,no-odbc-entry,none,,,body,ScalarType,0
@@ -2314,6 +2321,38 @@ tests/unit/test_sql_escape.cpp,366,TEST,RedshiftLogarithmEscapeTest,NaturalAndBa
 tests/unit/test_sql_escape.cpp,373,TEST,RedshiftLogarithmEscapeTest,RawLineCommentsQuotesNestedCommentsAndDollarBodiesAreRetained,,no-odbc-entry,none,,,,,0
 tests/unit/test_sql_escape.cpp,383,TEST,RedshiftLogarithmEscapeTest,MalformedUnaryCallsRefuseAndPositiveSmallRecoveryRemainsNative,,no-odbc-entry,none,,,body,SqlTranslationError,0
 tests/unit/test_sql_escape.cpp,391,TEST,RedshiftLogarithmEscapeTest,PostgresNativeLogAndUnknownPrefixesAndPriorFamiliesAreUnchanged,,no-odbc-entry,none,,,,,0
+tests/unit/test_sts_assume_role_response.cpp,44,TEST,StsAssumeRoleResponseTest,OperationAndLocalSyntaxDoNotFabricateServiceAuthority,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleAcquisition,0
+tests/unit/test_sts_assume_role_response.cpp,56,TEST,StsAssumeRoleResponseTest,ProjectionOwnsCredentialAndConservativeValidity,,no-odbc-entry,none,,,helpers,Deadline TemporaryClockSample TemporaryTimePolicy,0
+tests/unit/test_sts_assume_role_response.cpp,75,TEST,StsAssumeRoleResponseTest,TargetRejectsForeignComponentsAndLocalBounds,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleAcquisition StsAssumeRoleFailure StsAssumeRolePartition StsAssumeRoleTarget StsAssumedCredential StsOutcome,0
+tests/unit/test_sts_assume_role_response.cpp,95,TEST,StsAssumeRoleResponseTest,RoleNameWithPathIsAccepted,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleAcquisition,0
+tests/unit/test_sts_assume_role_response.cpp,100,TEST,StsAssumeRoleResponseTest,DurationAndHeadroomBoundsAreClosed,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleAcquisition,0
+tests/unit/test_sts_assume_role_response.cpp,116,TEST,StsAssumeRoleResponseTest,MissingEmptyAndNulSecretsCannotPublish,,no-odbc-entry,none,,,body,Deadline SecretBytes StsAssumeRoleFailure StsAssumedCredential StsOutcome TemporaryClockSample TemporaryTimePolicy,0
+tests/unit/test_sts_assume_role_response.cpp,135,TEST,StsAssumeRoleResponseTest,MissingNonpositiveAndOverflowExpiryConsumeSecrets,,no-odbc-entry,none,,,body,Deadline SecretBytes StsAssumeRoleFailure StsAssumeRoleResponse StsAssumeRoleResponseUtc StsAssumedCredential StsOutcome TemporaryClockSample,0
+tests/unit/test_sts_assume_role_response.cpp,143,TEST,StsAssumeRoleResponseTest,OriginalDeadlineAndQualityRemainClosed,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleFailure StsAssumedCredential StsOutcome TemporaryClockSample TemporaryTimePolicy TimeFailure,0
+tests/unit/test_sts_assume_role_response.cpp,164,TEST,StsAssumeRoleResponseTest,CancellationConsumesBeforeEarlyValidation,,no-odbc-entry,none,,,body,Cancellation Deadline StsAssumeRoleFailure StsAssumedCredential StsOutcome TemporaryClockSample TemporaryTimePolicy,0
+tests/unit/test_sts_assume_role_response.cpp,174,TEST,StsAssumeRoleResponseTest,UtcTypesHaveNoImplicitMillisecondOrOperationConversions,,no-odbc-entry,none,,,body,StsAssumeRoleResponse StsAssumeRoleResponseUtc StsAssumedCredential,0
+tests/unit/test_sts_assume_role_response.cpp,181,TEST,StsAssumeRoleResponseTest,ExactOneMicrosecondChangesExclusiveBoundaryWithoutRounding,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleFailure StsAssumedCredential StsOutcome TemporaryClockSample TemporaryTimePolicy TimeFailure,0
+tests/unit/test_sts_assume_role_response.cpp,190,TEST,StsAssumeRoleResponseTest,MillisecondCompatibilityAndCheckedRangeStayUnchanged,,no-odbc-entry,none,,,body,Deadline SecretBytes StsAssumeRoleFailure StsAssumeRoleResponse StsAssumeRoleResponseUtc StsAssumedCredential StsOutcome TemporaryClockSample,0
+tests/unit/test_sts_assume_role_response.cpp,210,TEST,StsAssumeRoleResponseTest,MultifaultPrecedenceAndEarlyOwnershipAreConsistent,,no-odbc-entry,none,,,body,Deadline StsAssumeRoleFailure StsAssumedCredential StsOutcome TemporaryClockSample TemporaryTimePolicy UtcInstant,0
+tests/unit/test_sts_assume_role_response.cpp,219,TEST,StsAssumeRoleResponseTest,SafeErrorsAreClosedWithoutSourcePayloads,,no-odbc-entry,none,,,body,StsAssumeRoleError StsAssumeRoleFailure,0
+tests/unit/test_sts_serverless_owner.cpp,49,TEST,StsOwnerInit,AllocationFailureDoesNotLeakSdkSlot,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,59,TEST,StsOwnerInit,AfterEntryInitFailureIsFatal,,no-odbc-entry,none,,,,,0
+tests/unit/test_sts_serverless_owner.cpp,64,TEST,StsOwnerAcquire,ApprovedEndpointSucceedsWithOneSend,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,82,TEST,StsOwnerAcquire,HttpEndpointOverrideCannotRedirectSend,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,101,TEST,StsOwnerAcquire,ExpiredAdmissionRefusesWithZeroSends,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,111,TEST,StsOwnerAcquire,ExpiryBetweenCreateAndAcquireRefuses,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,126,TEST,StsOwnerAcquire,ExpiryDuringPreparationRefusesWithZeroSends,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,140,TEST,StsOwnerAcquire,LateCompletionRefusesPublication,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,154,TEST,StsOwnerAcquire,CancellationDuringTransportRefuses,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,169,TEST,StsOwnerAcquire,DeniedAssumptionRefusesWithoutFallback,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,183,TEST,ServerlessOwnerInit,AllocationFailureDoesNotLeakSdkSlot,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,193,TEST,ServerlessOwnerInit,AfterEntryInitFailureIsFatal,,no-odbc-entry,none,,,,,0
+tests/unit/test_sts_serverless_owner.cpp,198,TEST,ServerlessOwnerAcquire,ApprovedEndpointSucceedsWithOneSend,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,212,TEST,ServerlessOwnerAcquire,HttpEndpointOverrideCannotRedirectSend,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,229,TEST,ServerlessOwnerAcquire,ExpiredAdmissionRefusesWithZeroSends,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,239,TEST,ServerlessOwnerAcquire,ExpiryDuringPreparationRefusesWithZeroSends,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,252,TEST,ServerlessOwnerAcquire,LateCompletionRefusesPublication,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/unit/test_sts_serverless_owner.cpp,265,TEST,ServerlessOwnerAcquire,CancellationDuringTransportRefuses,,no-odbc-entry,none,,,helpers,Clock Deadline,0
 tests/unit/test_temporary_db_validity.cpp,30,TEST,TemporaryDbTimeTest,EarliestBracketUncertaintyAndExplicitReadinessAreConservative,,no-odbc-entry,none,,,helpers,Deadline TemporaryClockSample TemporaryTimePolicy UtcInstant,0
 tests/unit/test_temporary_db_validity.cpp,39,TEST,TemporaryDbTimeTest,ExclusiveHeadroomAndOneTickNeighbors,,no-odbc-entry,none,,,body,Clock Deadline TemporaryClockSample TemporaryTimePolicy TimeConversion TimeFailure UtcInstant,0
 tests/unit/test_temporary_db_validity.cpp,49,TEST,TemporaryDbTimeTest,FreshnessUsesBeforeRatherThanAfterAndLimitsAreInclusive,,no-odbc-entry,none,,,body,Clock Deadline TemporaryClockSample TemporaryTimePolicy TimeConversion TimeFailure UtcInstant,0
@@ -3027,6 +3066,14 @@ tests/integration/it_redshift_real.cpp,11768,TEST_F,RedshiftSpecialTypesRealTest
 tests/integration/it_redshift_real.cpp,11784,TEST_F,RedshiftSpecialTypesRealTest,RawBinaryVarbyteParameterRoundTrip,,needs-internals,SQLDriverConnect,,,body,BackendErrorClass BackendOperation BackendResult ConnectionSettings ConnectionString DbErrorCode PgDatabaseConnection PrimaryKeysCatalogRequest,25
 tests/integration/it_redshift_real.cpp,11809,TEST_F,RedshiftSpecialTypesRealTest,DoubleResultRoundTripsStoredValue,,needs-internals,SQLDriverConnect,,,body,BackendErrorClass BackendOperation BackendResult ConnectionSettings ConnectionString DbErrorCode PgDatabaseConnection PrimaryKeysCatalogRequest,22
 tests/integration/it_redshift_routine_schema_patterns.cpp,269,TEST_P,RoutineSchemaNative,OmittedWildcardUnicodeEscapedAndMetadataIdentifiers,1,needs-internals,SQLConnect,,,helpers,ConnectionString ResultLimits configured_backend_provider trim utf8_to_wide,16
+tests/integration/it_redshift_serverless_sts_auth.cpp,158,TEST,ServerlessStsAuth,AssumeRoleGetCredentialsAndVerifiedTlsLogin,,no-odbc-entry,none,,,body,Clock Deadline TLSTransport,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,185,TEST,ServerlessStsAuth,ForeignRoleArnIsRefusedBeforeCredentialIssuance,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,195,TEST,ServerlessStsAuth,WrongWorkgroupIsRefusedAtGetCredentials,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,217,TEST,ServerlessStsAuth,BogusSourceKeysAreRefusedAtAssumeRole,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,234,TEST,ServerlessStsAuth,WrongPasswordIsRefusedAtLogin,,no-odbc-entry,none,,,body,Clock Deadline TLSTransport,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,253,TEST,ServerlessStsAuth,WrongHostnameIsRefusedAtTls,,no-odbc-entry,none,,,body,Clock Deadline TLSTransport,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,274,TEST,ServerlessStsAuth,TwoSequentialCredentialIssuancesSucceed,,no-odbc-entry,none,,,helpers,Clock Deadline,0
+tests/integration/it_redshift_serverless_sts_auth.cpp,286,TEST,ServerlessStsAuth,ProfileChainRoleArnAssumesRoleViaResolver,,no-odbc-entry,none,,,helpers,Clock Deadline,0
 tests/integration/it_session_baseline.cpp,8,TEST,SessionBaselineIntegrationTest,MandatoryPostgreSQLUsesIsolatedSharedRunner,,no-odbc-entry,none,,,body,ConnectionOptions ConnectionString QueryParameterType ScalarType configured_backend_provider,0
 tests/integration/it_session_owner.cpp,14,TEST,SessionOwnerIntegrationTest,LiveBorrowSurvivesOwnerAndRetirementClosesPhysicalSession,,no-odbc-entry,none,,,body,BackendErrorClass BackendOperation ConnectionOptions ConnectionString CredentialContext Deadline QueryParameter QueryParameterType,0
 tests/integration/it_session_reset.cpp,38,TEST_F,SessionResetIntegrationTest,ResetRestoresServerBaselineAndClearsSessionResources,,needs-internals,SQLConnect,,,body,BackendResult Deadline DescriptorRecord HandleRegistry::get_handle_as ODBCBackendTestAccess ODBCConnection(non-construction) ODBCStatement SessionDisposition,5
