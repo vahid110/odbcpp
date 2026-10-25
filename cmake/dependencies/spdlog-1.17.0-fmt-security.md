@@ -38,6 +38,13 @@ All fixed staging paths are preflighted too: any existing file, directory or
 symlink (including a dangling link) is rejected before any write. The source/build
 tree must be trusted and not concurrently mutated by another same-user process;
 this recipe does not create a hostile-filesystem transaction boundary.
+Patched output is explicitly LF on every platform. CMake file(WRITE) uses native
+text mode on Windows and changes those bytes to CRLF, so the recipe instead uses
+file(CONFIGURE) with NEWLINE_STYLE UNIX and a single-pass content placeholder.
+The exact original/result hashes remain unchanged; CRLF dependency inputs are
+rejected rather than silently accepted or rehashed. LF/CRLF checkouts of the
+recipe/control metadata produce the same pinned output, without configuring
+tokens embedded in the upstream C++ text.
 An interrupted write can leave a mixed state that must be repopulated from the
 pinned archive; it is intentionally not silently repaired. The patch does not
 create a dependency on Python, git or an external patch utility at configure time.

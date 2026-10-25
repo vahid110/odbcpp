@@ -81,6 +81,51 @@ class PatchControl(unittest.TestCase):
         self.assertIn("unknown header hash", self.apply(False).stderr)
         self.assertEqual(before, self.snapshot())
 
+    def test_crlf_checkout_controls_emit_exact_lf_headers(self):
+        # Windows checkout line endings may affect controls, but never the
+        # pinned archive or patched header bytes. Exercise real CMake emission.
+        for name in ('ApplySpdlogFmtSecurity.cmake', 'spdlog-1.17.0-fmt-security.json'):
+            path = self.control / name
+            path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+        self.apply()
+        for item in MANIFEST['files']:
+            body = (self.source / item['path']).read_bytes()
+            self.assertNotIn(b'\r', body)
+            self.assertTrue(body.endswith(b'\n'))
+            self.assertFalse(body.endswith(b'\n\n'))
+            self.assertEqual(digest(body), item['result_sha256'])
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(before, self.snapshot())
+
+    def test_crlf_dependency_bytes_are_not_silently_normalized(self):
+        path = self.source / MANIFEST['files'][0]['path']
+        path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+        before = self.snapshot()
+        self.assertIn('unknown header hash', self.apply(False).stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_emitted_header_preserves_literal_configure_tokens(self):
+        item = MANIFEST['files'][0]
+        path = self.source / item['path']
+        marker = b'// literal @tokens@ ${tokens} @lf_content@\n'
+        original = path.read_bytes() + marker
+        expected = original
+        for hunk in item['hunks']:
+            expected = expected.replace(hunk['before'].encode(), hunk['after'].encode())
+        path.write_bytes(original)
+        # Only this disposable fixture gets alternate whole-file pins. The
+        # checked-in upstream manifest and its three result hashes stay fixed.
+        self.change_manifest(lambda d: d['files'][0].update(
+            base_sha256=digest(original), result_sha256=digest(expected)))
+        script = self.control / 'ApplySpdlogFmtSecurity.cmake'
+        script.write_text('set(tokens "UNEXPECTED_EXPANSION")\n' + script.read_text())
+        self.apply()
+        actual = path.read_bytes()
+        self.assertEqual(actual, expected)
+        self.assertIn(marker, actual)
+        self.assertNotIn(b'UNEXPECTED_EXPANSION', actual)
+
     def test_wrong_result_hash_preserves_every_file(self):
         self.change_manifest(lambda d: d["files"][-1].update(result_sha256="0" * 64))
         before = self.snapshot()

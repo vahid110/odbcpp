@@ -56,7 +56,13 @@ function(odbcpp_patch_spdlog_fmt source_dir)
   endforeach()
   foreach(index RANGE ${last})
     string(JSON path GET "${manifest}" files ${index} path)
-    file(WRITE "${source_dir}/${path}.odbcpp-security-tmp" "${output_${index}}")
+    # file(WRITE) uses native text mode (CRLF on Windows). CONFIGURE with an
+    # explicit style writes binary LF bytes. Expand one placeholder exactly
+    # once, so @...@/${...} inside upstream C++ is not configured as a template.
+    # CONFIGURE appends one final LF; the pinned headers already end in one.
+    string(REGEX REPLACE "\n$" "" lf_content "${output_${index}}")
+    file(CONFIGURE OUTPUT "${source_dir}/${path}.odbcpp-security-tmp"
+         CONTENT "@lf_content@" @ONLY NEWLINE_STYLE UNIX)
     file(RENAME "${source_dir}/${path}.odbcpp-security-tmp" "${source_dir}/${path}")
   endforeach()
   # Read back the final on-disk bytes, not merely the in-memory replacement.
