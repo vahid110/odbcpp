@@ -5940,7 +5940,15 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,row_statuses_.slots,0));
   }
   void row_number(SQLHSTMT statement,SQLULEN expected) {
-    SQLULEN row=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr)); EXPECT_EQ(expected,row);
+    SQLULEN row=99;
+    if(expected==0&&odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::RowNumberOffRowRefused)) {
+      // The driver reports 0 when the static cursor is on no row; the manager
+      // applies the SQLGetStmtAttr 24000 rule itself and leaves the output.
+      ASSERT_EQ(SQL_ERROR,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr));
+      EXPECT_EQ("24000",get_error(SQL_HANDLE_STMT,statement)); EXPECT_EQ(99u,row);
+      return;
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr)); EXPECT_EQ(expected,row);
   }
   void saved_fetch(SQLLEN delta=0) {
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));

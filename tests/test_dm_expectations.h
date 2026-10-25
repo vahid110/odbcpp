@@ -73,6 +73,7 @@ enum class Deviation {
   GetFunctionsRefusesOdbc38Id,
   PutDataNullEmptyPieceRejected,
   BookmarkColumnDescribeRejected,
+  RowNumberOffRowRefused,
 };
 
 }  // namespace dm
@@ -184,6 +185,7 @@ inline constexpr Entry kEntries[] = {
     {Deviation::GetFunctionsRefusesOdbc38Id, kUnixodbc2314, "HY095", "live bucket R8"},
     {Deviation::PutDataNullEmptyPieceRejected, kIodbc35216, nullptr, "live bucket R9"},
     {Deviation::BookmarkColumnDescribeRejected, kIodbc35216, nullptr, "live bucket R10"},
+    {Deviation::RowNumberOffRowRefused, kUnixodbc2314, nullptr, "live bucket R11"},
 };
 
 inline const Entry* entry(Deviation deviation) {

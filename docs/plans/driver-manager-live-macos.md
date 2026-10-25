@@ -35,7 +35,7 @@ Probes behind the D buckets ran on the disposable loopback PostgreSQL fixture us
 | D2 | manager | | (masked) | 1 | `NegativeTests` passes a connection string as `SQLConnect` ServerName. The manager reads it as a DSN name and refuses it: unixODBC HY090 (longer than `SQL_MAX_DSN_LENGTH`), iODBC IM002. This is live bucket R2. |
 | D3 | manager | | (masked) | 1 | `SQLGetDiagRecW` through a manager reports the record's UTF-8 byte count as its length in characters. Probe: 62 from both managers, 56 direct. The text itself is complete. This is live bucket R3. |
 | D4 | manager | | (masked) | 1 | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns `SQL_SUCCESS`. iODBC returns `SQL_ERROR` as the driver does, but the record is still gone. This is live bucket R4. |
-| P1 | product | | | 2 | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or before any fetch: the driver returns `SQL_SUCCESS` with 0, and unixODBC raises 24000 itself. See [proposal P1](#p1-static-cursor-row_number-off-a-row). |
+| P1 | manager (R11) | | | 2 | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or before any fetch: the driver returns `SQL_SUCCESS` with 0, and unixODBC raises 24000 itself. Recorded as R11; the product question stays open ([P1](#p1-static-cursor-row_number-off-a-row)). |
 | O1 | test oracle | 1 | | 1 | `SuperResultsPreserveServerJsonText` expected the text `null` for `JSON_PARSE('null')`. The driver correctly returned `SQL_NULL_DATA`, because the server makes a top-level JSON null SQL NULL. See [O1](#o1-super-json-null). |
 
 All 198 failures are assigned to a bucket. The case-by-case list is in the private evidence (`classified.json`).
@@ -62,12 +62,9 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
   - The diagnostics table lists 24000 when the attribute is `SQL_ATTR_ROW_NUMBER` and the cursor is not open, or is positioned before the start or after the end of the result set.
 - **Driver:** The driver follows the diagnostics table for forward-only cursors (`MetadataIntegrationTest.ReportsCurrentRowNumberOnlyWhilePositioned`). For static cursors it follows the attribute description, through a deliberate carve-out added with static scrolling (`8ee2cfc`, `odbc/odbc_handles.cpp` `SQL_ATTR_ROW_NUMBER`). Unit tests in `tests/unit/test_backend_contract.cpp` assert the 0, and so does `RedshiftRecentFeaturesRealTest`.
 - **unixODBC:** It applies the diagnostics table itself and returns 24000 after `SQL_NO_DATA`, before the call reaches the driver.
-- **Recommendation:** Raise 24000 for static cursors too. That gives one rule for both cursor types, matches the diagnostics table and matches what an application already sees through unixODBC. This is a product change:
-  - the static-cursor unit tests change first, as failing-before evidence;
-  - the carve-out goes;
-  - the two live `row_number(…,0)` checks change to 24000.
-- **Alternative:** Keep 0, and record the unixODBC behaviour as a manager deviation instead.
-- **Waiting for your decision:** nothing is changed yet.
+- **Done in this branch:** the driver is unchanged, and the unixODBC behaviour is recorded as live bucket R11 (`RowNumberOffRowRefused`). The two live `row_number(…,0)` checks expect the manager's 24000 there.
+  - The authorization for this branch covers test infrastructure only. Changing the driver would also mean reversing a deliberate design that 11 static-cursor unit assertions in `tests/unit/test_backend_contract.cpp` check, so it isn't made here.
+- **Open product question, for a separate product change:** whether static cursors should raise 24000 like forward-only cursors. That would give one rule for both cursor types and match the diagnostics table. The plan: change the static-cursor unit tests first, as failing-before evidence; then remove the carve-out; then drop R11.
 
 ### O1: SUPER JSON null (resolved: test oracle)
 
@@ -125,9 +122,10 @@ All were measured on the loopback PostgreSQL fixture unless marked live.
 | R8 | unixODBC | `SQLGetFunctions` for the individual ODBC 3.8 ID 1022 raises HY095. The ODBC 3 bitmap carries the driver's answer. |
 | R9 | iODBC | `SQLPutData(NULL, 0)` is refused with HY009. The ODBC reference allows a NULL pointer with length 0. |
 | R10 | iODBC | `SQLDescribeCol` on column 0 is refused with S1002 (07009) while bookmarks are on (live). |
+| R11 | unixODBC | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or after a failed fetch before any row, raises 24000 from the manager. The driver reports 0 (P1). |
 
 ## Next run
 
 The same three builds after these fixes, with the same 1,495 cases:
-- **Expected to fail:** P1 (2 unixODBC cases) until it is decided. Also the HYT00 cases if the slowness repeats.
+- **Expected to fail:** the HYT00 cases, if the slowness repeats.
 - **To diagnose:** the repeated `SQLFetch` on empty catalog results through iODBC.
