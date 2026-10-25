@@ -417,6 +417,10 @@ core/
 
 ## Adding New Database Support
 
+The following is an extension-development outline. `MYSQL` is not an available
+product configuration; its example configure command will be rejected until the
+backend and product integration are implemented and qualified.
+
 1. **Create protocol parser**:
    ```bash
    mkdir -p core/database/mysql

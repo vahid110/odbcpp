@@ -96,3 +96,12 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 as historical draft notes, not authenticated release records. No formal release
 is asserted by those placeholder dates. Development snapshots are identified by
 full commit and build evidence; the CMake version alone is not unique.
+
+## Release publication policy
+
+A future formal release must have a unique version bound to its exact source
+commit and package inventory, dated human-readable changes, and compatibility
+or upgrade notes. Include CVE or comparable identifiers for publicly known
+project runtime vulnerabilities fixed by that release, when applicable. The
+current CMake/MSI version is a package version, not evidence that a formal
+release with that name has been accepted.
