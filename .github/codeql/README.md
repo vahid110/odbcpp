@@ -27,6 +27,14 @@ registration remains OFF. There are no services, PostgreSQL startup, DSNs, CTest
 native authentication, credentials, cloud calls, caches or restored binaries in
 this workflow. It does not repeat the primary test matrix.
 
+CMake configuration runs before CodeQL initialization for the manual profile.
+Its architecture checks intentionally compile invalid private-header probes;
+those expected failures are configuration evidence, not product translation
+units. Initialization then precedes the unchanged actual build, so all product,
+ordinary test and generated SDK header units remain traced and checked against
+`compile_commands.json`. The configure log is retained. This ordering does not
+turn an extractor error in an actual build unit into an accepted exception.
+
 The manual profile does not qualify POSTGRESQL-only composition, Windows setup/
 registry/IOCP, Apple trust APIs, alternate ODBC widths, installed packages, runtime
 TLS, or the default-off native AWS SDK modules. Those native modules require a
