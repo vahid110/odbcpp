@@ -80,6 +80,128 @@ TEST_F(TlsTrustStoreTest, CustomFileVerifiesIpAddressSubjectAlternativeName) {
   EXPECT_TRUE(client.peer_identity_verified());
 }
 
+TEST_F(TlsTrustStoreTest, StrengthPolicyAcceptsRsa2048WithTls12AndTls13) {
+  pki::Spec spec{"db.example.test", false, {"db.example.test"}, {}, "serverAuth"};
+  spec.rsa_bits = 2048;
+  const auto leaf = pki::issue(spec, &hierarchy.intermediate);
+  ASSERT_EQ(::EVP_PKEY_bits(leaf.key.get()), 2048);
+  for (const int protocol : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+    SCOPED_TRACE(protocol);
+    TlsClient client;
+    client.configure(custom_file(root_file));
+    pki::MemoryServer server(leaf, {&hierarchy.intermediate},
+        {protocol, "ECDHE-RSA-AES128-GCM-SHA256", false});
+    const auto step = server.connect(client, "db.example.test");
+    EXPECT_EQ(step.state, TlsStepState::Complete) << step.message;
+    EXPECT_TRUE(client.peer_identity_verified());
+    if (protocol == TLS1_2_VERSION) {
+      EXPECT_EQ(server.selected_cipher(), "ECDHE-RSA-AES128-GCM-SHA256");
+    } else {
+      EXPECT_EQ(server.selected_cipher().find("TLS_"), 0u);
+    }
+  }
+}
+
+TEST_F(TlsTrustStoreTest, StrengthPolicyRejectsWeakLeafIssuerAndAnchorKeys) {
+  enum class WeakRole { Leaf, Intermediate, Root };
+  for (const auto role : {WeakRole::Leaf, WeakRole::Intermediate, WeakRole::Root}) {
+    SCOPED_TRACE(static_cast<int>(role));
+    pki::Spec root_spec{"Strength Root", true, {}, {}, ""};
+    pki::Spec issuer_spec{"Strength Issuer", true, {}, {}, ""};
+    pki::Spec leaf_spec{"db.example.test", false, {"db.example.test"}, {}, "serverAuth"};
+    if (role == WeakRole::Root) {
+      root_spec.rsa_bits = 1024;
+    } else if (role == WeakRole::Intermediate) {
+      issuer_spec.rsa_bits = 1024;
+    } else {
+      leaf_spec.rsa_bits = 1024;
+    }
+    const auto root = pki::issue(root_spec, nullptr);
+    const auto issuer = pki::issue(issuer_spec, &root);
+    const auto leaf = pki::issue(leaf_spec, &issuer);
+    pki::TempDirectory directory{"strength"};
+    const auto file = directory.path() / "root.pem";
+    pki::write_file(file, pki::pem(root.cert.get()));
+    pki::write_hashed(directory.path(), root.cert.get());
+    const char* cipher = role == WeakRole::Leaf
+        ? "ECDHE-RSA-AES128-GCM-SHA256" : "ECDHE-ECDSA-AES128-GCM-SHA256";
+    pki::MemoryServer server(leaf, {&issuer}, {TLS1_2_VERSION, cipher, true});
+    ASSERT_TRUE(server.unverified_control(TLS1_2_VERSION, cipher));
+    for (const bool hashed : {false, true}) {
+      SCOPED_TRACE(hashed);
+      TlsClient client;
+      client.configure(hashed ? custom_directory(directory.path()) : custom_file(file));
+      const auto step = server.connect(client, "db.example.test");
+      EXPECT_EQ(step.state, TlsStepState::TlsError);
+      EXPECT_FALSE(client.peer_identity_verified());
+      std::array<std::byte, 1> secret{};
+      EXPECT_EQ(client.write(secret).state, TlsStepState::TlsError);
+    }
+  }
+}
+
+TEST_F(TlsTrustStoreTest, StrengthPolicyChecksIssuerSignaturesButNotAnchorSelfSignature) {
+  for (const bool weak_issuer : {false, true}) {
+    SCOPED_TRACE(weak_issuer);
+    pki::Spec root_spec{"SHA1 Self Signed Anchor", true, {}, {}, ""};
+    root_spec.signature_digest = ::EVP_sha1();
+    const auto root = pki::issue(root_spec, nullptr);
+    pki::Spec issuer_spec{"Strength Issuer", true, {}, {}, ""};
+    if (weak_issuer) {
+      issuer_spec.signature_digest = ::EVP_sha1();
+    }
+    const auto issuer = pki::issue(issuer_spec, &root);
+    const auto leaf = pki::issue(
+        {"db.example.test", false, {"db.example.test"}, {}, "serverAuth"}, &issuer);
+    pki::TempDirectory directory{"signatures"};
+    const auto file = directory.path() / "root.pem";
+    pki::write_file(file, pki::pem(root.cert.get()));
+    TlsClient client;
+    client.configure(custom_file(file));
+    constexpr char cipher[] = "ECDHE-ECDSA-AES128-GCM-SHA256";
+    pki::MemoryServer server(leaf, {&issuer}, {TLS1_2_VERSION, cipher, true});
+    ASSERT_TRUE(server.unverified_control(TLS1_2_VERSION, cipher));
+    const auto step = server.connect(client, "db.example.test");
+    EXPECT_EQ(step.state, weak_issuer ? TlsStepState::TlsError : TlsStepState::Complete)
+        << step.message;
+    EXPECT_EQ(client.peer_identity_verified(), !weak_issuer);
+  }
+}
+
+TEST_F(TlsTrustStoreTest, StrengthPolicyRejectsStaticRsaAndCbcOnlyPeers) {
+  pki::Spec spec{"db.example.test", false, {"db.example.test"}, {}, "serverAuth"};
+  spec.rsa_bits = 2048;
+  const auto leaf = pki::issue(spec, &hierarchy.intermediate);
+  for (const char* cipher : {"AES128-GCM-SHA256", "ECDHE-RSA-AES128-SHA256"}) {
+    SCOPED_TRACE(cipher);
+    pki::MemoryServer server(leaf, {&hierarchy.intermediate}, {TLS1_2_VERSION, cipher, true});
+    ASSERT_TRUE(server.unverified_control(TLS1_2_VERSION, cipher));
+    TlsClient client;
+    client.configure(custom_file(root_file));
+    const auto step = server.connect(client, "db.example.test");
+    EXPECT_EQ(step.state, TlsStepState::TlsError);
+    EXPECT_FALSE(client.peer_identity_verified());
+  }
+}
+
+TEST_F(TlsTrustStoreTest, FrozenSiblingKeepsStrengthPolicy) {
+  TlsClient original;
+  original.configure(custom_file(root_file));
+  ASSERT_EQ(connect(original).state, TlsStepState::Complete);
+  auto sibling = original.verified_sibling();
+  ASSERT_NE(sibling, nullptr);
+  ASSERT_TRUE(sibling->frozen_context());
+  pki::Spec spec{"db.example.test", false, {"db.example.test"}, {}, "serverAuth"};
+  spec.rsa_bits = 2048;
+  const auto leaf = pki::issue(spec, &hierarchy.intermediate);
+  constexpr char cipher[] = "AES128-GCM-SHA256";
+  pki::MemoryServer server(leaf, {&hierarchy.intermediate}, {TLS1_2_VERSION, cipher, true});
+  ASSERT_TRUE(server.unverified_control(TLS1_2_VERSION, cipher));
+  const auto step = server.connect(*sibling, "db.example.test");
+  EXPECT_EQ(step.state, TlsStepState::TlsError);
+  EXPECT_FALSE(sibling->peer_identity_verified());
+}
+
 TEST_F(TlsTrustStoreTest, CustomFileRejectsHostAndIpMismatch) {
   for (const std::string host : {"other.example.test", "127.0.0.2", "example.test"}) {
     TlsClient client;
@@ -519,6 +641,42 @@ TEST_F(NativeVerifierHandshakeTest, AcceptsChainToAnchorAndKeepsHostCheck) {
   EXPECT_EQ(mismatch.state, TlsStepState::TlsError);
   EXPECT_TRUE(contains(mismatch, "hostname verification failed")) << mismatch.message;
   EXPECT_FALSE(client.peer_identity_verified());
+}
+
+TEST_F(NativeVerifierHandshakeTest, NativeVerdictOwnsTheActualAnchorPath) {
+  rs::core::security::platform::EvaluationOptions options;
+  options.test_anchors.push_back(pki::der(hierarchy.root.cert.get()));
+  const auto result = rs::core::security::platform::evaluate_server_chain(
+      {pki::der(hierarchy.leaf.cert.get()), pki::der(hierarchy.intermediate.cert.get())}, options);
+  ASSERT_TRUE(result.trusted) << result.reason;
+  ASSERT_EQ(result.verified_chain.size(), 3u);
+  EXPECT_EQ(result.verified_chain.front().der, pki::der(hierarchy.leaf.cert.get()));
+  EXPECT_FALSE(result.verified_chain.front().trust_anchor);
+  EXPECT_FALSE(result.verified_chain[1].trust_anchor);
+  EXPECT_EQ(result.verified_chain.back().der, pki::der(hierarchy.root.cert.get()));
+  EXPECT_TRUE(result.verified_chain.back().trust_anchor);
+}
+
+TEST_F(NativeVerifierHandshakeTest, StrengthPolicyRejectsWeakIssuerOnNativeAndSiblingPaths) {
+  TlsClient original;
+  anchor_client(original, hierarchy.root);
+  ASSERT_EQ(connect(original).state, TlsStepState::Complete);
+  auto sibling = original.verified_sibling();
+  ASSERT_NE(sibling, nullptr);
+  pki::Spec spec{"Weak Native Issuer", true, {}, {}, ""};
+  spec.rsa_bits = 1024;
+  const auto issuer = pki::issue(spec, &hierarchy.root);
+  const auto leaf = pki::issue(
+      {"db.example.test", false, {"db.example.test"}, {}, "serverAuth"}, &issuer);
+  constexpr char cipher[] = "ECDHE-ECDSA-AES128-GCM-SHA256";
+  pki::MemoryServer server(leaf, {&issuer}, {TLS1_2_VERSION, cipher, true});
+  ASSERT_TRUE(server.unverified_control(TLS1_2_VERSION, cipher));
+  original.reset_session();
+  for (auto* client : {&original, sibling.get()}) {
+    const auto step = server.connect(*client, "db.example.test");
+    EXPECT_EQ(step.state, TlsStepState::TlsError);
+    EXPECT_FALSE(client->peer_identity_verified());
+  }
 }
 
 TEST_F(NativeVerifierHandshakeTest, RejectsUnrelatedAnchorAndWrongPurpose) {

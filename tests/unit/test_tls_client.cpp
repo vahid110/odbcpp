@@ -53,4 +53,27 @@ TEST(TlsClientTest, RejectsEmbeddedNulBeforeCreatingASession) {
   EXPECT_FALSE(client.active());
 }
 
+TEST(TlsClientTest, RejectsMinimumProtocolBelowTls12) {
+  TlsClient client;
+  TlsClientConfig config;
+  config.minimum_version = 0x0302;
+  config.verify_peer = false;
+  client.configure(config);
+  const auto result = client.begin_memory("db.example.test");
+  EXPECT_EQ(result.state, TlsStepState::TlsError);
+  EXPECT_FALSE(client.active());
+}
+
+TEST(TlsClientTest, ApplicationIoCannotBypassHandshakePolicy) {
+  TlsClient client;
+  TlsClientConfig config;
+  config.verify_peer = false;
+  client.configure(config);
+  ASSERT_EQ(client.begin_memory("db.example.test").state, TlsStepState::Complete);
+  std::array<std::byte, 1> buffer{};
+  EXPECT_EQ(client.write(buffer).state, TlsStepState::TlsError);
+  EXPECT_EQ(client.read(buffer).state, TlsStepState::TlsError);
+  EXPECT_EQ(client.handshake().state, TlsStepState::WantRead);
+}
+
 }  // namespace

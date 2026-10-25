@@ -33,6 +33,71 @@
 namespace rs::core::security {
 namespace {
 
+// One policy for fresh and frozen sibling contexts. Do not rely on a provider
+// build's defaults: AWS-LC's OpenSSL security-level functions are no-ops.
+bool configure_strength_floor(SSL_CTX* context) {
+#if !defined(OPENSSL_IS_AWSLC)
+  if (::SSL_CTX_get_security_level(context) < 2) {
+    ::SSL_CTX_set_security_level(context, 2);
+  }
+#endif
+  constexpr char tls12[] =
+      "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+      "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+      "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305";
+  constexpr char tls13[] =
+      "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256";
+  constexpr char signatures[] =
+      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
+      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:ed25519:"
+      "rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512"
+#if !defined(OPENSSL_IS_AWSLC)
+      ":rsa_pss_pss_sha256:rsa_pss_pss_sha384:rsa_pss_pss_sha512:ed448"
+#endif
+      ;
+  return ::SSL_CTX_set_cipher_list(context, tls12) == 1 &&
+      ::SSL_CTX_set_ciphersuites(context, tls13) == 1 &&
+      ::SSL_CTX_set1_sigalgs_list(context, signatures) == 1 &&
+      ::SSL_CTX_set1_groups_list(context, "X25519:P-256:P-384:P-521") == 1;
+}
+
+bool certificate_key_meets_strength_floor(X509* certificate) {
+  if (!certificate) return false;
+  std::unique_ptr<EVP_PKEY, decltype(&::EVP_PKEY_free)> key(
+      ::X509_get_pubkey(certificate), &::EVP_PKEY_free);
+  if (!key) return false;
+  const int kind = ::EVP_PKEY_base_id(key.get());
+  const int bits = ::EVP_PKEY_bits(key.get());
+  bool strong_key = false;
+  switch (kind) {
+    case EVP_PKEY_RSA:
+    case EVP_PKEY_RSA_PSS: strong_key = bits >= 2048; break;
+    case EVP_PKEY_EC: strong_key = bits >= 224; break;
+    case EVP_PKEY_ED25519:
+    case EVP_PKEY_ED448: strong_key = true; break;
+    default: break;  // No strength claim for unknown certificate key types.
+  }
+  return strong_key;
+}
+
+bool certificate_meets_strength_floor(X509* certificate, bool trust_anchor) {
+  if (!certificate_key_meets_strength_floor(certificate)) return false;
+  if (trust_anchor) return true;
+  int security_bits = 0;
+  return ::X509_get_signature_info(
+      certificate, nullptr, nullptr, &security_bits, nullptr) == 1 && security_bits >= 112;
+}
+
+bool verified_chain_meets_strength_floor(X509_STORE_CTX* context) {
+  auto* chain = ::X509_STORE_CTX_get0_chain(context);
+  const auto count = chain ? sk_X509_num(chain) : 0;
+  if (count <= 0 || static_cast<std::size_t>(count) > platform::max_peer_chain_certificates) return false;
+  for (decltype(sk_X509_num(chain)) i = 0; i < count; ++i) {
+    if (!certificate_meets_strength_floor(sk_X509_value(chain, i), i == count - 1)) return false;
+  }
+  return true;
+}
+
 int current_socket_error() noexcept {
 #if defined(_WIN32)
   return ::WSAGetLastError();
@@ -439,11 +504,18 @@ public:
       status.message += " (operating system trust store: " + platform_failure_ + ")";
     }
     if (status.state != TlsStepState::Complete) return status;
-    return verify_peer();
+    auto verified = verify_peer();
+    if (verified.state != TlsStepState::Complete) {
+      reset_session();
+      return verified;
+    }
+    handshake_complete_ = true;
+    return verified;
   }
 
   TlsStep write(std::span<const std::byte> plaintext) {
     if (!session_) return tls_error("TLS session is not active");
+    if (!handshake_complete_) return tls_error("TLS handshake is not complete");
     if (plaintext.empty()) return {};
     ::ERR_clear_error();
     std::size_t written = 0;
@@ -463,6 +535,7 @@ public:
 
   TlsStep read(std::span<std::byte> plaintext) {
     if (!session_) return tls_error("TLS session is not active");
+    if (!handshake_complete_) return tls_error("TLS handshake is not complete");
     if (plaintext.empty()) return {};
     ::ERR_clear_error();
     std::size_t received = 0;
@@ -516,11 +589,19 @@ public:
     if (!sibling->config_.verify_peer || !sibling->config_.verify_hostname) return nullptr;
     sibling->context_ = ::SSL_CTX_new(::TLS_client_method());
     if (!sibling->context_) return nullptr;
+    if (!configure_strength_floor(sibling->context_)) return nullptr;
+#if !defined(OPENSSL_IS_AWSLC)
+    const int source_level = ::SSL_CTX_get_security_level(context_);
+    if (::SSL_CTX_get_security_level(sibling->context_) < source_level) {
+      ::SSL_CTX_set_security_level(sibling->context_, source_level);
+    }
+#endif
     if (::SSL_CTX_set_min_proto_version(sibling->context_, static_cast<int>(context_config_.minimum_version)) != 1) return nullptr;
 #ifdef TLS1_3_VERSION
     if (::SSL_CTX_set_max_proto_version(sibling->context_, TLS1_3_VERSION) != 1) return nullptr;
 #endif
     ::SSL_CTX_set_verify(sibling->context_, SSL_VERIFY_PEER, nullptr);
+    ::SSL_CTX_set_cert_verify_callback(sibling->context_, &Impl::verify_chain, sibling.get());
     auto* source = ::SSL_CTX_get_cert_store(context_);
     auto* target = ::SSL_CTX_get_cert_store(sibling->context_);
     if (!source || !target || ::X509_VERIFY_PARAM_set1(::X509_STORE_get0_param(target), ::X509_STORE_get0_param(source)) != 1) return nullptr;
@@ -558,6 +639,7 @@ public:
 
   void reset_session() noexcept {
     peer_verified_ = false;
+    handshake_complete_ = false;
     platform_failure_.clear();
     if (session_) ::SSL_free(session_);
     session_ = nullptr;
@@ -606,6 +688,9 @@ private:
 #endif
       return {};
     }
+    if (config_.minimum_version < 0x0303) {
+      return tls_error("Minimum TLS version must be TLS 1.2 or later");
+    }
     context_config_ = config_;
     platform_verification_ = false;
     context_ = ::SSL_CTX_new(::TLS_client_method());
@@ -619,6 +704,9 @@ private:
 #endif
       return failed;
     };
+    if (!configure_strength_floor(context_)) {
+      return fail_context("Failed to configure TLS strength policy");
+    }
     if (::SSL_CTX_set_min_proto_version(
             context_, static_cast<int>(config_.minimum_version)) != 1) {
       return fail_context("Failed to set minimum TLS version");
@@ -631,6 +719,7 @@ private:
     ::SSL_CTX_set_verify(
         context_, config_.verify_peer ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
         nullptr);
+    ::SSL_CTX_set_cert_verify_callback(context_, &Impl::verify_chain, this);
     if (!config_.verify_peer) return {};
     const auto fail_trust = [this](std::string message) {
       ::SSL_CTX_free(context_);
@@ -711,15 +800,22 @@ private:
 
   void enable_platform_verification() noexcept {
     platform_verification_ = true;
-    ::SSL_CTX_set_cert_verify_callback(context_, &Impl::platform_verify, this);
+    ::SSL_CTX_set_cert_verify_callback(context_, &Impl::verify_chain, this);
   }
 
-  // Replaces OpenSSL path building with the OS verifier for the peer chain.
+  // Keep provider path building for custom/Unix stores; only native trust
+  // replaces it with the OS verifier. Both routes enforce the same floor.
   // No exception may cross the provider's C frames.
-  static int platform_verify(X509_STORE_CTX* store_context, void* argument) noexcept {
+  static int verify_chain(X509_STORE_CTX* store_context, void* argument) noexcept {
     auto* self = static_cast<Impl*>(argument);
     try {
-      return platform_verify_chain(store_context, self);
+      if (self->platform_verification_) return platform_verify_chain(store_context, self);
+      if (::X509_verify_cert(store_context) != 1) return 0;
+      if (!verified_chain_meets_strength_floor(store_context)) {
+        ::X509_STORE_CTX_set_error(store_context, X509_V_ERR_APPLICATION_VERIFICATION);
+        return 0;
+      }
+      return 1;
     } catch (...) {
       self->platform_failure_.clear();
       ::X509_STORE_CTX_set_error(store_context, X509_V_ERR_CERT_UNTRUSTED);
@@ -764,6 +860,16 @@ private:
       return reject(evaluation.reason.empty() ? "certificate is not trusted"
                                               : std::move(evaluation.reason));
     }
+    if (evaluation.verified_chain.empty()) return reject("verified certificate chain missing");
+    for (const auto& verified : evaluation.verified_chain) {
+      const unsigned char* cursor = verified.der.data();
+      std::unique_ptr<X509, decltype(&::X509_free)> certificate(
+          ::d2i_X509(nullptr, &cursor, static_cast<long>(verified.der.size())), &::X509_free);
+      if (!certificate || cursor != verified.der.data() + verified.der.size() ||
+          !certificate_meets_strength_floor(certificate.get(), verified.trust_anchor)) {
+        return reject("verified certificate does not meet TLS strength policy");
+      }
+    }
     // A verdict that arrives after the caller's original deadline never
     // publishes trust; the transport reports the expired deadline.
     if (std::chrono::steady_clock::now() >= self->verification_deadline_) {
@@ -774,9 +880,30 @@ private:
   }
 
   TlsStep verify_peer() {
-    if (!config_.verify_peer) return {};
+    const SSL_CIPHER* cipher = ::SSL_get_current_cipher(session_);
+    if (!cipher || ::SSL_CIPHER_get_bits(cipher, nullptr) < 112) {
+      return tls_error("Negotiated cipher does not meet TLS strength policy");
+    }
+    EVP_PKEY* raw_ephemeral = nullptr;
+    const int has_ephemeral = ::SSL_get_peer_tmp_key(session_, &raw_ephemeral);
+    std::unique_ptr<EVP_PKEY, decltype(&::EVP_PKEY_free)> ephemeral(
+        raw_ephemeral, &::EVP_PKEY_free);
+    const int kind = ephemeral ? ::EVP_PKEY_base_id(ephemeral.get()) : EVP_PKEY_NONE;
+    if (has_ephemeral != 1 || !ephemeral ||
+        (kind != EVP_PKEY_EC && kind != EVP_PKEY_X25519 && kind != EVP_PKEY_X448) ||
+        ::EVP_PKEY_bits(ephemeral.get()) < 224) {
+      return tls_error("Negotiated key exchange does not meet TLS strength policy");
+    }
     X509* certificate = ::SSL_get1_peer_certificate(session_);
     if (!certificate) return tls_error("TLS peer did not provide a certificate");
+    if (!certificate_key_meets_strength_floor(certificate)) {
+      ::X509_free(certificate);
+      return tls_error("TLS peer key does not meet strength policy");
+    }
+    if (!config_.verify_peer) {
+      ::X509_free(certificate);
+      return {};
+    }
     const long verification = ::SSL_get_verify_result(session_);
     const bool hostname_matches = !config_.verify_hostname ||
         certificate_matches_host(certificate, server_name_);
@@ -844,6 +971,7 @@ private:
   BIO* write_bio_{nullptr};
   std::string server_name_;
   bool peer_verified_{false};
+  bool handshake_complete_{false};
 };
 
 TlsClient::TlsClient() : impl_(std::make_unique<Impl>()) {}
