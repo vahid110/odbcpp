@@ -34,6 +34,10 @@ are accepted only for the first application; all patched hashes make repeated
 configuration a no-op after verification. Mixed, partially patched, missing,
 symlinked or unknown header inputs fail. All replacements and result hashes
 are computed before the first write. Each final file is read back and checked.
+All fixed staging paths are preflighted too: any existing file, directory or
+symlink (including a dangling link) is rejected before any write. The source/build
+tree must be trusted and not concurrently mutated by another same-user process;
+this recipe does not create a hostile-filesystem transaction boundary.
 An interrupted write can leave a mixed state that must be repopulated from the
 pinned archive; it is intentionally not silently repaired. The patch does not
 create a dependency on Python, git or an external patch utility at configure time.

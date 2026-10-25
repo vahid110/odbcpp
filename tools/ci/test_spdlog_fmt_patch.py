@@ -130,6 +130,40 @@ class PatchControl(unittest.TestCase):
         self.apply(False)
         self.assertEqual(before, self.snapshot())
 
+    def test_existing_last_temporary_file_preserves_all_bytes(self):
+        temporary = self.source / (MANIFEST["files"][-1]["path"] + ".odbcpp-security-tmp")
+        temporary.write_bytes(b"temporary sentinel must not be truncated\n")
+        before = self.snapshot()
+        self.assertIn("pre-existing temporary path", self.apply(False).stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_existing_temporary_symlink_preserves_external_sentinel(self):
+        sentinel = self.root / "unrelated-sentinel"
+        sentinel.write_bytes(b"unrelated sentinel must not be overwritten\n")
+        temporary = self.source / (MANIFEST["files"][-1]["path"] + ".odbcpp-security-tmp")
+        try:
+            temporary.symlink_to(sentinel)
+        except OSError as error:
+            self.skipTest("symlink fixture unavailable: " + str(error))
+        before = self.snapshot()
+        self.assertIn("pre-existing temporary path", self.apply(False).stderr)
+        self.assertEqual(sentinel.read_bytes(), b"unrelated sentinel must not be overwritten\n")
+        self.assertTrue(temporary.is_symlink())
+        self.assertEqual(before, self.snapshot())
+
+    def test_dangling_temporary_symlink_does_not_create_target(self):
+        sentinel = self.root / "absent-sentinel"
+        temporary = self.source / (MANIFEST["files"][-1]["path"] + ".odbcpp-security-tmp")
+        try:
+            temporary.symlink_to(sentinel)
+        except OSError as error:
+            self.skipTest("symlink fixture unavailable: " + str(error))
+        before = self.snapshot()
+        self.assertIn("pre-existing temporary path", self.apply(False).stderr)
+        self.assertFalse(sentinel.exists())
+        self.assertTrue(temporary.is_symlink())
+        self.assertEqual(before, self.snapshot())
+
     def test_two_actual_configures_and_drift_failure(self):
         project = self.root / "project"
         project.mkdir()

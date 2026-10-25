@@ -13,6 +13,12 @@ function(odbcpp_patch_spdlog_fmt source_dir)
     if(NOT EXISTS "${source_dir}/${path}" OR IS_SYMLINK "${source_dir}/${path}")
       message(FATAL_ERROR "spdlog fmt security: missing or symlink header ${path}")
     endif()
+    # A stale file/link at the fixed staging name must never be truncated.
+    # Preflight ALL destinations before writing any header or staging file.
+    if(EXISTS "${source_dir}/${path}.odbcpp-security-tmp" OR
+       IS_SYMLINK "${source_dir}/${path}.odbcpp-security-tmp")
+      message(FATAL_ERROR "spdlog fmt security: pre-existing temporary path for ${path}")
+    endif()
     file(SHA256 "${source_dir}/${path}" actual)
     if(actual STREQUAL base)
       math(EXPR base_count "${base_count} + 1")
