@@ -44,6 +44,10 @@ zero extractor compiler/syntax errors. It does not infer extraction from an
 archive, baseline denominator, native compiler success or result count.
 Its only CLI input is the allowlisted profile; repository and artifact paths are
 fixed by the checked-in helper, rather than accepted from environment or caller.
+Each profile requires exactly one raw SARIF file containing exactly one CodeQL
+run with its expected language's extraction diagnostics. Additional files or
+runs fail closed before aggregation, so another run cannot overwrite failed
+extraction metrics. Raw input is preserved unchanged.
 
 Publication follows that check. `analyze` writes raw SARIF with `upload: never`;
 `upload-sarif` publishes only after coverage passes. Raw SARIF and the coverage

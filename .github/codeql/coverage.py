@@ -54,6 +54,8 @@ def relative_path(value, root):
 
 
 def evidence(runs, language, root):
+    if len(runs) != 1:
+        raise ValueError(f"Expected exactly one CodeQL run; found {len(runs)}")
     extracted, metrics, diagnostics = set(), {}, Counter()
     for run in runs:
         if run.get("tool", {}).get("driver", {}).get("name") != "CodeQL":
@@ -79,6 +81,13 @@ def evidence(runs, language, root):
     if not extracted:
         raise ValueError("No successful-extraction diagnostics; file counts alone are insufficient")
     return extracted, metrics, dict(diagnostics)
+
+
+def read_sarif(directory):
+    files = sorted(directory.glob("*.sarif"))
+    if len(files) != 1:
+        raise ValueError(f"Expected exactly one raw SARIF file; found {len(files)}")
+    return files, json.loads(files[0].read_text())["runs"]
 
 
 def cache_values(text):
@@ -188,10 +197,7 @@ def main():
     try:
         tracked = set(subprocess.check_output(["git", "ls-files", "-z"], cwd=root,
                                               text=True).split("\0")) - {""}
-        files = sorted((root / "codeql-results").glob("*.sarif"))
-        if not files:
-            raise ValueError("No raw SARIF files")
-        runs = [run for path in files for run in json.loads(path.read_text())["runs"]]
+        files, runs = read_sarif(root / "codeql-results")
         exceptions = json.loads((root / ".github/codeql/coverage-exceptions.json").read_text())
         report = validate(args.profile, runs, tracked, root, root / "build-codeql", exceptions)
         report["source_head"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,

@@ -83,6 +83,21 @@ class ActualBuildEvidence(unittest.TestCase):
         runs[0]["properties"]["metricResults"][-1]["value"] = 1
         self.assertFalse(self.validate(runs)["passed"])
 
+    def test_multiple_runs_cannot_overwrite_failed_metrics_in_either_order(self):
+        bad = sarif(self.paths)
+        for metric in bad[0]["properties"]["metricResults"]:
+            if metric["message"]["text"] == "compiler errors":
+                metric["value"] = 1
+            elif metric["message"]["text"] == "compilations without errors":
+                metric["value"] -= 1
+        good = sarif(self.paths)
+        self.assertFalse(self.validate(bad)["passed"])
+        self.assertTrue(self.validate(good)["passed"])
+        for runs in (bad + good, good + bad):
+            with self.subTest(first_errors=runs[0]["properties"]["metricResults"][2]["value"]):
+                with self.assertRaisesRegex(ValueError, "exactly one CodeQL run; found 2"):
+                    self.validate(runs)
+
     def test_missing_metrics_fail_closed(self):
         runs = sarif(self.paths)
         runs[0]["properties"]["metricResults"] = []
@@ -165,10 +180,56 @@ class SourceInventoryEvidence(unittest.TestCase):
         with self.assertRaises(ValueError):
             COVERAGE.evidence(runs, "cpp", self.root)
 
+    def test_each_profile_rejects_zero_or_multiple_runs(self):
+        for profile, language in COVERAGE.LANGUAGE.items():
+            for runs in ([], sarif({"a"}, language) * 2):
+                with self.subTest(profile=profile, count=len(runs)):
+                    with self.assertRaisesRegex(ValueError, "exactly one CodeQL run"):
+                        COVERAGE.validate(profile, runs, {"a"}, self.root, self.build, {})
+
+    def test_wrong_scanner_or_language_cannot_supply_expected_evidence(self):
+        runs = sarif({"a.py"}, "cpp")
+        with self.assertRaisesRegex(ValueError, "No successful-extraction diagnostics"):
+            COVERAGE.evidence(runs, "py", self.root)
+        runs[0]["tool"]["driver"]["name"] = "Other scanner"
+        with self.assertRaisesRegex(ValueError, "Expected raw CodeQL SARIF"):
+            COVERAGE.evidence(runs, "cpp", self.root)
+
     def test_uri_normalization_and_traversal_do_not_forge_coverage(self):
         self.assertEqual(COVERAGE.relative_path("file:///checkout/a%20b.cpp", self.root), "a b.cpp")
         self.assertIsNone(COVERAGE.relative_path("%2e%2e/a.cpp", self.root))
         self.assertIsNone(COVERAGE.relative_path("/elsewhere/a.cpp", self.root))
+
+
+class RawSarifInput(unittest.TestCase):
+    def test_one_file_preserves_raw_input_and_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cpp.sarif"
+            raw = json.dumps({"runs": sarif({"a.cpp"})}) + "\n"
+            path.write_text(raw)
+            files, runs = COVERAGE.read_sarif(Path(directory))
+            self.assertEqual(files, [path])
+            self.assertEqual(runs, json.loads(raw)["runs"])
+            self.assertEqual(path.read_text(), raw)
+
+    def test_missing_or_multiple_files_fail_without_combining_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "exactly one raw SARIF file; found 0"):
+                COVERAGE.read_sarif(root)
+            bad = sarif({"a.cpp"})
+            bad[0]["properties"]["metricResults"][2]["value"] = 1
+            good = sarif({"a.cpp"})
+            for first, second in ((bad, good), (good, bad)):
+                with self.subTest(first_errors=first[0]["properties"]["metricResults"][2]["value"]):
+                    contents = {"a.sarif": json.dumps({"runs": first}),
+                                "z.sarif": json.dumps({"runs": second})}
+                    for name, raw in contents.items():
+                        (root / name).write_text(raw)
+                    with self.assertRaisesRegex(ValueError, "exactly one raw SARIF file; found 2"):
+                        COVERAGE.read_sarif(root)
+                    for name, raw in contents.items():
+                        self.assertEqual((root / name).read_text(), raw)
 
 
 if __name__ == "__main__":
