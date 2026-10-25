@@ -75,8 +75,8 @@ inputs, lifecycle and dependency rules are described in
 not promise a stable released SDK ABI. Historical `core/` include paths and
 backend factories are not the recommended application interface.
 
-SDK operations return owning `BackendResult` values. Test success before
-accessing the value; on failure inspect `backend_error()` and its session
+`BackendResult<T>` carries an owning backend success or failure. Check success
+before accessing its value; on failure inspect `backend_error()` and its session
 state/disposition. `BackendError::safe_summary()` is the fixed public summary;
 its detailed message may contain private context. A `Reusable` disposition
 means protocol readiness for the current owner, not a reset for another pooled
