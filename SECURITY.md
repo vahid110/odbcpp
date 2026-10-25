@@ -36,3 +36,6 @@ private channel above.
 Static analysis, dependency review, tests and independent code review provide
 different evidence. Badge claims must describe the checks or practices actually
 verified; they do not guarantee that the software has no vulnerabilities.
+
+The [security verification record](docs/security-verification.md) describes the
+2026-10-25 history scan, its limits, and how to interpret analysis and badge results.
