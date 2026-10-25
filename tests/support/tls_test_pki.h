@@ -54,9 +54,25 @@ struct Spec {
   // controls, never by the production adapter.
   int rsa_bits{0};
   const EVP_MD* signature_digest{nullptr};
+  bool ed25519_key{false};
+  bool rsa_pss_signature{false};
+  const EVP_MD* pss_mgf1_digest{nullptr};
+  int pss_salt_length{-1};  // Digest-sized salt, not a byte/key strength.
 };
 
-inline Key generate_key(int rsa_bits = 0) {
+inline Key generate_key(int rsa_bits = 0, bool ed25519 = false) {
+  if (ed25519) {
+    if (rsa_bits != 0) throw std::invalid_argument("conflicting fixture key types");
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&::EVP_PKEY_CTX_free)> context(
+        ::EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr), &::EVP_PKEY_CTX_free);
+    EVP_PKEY* result = nullptr;
+    if (!context || ::EVP_PKEY_keygen_init(context.get()) <= 0 ||
+        ::EVP_PKEY_keygen(context.get(), &result) <= 0) {
+      ::EVP_PKEY_free(result);
+      throw std::runtime_error("Ed25519 key generation failed");
+    }
+    return Key(result);
+  }
   if (rsa_bits != 0) {
     std::unique_ptr<EVP_PKEY_CTX, decltype(&::EVP_PKEY_CTX_free)> context(
         ::EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), &::EVP_PKEY_CTX_free);
@@ -86,7 +102,7 @@ inline void add_extension(X509* cert, X509* issuer, int nid, const std::string& 
 
 inline Identity issue(const Spec& spec, const Identity* issuer) {
   static std::atomic<long> serial{1};
-  Identity result{generate_key(spec.rsa_bits), Cert(::X509_new())};
+  Identity result{generate_key(spec.rsa_bits, spec.ed25519_key), Cert(::X509_new())};
   X509* cert = result.cert.get();
   ::X509_set_version(cert, 2);
   std::mt19937_64 random(std::random_device{}());
@@ -117,7 +133,20 @@ inline Identity issue(const Spec& spec, const Identity* issuer) {
   for (const auto& ip : spec.ips) alternatives += (alternatives.empty() ? "" : ",") + ("IP:" + ip);
   if (!alternatives.empty()) add_extension(cert, issuer_cert, NID_subject_alt_name, alternatives);
   EVP_PKEY* signer = issuer ? issuer->key.get() : result.key.get();
-  if (::X509_sign(cert, signer, spec.signature_digest ? spec.signature_digest : ::EVP_sha256()) <= 0) {
+  if (spec.rsa_pss_signature) {
+    std::unique_ptr<EVP_MD_CTX, decltype(&::EVP_MD_CTX_free)> context(
+        ::EVP_MD_CTX_new(), &::EVP_MD_CTX_free);
+    EVP_PKEY_CTX* signing = nullptr;
+    const auto* digest = spec.signature_digest ? spec.signature_digest : ::EVP_sha256();
+    if (!context || ::EVP_DigestSignInit(context.get(), &signing, digest, nullptr, signer) != 1 ||
+        ::EVP_PKEY_CTX_set_rsa_padding(signing, RSA_PKCS1_PSS_PADDING) <= 0 ||
+        ::EVP_PKEY_CTX_set_rsa_mgf1_md(signing, spec.pss_mgf1_digest ? spec.pss_mgf1_digest : digest) <= 0 ||
+        ::EVP_PKEY_CTX_set_rsa_pss_saltlen(signing, spec.pss_salt_length) <= 0 ||
+        ::X509_sign_ctx(cert, context.get()) <= 0) {
+      throw std::runtime_error("RSA-PSS certificate signing failed");
+    }
+  } else if (::X509_sign(cert, signer, ::EVP_PKEY_base_id(signer) == EVP_PKEY_ED25519
+      ? nullptr : spec.signature_digest ? spec.signature_digest : ::EVP_sha256()) <= 0) {
     throw std::runtime_error("X509_sign failed");
   }
   return result;

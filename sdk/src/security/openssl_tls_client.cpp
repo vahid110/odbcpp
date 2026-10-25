@@ -7,6 +7,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -22,6 +23,7 @@
 
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -80,9 +82,85 @@ bool certificate_key_meets_strength_floor(X509* certificate) {
   return strong_key;
 }
 
+int strong_digest_nid(const X509_ALGOR* algorithm) {
+  if (!algorithm) return NID_undef;  // PSS omission defaults to weak SHA-1.
+  const ASN1_OBJECT* object = nullptr;
+  int parameter_type = V_ASN1_UNDEF;
+  ::X509_ALGOR_get0(&object, &parameter_type, nullptr, algorithm);
+  if (!object || (parameter_type != V_ASN1_UNDEF && parameter_type != V_ASN1_NULL)) {
+    return NID_undef;
+  }
+  const int nid = ::OBJ_obj2nid(object);
+  switch (nid) {
+    case NID_sha224:
+    case NID_sha256:
+    case NID_sha384:
+    case NID_sha512: return nid;
+    default: return NID_undef;
+  }
+}
+
+const ASN1_STRING* sequence_parameters(const X509_ALGOR* algorithm, int expected_nid) {
+  if (!algorithm) return nullptr;
+  const ASN1_OBJECT* object = nullptr;
+  const void* parameters = nullptr;
+  int type = V_ASN1_UNDEF;
+  ::X509_ALGOR_get0(&object, &type, &parameters, algorithm);
+  if (!object || ::OBJ_obj2nid(object) != expected_nid ||
+      type != V_ASN1_SEQUENCE || !parameters) return nullptr;
+  return static_cast<const ASN1_STRING*>(parameters);
+}
+
+bool pss_signature_meets_strength_floor(const X509_ALGOR* algorithm) {
+  const auto* encoded = sequence_parameters(algorithm, NID_rsassaPss);
+  const int length = encoded ? ::ASN1_STRING_length(encoded) : 0;
+  if (length <= 0 || length > 1024) return false;
+  const auto* begin = ::ASN1_STRING_get0_data(encoded);
+  if (!begin) return false;
+  const auto* cursor = begin;
+  std::unique_ptr<RSA_PSS_PARAMS, decltype(&::RSA_PSS_PARAMS_free)> parameters(
+      ::d2i_RSA_PSS_PARAMS(nullptr, &cursor, length), &::RSA_PSS_PARAMS_free);
+  if (!parameters || cursor != begin + length) return false;
+  const int digest = strong_digest_nid(parameters->hashAlgorithm);
+  if (digest == NID_undef) return false;
+  const auto* mgf = sequence_parameters(parameters->maskGenAlgorithm, NID_mgf1);
+  const int mgf_length = mgf ? ::ASN1_STRING_length(mgf) : 0;
+  if (mgf_length <= 0 || mgf_length > 128) return false;
+  const auto* mgf_begin = ::ASN1_STRING_get0_data(mgf);
+  if (!mgf_begin) return false;
+  const auto* mgf_cursor = mgf_begin;
+  std::unique_ptr<X509_ALGOR, decltype(&::X509_ALGOR_free)> mgf_digest(
+      ::d2i_X509_ALGOR(nullptr, &mgf_cursor, mgf_length), &::X509_ALGOR_free);
+  if (!mgf_digest || mgf_cursor != mgf_begin + mgf_length ||
+      strong_digest_nid(mgf_digest.get()) != digest) return false;
+  // RFC4055 defaults are saltLength20/trailerField1. Salt length is not a
+  // symmetric key length: provider/native signature verification also proves
+  // the declared nonnegative salt fits the actual issuer RSA modulus.
+  std::int64_t salt_length = 20;
+  std::int64_t trailer = 1;
+  if ((parameters->saltLength &&
+       ::ASN1_INTEGER_get_int64(&salt_length, parameters->saltLength) != 1) ||
+      (parameters->trailerField &&
+       ::ASN1_INTEGER_get_int64(&trailer, parameters->trailerField) != 1)) return false;
+  return salt_length >= 0 && salt_length <= std::numeric_limits<int>::max() && trailer == 1;
+}
+
 bool certificate_meets_strength_floor(X509* certificate, bool trust_anchor) {
   if (!certificate_key_meets_strength_floor(certificate)) return false;
   if (trust_anchor) return true;
+  const X509_ALGOR* signature = nullptr;
+  ::X509_get0_signature(nullptr, &signature, certificate);
+  if (!signature) return false;
+  const ASN1_OBJECT* object = nullptr;
+  int parameter_type = V_ASN1_UNDEF;
+  ::X509_ALGOR_get0(&object, &parameter_type, nullptr, signature);
+  const int nid = object ? ::OBJ_obj2nid(object) : NID_undef;
+  // AWS-LC reports success with sec_bits=-1 for these algorithms. Their
+  // intrinsic/parameterized strength must be established explicitly; a PSS OID
+  // alone says nothing about its digest. Cryptographic verification already
+  // succeeded before this supplemental policy check on either trust path.
+  if (nid == NID_ED25519 || nid == NID_ED448) return parameter_type == V_ASN1_UNDEF;
+  if (nid == NID_rsassaPss) return pss_signature_meets_strength_floor(signature);
   int security_bits = 0;
   return ::X509_get_signature_info(
       certificate, nullptr, nullptr, &security_bits, nullptr) == 1 && security_bits >= 112;

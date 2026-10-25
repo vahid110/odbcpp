@@ -184,6 +184,91 @@ TEST_F(TlsTrustStoreTest, StrengthPolicyRejectsStaticRsaAndCbcOnlyPeers) {
   }
 }
 
+TEST_F(TlsTrustStoreTest, StrengthPolicyAcceptsIssuedEd25519Signatures) {
+  pki::Spec root_spec{"Ed25519 Root", true, {}, {}, ""};
+  root_spec.ed25519_key = true;
+  const auto root = pki::issue(root_spec, nullptr);
+  pki::Spec issuer_spec{"Ed25519 Issuer", true, {}, {}, ""};
+  issuer_spec.ed25519_key = true;
+  const auto issuer = pki::issue(issuer_spec, &root);
+  const auto leaf = pki::issue(
+      {"db.example.test", false, {"db.example.test"}, {}, "serverAuth"}, &issuer);
+  ASSERT_EQ(::X509_get_signature_nid(issuer.cert.get()), NID_ED25519);
+  ASSERT_EQ(::X509_get_signature_nid(leaf.cert.get()), NID_ED25519);
+  pki::TempDirectory directory{"ed25519"};
+  const auto file = directory.path() / "root.pem";
+  pki::write_file(file, pki::pem(root.cert.get()));
+  pki::write_hashed(directory.path(), root.cert.get());
+  for (const bool hashed : {false, true}) {
+    SCOPED_TRACE(hashed);
+    TlsClient client;
+    client.configure(hashed ? custom_directory(directory.path()) : custom_file(file));
+    pki::MemoryServer server(leaf, {&issuer});
+    const auto step = server.connect(client, "db.example.test");
+    ASSERT_EQ(step.state, TlsStepState::Complete) << step.message;
+    EXPECT_TRUE(client.peer_identity_verified());
+    auto sibling = client.verified_sibling();
+    ASSERT_NE(sibling, nullptr);
+    const auto sibling_step = server.connect(*sibling, "db.example.test");
+    EXPECT_EQ(sibling_step.state, TlsStepState::Complete) << sibling_step.message;
+    EXPECT_TRUE(sibling->peer_identity_verified());
+  }
+}
+
+TEST_F(TlsTrustStoreTest, StrengthPolicyAcceptsStrongPssAndRejectsWeakDigestParameters) {
+  enum class Parameters { Sha256, Sha384, WeakMessageDigest, WeakMaskDigest, DifferentStrongMask };
+  for (const auto parameters : {Parameters::Sha256, Parameters::Sha384,
+                               Parameters::WeakMessageDigest, Parameters::WeakMaskDigest,
+                               Parameters::DifferentStrongMask}) {
+    SCOPED_TRACE(static_cast<int>(parameters));
+    const bool strong = parameters == Parameters::Sha256 || parameters == Parameters::Sha384;
+    pki::Spec root_spec{"PSS Root", true, {}, {}, ""};
+    root_spec.rsa_bits = 2048;
+    const auto root = pki::issue(root_spec, nullptr);
+    pki::Spec issuer_spec{"PSS Issuer", true, {}, {}, ""};
+    issuer_spec.rsa_pss_signature = true;
+    if (parameters == Parameters::Sha384) {
+      issuer_spec.signature_digest = ::EVP_sha384();
+    } else if (parameters == Parameters::WeakMessageDigest) {
+      issuer_spec.signature_digest = ::EVP_sha1();
+    } else if (parameters == Parameters::WeakMaskDigest) {
+      issuer_spec.pss_mgf1_digest = ::EVP_sha1();
+    } else if (parameters == Parameters::DifferentStrongMask) {
+      issuer_spec.pss_mgf1_digest = ::EVP_sha384();
+    }
+    const auto issuer = pki::issue(issuer_spec, &root);
+    const auto leaf = pki::issue(
+        {"db.example.test", false, {"db.example.test"}, {}, "serverAuth"}, &issuer);
+    ASSERT_EQ(::X509_get_signature_nid(issuer.cert.get()), NID_rsassaPss);
+    pki::TempDirectory directory{"pss"};
+    const auto file = directory.path() / "root.pem";
+    pki::write_file(file, pki::pem(root.cert.get()));
+    pki::write_hashed(directory.path(), root.cert.get());
+    constexpr char cipher[] = "ECDHE-ECDSA-AES128-GCM-SHA256";
+    pki::MemoryServer server(leaf, {&issuer}, {TLS1_2_VERSION, cipher, true});
+    ASSERT_TRUE(server.unverified_control(TLS1_2_VERSION, cipher));
+    for (const bool hashed : {false, true}) {
+      SCOPED_TRACE(hashed);
+      TlsClient client;
+      client.configure(hashed ? custom_directory(directory.path()) : custom_file(file));
+      const auto step = server.connect(client, "db.example.test");
+      EXPECT_EQ(step.state, strong ? TlsStepState::Complete : TlsStepState::TlsError)
+          << step.message;
+      EXPECT_EQ(client.peer_identity_verified(), strong);
+      if (strong) {
+        auto sibling = client.verified_sibling();
+        ASSERT_NE(sibling, nullptr);
+        const auto sibling_step = server.connect(*sibling, "db.example.test");
+        EXPECT_EQ(sibling_step.state, TlsStepState::Complete) << sibling_step.message;
+        EXPECT_TRUE(sibling->peer_identity_verified());
+      } else {
+        std::array<std::byte, 1> secret{};
+        EXPECT_EQ(client.write(secret).state, TlsStepState::TlsError);
+      }
+    }
+  }
+}
+
 TEST_F(TlsTrustStoreTest, FrozenSiblingKeepsStrengthPolicy) {
   TlsClient original;
   original.configure(custom_file(root_file));

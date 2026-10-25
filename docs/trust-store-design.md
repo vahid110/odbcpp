@@ -293,7 +293,18 @@ enabled by this policy. TLS 1.2 remains supported; TLS 1.3 is not required.
 Certificate RSA/RSA-PSS keys must have at least 2048 bits and EC keys at least
 224 bits. Ed25519/Ed448 certificate keys are accepted where the provider
 implements them; other certificate key types have no strength claim and are
-rejected. Issued certificate signatures must report at least 112 security bits.
+rejected. Issued certificate signatures must establish at least 112 security bits.
+For intrinsic Ed25519/Ed448 signatures, the exact OID must have absent parameters
+as required by RFC 8410. RSA-PSS parameters must decode completely, use SHA-224,
+SHA-256, SHA-384 or SHA-512 and MGF1 with the same hash, a nonnegative salt length
+representable as an int (omitted means 20), and trailer field 1 (also the default).
+Omitted hash/MGF parameters default to SHA-1 and are rejected. Different message
+and MGF hashes are deliberately unsupported even if each is independently strong.
+Provider/native cryptographic verification remains mandatory and establishes
+actual signature validity and PSS salt/modulus fit before these additional checks.
+Other supported signatures use the provider's reported security bits. This
+explicit handling is needed because AWS-LC can report a valid signature-info
+record with unset strength for Ed25519 and RSA-PSS; success alone is not strength.
 Trust-anchor public keys are checked too; an anchor's self-signature does not
 establish trust and is not subjected to the issued-signature check. Symmetric
 negotiation must provide at least 112 bits, and application reads/writes cannot
