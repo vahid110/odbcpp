@@ -25,6 +25,8 @@ class Native:
         self.calls = []
         self.raw = b'RSD1|odbcpp_pilot|odbcpp_pilot_test|123\n1\n'
         self.returncode, self.timed_out = 0, False
+        self.ca_held = mock.Mock()
+        self.close_ca_snapshot = mock.Mock()
 
     def ordinary_held(self):
         pass

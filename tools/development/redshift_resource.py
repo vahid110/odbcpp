@@ -17,6 +17,8 @@ from tools.development.redshift_ctest_lifecycle import need, record, BASE_ENV, R
 from tools.redshift import native_auth_inputs
 from tools.redshift.pilot_runtime import bounded_process
 
+MAX_CA_BYTES = 16 * 1024 * 1024  # Same finite CA-file cap as the shared TLS adapter.
+
 
 def validate_resource(resource):
     """The two existing pilot resources, never a general provisioning surface."""
@@ -94,6 +96,7 @@ class NativeOps:
         if self.resource_kind == 'serverless':
             validate_resource(self.resource)
         self.snapshot = self.config = self.test_passfile = self.test_stamp = None
+        self.ca_snapshot = None
         self.sql_unknown = self.sql_fenced = False
         self.readers_known = True
         self.helpers = self.statements = self.aws_calls = 0
@@ -124,6 +127,82 @@ class NativeOps:
             self.test_passfile, follow_symlinks=False)) == self.test_stamp,
             'ordinary_private_input_changed')
 
+    def prepare_ca_snapshot(self, source):
+        """Copy admitted public CA bytes into this existing private run only."""
+        need(self.ca_snapshot is None and type(source) is str and Path(source).is_absolute(),
+             'CA_source_path')
+        # Public CA bundles may intentionally be symlinks or root-owned files.
+        # Resolve deliberately, then acquire a nonblocking, no-follow regular FD.
+        canonical = Path(source).resolve(strict=True)
+        fd = os.open(canonical, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            before = os.fstat(fd)
+            need(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= MAX_CA_BYTES,
+                 'CA_regular_bounded')
+            chunks = []
+            remaining = before.st_size
+            while remaining:
+                need(self.now() < self.child_deadline, 'CA_deadline')
+                block = os.read(fd, min(1024 * 1024, remaining))
+                need(bool(block), 'CA_short_read')
+                chunks.append(block)
+                remaining -= len(block)
+            need(not os.read(fd, 1) and self.stamp(os.fstat(fd)) == self.stamp(before),
+                 'CA_source_changed')
+            body = b''.join(chunks)
+        finally:
+            os.close(fd)
+        need(self.now() < self.child_deadline and
+             hashlib.sha256(body).hexdigest() == self.m['ca_sha256'], 'CA_changed')
+        parent = self.directory.lstat()
+        need(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.geteuid() and
+             stat.S_IMODE(parent.st_mode) == 0o700, 'CA_private_run')
+        path = self.directory / 'ca.pem'
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        row = {'path': path, 'fd': fd, 'stamp': None,
+               'body': body, 'complete': False}
+        self.ca_snapshot = row  # Track this exact acquisition before any write.
+        try:
+            row['stamp'] = self.stamp(os.fstat(fd))
+            view = memoryview(body)
+            while view:
+                need(self.now() < self.child_deadline, 'CA_deadline')
+                count = os.write(fd, view)
+                need(count > 0, 'CA_snapshot_short_write')
+                view = view[count:]
+            os.fsync(fd)
+            row['stamp'] = self.stamp(os.fstat(fd))
+            row['complete'] = True
+            self.ca_held()
+        except BaseException:
+            row['stamp'] = self.stamp(os.fstat(fd))
+            self.close_ca_snapshot()
+            raise
+        return str(path)
+
+    def ca_held(self, *, allow_partial=False):
+        row = self.ca_snapshot
+        need(row is not None and (row['complete'] or allow_partial), 'CA_snapshot_pending')
+        held = os.fstat(row['fd'])
+        current = row['path'].lstat()
+        need(self.stamp(held) == self.stamp(current) == row['stamp'] and
+             stat.S_ISREG(held.st_mode) and held.st_uid == os.geteuid() and
+             stat.S_IMODE(held.st_mode) == 0o600 and held.st_nlink == 1,
+             'CA_snapshot_identity_changed')
+        size = held.st_size
+        need((size == len(row['body']) if row['complete'] else 0 <= size <= len(row['body']))
+             and os.pread(row['fd'], size + 1, 0) == row['body'][:size],
+             'CA_snapshot_bytes_changed')
+
+    def close_ca_snapshot(self):
+        if self.ca_snapshot is None:
+            return
+        self.ca_held(allow_partial=True)
+        row = self.ca_snapshot
+        row['path'].unlink()
+        os.close(row['fd'])
+        self.ca_snapshot = None
+
     def prepare(self):
         self.config = private_json(self.a['database_config'])
         c = self.config
@@ -134,9 +213,7 @@ class NativeOps:
              'config_identity')
         if self.resource_kind == 'serverless':
             need(c['host'] == self.resource['endpoint'], 'serverless_config_endpoint')
-        import hashlib
-        need(hashlib.sha256(Path(c['ca']).read_bytes()).hexdigest() == self.m['ca_sha256'],
-             'CA_changed')
+        c['ca'] = self.prepare_ca_snapshot(c['ca'])
         self.snapshot = native_auth_inputs.prepare_snapshot(
             credentials_path=self.a['credential_source'], profile=self.resource['profile'],
             directory=str(self.directory/'inputs'),
