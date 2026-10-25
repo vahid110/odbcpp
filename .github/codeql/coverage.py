@@ -168,6 +168,14 @@ def validate(profile, runs, tracked, root, build, exceptions):
         result["scope"] = "Actual Linux REDSHIFT compile graph; no runtime/platform/native AWS acceptance"
     elif profile == "cpp-source":
         expected = {p for p in tracked if p.endswith((".cpp", ".h"))}
+        standards = [note.get("properties", {}).get("attributes", {}).get("std_version")
+                     for invocation in runs[0]["invocations"]
+                     for note in invocation.get("toolExecutionNotifications", [])
+                     if note.get("descriptor", {}).get("id") == "cpp/extractor/platform"]
+        result["cpp_standard_versions"] = standards
+        if not standards or any(type(version) is not int or version < 202002
+                                for version in standards):
+            errors.append("Supplemental extraction requires actual C++20 platform telemetry")
         result["scope"] = "Supplemental inferred source extraction; quality metrics are reported, not actual-build proof"
     elif profile == "python":
         expected = {p for p in tracked if p.endswith(".py")}

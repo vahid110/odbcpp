@@ -21,7 +21,8 @@ jobs:
   analyze:
     name: CodeQL (${{ matrix.profile }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # First actual run built successfully, then exhausted 30 minutes mid-analysis.
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -61,6 +62,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build g++ libssl-dev unixodbc-dev libgtest-dev libspdlog-dev
+
+      - name: Select C++20 for supplemental inferred source extraction
+        if: matrix.profile == 'cpp-source'
+        run: echo 'CODEQL_EXTRACTOR_CPP_OPTION_FRONTEND_OPTIONS=--c++20' >> "$GITHUB_ENV"
 
       - name: Initialize CodeQL
         id: init
@@ -120,6 +125,17 @@ jobs:
         with:
           sarif_file: codeql-results
           category: /language:${{ matrix.language }}/profile:${{ matrix.profile }}
+
+      - name: Retain C++ extractor logs and diagnostics even after failure
+        if: always() && matrix.language == 'c-cpp'
+        run: |
+          mkdir -p codeql-evidence
+          for kind in log diagnostic; do
+            source="$RUNNER_TEMP/codeql_databases/cpp/$kind"
+            if [[ -d "$source" ]]; then
+              cp -R "$source" "codeql-evidence/codeql-$kind"
+            fi
+          done
 
       - name: Preserve raw SARIF and extraction evidence, including failures
         if: always()

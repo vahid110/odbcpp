@@ -11,7 +11,7 @@ denominator. A successful scanner process or a zero finding count was insufficie
 | Profile | Actual scope | Evidence and limits |
 |---|---|---|
 | `cpp-redshift` | Fresh Ubuntu 24.04/GCC Debug REDSHIFT, C++20, OpenSSL system shared, unixODBC/SQLWCHAR2; core/driver, existing ordinary test sources and generated SDK header-isolation units | Actual CMake compiler records and successful extraction must agree. No parser errors or incomplete compilations are accepted. `test_backend_contract.cpp` is required independently of CodeQL's baseline. |
-| `cpp-source` | Supplemental no-build analysis of all tracked C++ sources and headers | Prevents dormant/platform/backend/optional code from disappearing when adding a real build. Reports extraction quality without presenting inferred code as actual-build proof. Only the two exact existing omissions in `coverage-exceptions.json` are allowed; new omissions fail. |
+| `cpp-source` | Supplemental no-build analysis of all tracked C++ sources and headers, with a C++20 frontend | Prevents dormant/platform/backend/optional code from disappearing when adding a real build. Requires observed C++20 platform telemetry and reports extraction quality without presenting inferred code as actual-build proof. Only the two exact existing omissions in `coverage-exceptions.json` are allowed; new omissions fail. |
 | `python` | All tracked `.py` files, including workflow controls | Successful-extraction diagnostics must cover the Git inventory. This is not execution, secret-history or cloud admission proof. |
 | `actions` | All tracked workflow YAML | Successful-extraction diagnostics must cover the Git inventory. Standalone PowerShell, shell, CMake, C# and installer sources need their own review. |
 
@@ -42,6 +42,11 @@ owned compiled translation unit, every generated SDK header unit and six named
 critical sources. It also requires positive complete compilation metrics and
 zero extractor compiler/syntax errors. It does not infer extraction from an
 archive, baseline denominator, native compiler success or result count.
+The supplemental source profile sets the supported `cpp.frontend_options`
+extractor option to `--c++20` and independently requires all reported C++ platform
+standards to be at least C++20. The first hosted run inferred C++17 and aborted
+seven MySQL test-source extractions; these are failures to repair, not new
+omission exceptions. The source inventory check remains required.
 Its only CLI input is the allowlisted profile; repository and artifact paths are
 fixed by the checked-in helper, rather than accepted from environment or caller.
 Each profile requires exactly one raw SARIF file containing exactly one CodeQL
@@ -58,7 +63,11 @@ and retains its evidence instead of publishing an apparent clean replacement.
 The action code is pinned to reviewed official commits; `tools: linked` selects
 the compatible CodeQL bundle shipped with that pinned action. Actual tool
 versions and SARIF/input hashes are recorded. All jobs use standard Ubuntu
-runners with a 30-minute limit, two query threads and a 4096 MB evaluator setting.
+runners with a 60-minute limit, two query threads and a 4096 MB evaluator setting.
+The first actual manual job completed its build but reached the previous
+30-minute limit during query evaluation. The new limit is a finite execution
+bound, not a prediction that every analysis will complete. C++ extractor logs and
+diagnostics are retained alongside raw SARIF after failures, including timeouts.
 That setting is not an OS-enforced process-tree memory cap. No automatic
 in-progress cancellation or privileged pull-request trigger is used.
 

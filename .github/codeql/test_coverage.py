@@ -12,14 +12,18 @@ COVERAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(COVERAGE)
 
 
-def sarif(paths, language="cpp", compilations=20):
+def sarif(paths, language="cpp", compilations=20, standard=202002):
     metrics = {"compilations": compilations, "compilations without errors": compilations,
                "compiler errors": 0, "syntax errors": 0}
-    return [{"tool": {"driver": {"name": "CodeQL"}},
-             "invocations": [{"executionSuccessful": True, "toolExecutionNotifications": [
+    notes = [
                  {"descriptor": {"id": language + "/diagnostics/successfully-extracted-files"},
                   "locations": [{"physicalLocation": {"artifactLocation": {"uri": p}}}]}
-                 for p in sorted(paths)]}],
+                 for p in sorted(paths)]
+    if language == "cpp":
+        notes.append({"descriptor": {"id": "cpp/extractor/platform"},
+                      "properties": {"attributes": {"std_version": standard}}})
+    return [{"tool": {"driver": {"name": "CodeQL"}},
+             "invocations": [{"executionSuccessful": True, "toolExecutionNotifications": notes}],
              "properties": {"metricResults": [
                  {"ruleId": "cpp/telemetry/extraction-metrics", "message": {"text": k}, "value": v}
                  for k, v in metrics.items()]}}]
@@ -156,6 +160,27 @@ class SourceInventoryEvidence(unittest.TestCase):
         report = self.validate("cpp-source", {"a.cpp", "new.h"}, {"a.cpp"})
         self.assertFalse(report["passed"])
         self.assertEqual(report["missing"], ["new.h"])
+
+    def test_source_profile_requires_observed_cpp20_not_only_requested_option(self):
+        for standard in (201703, None, "202002"):
+            with self.subTest(standard=standard):
+                report = COVERAGE.validate("cpp-source", sarif({"a.cpp"}, standard=standard),
+                                           {"a.cpp"}, self.root, self.build, {})
+                self.assertFalse(report["passed"])
+                self.assertIn("Supplemental extraction requires actual C++20 platform telemetry",
+                              report["errors"])
+        runs = sarif({"a.cpp"})
+        runs[0]["invocations"][0]["toolExecutionNotifications"].pop()
+        self.assertFalse(COVERAGE.validate("cpp-source", runs, {"a.cpp"},
+                                          self.root, self.build, {})["passed"])
+
+    def test_mixed_source_platform_standards_cannot_hide_cpp17(self):
+        runs = sarif({"a.cpp"})
+        notes = runs[0]["invocations"][0]["toolExecutionNotifications"]
+        notes.append({"descriptor": {"id": "cpp/extractor/platform"},
+                      "properties": {"attributes": {"std_version": 201703}}})
+        self.assertFalse(COVERAGE.validate("cpp-source", runs, {"a.cpp"},
+                                          self.root, self.build, {})["passed"])
 
     def test_exception_is_exact_and_profile_scoped(self):
         exceptions = {"cpp-source": {"legacy.h": "Reviewed unused placeholder"}}
