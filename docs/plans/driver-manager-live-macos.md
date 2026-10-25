@@ -36,7 +36,7 @@ Probes behind the D buckets ran on the disposable loopback PostgreSQL fixture us
 | D3 | manager | | (masked) | 1 | `SQLGetDiagRecW` through a manager reports the record's UTF-8 byte count as its length in characters. Probe: 62 from both managers, 56 direct. The text itself is complete. This is live bucket R3. |
 | D4 | manager | | (masked) | 1 | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns `SQL_SUCCESS`. iODBC returns `SQL_ERROR` as the driver does, but the record is still gone. This is live bucket R4. |
 | P1 | product | | | 2 | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or before any fetch: the driver returns `SQL_SUCCESS` with 0, and unixODBC raises 24000 itself. See [proposal P1](#p1-static-cursor-row_number-off-a-row). |
-| O1 | open | 1 | | 1 | `SuperResultsPreserveServerJsonText`: `JSON_PARSE('null')` came back as zero-length text, not `null`. The driver passes server bytes through unchanged, so the open question is what the server sends. See [O1](#o1-super-json-null). |
+| O1 | test oracle | 1 | | 1 | `SuperResultsPreserveServerJsonText` expected the text `null` for `JSON_PARSE('null')`. The driver correctly returned `SQL_NULL_DATA`, because the server makes a top-level JSON null SQL NULL. See [O1](#o1-super-json-null). |
 
 All 198 failures are assigned to a bucket. The case-by-case list is in the private evidence (`classified.json`).
 
@@ -50,25 +50,34 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
 | T1 | The oracle has 20 rows in DATA_TYPE order, with an `object_type` flag (no literal syntax, no create parameters). | Compiles. The PostgreSQL rows are unchanged, and `it_metadata_real` passes on PostgreSQL direct and through both managers. |
 | T2 | The cursor-close step moves into the PostgreSQL branch. | As T1. |
 | T3 | Uses `untouched_row_count(93)`. | As T1. |
+| O1 | Column 4 expects `SQL_NULL_DATA`. | Server check (below). |
 | D1–D4 | New entries R1–R4 in `tests/test_dm_expectations.h`. `RedshiftLoginTimeoutOptionsRealTest` records the login timeout the application sets on an unconnected handle (fixture forwards) and expects the manager's answer while disconnected. D4 asserts the manager's result and the drained record, then stops the case (`dm_case_stopped_by`). | Expected values come from the probes and the unixODBC live result. The iODBC rows need the re-run. |
 
-## Needs a decision or evidence
+## Needs a decision
 
 ### P1: static-cursor ROW_NUMBER off a row
 
-- **Spec:** The `SQLGetStmtAttr` diagnostics table lists 24000 when the attribute is `SQL_ATTR_ROW_NUMBER` and the cursor is not open, or is positioned before the start or after the end of the result set.
-- **Driver:** The driver already raises 24000 for forward-only cursors (`MetadataIntegrationTest.ReportsCurrentRowNumberOnlyWhilePositioned`). For static cursors it returns `SQL_SUCCESS` with 0. This is the in-process result asserted by `RedshiftRecentFeaturesRealTest` at `it_redshift_real.cpp` `row_number(hstmt_,0)`.
-- **Proposal:** Following the earlier decision to do whatever the ODBC spec says, raise 24000 for static cursors as well. Then change those two `row_number(…,0)` checks to expect 24000. This is a product change, so it needs failing-before and passing-after GoogleTest evidence (a unit test of the static-cursor path) and approval before it is made.
+- **Spec:** `SQLGetStmtAttr` says two different things here:
+  - The attribute description says: "If the number of the current row cannot be determined or there is no current row, the driver returns 0."
+  - The diagnostics table lists 24000 when the attribute is `SQL_ATTR_ROW_NUMBER` and the cursor is not open, or is positioned before the start or after the end of the result set.
+- **Driver:** The driver follows the diagnostics table for forward-only cursors (`MetadataIntegrationTest.ReportsCurrentRowNumberOnlyWhilePositioned`). For static cursors it follows the attribute description, through a deliberate carve-out added with static scrolling (`8ee2cfc`, `odbc/odbc_handles.cpp` `SQL_ATTR_ROW_NUMBER`). Unit tests in `tests/unit/test_backend_contract.cpp` assert the 0, and so does `RedshiftRecentFeaturesRealTest`.
+- **unixODBC:** It applies the diagnostics table itself and returns 24000 after `SQL_NO_DATA`, before the call reaches the driver.
+- **Recommendation:** Raise 24000 for static cursors too. That gives one rule for both cursor types, matches the diagnostics table and matches what an application already sees through unixODBC. This is a product change:
+  - the static-cursor unit tests change first, as failing-before evidence;
+  - the carve-out goes;
+  - the two live `row_number(…,0)` checks change to 24000.
+- **Alternative:** Keep 0, and record the unixODBC behaviour as a manager deviation instead.
+- **Waiting for your decision:** nothing is changed yet.
 
-### O1: SUPER JSON null
+### O1: SUPER JSON null (resolved: test oracle)
 
-- **Live:** The server's text for top-level `JSON_PARSE('null')` was zero-length. SQL NULL (`CAST(NULL AS SUPER)`) was correctly `SQL_NULL_DATA`, and the other five values matched.
-- **Prediction:** `docs/redshift-special-types.md` predicted the 4-byte text `null`, but no live check backed it.
-- **Next step:** One `psql` query on the cluster settles whether the server sends empty text. If it does, the doc and the oracle change. If it sends `null`, the driver has a decoding defect.
+- **Server check, 2026-10-25:** one read-only `psql` query on the cluster over verified TLS (`sslmode=verify-full`). `JSON_PARSE('null') IS NULL` is true. `JSON_SERIALIZE` of it is the 4 bytes `null`, and `JSON_TYPEOF` is `null`.
+- **Driver:** returned `SQL_NULL_DATA`, which is correct. The test's `text_cell` returns an empty string for a NULL cell, and that was the `""` in the failure.
+- **Fix:** The oracle now expects `SQL_NULL_DATA` for column 4. `docs/redshift-special-types.md` is corrected. A nested JSON null stays in the text, which the array column already checks.
 
 ## Next run
 
 Same three builds after the fixes, against the new inventory:
 - 1,495 cases, with the B1 boundaries excluded.
-- Expected to fail: P1 (2 unixODBC cases) and O1 (direct and unixODBC; and iODBC, which this run masked) until they are decided.
+- Expected to fail: P1 (2 unixODBC cases) until it is decided.
 - iODBC `it_redshift_real` runs for the first time.

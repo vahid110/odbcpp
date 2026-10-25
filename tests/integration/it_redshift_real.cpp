@@ -11714,7 +11714,10 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   EXPECT_EQ("{\"a\":1,\"b\":[true,null]}", text_cell(1, length));
   EXPECT_EQ("[1,\"abc\",null]", text_cell(2, length));
   EXPECT_EQ("\"s\"", text_cell(3, length));
-  EXPECT_EQ("null", text_cell(4, length));
+  // Redshift makes a top-level JSON null SQL NULL: JSON_PARSE('null') IS NULL
+  // is true on the server (docs/redshift-special-types.md).
+  text_cell(4, length);
+  EXPECT_EQ(SQL_NULL_DATA, length);
   text_cell(5, length);
   EXPECT_EQ(SQL_NULL_DATA, length);
   // Server JSON serialization of U+20AC; either escaped or literal is recorded.
