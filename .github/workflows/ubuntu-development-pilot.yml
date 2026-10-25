@@ -208,7 +208,7 @@ jobs:
           PILOT_CACHE_HIT: "not-restored-cold"
         run: python3 tools/ci/ubuntu_development_pilot.py finish
       - name: Save ONLY bounded compiler objects for this run/attempt/source/profile
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.configure.outputs.cache_key }}
@@ -397,7 +397,7 @@ jobs:
         run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" finish
       - name: Save only exact source A objects for this workflow/run/attempt
         if: env.PILOT_MODE == 'seed-a'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.configure.outputs.cache_key }}
