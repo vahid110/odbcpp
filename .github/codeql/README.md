@@ -45,8 +45,14 @@ not established as a GCC-only issue. Original assertions and raw SARIF remain
 unchanged. The publication gate accepts only that exact diagnostic with pinned
 test/header SHA256, extractor version, path, line and complete message. It also
 requires the actual GCC unit object, every owned compiled source/header unit,
-zero syntax errors, one compiler error in one partial compilation, and retained
+zero syntax errors, exactly two compiler-error records in one partial compilation, and retained
 logs proving the sole nonzero extractor exit is this unit's partial exit 3.
+The two grouped `cpp/telemetry/compiler-errors` records must be exactly
+`static assertion failed` = 1 and `There was an error during this compilation` = 1;
+the latter is the failed-compilation marker. The pinned extraction metric counts
+both records, while the clean-compilation count decreases by one. Missing,
+duplicate, extra, renamed or differently counted buckets fail; this is not an
+allowance for two arbitrary errors.
 Missing evidence, drift, another error/partial compilation or any hard abort
 fails. Original errors remain in the report beside `accepted_extractor_limitations`.
 

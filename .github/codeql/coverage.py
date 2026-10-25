@@ -50,11 +50,22 @@ def accepted_static_assert(runs, metrics, expected, extracted, commands, root, b
     if (runs[0]["tool"]["driver"].get("semanticVersion") != "2.27.3" or
             type(metrics.get("compiler errors")) is not int or
             type(metrics.get("syntax errors")) is not int or
-            metrics.get("compiler errors") != 1 or metrics.get("syntax errors") != 0 or
+            metrics.get("compiler errors") != 2 or metrics.get("syntax errors") != 0 or
             type(metrics.get("compilations")) is not int or
             metrics["compilations"] <= 1 or
             metrics.get("compilations without errors") != metrics["compilations"] - 1 or
             STATIC_ASSERT_SOURCE not in expected & extracted):
+        return None
+    # The pinned metric counts both the parser diagnostic and its generic
+    # failed-compilation marker. Require these exact two records, not a budget.
+    buckets = [(metric.get("message", {}).get("text"), metric.get("value"))
+               for metric in runs[0].get("properties", {}).get("metricResults", [])
+               if metric.get("ruleId") == "cpp/telemetry/compiler-errors"]
+    if (len(buckets) != 2 or
+            any(type(message) is not str or type(value) is not int
+                for message, value in buckets) or
+            dict(buckets) != {"static assertion failed": 1,
+                              "There was an error during this compilation": 1}):
         return None
     for path, digest in STATIC_ASSERT_BINDINGS.items():
         candidate = root / path
@@ -126,6 +137,7 @@ def accepted_static_assert(runs, metrics, expected, extracted, commands, root, b
     return {"source": STATIC_ASSERT_SOURCE, "line": 34, "codeql_version": "2.27.3",
             "reason": "Reviewed private-member requires-expression static assertion; actual GCC assertion compiled",
             "source_sha256": dict(STATIC_ASSERT_BINDINGS),
+            "compiler_error_buckets": dict(buckets),
             "object_sha256": hashlib.sha256(objects[0].read_bytes()).hexdigest(),
             "extractor_log": failures[0][2].relative_to(root).as_posix(),
             "limit": "One partial test TU; source presence is not proof of every function body's extraction"}
@@ -250,14 +262,14 @@ def validate(profile, runs, tracked, root, build, exceptions):
             if not isinstance(metrics.get(name), (int, float)):
                 errors.append("Missing independent extraction metric: " + name)
         limitation = accepted_static_assert(runs, metrics, expected, extracted, commands, root, build)
-        accepted_errors = 1 if limitation else 0
+        accepted_compilations = 1 if limitation else 0
         if limitation:
             result["accepted_extractor_limitations"] = [limitation]
-        if metrics.get("compiler errors") != accepted_errors or metrics.get("syntax errors") != 0:
+        if metrics.get("compiler errors") != (2 if limitation else 0) or metrics.get("syntax errors") != 0:
             errors.append("Actual-build extraction contains compiler/syntax errors")
         if (not isinstance(metrics.get("compilations"), (int, float)) or
                 metrics["compilations"] <= 0 or
-                metrics.get("compilations without errors") != metrics.get("compilations") - accepted_errors):
+                metrics.get("compilations without errors") != metrics.get("compilations") - accepted_compilations):
             errors.append("Actual-build extraction has incomplete/error compilations")
         if metrics.get("compilations", 0) < len(expected):
             errors.append("Fewer extracted compilations than owned source units")
