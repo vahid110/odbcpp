@@ -642,7 +642,8 @@ core/
 
 ## License
 
-[Your License Here]
+ODBCPP is licensed under the [MIT License](LICENSE). Third-party dependencies
+retain their respective licenses.
 
 ## Support
 
