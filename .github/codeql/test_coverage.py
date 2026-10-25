@@ -262,7 +262,9 @@ class ActualBuildEvidence(unittest.TestCase):
 
 class SourceInventoryEvidence(unittest.TestCase):
     def setUp(self):
-        self.root = Path("/checkout")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
         self.build = self.root / "build-codeql"
 
     def validate(self, profile, tracked, extracted, exceptions=None):
@@ -296,11 +298,17 @@ class SourceInventoryEvidence(unittest.TestCase):
                                           self.root, self.build, {})["passed"])
 
     def csharp(self, paths):
+        # Synthetic compiler artifacts only exercise the publication control.
+        evidence = self.root / "codeql-evidence/csharp-build"
+        (evidence / "output").mkdir(parents=True, exist_ok=True)
+        (evidence / "output/ODBCPPSecurityHelpers.dll").write_bytes(b"MZ synthetic library")
+        for name in ("build.log", "dotnet-info.log"):
+            (evidence / name).write_text("synthetic offline compiler evidence\n")
         runs = sarif(paths, language="cs")
         runs[0]["properties"]["metricResults"] = [
             {"ruleId": "cs/telemetry/extraction-information",
              "message": {"text": key}, "value": value}
-            for key, value in [("Is extracted with build-mode set to 'none'", 1),
+            for key, value in [("Is extracted with build-mode set to 'none'", 0),
                                ("Number of lines of code", 100)]]
         return runs
 
@@ -332,6 +340,30 @@ class SourceInventoryEvidence(unittest.TestCase):
                 runs[0]["properties"]["metricResults"] = metrics
                 self.assertFalse(COVERAGE.validate("csharp", runs, {"helper.cs"},
                                                    self.root, self.build, {})["passed"])
+
+    def test_csharp_no_build_cannot_substitute_for_library_compilation(self):
+        runs = self.csharp({"helper.cs"})
+        runs[0]["properties"]["metricResults"][0]["value"] = 1
+        report = COVERAGE.validate("csharp", runs, {"helper.cs"}, self.root, self.build, {})
+        self.assertFalse(report["passed"])
+        self.assertIn("Missing C# actual-build extraction telemetry", report["errors"])
+
+    def test_csharp_requires_compiled_library_and_retained_compiler_evidence(self):
+        for name in ("output/ODBCPPSecurityHelpers.dll", "build.log", "dotnet-info.log"):
+            for mutation in ("missing", "empty"):
+                with self.subTest(name=name, mutation=mutation):
+                    runs = self.csharp({"helper.cs"})
+                    path = self.root / "codeql-evidence/csharp-build" / name
+                    if mutation == "missing":
+                        path.unlink()
+                    else:
+                        path.write_bytes(b"")
+                    self.assertFalse(COVERAGE.validate("csharp", runs, {"helper.cs"},
+                                                       self.root, self.build, {})["passed"])
+        runs = self.csharp({"helper.cs"})
+        (self.root / "codeql-evidence/csharp-build/output/ODBCPPSecurityHelpers.dll").write_bytes(b"text")
+        self.assertFalse(COVERAGE.validate("csharp", runs, {"helper.cs"},
+                                           self.root, self.build, {})["passed"])
 
     def test_exception_is_exact_and_profile_scoped(self):
         exceptions = {"cpp-source": {"legacy.h": "Reviewed unused placeholder"}}
@@ -372,7 +404,7 @@ class SourceInventoryEvidence(unittest.TestCase):
             COVERAGE.evidence(runs, "cpp", self.root)
 
     def test_uri_normalization_and_traversal_do_not_forge_coverage(self):
-        self.assertEqual(COVERAGE.relative_path("file:///checkout/a%20b.cpp", self.root), "a b.cpp")
+        self.assertEqual(COVERAGE.relative_path(self.root.as_uri() + "/a%20b.cpp", self.root), "a b.cpp")
         self.assertIsNone(COVERAGE.relative_path("%2e%2e/a.cpp", self.root))
         self.assertIsNone(COVERAGE.relative_path("/elsewhere/a.cpp", self.root))
 

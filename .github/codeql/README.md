@@ -13,7 +13,7 @@ denominator. A successful scanner process or a zero finding count was insufficie
 | `cpp-redshift` | Fresh Ubuntu 24.04/GCC Debug REDSHIFT, C++20, OpenSSL system shared, unixODBC/SQLWCHAR2; core/driver, existing ordinary test sources and generated SDK header-isolation units | Actual CMake compiler records and source extraction must agree. Errors fail except the single pinned compile-time assertion limitation below. `test_backend_contract.cpp` remains independently required. |
 | `cpp-source` | Supplemental no-build analysis of all tracked C++ sources and headers, with a C++20 frontend | Prevents dormant/platform/backend/optional code from disappearing when adding a real build. Requires observed C++20 platform telemetry and reports extraction quality without presenting inferred code as actual-build proof. Only the two exact existing omissions in `coverage-exceptions.json` are allowed; new omissions fail. |
 | `python` | All tracked `.py` files, including workflow controls | Successful-extraction diagnostics must cover the Git inventory. This is not execution, secret-history or cloud admission proof. |
-| `csharp` | All standalone tracked `.cs` files using supported no-build extraction | Requires each source, positive code/no-build telemetry and no extractor/compiler-error or low-database-quality diagnostic. Does not execute Windows APIs or scan C# embedded in PowerShell strings. |
+| `csharp` | All standalone tracked `.cs` files compiled as a library on Linux | Requires each source, actual-build and positive-code telemetry, a compiled library with retained compiler evidence, and no extractor/compiler-error or low-database-quality diagnostic. Does not execute Windows APIs or scan C# embedded in PowerShell strings. |
 | `actions` | All tracked workflow YAML | Successful-extraction diagnostics must cover the Git inventory. Standalone PowerShell, shell, CMake and installer sources need their own review. |
 
 All profiles run the default security queries plus `security-extended`. The audit's
@@ -149,9 +149,12 @@ Primary references: [compiled-language build modes](https://docs.github.com/en/c
 
 ## Standalone C# scope
 
-The C# profile includes `tools/development/windows_local_process.cs`, the Windows
-job/process helper. No-build extraction is a source-analysis route on Linux; it
-neither starts the helper nor validates P/Invoke behavior. The two C# regions
+The C# profile compiles the original `tools/development/windows_local_process.cs`,
+the Windows job/process helper, through `standalone-csharp.csproj`. The project
+declares `OutputType=Library`, targets .NET 8 and adds no duplicate source or entry
+point. The compiler runs after CodeQL initialization, with fresh compilation and
+compiler servers disabled. It neither starts the helper nor validates P/Invoke
+behavior. The two C# regions
 embedded in `test_windows_local_process.ps1` and `test_windows_dsn_gui.ps1` remain
 outside this tracked `.cs` inventory and require separate review.
 
@@ -159,6 +162,20 @@ The pinned query source explains why source presence is insufficient:
 [`ExtractedFiles.ql`](https://github.com/github/codeql/blob/a1575b98a8cc19bcfa7bb6cb41be688cb3dae65c/csharp/ql/src/Diagnostics/ExtractedFiles.ql)
 selects source files even if their extraction had errors. The publication check
 also rejects `cs/diagnostics/extraction-errors` and
-`csharp/diagnostic/database-quality`, and requires positive code and no-build
-telemetry from `cs/telemetry/extraction-information`. This is checked against
-actual hosted SARIF before acceptance, not inferred from the requested mode.
+`csharp/diagnostic/database-quality`, and requires positive code and actual-build
+telemetry from `cs/telemetry/extraction-information` (the no-build flag must be
+zero). It records the library and compiler-evidence hashes. All tracked `.cs`
+sources must still appear in extraction diagnostics; adding another source without
+including it in the library project fails the offline inventory control and the
+hosted publication gate.
+
+The first C# hosted attempt on `38747ca` retained one `CS5001` compiler diagnostic:
+the pinned no-build extractor constructs a console application even for this
+Add-Type library helper. The original failed SARIF remains retained. Its
+[`Extractor.cs`](https://github.com/github/codeql/blob/a1575b98a8cc19bcfa7bb6cb41be688cb3dae65c/csharp/extractor/Semmle.Extraction.CSharp.Standalone/Extractor.cs)
+sets `OutputKind.ConsoleApplication`. The manual library build corrects that
+compilation context rather than suppressing the diagnostic. Actual successor
+compilation and SARIF qualification remain hosted acceptance requirements.
+
+Primary build references: [CodeQL manual builds](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/manage-your-configuration/codeql-for-compiled-languages),
+[C# library output](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/output#outputtype).

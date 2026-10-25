@@ -2,7 +2,9 @@
 
 from pathlib import Path
 import re
+import subprocess
 import unittest
+import xml.etree.ElementTree as ET
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / "workflows/codeql.yml"
@@ -10,6 +12,16 @@ CONFIGURE = "Configure the actual REDSHIFT C++20 profile"
 INITIALIZE = "Initialize CodeQL"
 BUILD = "Compile product, SDK header units and existing test sources without running tests"
 ANALYZE = "Analyze and retain full diagnostics before publication"
+CSHARP_BUILD = "Compile the original standalone C# helper as a library without executing it"
+
+
+def library_sources(text):
+    project = ET.fromstring(text)
+    if (project.findtext("./PropertyGroup/OutputType") != "Library" or
+            project.findtext("./PropertyGroup/EnableDefaultCompileItems") != "false"):
+        raise ValueError("Expected an explicit library compilation")
+    return {item.attrib["Include"].removeprefix("../../")
+            for item in project.findall("./ItemGroup/Compile")}
 
 
 def tracing_boundary(text):
@@ -56,6 +68,32 @@ class ManualTracingBoundary(unittest.TestCase):
                         text.index("      - name: Independently verify actual extraction"))
         self.assertLess(text.index("      - name: Independently verify actual extraction"),
                         text.index("      - name: Publish only the verified SARIF"))
+
+    def test_csharp_build_is_traced_fresh_and_compiler_servers_disabled(self):
+        text = WORKFLOW.read_text()
+        blocks = re.split(r"(?m)^      - name: ", text)[1:]
+        steps = [block.splitlines()[0] for block in blocks]
+        self.assertEqual(steps.count(CSHARP_BUILD), 1)
+        self.assertLess(steps.index(INITIALIZE), steps.index(CSHARP_BUILD))
+        self.assertLess(steps.index(CSHARP_BUILD), steps.index(ANALYZE))
+        block = blocks[steps.index(CSHARP_BUILD)]
+        self.assertIn("        if: matrix.profile == 'csharp'\n", block)
+        self.assertIn("language: csharp\n            build-mode: manual", text)
+        for required in ("dotnet build .github/codeql/standalone-csharp.csproj",
+                         "--no-incremental", "--disable-build-servers",
+                         "-p:UseSharedCompilation=false", "-maxcpucount:1",
+                         "tee codeql-evidence/csharp-build/build.log"):
+            self.assertIn(required, block)
+
+    def test_library_project_compiles_all_tracked_cs_without_duplicate_source_or_main(self):
+        root = WORKFLOW.parents[2]
+        project = root / ".github/codeql/standalone-csharp.csproj"
+        text = project.read_text()
+        tracked = set(subprocess.check_output(["git", "ls-files", "*.cs"],
+                                              cwd=root, text=True).splitlines())
+        self.assertEqual(library_sources(text), tracked)
+        with self.assertRaisesRegex(ValueError, "explicit library"):
+            library_sources(text.replace("<OutputType>Library", "<OutputType>Exe"))
 
 
 if __name__ == "__main__":

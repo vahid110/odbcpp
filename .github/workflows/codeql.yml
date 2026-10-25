@@ -46,7 +46,7 @@ jobs:
             build-mode: none
           - profile: csharp
             language: csharp
-            build-mode: none
+            build-mode: manual
           - profile: actions
             language: actions
             build-mode: none
@@ -108,6 +108,18 @@ jobs:
           cmake --build build-codeql --parallel 2 --verbose --target all \
             it_redshift_routine_schema_patterns it_redshift_columns_omitted_table \
             2>&1 | tee codeql-evidence/build.log
+
+      - name: Compile the original standalone C# helper as a library without executing it
+        if: matrix.profile == 'csharp'
+        run: |
+          mkdir -p codeql-evidence/csharp-build
+          dotnet --info > codeql-evidence/csharp-build/dotnet-info.log
+          dotnet build .github/codeql/standalone-csharp.csproj \
+            --configuration Release --no-incremental --disable-build-servers \
+            --verbosity normal --output codeql-evidence/csharp-build/output \
+            -p:BaseIntermediateOutputPath="$RUNNER_TEMP/odbcpp-codeql-csharp/obj/" \
+            -p:UseSharedCompilation=false -maxcpucount:1 \
+            2>&1 | tee codeql-evidence/csharp-build/build.log
 
       - name: Analyze and retain full diagnostics before publication
         id: analyze

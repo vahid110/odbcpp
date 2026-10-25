@@ -280,17 +280,28 @@ def validate(profile, runs, tracked, root, build, exceptions):
         result["scope"] = "Supplemental inferred source extraction; quality metrics are reported, not actual-build proof"
     elif profile == "csharp":
         expected = {p for p in tracked if p.endswith(".cs")}
-        result["scope"] = "Standalone tracked C# source; no Windows execution or embedded PowerShell C# proof"
+        result["scope"] = "Actual C# library compilation; no Windows execution or embedded PowerShell C# proof"
         # ExtractedFiles includes files with errors: a file count alone is not
         # evidence that method bodies and their references were analyzed.
         for kind in ("cs/diagnostics/extraction-errors", "csharp/diagnostic/database-quality"):
             if diagnostics.get(kind, 0):
                 errors.append("C# extraction has errors or low database quality: " + kind)
-        if metrics.get("Is extracted with build-mode set to 'none'") != 1:
-            errors.append("Missing C# no-build extraction telemetry")
+        if metrics.get("Is extracted with build-mode set to 'none'") != 0:
+            errors.append("Missing C# actual-build extraction telemetry")
         lines = metrics.get("Number of lines of code")
         if type(lines) not in (int, float) or not lines > 0:
             errors.append("Missing positive C# code extraction telemetry")
+        assembly = root / "codeql-evidence/csharp-build/output/ODBCPPSecurityHelpers.dll"
+        if not assembly.is_file() or assembly.read_bytes()[:2] != b"MZ":
+            errors.append("Missing compiled C# library")
+        else:
+            result["csharp_assembly_sha256"] = hashlib.sha256(assembly.read_bytes()).hexdigest()
+        for name in ("build.log", "dotnet-info.log"):
+            path = root / "codeql-evidence/csharp-build" / name
+            if not path.is_file() or not path.stat().st_size:
+                errors.append("Missing C# compiler evidence: " + name)
+            else:
+                result["csharp_" + name + "_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     elif profile == "python":
         expected = {p for p in tracked if p.endswith(".py")}
         result["scope"] = "All tracked Python source; no runtime or secret-history proof"
