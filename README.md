@@ -456,7 +456,7 @@ retain their respective licenses.
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/your-repo/issues)
+- **Issues**: [GitHub Issues](https://github.com/vahid110/odbcpp/issues)
 - **Documentation**: See `examples/` directory
 - **Architecture**: See `docs/` directory (if available)
 
