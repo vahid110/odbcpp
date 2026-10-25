@@ -194,6 +194,20 @@ find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 add_test(NAME test_xml_evidence COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_xml_evidence.py")
 set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT 60)
+# Compile the dependency regressions against the exact patched bundled headers.
+add_executable(test_bundled_fmt_security tools/ci/test_bundled_fmt_security.cpp)
+target_include_directories(test_bundled_fmt_security PRIVATE "${SPDLOG_INCLUDE_DIR}")
+target_compile_definitions(test_bundled_fmt_security PRIVATE FMT_HEADER_ONLY=1)
+target_link_libraries(test_bundled_fmt_security PRIVATE GTest::gtest_main)
+apply_compiler_settings(test_bundled_fmt_security)
+set_target_properties(test_bundled_fmt_security PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_bundled_fmt_security COMMAND test_bundled_fmt_security)
+set_tests_properties(test_bundled_fmt_security PROPERTIES LABELS "unit;security" TIMEOUT 30)
+add_test(NAME test_spdlog_fmt_patch COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_spdlog_fmt_patch.py"
+  --cmake "${CMAKE_COMMAND}" --spdlog-source "${spdlog_SOURCE_DIR}")
+set_tests_properties(test_spdlog_fmt_patch PROPERTIES LABELS "unit;security" TIMEOUT 120)
 add_executable(trace_reload_exit_policy_control tests/unit/test_odbc_trace_reload.cpp)
 target_include_directories(trace_reload_exit_policy_control PRIVATE ${ODBC_INCLUDE_DIR})
 target_compile_definitions(trace_reload_exit_policy_control PRIVATE ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL=1)
