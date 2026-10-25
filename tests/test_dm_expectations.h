@@ -79,6 +79,7 @@ enum class Deviation {
   ConnectReappliesPreloadLoginTimeout,
   RefusedLoginTimeoutReplayedOnConnect,
   CancelClosesIdleCursor,
+  AnsiNameLengthInCharacters,
 };
 
 }  // namespace dm
@@ -197,6 +198,7 @@ inline constexpr Entry kEntries[] = {
     {Deviation::ConnectReappliesPreloadLoginTimeout, kIodbc35216, nullptr, "live bucket R14"},
     {Deviation::RefusedLoginTimeoutReplayedOnConnect, kUnixodbc2314, nullptr, "live bucket R15"},
     {Deviation::CancelClosesIdleCursor, kUnixodbc2314, nullptr, "live bucket R16"},
+    {Deviation::AnsiNameLengthInCharacters, kIodbc35216, nullptr, "live bucket R17"},
 };
 
 inline const Entry* entry(Deviation deviation) {

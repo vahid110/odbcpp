@@ -31,7 +31,7 @@ Probes behind the D buckets ran on the disposable loopback PostgreSQL fixture us
 | T1 | test oracle | 1 | 1 | | `ReportsSupportedTypeInformation` expects 17 Redshift rows. The catalog now has 20: `super` (ab4a2a7) and `geometry`/`geography` (0dfa6c2). None of the three has a literal prefix, suffix or create parameters. unixODBC never reaches the assertion (`FailedCallForgetsOpenCursor`). |
 | T2 | test | | 1 | 1 | `MissingSchemaUsesOdbcSqlstate`: the cursor-close step for a failed `SQLMoreResults` ran on the Redshift branch too. There, the batch fails at `SQLExecDirect`, so no cursor exists. |
 | T3 | test | | | 1 | `DescribesPreparedResultsBeforeExecution` (Redshift branch): a known bucket W deviation (unixODBC writes -1 to the row count on error) that this branch did not apply. |
-| D1 | manager | | (masked) | 27 | On an unconnected handle the manager answers `SQL_ATTR_LOGIN_TIMEOUT` itself: unixODBC 15 (`SQL_LOGIN_TIMEOUT_DEFAULT`), iODBC 0 with 8 bytes written and length 0 (bucket J). The direct driver reports 30. This is live bucket R1; the re-run refined the model (see [R1](#live-deviations-r1r16)). |
+| D1 | manager | | (masked) | 27 | On an unconnected handle the manager answers `SQL_ATTR_LOGIN_TIMEOUT` itself: unixODBC 15 (`SQL_LOGIN_TIMEOUT_DEFAULT`), iODBC 0 with 8 bytes written and length 0 (bucket J). The direct driver reports 30. This is live bucket R1; the re-run refined the model (see [R1](#live-deviations-r1r17)). |
 | D2 | manager | | (masked) | 1 | `NegativeTests` passes a connection string as `SQLConnect` ServerName. The manager reads it as a DSN name and refuses it: unixODBC HY090 (longer than `SQL_MAX_DSN_LENGTH`), iODBC IM002. This is live bucket R2. |
 | D3 | manager | | (masked) | 1 | `SQLGetDiagRecW` through a manager reports the record's UTF-8 byte count as its length in characters. Probe: 62 from both managers, 56 direct. The text itself is complete. This is live bucket R3. |
 | D4 | manager | | (masked) | 1 | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns `SQL_SUCCESS`. iODBC returns `SQL_ERROR` as the driver does, but the record is still gone. This is live bucket R4. |
@@ -123,7 +123,15 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
   - bucket E bound-wide length (1);
   - R13 (1), R14 (1), R15 (1) and R16 (1).
 
-## Live deviations R1–R16
+## Fourth run `dm-live-macos-1a677ec-a`
+
+- **Source and time:** source `1a677ec`, CI green (runs 40236356829 and 40236356838); 1,156 s.
+- **Result:** 3 of 1,495 failed. Cleanup completed with nothing left over, and the cluster was paused and verified. The HYT00 case passed in all three builds this time.
+- **Failures (all fixed in source after this run):**
+  - **`WideDiagnosticsCarryServerUnicodeErrorText`, both managers:** the complete read showed that the manager's wide text is the UTF-8 bytes widened one by one (R3, corrected).
+  - **`WideZeroCapacityAndDescriptorUnicodeColumnNames`, iODBC:** narrow name lengths are counted in characters (R17).
+
+## Live deviations R1–R17
 
 All were measured on the loopback PostgreSQL fixture unless marked live.
 
@@ -133,7 +141,7 @@ All were measured on the loopback PostgreSQL fixture unless marked live.
 | | iODBC | Answers itself until the first connect attempt loads the driver, even a failed one: the application's value or 0, 8 bytes written, length 0. After that the driver answers. |
 | | unixODBC | Answers whenever the handle is not connected: the last value the application set, even one the driver refused while connected, or 15. |
 | R2 | both | A connection string passed as `SQLConnect` ServerName is refused: unixODBC HY090, iODBC IM002. |
-| R3 | both | `SQLGetDiagRecW` reports the record's UTF-8 byte count as its length, and reports truncation (SUCCESS_WITH_INFO) for a buffer that fits the text exactly. The text and its terminator are complete. |
+| R3 | both | `SQLGetDiagRecW` returns the record's UTF-8 bytes widened one by one: one unit per byte, so a non-ASCII message comes back garbled, and its length and every capacity are in bytes. A buffer that fits the true text reports truncation. Confirmed on the fixture by comparing unit by unit. |
 | R4 | both | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns SQL_SUCCESS; iODBC returns SQL_ERROR. |
 | R5 | iODBC | A braced `DRIVER={path}` value is passed to dlopen with its braces. |
 | R6 | iODBC | A failed `SQLDriverConnect(W)` writes 1 to StringLength2 and leaves the output buffer alone. |
@@ -147,6 +155,7 @@ All were measured on the loopback PostgreSQL fixture unless marked live.
 | R14 | iODBC | Every connect re-applies the login timeout stored before the driver was first loaded, over a later value and the keyword. |
 | R15 | unixODBC | A login timeout the driver refused while connected is replayed to the driver before the next connect. The driver then ignores an invalid `LOGINTIMEOUT` keyword, as it does for any application value. |
 | R16 | unixODBC | `SQLCancelHandle` on an idle statement with an open cursor closes the cursor (the ODBC 2.x meaning): the next `SQLFetch` raises HY010. |
+| R17 | iODBC | ANSI `SQLDescribeCol` reports a non-ASCII column name's length in characters, not UTF-8 bytes (live and fixture: 2 for a 5-byte name). |
 
 Bucket L also applies in more places: ANSI statement text with UTF-8 identifiers or values. Where that text is incidental to the case, the fixture sends it through the wide API instead (`exec_utf8`, `utf8_direct`). Where ANSI input is the point of the case, the case asserts the widened result and stops.
 

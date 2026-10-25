@@ -1630,17 +1630,18 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
   const SQLWCHAR expected_state[]{'4', '2', 'S', '0', '2', 0};
   EXPECT_EQ(0, std::memcmp(state, expected_state, sizeof(expected_state)));
   if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::WideDiagLengthInUtf8Bytes)) {
-    // The same manager converts the record itself from its UTF-8 copy, so
-    // capacities and truncation are measured in its byte count. A buffer that
-    // holds that count returns the complete text; the driver's wide truncation
-    // edges below are not reachable through it.
+    // The same manager widens its UTF-8 copy of the record byte by byte, so
+    // the wide text is one unit per byte and capacities are measured in bytes.
+    // The driver's wide text and truncation edges below are not reachable.
     std::vector<SQLWCHAR> complete(static_cast<std::size_t>(reported) + 2, SQLWCHAR{0x5a});
     units = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
         complete.data(), static_cast<SQLSMALLINT>(reported + 1), &units));
     EXPECT_EQ(reported, units);
-    EXPECT_TRUE(std::equal(expected_units->begin(), expected_units->end(), complete.begin()));
-    EXPECT_EQ(SQLWCHAR{0}, complete[static_cast<std::size_t>(required)]);
+    for (std::size_t i = 0; i < narrow_text.size(); ++i) {
+      EXPECT_EQ(static_cast<SQLWCHAR>(static_cast<unsigned char>(narrow_text[i])), complete[i]);
+    }
+    EXPECT_EQ(SQLWCHAR{0}, complete[narrow_text.size()]);
     return;
   }
 
@@ -1799,7 +1800,10 @@ TEST_F(RedshiftRealTest, WideZeroCapacityAndDescriptorUnicodeColumnNames) {
     ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLDescribeCol(hstmt_, column, narrow.data(), 0, &bytes,
         nullptr, nullptr, nullptr, nullptr));
     EXPECT_EQ("01004", get_error(SQL_HANDLE_STMT, hstmt_));
-    EXPECT_EQ(static_cast<SQLSMALLINT>(utf8.size()), bytes);
+    // A manager that narrows the driver's wide name itself reports its length
+    // in characters, not UTF-8 bytes (AnsiNameLengthInCharacters).
+    EXPECT_EQ(odbcpp::test::dm::value(odbcpp::test::dm::Deviation::AnsiNameLengthInCharacters,
+        static_cast<SQLSMALLINT>(utf8.size()), required), bytes);
     EXPECT_EQ(0x5a, narrow[0]);
 
     std::vector<SQLWCHAR> exact(static_cast<std::size_t>(required) + 2, SQLWCHAR{0x5a});
