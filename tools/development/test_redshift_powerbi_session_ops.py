@@ -20,7 +20,13 @@ class SessionRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='odbcpp-session-dispatch-')
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.root = Path(self.temporary.name)
+        self.directory = self.root / 'powerbi007-own-offline'
+        self.directory.mkdir()
+        self.native_base = self.root / 'native'
+        native_root = patch('tools.development.redshift_powerbi_bridge.BASE', self.native_base)
+        native_root.start()
+        self.addCleanup(native_root.stop)
         self.ops = object.__new__(runtime.PowerBiSessionOperations)
         self.ops.__dict__.update(adapter(self.directory).__dict__)
         self.ops.powerbi_session_state = data.new_state()
@@ -75,17 +81,19 @@ class SessionRuntimeTests(unittest.TestCase):
             sha256=hashlib.sha256(path.read_bytes()).hexdigest()), 500)
 
     def retained_descriptor(self, *, baseline_padding=0):
-        def write(name, value):
-            path = self.directory / name
+        def write(name, value, *, directory=None):
+            path = (directory or self.directory) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(value))
             return dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
-        self.ops.approval.update(source_head='e' * 40, run_name='powerbi007-own-offline')
+        self.ops.approval.update(source_head='e' * 40, run_name='powerbi007-own-offline',
+                                 run_directory=str(self.directory))
         baseline = write('baseline-closed.json', dict(source_head='e' * 40,
             run_id='powerbi007-own-offline', phase=0, normal_close=True,
             workload_sha256='a' * 64, process=dict(readers_known=True,
                 receipt=dict(treeEmpty=True, jobActiveProcesses=0, heldProcessHandlesStopped=True),
                 held_observed_processes=[dict(stopped=True)],
-                capture_evidence='x' * baseline_padding)))
+                capture_evidence='x' * baseline_padding)), directory=self.native_base / self.directory.name)
         proofs = {name: write('zero-' + name + '.json', dict(synthetic_offline_zero=True))
                   for name in ('raw', 'intent', 'status')}
         self.ops.proofs['principal_zero'] = proofs
@@ -116,6 +124,71 @@ class SessionRuntimeTests(unittest.TestCase):
         self.assertEqual((self.ops.helpers, self.ops.statements, self.ops.logins), (6, 48, 6))
         for _, call in self.ops.native.calls:
             self.assertNotIn('ALTER USER', call['input_bytes'].decode())
+
+    def test_retained_nested_paths_reject_traversal_sibling_and_outside_before_evidence_IO(self):
+        self.snapshot()
+        ref, original = self.retained_descriptor()
+        decision_path = Path(ref['path'])
+        real_open = runtime.os.open
+        for key in ('baseline_closed', 'exact_zero', 'review'):
+            expected = Path(original[key]['path'])
+            for wrong in (str(expected.parent / '..' / expected.name),
+                          str(expected.parent.parent / 'powerbi007-own-sibling' / expected.name),
+                          '/unrelated/retention-evidence.json'):
+                with self.subTest(key=key, path=wrong):
+                    value = copy.deepcopy(original)
+                    value[key]['path'] = wrong
+                    decision_path.write_text(json.dumps(value))
+                    changed = dict(path=str(decision_path), sha256=hashlib.sha256(decision_path.read_bytes()).hexdigest())
+                    with patch.object(runtime.os, 'open', wraps=real_open) as opened:
+                        with self.assertRaisesRegex(Refused, 'fixed_evidence_path'):
+                            self.ops.decide_session_cap(changed, 500)
+                    self.assertTrue(all(Path(call.args[0]) == decision_path for call in opened.call_args_list))
+                    self.assertEqual(self.calls, ['snapshot'])
+                    self.assertEqual(self.ops.powerbi_session_state['phase'], 'OBSERVED')
+
+    def test_retained_decision_and_run_component_refuse_before_any_IO(self):
+        self.snapshot()
+        ref, _ = self.retained_descriptor()
+        for wrong in (str(self.directory / '..' / 'retention.json'),
+                      str(self.directory.parent / 'powerbi007-own-sibling' / 'retention.json'),
+                      '/unrelated/retention.json'):
+            with self.subTest(path=wrong), patch.object(runtime, 'verify_public_pin') as verify, \
+                    patch.object(runtime.os, 'open') as opened:
+                with self.assertRaisesRegex(Refused, 'fixed_evidence_path'):
+                    self.ops.decide_session_cap(dict(ref, path=wrong), 500)
+                verify.assert_not_called()
+                opened.assert_not_called()
+        for run in ('../powerbi007-own-offline', 'powerbi007-own-../sibling',
+                    'powerbi007-own-sibling', 'foreign'):
+            with self.subTest(run=run), patch.object(runtime, 'verify_public_pin') as verify, \
+                    patch.object(runtime.os, 'open') as opened:
+                self.ops.approval['run_name'] = run
+                with self.assertRaisesRegex(Refused, 'actual_admitted_run'):
+                    self.ops.decide_session_cap(ref, 500)
+                verify.assert_not_called()
+                opened.assert_not_called()
+        self.assertEqual(self.calls, ['snapshot'])
+
+    def test_retained_closed_paths_cannot_be_symlinks(self):
+        self.snapshot()
+        ref, value = self.retained_descriptor()
+        for target in (ref, value['baseline_closed'], value['exact_zero'], value['review']):
+            path = Path(target['path'])
+            held = path.with_name(path.name + '.original')
+            path.rename(held)
+            try:
+                try:
+                    path.symlink_to(held)
+                except (OSError, NotImplementedError):
+                    self.skipTest('symlink creation unavailable')
+                with self.assertRaises((OSError, Refused)):
+                    self.ops.decide_session_cap(ref, 500)
+                self.assertEqual(self.calls, ['snapshot'])
+            finally:
+                if path.is_symlink():
+                    path.unlink()
+                held.rename(path)
 
     def test_retained_descriptor_requires_actual_current_baseline_SQL_proof_before_read(self):
         self.snapshot()

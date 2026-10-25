@@ -9,6 +9,8 @@ import copy
 import hashlib
 import json
 import os
+from pathlib import Path
+import re
 import stat
 import time
 
@@ -138,6 +140,10 @@ class PowerBiSessionOperations(Operations):
 
     def decide_session_cap(self, measurement_pin, deadline):
         self._session_deadline('snapshot', deadline)
+        # The unchanged-cap protocol has a closed decision filename. Route it
+        # through its path guard before even the initial descriptor read.
+        if Path(measurement_pin['path']).name == 'retention.json':
+            return self.retain_original_cap(measurement_pin, deadline)
         verify_public_pin(measurement_pin['path'], measurement_pin['sha256'])
         descriptor = os.open(measurement_pin['path'], os.O_RDONLY | os.O_NOFOLLOW)
         try:
@@ -170,9 +176,25 @@ class PowerBiSessionOperations(Operations):
         need(self.readers_known and self.native is not None and self.native.readers_known,
              'retention_requires_known_baseline_readers')
 
-        def load(ref, maximum=16384):
-            verify_public_pin(ref['path'], ref['sha256'])
-            descriptor = os.open(ref['path'], os.O_RDONLY | os.O_NOFOLLOW)
+        from tools.development.redshift_powerbi_bridge import BASE as native_base
+        run = self.approval.get('run_name')
+        need(type(run) is str and re.fullmatch(r'powerbi007-(?:own|aws2)-[A-Za-z0-9_-]{1,64}', run)
+             and self.directory.is_absolute() and self.directory.name == run and
+             '..' not in self.directory.parts and
+             self.approval.get('run_directory') == str(self.directory), 'retention_actual_admitted_run')
+        decision_path = self.directory / 'retention.json'
+        zero_path = self.directory / 'baseline-exact-zero.json'
+        review_path = self.directory / 'retention-review.json'
+        baseline_path = native_base / run / 'baseline-closed.json'
+
+        def bound(ref, expected):
+            need(type(ref) is dict and set(ref) == {'path', 'sha256'} and
+                 ref['path'] == str(expected), 'retention_fixed_evidence_path')
+
+        def load(ref, expected, maximum=16384):
+            bound(ref, expected)
+            verify_public_pin(str(expected), ref['sha256'])
+            descriptor = os.open(expected, os.O_RDONLY | os.O_NOFOLLOW)
             try:
                 info = os.fstat(descriptor)
                 need(stat.S_ISREG(info.st_mode) and info.st_size <= maximum, 'bounded_retention_evidence')
@@ -183,13 +205,18 @@ class PowerBiSessionOperations(Operations):
                 os.close(descriptor)
             return json.loads(body)
 
-        decision = load(decision_pin)
+        decision = load(decision_pin, decision_path)
+        need(type(decision) is dict and {'exact_zero', 'baseline_closed', 'review'} <= set(decision),
+             'retention_fixed_evidence_path')
+        for key, expected in (('exact_zero', zero_path), ('baseline_closed', baseline_path),
+                              ('review', review_path)):
+            bound(decision[key], expected)
         sessions._retention(decision, self.powerbi_session_state, self.utc_ms())
         # This is the bridge's actual completed baseline, not a fabricated
         # replacement for an observed query result or native-reader proof.
-        zero = load(decision['exact_zero'])
-        baseline = load(decision['baseline_closed'], maximum=2 * 1024 * 1024)
-        load(decision['review'])
+        zero = load(decision['exact_zero'], zero_path)
+        baseline = load(decision['baseline_closed'], baseline_path, maximum=2 * 1024 * 1024)
+        load(decision['review'], review_path)
         need(set(zero) == {'source_head', 'run_id', 'native_baseline',
                           'exact_principal_zero', 'SQL_proof'} and
              zero['source_head'] == self.approval['source_head'] and
@@ -216,10 +243,10 @@ class PowerBiSessionOperations(Operations):
         decided = sessions.retain_original_cap(refreshed, decision, now_ms=self.utc_ms())
         # Recheck the exact decision/evidence after the read dispatch, before
         # durably publishing. No readback can authorize a changed decision.
-        need(load(decision_pin) == decision and load(decision['exact_zero']) == zero,
+        need(load(decision_pin, decision_path) == decision and load(decision['exact_zero'], zero_path) == zero,
              'retention_decision_or_baseline_changed')
-        verify_public_pin(decision['baseline_closed']['path'], decision['baseline_closed']['sha256'])
-        verify_public_pin(decision['review']['path'], decision['review']['sha256'])
+        verify_public_pin(str(baseline_path), decision['baseline_closed']['sha256'])
+        verify_public_pin(str(review_path), decision['review']['sha256'])
         self._session_deadline('baseline_revalidate', deadline)
         self.session_sequence += 1
         self._publish_session('decision', {'state': decided, 'retention': decision_pin,
