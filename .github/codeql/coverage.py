@@ -6,6 +6,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 from urllib.parse import unquote, urlparse
@@ -35,6 +36,99 @@ PROFILE = {
     "ODBCPP_CRYPTO_TLS_PROOF": "OFF",
     "ODBCPP_NATIVE_PROVISIONED_AUTH_TESTS": "OFF",
 }
+
+STATIC_ASSERT_SOURCE = "tests/unit/test_session_owner.cpp"
+STATIC_ASSERT_BINDINGS = {
+    STATIC_ASSERT_SOURCE: "7e7a00907d36a26a7e9d87ae8d142fa396d1c8e4e3b008dd0eef64be18bc4161",
+    "sdk/internal/odbcpp/session/session_owner.h":
+        "776d5a62bf86240671a47203ac35440b7d87c17458fd15ac4f6df1501b01b771",
+}
+
+
+def accepted_static_assert(runs, metrics, expected, extracted, commands, root, build):
+    """Recognize one reviewed extractor limitation, never a general error budget."""
+    if (runs[0]["tool"]["driver"].get("semanticVersion") != "2.27.3" or
+            type(metrics.get("compiler errors")) is not int or
+            type(metrics.get("syntax errors")) is not int or
+            metrics.get("compiler errors") != 1 or metrics.get("syntax errors") != 0 or
+            type(metrics.get("compilations")) is not int or
+            metrics["compilations"] <= 1 or
+            metrics.get("compilations without errors") != metrics["compilations"] - 1 or
+            STATIC_ASSERT_SOURCE not in expected & extracted):
+        return None
+    for path, digest in STATIC_ASSERT_BINDINGS.items():
+        candidate = root / path
+        if not candidate.is_file() or hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+            return None
+    notes = [note for invocation in runs[0]["invocations"]
+             for note in invocation.get("toolExecutionNotifications", [])]
+    warnings = [note for note in notes if note.get("descriptor", {}).get("id") ==
+                "cpp/diagnostics/extraction-warnings"]
+    if len(warnings) != 1:
+        return None
+    locations = warnings[0].get("locations", [])
+    if len(locations) != 1:
+        return None
+    physical = locations[0].get("physicalLocation", {})
+    if (relative_path(physical.get("artifactLocation", {}).get("uri", ""), root) != STATIC_ASSERT_SOURCE or
+            physical.get("region", {}).get("startLine") != 34):
+        return None
+    path = str(root / STATIC_ASSERT_SOURCE)
+    message = (f'Extraction failed in {path} with warning "{path}", line 34: error: static assertion failed\n'
+               '  static_assert(!ExposesRawSession<SessionLease> && !ExposesPhysicalSession<SessionLease>);\n'
+               '  ^\n\n')
+    if warnings[0].get("message", {}).get("text") != message:
+        return None
+    summaries = [note.get("properties", {}).get("attributes", {}) for note in notes
+                 if note.get("descriptor", {}).get("id") == "cpp/extractor/summary"]
+    if (len(summaries) != 1 or summaries[0].get("extractor-failures") != 1 or
+            summaries[0].get("extractor-successes") != metrics["compilations"] - 1):
+        return None
+    # A fresh actual GCC build precedes this check. Require its real unit object,
+    # not only a requested compiler command or a generic native-build exit code.
+    objects = []
+    for entry in commands:
+        source = Path(entry["file"])
+        if not source.is_absolute():
+            source = Path(entry["directory"]) / source
+        if relative_path(str(source), root) != STATIC_ASSERT_SOURCE:
+            continue
+        args = entry.get("arguments") or shlex.split(entry["command"])
+        if args[0] != "/usr/bin/g++" or "-c" not in args or "-o" not in args:
+            return None
+        index = args.index("-o") + 1
+        if index >= len(args):
+            return None
+        obj = Path(args[index])
+        if not obj.is_absolute():
+            obj = Path(entry["directory"]) / obj
+        if (relative_path(str(obj), build) is None or not obj.is_file() or
+                obj.stat().st_size == 0):
+            return None
+        objects.append(obj)
+    if len(objects) != 1:
+        return None
+    # Inspect bounded log heads/tails. A hard abort or another partial unit is
+    # rejected even if its source happened to acquire a presence diagnostic.
+    failures = []
+    logs = root / "codeql-evidence/codeql-log/extractor"
+    for log in logs.rglob("*.log"):
+        with log.open("rb") as stream:
+            head = stream.read(8192).decode("utf-8", "replace")
+            stream.seek(max(0, log.stat().st_size - 16384))
+            tail = stream.read().decode("utf-8", "replace")
+        for code in re.findall(r"Extractor exiting with code (\d+)", tail):
+            if int(code):
+                failures.append((head, int(code), log))
+    if (len(failures) != 1 or failures[0][1] != 3 or
+            path not in failures[0][0]):
+        return None
+    return {"source": STATIC_ASSERT_SOURCE, "line": 34, "codeql_version": "2.27.3",
+            "reason": "Reviewed private-member requires-expression static assertion; actual GCC assertion compiled",
+            "source_sha256": dict(STATIC_ASSERT_BINDINGS),
+            "object_sha256": hashlib.sha256(objects[0].read_bytes()).hexdigest(),
+            "extractor_log": failures[0][2].relative_to(root).as_posix(),
+            "limit": "One partial test TU; source presence is not proof of every function body's extraction"}
 
 
 def relative_path(value, root):
@@ -155,10 +249,15 @@ def validate(profile, runs, tracked, root, build, exceptions):
         for name in ("compilations", "compilations without errors", "compiler errors", "syntax errors"):
             if not isinstance(metrics.get(name), (int, float)):
                 errors.append("Missing independent extraction metric: " + name)
-        if metrics.get("compiler errors") != 0 or metrics.get("syntax errors") != 0:
+        limitation = accepted_static_assert(runs, metrics, expected, extracted, commands, root, build)
+        accepted_errors = 1 if limitation else 0
+        if limitation:
+            result["accepted_extractor_limitations"] = [limitation]
+        if metrics.get("compiler errors") != accepted_errors or metrics.get("syntax errors") != 0:
             errors.append("Actual-build extraction contains compiler/syntax errors")
-        if (not metrics.get("compilations") or
-                metrics.get("compilations without errors") != metrics.get("compilations")):
+        if (not isinstance(metrics.get("compilations"), (int, float)) or
+                metrics["compilations"] <= 0 or
+                metrics.get("compilations without errors") != metrics.get("compilations") - accepted_errors):
             errors.append("Actual-build extraction has incomplete/error compilations")
         if metrics.get("compilations", 0) < len(expected):
             errors.append("Fewer extracted compilations than owned source units")
@@ -232,6 +331,9 @@ def main():
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     for error in report.get("errors", []):
         print(error)
+    for limitation in report.get("accepted_extractor_limitations", []):
+        print("Accepted extractor limitation: " + limitation["source"] + ":" +
+              str(limitation["line"]) + "; " + limitation["limit"])
     if not report["passed"]:
         raise SystemExit(1)
     found = len(set(report["expected"]) & set(report["extracted"]))

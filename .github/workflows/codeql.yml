@@ -70,18 +70,6 @@ jobs:
         if: matrix.profile == 'cpp-source'
         run: echo 'CODEQL_EXTRACTOR_CPP_OPTION_FRONTEND_OPTIONS=--c++20' >> "$GITHUB_ENV"
 
-      - name: Initialize CodeQL
-        id: init
-        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
-        with:
-          tools: linked
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-          config-file: ./.github/codeql/config.yml
-          threads: 2
-          ram: 4096
-          dependency-caching: false
-
       - name: Configure the actual REDSHIFT C++20 profile
         if: matrix.profile == 'cpp-redshift'
         run: |
@@ -102,6 +90,18 @@ jobs:
             -DODBCPP_NATIVE_PROVISIONED_AUTH_TESTS=OFF \
             2>&1 | tee codeql-evidence/configure.log
 
+      - name: Initialize CodeQL
+        id: init
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          tools: linked
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/config.yml
+          threads: 2
+          ram: 4096
+          dependency-caching: false
+
       - name: Compile product, SDK header units and existing test sources without running tests
         if: matrix.profile == 'cpp-redshift'
         run: |
@@ -118,17 +118,6 @@ jobs:
           upload: never
           upload-database: false
 
-      - name: Independently verify actual extraction and retain its boundaries
-        run: >-
-          python3 -B .github/codeql/coverage.py
-          --profile '${{ matrix.profile }}'
-
-      - name: Publish only the verified SARIF
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
-        with:
-          sarif_file: codeql-results
-          category: /language:${{ matrix.language }}/profile:${{ matrix.profile }}
-
       - name: Retain compiled-language extractor logs and diagnostics even after failure
         if: always() && (matrix.language == 'c-cpp' || matrix.language == 'csharp')
         env:
@@ -141,6 +130,17 @@ jobs:
               cp -R "$source" "codeql-evidence/codeql-$kind"
             fi
           done
+
+      - name: Independently verify actual extraction and retain its boundaries
+        run: >-
+          python3 -B .github/codeql/coverage.py
+          --profile '${{ matrix.profile }}'
+
+      - name: Publish only the verified SARIF
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          sarif_file: codeql-results
+          category: /language:${{ matrix.language }}/profile:${{ matrix.profile }}
 
       - name: Preserve raw SARIF and extraction evidence, including failures
         if: always()
