@@ -131,6 +131,21 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
   - **`WideDiagnosticsCarryServerUnicodeErrorText`, both managers:** the complete read showed that the manager's wide text is the UTF-8 bytes widened one by one (R3, corrected).
   - **`WideZeroCapacityAndDescriptorUnicodeColumnNames`, iODBC:** narrow name lengths are counted in characters (R17).
 
+## Fifth run `dm-live-macos-4010fe8-a`: all pass
+
+- **Source and time:** source `4010fe8`, CI green (runs 40240011211 and 40240011242); 1,108 s.
+- **Result:** **1,495 of 1,495 passed.** No case was skipped. Cleanup completed with nothing left over, and the cluster was paused and verified.
+
+| build | pass | fail |
+|---|---|---|
+| direct (in-process) | 524 | 0 |
+| iODBC 3.52.16 | 485 | 0 |
+| unixODBC 2.3.14 | 486 | 0 |
+
+- **Early stops:** 36 manager cases asserted a recorded deviation and then ended, because the rest of the case was unreachable through that manager. Each records `dm_case_stopped_by` in its XML. By bucket: D 11, L 9, O 5, B 2, G 1, R3 2, R4 2, R9 1, R10 1, R15 1, R16 1.
+- **Not run:** 104 boundary instances stay unrun and are recorded in the inventory's `applicability.json`.
+- **Evidence:** private, at `~/.local/state/odbcpp/redshift-pilot/dm-live-macos-4010fe8-a/`.
+
 ## Live deviations R1–R17
 
 All were measured on the loopback PostgreSQL fixture unless marked live.
@@ -159,8 +174,12 @@ All were measured on the loopback PostgreSQL fixture unless marked live.
 
 Bucket L also applies in more places: ANSI statement text with UTF-8 identifiers or values. Where that text is incidental to the case, the fixture sends it through the wide API instead (`exec_utf8`, `utf8_direct`). Where ANSI input is the point of the case, the case asserts the widened result and stops.
 
-## Next run
+## State at handoff
 
-The same three builds after these fixes, with the same 1,495 cases:
-- **Expected to fail:** the HYT00 cases, if the slowness repeats.
-- **To diagnose:** the repeated `SQLFetch` on empty catalog results through iODBC.
+- **macOS:** all three builds pass the complete applicable inventory live (fifth run).
+- **Repeated iODBC catalog fetch:** diagnosed as R12.
+- **HYT00:** passed in the fourth and fifth runs. It depends on the link's throughput.
+- **Still open:**
+  - P1, a product question;
+  - Windows verification: see [driver-manager-windows-handoff.md](driver-manager-windows-handoff.md);
+  - Redshift `dm_*` through the Windows manager, which `windows_live_backend.py` doesn't support yet.

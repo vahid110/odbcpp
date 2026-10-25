@@ -9,13 +9,16 @@ The rules in AGENTS.md and DEVELOPMENT_WORKFLOW.md apply unchanged:
 
 ## Source
 
-- **Head:** use the head of `codex/dm-test-layer` named in the PR's latest handoff section. That is the exact commit this file was last updated with. Merge `origin/main` in first if `main` has moved.
+- **Head:** the current head of `codex/dm-test-layer`. Merge `origin/main` in first if `main` has moved.
+  - **Code:** the test code was last qualified on the Mac at `4010fe8`. Later commits change documentation only.
+  - **macOS result at `4010fe8`:** the fifth live run (`dm-live-macos-4010fe8-a`) passed **1,495 of 1,495** across direct, iODBC and unixODBC, with no skips and complete cleanup. See [driver-manager-live-macos.md](driver-manager-live-macos.md#fifth-run-dm-live-macos-4010fe8-a-all-pass).
 - **What changed for Windows:** C++ test code, one test header, and the POSIX live-profile tooling. No product (driver) code changed on this branch, apart from merges from `main`. The changed test files:
   - `tests/test_dm_expectations.h`: the expectation table for manager deviations. It has entries for iODBC 3.52.16 (`03.52.1623.0502`) and unixODBC 2.3.14 (`03.52.0002.0003`) only. On a manager with no entry, every case expects exactly the direct driver's behaviour.
   - `tests/integration/it_redshift_real.cpp`:
     - fixture forwards for `SQLGetDiagRec`, `SQLConnect`, `SQLDriverConnect` and `SQLDriverConnectW` (`diag_rec`, `note_connect`);
     - `connection_text()`;
-    - the expectations for the live buckets R1–R11.
+    - `exec_utf8`, `refetch_after_no_data` and other fixture helpers;
+    - the expectations for the live buckets R1–R17.
   - `tests/integration/it_metadata_real.cpp`, `tests/test_connection_config.h`, and the other `tests/integration/it_*` suites built as `dm_*`.
 - **Not compiled by the PR's Windows CI:** that job builds `TARGET_DATABASE=POSTGRESQL` only. `it_redshift_real` and `dm_it_redshift_real` exist only in Redshift builds, so **they have not been compiled with MSVC yet**.
 
@@ -42,8 +45,8 @@ The rules in AGENTS.md and DEVELOPMENT_WORKFLOW.md apply unchanged:
 | item | where | state |
 |---|---|---|
 | P1 | static-cursor `SQL_ATTR_ROW_NUMBER` off a row | Driver unchanged (returns 0); unixODBC refuses with 24000 (R11). Whether static cursors should raise 24000 is a product question outside this branch. |
-| HYT00 | `RedshiftMaterializedEnvelopeRealTest` 1,000-row / 8 KiB cases | Timed out in the second macOS run when the whole run was twice as slow. Classified as execution environment unless it repeats. |
-| iODBC catalog double fetch | `SQLFetch` after `SQL_NO_DATA` on empty Redshift catalog results through iODBC | Doesn't reproduce on PostgreSQL; the assertions now print the diagnostic. macOS/iODBC only. |
+| HYT00 | `RedshiftMaterializedEnvelopeRealTest` ~4 MB materialization in a 5 s statement budget | Timed out in the second and third macOS runs on a slow link and passed in the fourth and fifth. Depends on throughput, not code. Watch for it on Windows. |
+| R12 | `SQLFetch` after `SQL_NO_DATA` on Redshift catalog results through iODBC | iODBC raises HY010 itself. Recorded and asserted; macOS/iODBC only. |
 | B1 | shared timeout fixture through a manager | Unrun boundary: its verified-TLS check needs the driver's own DSN parser. |
 
 ## Evidence on the Mac (private)
