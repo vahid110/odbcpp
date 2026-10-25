@@ -1452,7 +1452,7 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
             0, 0, &input, 0, nullptr));
         row_count = 93;
         EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-        EXPECT_EQ(93, row_count);
+        EXPECT_EQ(untouched_row_count(93), row_count);
         EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, hstmt));
         column_count = -1;
         ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count))
@@ -2281,6 +2281,9 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         const char* name;
         SQLSMALLINT data_type;
         SQLINTEGER column_size;
+        // SUPER and the EWKB spatial types have no literal syntax and no
+        // create parameters (core/database/postgres/pg_type_catalog.cpp).
+        bool object_type = false;
     };
     constexpr std::array<ExpectedType, 18> postgres_types{{
         {"boolean", SQL_BIT, 1},
@@ -2305,9 +2308,14 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
 
     // Redshift DDL advertisements are separate from PostgreSQL limits and from
     // actual result dimensions; no PostgreSQL server_version_num query is used.
-    constexpr std::array<ExpectedType, 17> redshift_types{{
+    // Rows are ordered by DATA_TYPE; SUPER (ab4a2a7) and GEOMETRY/GEOGRAPHY
+    // (0dfa6c2) follow varbyte with their documented object limits.
+    constexpr std::array<ExpectedType, 20> redshift_types{{
         {"boolean", SQL_BIT, 1}, {"bigint", SQL_BIGINT, 19},
         {"varbyte", SQL_LONGVARBINARY, 16777216},
+        {"geometry", SQL_LONGVARBINARY, 1048447, true},
+        {"geography", SQL_LONGVARBINARY, 1048447, true},
+        {"super", SQL_LONGVARCHAR, 16777216, true},
         {"char", SQL_CHAR, 4096}, {"numeric", SQL_NUMERIC, 38},
         {"decimal", SQL_DECIMAL, 38}, {"integer", SQL_INTEGER, 10},
         {"smallint", SQL_SMALLINT, 5}, {"real", SQL_REAL, 7},
@@ -2344,10 +2352,12 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         const auto type = expected_types[index].data_type;
         const bool character_type = type == SQL_CHAR ||
             type == SQL_VARCHAR || type == SQL_LONGVARCHAR;
-        const bool quoted_type = character_type || type == SQL_VARBINARY ||
+        const bool object_type = expected_types[index].object_type;
+        const bool quoted_type = !object_type && (character_type ||
+            type == SQL_VARBINARY ||
             type == SQL_DATE || type == SQL_TIME || type == SQL_TIMESTAMP ||
             type == SQL_TYPE_DATE || type == SQL_TYPE_TIME ||
-            type == SQL_TYPE_TIMESTAMP;
+            type == SQL_TYPE_TIMESTAMP);
         const bool numeric_type = type == SQL_BIGINT || type == SQL_NUMERIC ||
             type == SQL_DECIMAL || type == SQL_INTEGER ||
             type == SQL_SMALLINT || type == SQL_REAL || type == SQL_DOUBLE;
@@ -2366,7 +2376,8 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
                   text_cell(hstmt, 4));
         EXPECT_EQ(quoted_type ? std::optional<std::string>("'") : std::nullopt,
                   text_cell(hstmt, 5));
-        if (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARBINARY) {
+        if (!object_type &&
+            (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARBINARY)) {
             EXPECT_EQ(std::optional<std::string>("length"), text_cell(hstmt, 6));
         } else if (type == SQL_NUMERIC || type == SQL_DECIMAL) {
             EXPECT_EQ(std::optional<std::string>("precision,scale"),
@@ -5601,8 +5612,8 @@ TEST_F(MetadataIntegrationTest, MissingSchemaUsesOdbcSqlstate) {
         EXPECT_EQ(7, integer_cell(hstmt, 1));
         EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
         EXPECT_EQ("3F000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        close_cursor_after_failed_more_results();
     }
-    close_cursor_after_failed_more_results();
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 1 AS recovered", SQL_NTS));

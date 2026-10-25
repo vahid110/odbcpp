@@ -56,12 +56,13 @@ class DriverManagerProfileTests(unittest.TestCase):
         self.assertNotIn('DRIVER=', direct)
         for manager in ('iODBC', 'unixODBC'):
             value = factory.build_profile_connection(self.config, self.profile('CORE_ENV', manager))
-            self.assertEqual(value, 'DRIVER={' + str(self.driver) + '};' + direct)
+            # Bare: iODBC 3.52.16 would dlopen a braced value with its braces.
+            self.assertEqual(value, 'DRIVER=' + str(self.driver) + ';' + direct)
             # The invalid-password variant reaches the same driver.
             profile = self.profile('CORE_ENV', manager)
             profile['private_input']['password_rejection'] = True
             invalid = factory.build_profile_connection(self.config, profile, password_rejection=True)
-            self.assertTrue(invalid.startswith('DRIVER={' + str(self.driver) + '};'))
+            self.assertTrue(invalid.startswith('DRIVER=' + str(self.driver) + ';'))
             self.assertNotIn('PWD={invented-test}', invalid)
 
     def test_manager_profiles_refuse_mismatched_width_kind_and_unpinned_driver(self):
@@ -73,7 +74,9 @@ class DriverManagerProfileTests(unittest.TestCase):
         package['private_input']['kind'] = 'OWN_DM_FILE'
         unpinned = self.profile('CORE_ENV', 'iODBC')
         unpinned['private_input']['driver']['sha256'] = 'not-a-digest'
-        for profile in cases + [package, unpinned]:
+        quoted = self.profile('CORE_ENV', 'iODBC')
+        quoted['private_input']['driver']['path'] = str(self.root / 'a;b' / 'libodbcpp.dylib')
+        for profile in cases + [package, unpinned, quoted]:
             with self.assertRaises(factory.FactoryRefused):
                 factory.validate_profile(profile)
         # A plain CORE_ENV profile still has no driver of its own.

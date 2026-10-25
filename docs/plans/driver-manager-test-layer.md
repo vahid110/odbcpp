@@ -58,8 +58,9 @@
 
 ### Phase 1: live and integration suites through a manager
 - **Run the existing live/integration suites through a manager:** `it_redshift_real`, the PostgreSQL `it_*` suites and the like.
-  - Change only the connection setup: allocate through the manager, connect with a `DRIVER={...}` string.
+  - Change only the connection setup: allocate through the manager, connect with a `DRIVER=<path>` string. Keep the path bare: iODBC 3.52.16 passes a braced value to `dlopen` with its braces.
   - Keep the direct run as the diagnostic baseline.
+  - Live Redshift results on macOS: [driver-manager-live-macos.md](driver-manager-live-macos.md).
 - **Registration:**
   - private ini files on Unix (iODBC `ODBCINSTINI`/`ODBCINI`; unixODBC `ODBCSYSINI`);
   - on Windows, a per-user DSN naming the PR-built DLL without admin rights, or HKLM in CI.

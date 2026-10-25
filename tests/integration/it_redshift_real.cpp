@@ -38,6 +38,33 @@ using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;
 using odbcpp::test::live_package_inputs::fixture_smallint_length;
 namespace warm_up = odbcpp::test::redshift_warm_up;
+// Fixture connection-string text from parsed fields: each value braced with
+// '}' doubled. A manager that passes a braced DRIVER value to dlopen
+// unchanged (BracedDriverValueLoadedVerbatim) gets the driver path bare.
+template <class Fields>
+std::string connection_text(const Fields& fields) {
+  const bool bare_driver = odbcpp::test::dm::deviates(
+      odbcpp::test::dm::Deviation::BracedDriverValueLoadedVerbatim);
+  std::string text;
+  for (const auto& [key, value] : fields) {
+    text += key;
+    if (bare_driver && key == "DRIVER") {
+      text += "=";
+      text += value;
+      text += ";";
+      continue;
+    }
+    text += "={";
+    for (const char ch : value) {
+      text.push_back(ch);
+      if (ch == '}') {
+        text.push_back('}');
+      }
+    }
+    text += "};";
+  }
+  return text;
+}
 // A whole-second ODBC timeout must never round an expired/subsecond budget
 // up into a fresh operation. This is fixture admission, not a driver timeout.
 constexpr std::uintptr_t checkpoint_timeout_seconds(std::chrono::milliseconds remaining) {
@@ -1494,7 +1521,11 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
       nullptr, 0, &units));
   const auto required = static_cast<SQLSMALLINT>(expected_units->size());
-  EXPECT_EQ(required, units);
+  // A manager reports the record's UTF-8 byte count as its wide length
+  // (WideDiagLengthInUtf8Bytes); the text it copies is still complete.
+  const auto reported = odbcpp::test::dm::value(
+      odbcpp::test::dm::Deviation::WideDiagLengthInUtf8Bytes, required, narrow_bytes);
+  EXPECT_EQ(reported, units);
   const SQLWCHAR expected_state[]{'4', '2', 'S', '0', '2', 0};
   EXPECT_EQ(0, std::memcmp(state, expected_state, sizeof(expected_state)));
 
@@ -1502,7 +1533,7 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
   units = -1;
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
       wide.data(), static_cast<SQLSMALLINT>(required + 1), &units));
-  EXPECT_EQ(required, units);
+  EXPECT_EQ(reported, units);
   EXPECT_TRUE(std::equal(expected_units->begin(), expected_units->end(), wide.begin()));
   EXPECT_EQ(SQLWCHAR{0}, wide[static_cast<std::size_t>(required)]);
   EXPECT_EQ(SQLWCHAR{0x5a}, wide[static_cast<std::size_t>(required) + 1]);
@@ -1559,7 +1590,23 @@ TEST_F(RedshiftRealTest, LegacySqlErrorWDrainsServerErrorThenNoData) {
   SQLWCHAR state[6]{};
   SQLINTEGER native = -1;
   SQLSMALLINT units = -1;
-  EXPECT_EQ(SQL_ERROR, SQLErrorW(nullptr, nullptr, hstmt_, state, &native, nullptr, -1, &units));
+  const auto refused = SQLErrorW(nullptr, nullptr, hstmt_, state, &native, nullptr, -1, &units);
+  if (odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::LegacyErrorNullBufferConsumesRecord)) {
+    // The manager maps SQLErrorW onto its own record cursor and moves past
+    // the record on this call, so the rest of the case cannot be reached.
+    EXPECT_EQ(std::atoi(odbcpp::test::dm::text(
+                  odbcpp::test::dm::Deviation::LegacyErrorNullBufferConsumesRecord, "")),
+              refused);
+    std::array<SQLWCHAR, 512> drained{};
+    EXPECT_EQ(SQL_NO_DATA, SQLErrorW(nullptr, nullptr, hstmt_, state, &native, drained.data(),
+        static_cast<SQLSMALLINT>(drained.size()), &units));
+    if (odbcpp::test::dm::stops_case(
+            odbcpp::test::dm::Deviation::LegacyErrorNullBufferConsumesRecord)) {
+      return;
+    }
+  }
+  EXPECT_EQ(SQL_ERROR, refused);
   std::array<SQLWCHAR, 512> message;
   message.fill(SQLWCHAR{0x5a});
   ASSERT_EQ(SQL_SUCCESS, SQLErrorW(nullptr, nullptr, hstmt_, state, &native, message.data(),
@@ -1747,7 +1794,11 @@ TEST_F(RedshiftRealTest, NegativeTests) {
   SQLCHAR sqlstate[6], message[256];
   ret = SQLGetDiagRec(SQL_HANDLE_DBC, bad_conn, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
   EXPECT_EQ(SQL_SUCCESS, ret);
-  EXPECT_STREQ("08001", (char*)sqlstate);
+  // A manager reads ServerName as a data source name and refuses this one
+  // itself (ServerNameIsDataSourceName); the driver tries to connect.
+  EXPECT_STREQ(odbcpp::test::dm::text(
+                   odbcpp::test::dm::Deviation::ServerNameIsDataSourceName, "08001"),
+               (char*)sqlstate);
   
   SQLFreeHandle(SQL_HANDLE_DBC, bad_conn);
   
@@ -8006,6 +8057,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
   struct IntCell { std::array<unsigned char,8> before;SQLINTEGER value;std::array<unsigned char,8> after; } output_{};
   SQLLEN output_length_{97};
   SQLINTEGER sibling_snapshot_{-1};
+  std::optional<SQLUINTEGER> application_login_timeout_;
   static std::string typed_sql(){return "SELECT CAST(? AS INTEGER)";}
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_LOGIN_TIMEOUT_ADMISSION",
@@ -8038,23 +8090,50 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     // keyword tests must not accidentally exercise that overriding application value.
     ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_DBC,henv_,&hdbc_));
+    application_login_timeout_.reset();
     ASSERT_NO_FATAL_FAILURE(readback(30));
+  }
+  // Fixture forwards record the login timeout the application set on the
+  // unconnected handle: that is the value a manager answers with itself.
+  SQLRETURN SQLSetConnectAttr(SQLHDBC connection,SQLINTEGER attribute,SQLPOINTER value,SQLINTEGER length){
+    return note_login_timeout(connection,attribute,value,::SQLSetConnectAttr(connection,attribute,value,length));
+  }
+  SQLRETURN SQLSetConnectAttrW(SQLHDBC connection,SQLINTEGER attribute,SQLPOINTER value,SQLINTEGER length){
+    return note_login_timeout(connection,attribute,value,::SQLSetConnectAttrW(connection,attribute,value,length));
+  }
+  SQLRETURN note_login_timeout(SQLHDBC connection,SQLINTEGER attribute,SQLPOINTER value,SQLRETURN result){
+    if(connection==hdbc_&&attribute==SQL_ATTR_LOGIN_TIMEOUT&&result==SQL_SUCCESS&&!connected_){
+      application_login_timeout_=static_cast<SQLUINTEGER>(reinterpret_cast<std::uintptr_t>(value));
+    }
+    return result;
   }
   std::string keyword_input(const char* key,const char* value){
     auto options=odbcpp::test::connection_string::parse(connection_string_);
     options.erase("LOGINTIMEOUT");options.erase("LT");options[key]=value;
-    std::string result;
-    for(const auto& [name,text]:options){
-      result+=name;result+="={";
-      for(const auto ch:text){result.push_back(ch);if(ch=='}'){result.push_back('}');}}
-      result+="};";
-    }
+    std::string result=connection_text(options);
     // Test-side serialization preserves all endpoint/principal/TLS values and
     // first-key policy. Never print the input or credentials in a failure.
     EXPECT_TRUE(options==odbcpp::test::connection_string::parse(result))<<"Login input preservation failed";
     return result;
   }
   void readback(SQLUINTEGER expected){
+    using odbcpp::test::dm::Deviation;
+    if(!connected_&&odbcpp::test::dm::deviates(Deviation::ManagerAnswersLoginTimeoutBeforeConnect)){
+      // An unconnected handle is the manager's: a value the driver took from
+      // a connection-string keyword is gone, and the manager reports the
+      // application's value or its own default.
+      expected=application_login_timeout_.value_or(static_cast<SQLUINTEGER>(std::strtoul(
+          odbcpp::test::dm::text(Deviation::ManagerAnswersLoginTimeoutBeforeConnect,""),nullptr,10)));
+    }
+    if(!connected_&&odbcpp::test::dm::deviates(Deviation::LoginTimeoutWritesEightBytes)){
+      // The manager writes a SQLULEN and reports length 0 (bucket J); the
+      // declared 4 bytes are the value.
+      alignas(SQLULEN) unsigned char storage[2*sizeof(SQLULEN)];std::memset(storage,0xab,sizeof(storage));SQLINTEGER bytes=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,storage,sizeof(SQLUINTEGER),&bytes));
+      SQLUINTEGER value=0;std::memcpy(&value,storage,sizeof(value));
+      EXPECT_EQ(expected,value);EXPECT_EQ(0xab,storage[sizeof(SQLULEN)]);EXPECT_EQ(0,bytes);
+      return;
+    }
     struct {SQLUINTEGER value;SQLUINTEGER guard;} captured{97,0x12345678u};SQLINTEGER bytes=-1;
     ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,&captured.value,sizeof(captured.value),&bytes));
     EXPECT_EQ(expected,captured.value);EXPECT_EQ(0x12345678u,captured.guard);EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(captured.value)),bytes);
@@ -8489,12 +8568,7 @@ class RedshiftQueryTimeoutDefaultRealTest : public RedshiftLoginTimeoutOptionsRe
     options.erase("QUERYTIMEOUT"); options.erase("QT");
     options.erase("LOGINTIMEOUT"); options.erase("LT");
     options[key] = value; options["LOGINTIMEOUT"] = "5";
-    std::string text;
-    for (const auto& [name, item] : options) {
-      text += name; text += "={";
-      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
-      text += "};";
-    }
+    std::string text = connection_text(options);
     EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text))
         << "QueryTimeout login input preservation failed";
     return text;
@@ -8591,12 +8665,7 @@ class RedshiftKeepaliveOptionsRealTest : public RedshiftLoginTimeoutOptionsRealT
     options["KEEPALIVEIDLE"] = "7"; options["KEEPALIVEINTERVAL"] = "3";
     options["KEEPALIVECOUNT"] = invalid ? "-1" : "4";
     options["LOGINTIMEOUT"] = "5";
-    std::string text;
-    for (const auto& [key, value] : options) {
-      text += key; text += "={";
-      for (char ch : value) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
-      text += "};";
-    }
+    std::string text = connection_text(options);
     EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text))
         << "Keepalive login input preservation failed";
     return text;
@@ -8686,12 +8755,7 @@ class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
     options["MAXVARCHARSIZE"] = disabled ? "0" : "8";
     options["MAXLONGVARCHARSIZE"] = invalid ? "65536" : disabled ? "0" : "17";
     options["LOGINTIMEOUT"] = "5";
-    std::string text;
-    for (const auto& [key, item] : options) {
-      text += key; text += "={";
-      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
-      text += "};";
-    }
+    std::string text = connection_text(options);
     EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Sizing input preservation failed";
     return text;
   }
@@ -8811,12 +8875,7 @@ class RedshiftBooleanCharacterRealTest : public RedshiftKeepaliveOptionsRealTest
     options["BOOLSASCHAR"] = invalid ? "invalid-secret" : enabled ? "TRUE" : "FALSE";
     options["MAXVARCHARSIZE"] = "1"; options["MAXLONGVARCHARSIZE"] = "17";
     options["LOGINTIMEOUT"] = "5";
-    std::string text;
-    for (const auto& [key, item] : options) {
-      text += key; text += "={";
-      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
-      text += "};";
-    }
+    std::string text = connection_text(options);
     EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Boolean input preservation failed";
     return text;
   }
@@ -8942,12 +9001,7 @@ class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
     options["ENABLETABLETYPES"] = invalid ? "invalid-secret" : enabled ? "TRUE" : "FALSE";
     options["REDSHIFTCATALOGMODE"] = "LEGACY";
     options["LOGINTIMEOUT"] = "5";
-    std::string text;
-    for (const auto& [key, item] : options) {
-      text += key; text += "={";
-      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
-      text += "};";
-    }
+    std::string text = connection_text(options);
     EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Table types input preservation failed";
     return text;
   }
@@ -9140,12 +9194,7 @@ class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
     for (const char* key : {"DATABASEMETADATACURRENTDBONLY", "REDSHIFTCATALOGMODE", "LT", "LOGINTIMEOUT"}) options.erase(key);
     if (value) options["DATABASEMETADATACURRENTDBONLY"] = value;
     options["REDSHIFTCATALOGMODE"] = mode; options["LOGINTIMEOUT"] = "5";
-    std::string text;
-    for (const auto& [key, item] : options) {
-      text += key; text += "={";
-      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
-      text += "};";
-    }
+    std::string text = connection_text(options);
     EXPECT_TRUE(options == odbcpp::test::connection_string::parse(text)) << "Metadata scope input preservation failed";
     return text;
   }

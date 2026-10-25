@@ -5,7 +5,8 @@
 // default is "same as direct": a profile without an entry must behave exactly
 // like the in-process driver, so a manager that changes behaviour fails the
 // test and the table is updated with evidence. Evidence for each entry is in
-// docs/plans/driver-manager-phase1-wave1.md.
+// docs/plans/driver-manager-phase1-wave1.md, and for the live buckets (R*) in
+// docs/plans/driver-manager-live-macos.md.
 //
 // Direct builds compile none of this: diag_rec is ::SQLGetDiagRec itself.
 #ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
@@ -61,6 +62,11 @@ enum class Deviation {
   SpecialColumnsNullableDropped,
   ColumnCountNullOutputAccepted,
   ReconnectAfterInternalCloseRefused,
+  ManagerAnswersLoginTimeoutBeforeConnect,
+  ServerNameIsDataSourceName,
+  WideDiagLengthInUtf8Bytes,
+  LegacyErrorNullBufferConsumesRecord,
+  BracedDriverValueLoadedVerbatim,
 };
 
 }  // namespace dm
@@ -149,6 +155,20 @@ inline constexpr Entry kEntries[] = {
     {Deviation::ColumnCountNullOutputAccepted, kIodbc35216, nullptr, "bucket S"},
     {Deviation::ReconnectAfterInternalCloseRefused, kIodbc35216, nullptr, "bucket Y"},
     {Deviation::ReconnectAfterInternalCloseRefused, kUnixodbc2314, nullptr, "bucket Y"},
+    // Live Redshift buckets (docs/plans/driver-manager-live-macos.md).
+    // value: the manager's own default while no application value is set.
+    {Deviation::ManagerAnswersLoginTimeoutBeforeConnect, kIodbc35216, "0", "live bucket R1"},
+    {Deviation::ManagerAnswersLoginTimeoutBeforeConnect, kUnixodbc2314, "15", "live bucket R1"},
+    // value: the SQLSTATE the manager raises for a connection string passed
+    // as SQLConnect ServerName.
+    {Deviation::ServerNameIsDataSourceName, kIodbc35216, "IM002", "live bucket R2"},
+    {Deviation::ServerNameIsDataSourceName, kUnixodbc2314, "HY090", "live bucket R2"},
+    {Deviation::WideDiagLengthInUtf8Bytes, kIodbc35216, nullptr, "live bucket R3"},
+    {Deviation::WideDiagLengthInUtf8Bytes, kUnixodbc2314, nullptr, "live bucket R3"},
+    // value: what the manager returns for the NULL-buffer, negative-length call.
+    {Deviation::LegacyErrorNullBufferConsumesRecord, kIodbc35216, "-1", "live bucket R4"},
+    {Deviation::LegacyErrorNullBufferConsumesRecord, kUnixodbc2314, "0", "live bucket R4"},
+    {Deviation::BracedDriverValueLoadedVerbatim, kIodbc35216, nullptr, "live bucket R5"},
 };
 
 inline const Entry* entry(Deviation deviation) {

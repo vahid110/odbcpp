@@ -99,6 +99,9 @@ def validate_profile(profile):
         need(kind in ('CORE_ENV', 'OWN_DSN') and manager in ('iODBC', 'unixODBC'), 'driver_manager_profile')
         need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'} and driver['kind'] == 'OWN' and (driver['wchar_bytes'] == (4 if manager == 'iODBC' else 2)), 'driver_manager_driver')
         _pin({'path': driver['path'], 'sha256': driver['sha256']})
+        # iODBC 3.52.16 passes a braced DRIVER value to dlopen unchanged, so
+        # the path is emitted bare and must not need quoting.
+        need(not any((ch in driver['path'] for ch in ';{}=')) and driver['path'] == driver['path'].strip(), 'driver_manager_bare_path')
     elif kind == 'CORE_ENV':
         need(driver is None, 'CORE_has_no_DM_driver')
     else:
@@ -149,7 +152,7 @@ def build_profile_connection(config, profile, *, password_rejection=False):
         adapted['test_password'] = values['PWD']
         connection = build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
         if profile.get('driver_manager') is not None:
-            connection = 'DRIVER=' + field(profile['private_input']['driver']['path']) + ';' + connection
+            connection = 'DRIVER=' + profile['private_input']['driver']['path'] + ';' + connection
         return connection
     text = ''.join((k + '=' + field(v) + ';' for k, v in values.items()))
     maximum = 4096 if profile['private_input']['kind'] in ('OWN_DM_FILE', 'VENDOR_DM_FILE') else 16384
