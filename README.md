@@ -1,6 +1,16 @@
 # ODBCPP - Multi-Database ODBC Driver Framework
 
+[![CodeQL](https://github.com/vahid110/odbcpp/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/vahid110/odbcpp/actions/workflows/codeql.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15911/badge)](https://www.bestpractices.dev/projects/15911)
+
+The badges report main-branch scan status and documented project practices.
+The Best Practices record is in progress; neither badge is a security certification.
+
 A modern C++20 framework for building database-specific ODBC drivers with pluggable protocol support.
+
+Licensed under the [MIT License](LICENSE). See [Contributing](CONTRIBUTING.md)
+for changes and bug reports, and [Security](SECURITY.md) for private vulnerability
+reports. Third-party components retain their own licenses.
 
 ## Features
 
@@ -62,177 +72,38 @@ for attribute, state, diagnostic, negative-test, and maintainability gaps.
 
 | Database | Status | Protocol |
 |----------|--------|----------|
-| **Redshift** | Compatibility target; validation follows PostgreSQL beta | PostgreSQL Wire Protocol |
-| **PostgreSQL** | Primary target; integration validated | PostgreSQL Wire Protocol |
+| **Redshift** | Implemented backend; application/profile qualification continues | Redshift adaptation of PostgreSQL wire protocol |
+| **PostgreSQL** | Implemented backend; see per-profile test evidence | PostgreSQL Wire Protocol |
 | **MySQL** | 🚧 Planned | MySQL Protocol |
 | **SQL Server** | 🚧 Planned | TDS Protocol |
 
 ## Quick Start
 
-### Prerequisites
+Use [the build and installation guide](BUILD_SYSTEM.md) and the
+[platform command matrix](tools/development/COMMANDS.md). The supported product
+values are `REDSHIFT` and `POSTGRESQL`; select a driver-manager/Unicode profile
+that matches your application.
 
-- CMake 3.20+
-- C++20 compiler (GCC 10+, Clang 12+, MSVC 2019+)
-- OpenSSL 3.0+
-- unixODBC or iODBC (for system integration)
+For Linux/WSL with unixODBC, CMake 3.21+, Ninja, a C++20 compiler, Python 3.9+
+and OpenSSL 3 development files installed:
 
-### Build ODBC Driver
-
-```bash
-# Build database-specific driver (recommended)
-./build-database.sh redshift
-
-# Or build manually
-cmake -DTARGET_DATABASE=REDSHIFT -B build-redshift
-cmake --build build-redshift
+```sh
+cmake --preset unixodbc-redshift
+cmake --build --preset unixodbc-redshift
+ctest --preset unixodbc-redshift-offline --output-junit offline.xml
 ```
 
-### ODBC Configuration Setup
+The offline preset excludes integration tests. It does not prove a database
+connection or full live acceptance. The unfiltered preset runs the full configured
+inventory once the documented database fixtures are available; see
+[Testing](#testing).
 
-```bash
-# Setup test environment with local ODBC configuration
-source ./setup-test-env.sh
-
-# Verify configuration
-echo $ODBCINI    # Should point to ./odbc.ini
-echo $ODBCSYSINI # Should point to current directory
-```
-
-### Build for Specific Database
-
-```bash
-# Redshift ODBC driver
-./build-database.sh redshift
-
-# PostgreSQL ODBC driver  
-./build-database.sh postgresql
-
-# Minimal build (no examples/tests)
-./build-database.sh minimal
-
-# Debug build
-./build-database.sh redshift --debug
-```
-
-### Usage
-
-#### Standard ODBC (Recommended)
-```cpp
-#include <sql.h>
-#include <sqlext.h>
-
-int main() {
-    SQLHENV henv;
-    SQLHDBC hdbc;
-    SQLHSTMT hstmt;
-    
-    // Allocate handles
-    SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
-    SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
-    SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
-    
-    // Connect using DSN or connection string
-    SQLConnect(hdbc, 
-        (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS,
-        (SQLCHAR*)"username", SQL_NTS,
-        (SQLCHAR*)"password", SQL_NTS);
-    
-    // Execute query
-    SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
-    SQLExecDirect(hstmt, (SQLCHAR*)"SELECT version()", SQL_NTS);
-    
-    // Fetch results
-    char version[512];
-    while (SQLFetch(hstmt) == SQL_SUCCESS) {
-        SQLGetData(hstmt, 1, SQL_C_CHAR, version, sizeof(version), nullptr);
-        printf("Version: %s\n", version);
-    }
-    
-    // Cleanup
-    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-    SQLDisconnect(hdbc);
-    SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
-    SQLFreeHandle(SQL_HANDLE_ENV, henv);
-    
-    return 0;
-}
-```
-
-#### Column Binding (Advanced)
-```cpp
-#include <sql.h>
-#include <sqlext.h>
-
-int main() {
-    SQLHENV henv;
-    SQLHDBC hdbc;
-    SQLHSTMT hstmt;
-    
-    // Setup handles
-    SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
-    SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
-    SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
-    SQLConnect(hdbc, (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS, nullptr, 0, nullptr, 0);
-    SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
-    
-    // Execute query
-    SQLExecDirect(hstmt, (SQLCHAR*)"SELECT name, age, salary FROM employees", SQL_NTS);
-    
-    // Bind columns to variables
-    char name[256];
-    SQLINTEGER age;
-    SQLDOUBLE salary;
-    SQLLEN name_len, age_len, salary_len;
-    
-    SQLBindCol(hstmt, 1, SQL_C_CHAR, name, sizeof(name), &name_len);
-    SQLBindCol(hstmt, 2, SQL_C_SLONG, &age, 0, &age_len);
-    SQLBindCol(hstmt, 3, SQL_C_DOUBLE, &salary, 0, &salary_len);
-    
-    // Fetch automatically populates bound variables
-    while (SQLFetch(hstmt) == SQL_SUCCESS) {
-        printf("Employee: %s, Age: %d, Salary: %.2f\n", name, age, salary);
-    }
-    
-    // Cleanup
-    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-    SQLDisconnect(hdbc);
-    SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
-    SQLFreeHandle(SQL_HANDLE_ENV, henv);
-    
-    return 0;
-}
-```
-
-#### Direct Library Usage
-```cpp
-#include "core/database/database_factory.h"
-
-using namespace rs::core::database;
-
-int main() {
-    // Create connection for compiled database
-    auto conn = DatabaseFactory::create_connection();
-    
-    // Configure connection
-    ConnectionSettings settings;
-    settings.host = "your-redshift-cluster.amazonaws.com";
-    settings.port = 5439;
-    settings.user = "username";
-    settings.password = "password";
-    settings.database = "dev";
-    settings.use_ssl = true;
-    
-    // Connect and query
-    conn->connect(settings);
-    
-    auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
-    auto result = conn->execute_query("SELECT version()", deadline);
-    
-    std::cout << "Version: " << result.rows[0][0] << std::endl;
-    
-    return 0;
-}
-```
+Applications use the standard ODBC API through their driver manager. See the
+[application API guide](docs/application-api.md) for connection inputs, outputs,
+errors, capability discovery and supported-interface boundaries. `SQLConnect`
+takes a DSN name such as `RedshiftTest`, not a `DSN=...` connection string;
+use `SQLDriverConnect` for a connection string. Supply credentials through the
+application's protected login mechanism, not source files or command-line arguments.
 
 ## Build Options
 
@@ -393,57 +264,15 @@ the application's actual architecture and Unicode ABI before using the package;
 retain its verified TLS configuration and required runtime dependencies.
 The default full SDK installation remains available without `--component`.
 
-### Build Scripts
+### Build and example reference
 
-**build-database.sh** - Database-specific builds:
-```bash
-# Show all options
-./build-database.sh --help
-
-# Build specific database drivers
-./build-database.sh redshift     # Redshift-only driver
-./build-database.sh postgresql   # PostgreSQL-only driver
-./build-database.sh minimal      # Minimal Redshift (no examples/tests)
-
-# Build options
-./build-database.sh redshift --debug  # Debug build
-./build-database.sh redshift --clean  # Clean first
-```
-
-**setup-test-env.sh** - ODBC environment setup:
-```bash
-# Source to set environment variables
-source ./setup-test-env.sh
-
-# Or run to check configuration
-./setup-test-env.sh
-```
-
-### CMake Presets (Alternative)
-
-```bash
-# List available presets
-cmake --list-presets
-
-# Use preset
-cmake --preset redshift
-cmake --build --preset redshift
-```
-
-## Examples
-
-The `examples/` directory contains:
-
-- **query_example**: Basic connection and query execution
-- **pg_handshake_example**: Connection establishment and server parameters
-- **extended_query_example**: Prepared statements and transactions
-- **multi_database_example**: Shows database-specific build behavior
-
-Run examples:
-```bash
-# After building
-./build-redshift/examples/query_example your-host.com 5439 mydb user pass
-```
+The supported commands are the checked-in presets and
+[command matrix](tools/development/COMMANDS.md). Historical convenience scripts
+and experimental examples are not substitutes for those profile definitions.
+Examples under `examples/` illustrate individual code paths; some use internal
+C++ interfaces or command-line credentials and are not production application
+login templates. The external application interface is described in the
+[API guide](docs/application-api.md).
 
 ## ODBC Configuration
 
@@ -534,55 +363,35 @@ PostgreSQL sessions request UTF-8 client encoding and ISO/YMD DateStyle at
 startup, so Unicode and date/time results remain decodable when database
 defaults differ.
 
-### System Installation (Optional)
+### Installation
 
-```bash
-# Install driver system-wide
-sudo cp build-redshift/libodbcpp.dylib /usr/local/lib/
-sudo odbcinst -i -d -f odbcinst.ini
-
-# Add DSNs system-wide
-sudo odbcinst -i -s -f odbc.ini
-```
+Use [BUILD_SYSTEM.md](BUILD_SYSTEM.md) for a private runtime installation or
+Windows MSI packaging. Register the actual installed driver path with your
+application's driver manager. Copying one library does not necessarily deploy its
+crypto/runtime dependencies, and installing a runtime does not create a DSN.
 
 ## Testing
 
-### Test Coverage
-- **Total Test Executables**: 33 when a Driver Manager is available
-  (23 unit + 9 in-process integration + 1 Driver Manager integration)
-- **CI Coverage**: Linux, Windows, sanitizers, and mixed-width iODBC Unicode
-- **Current Focus**: Transport, PostgreSQL protocol, core ODBC behavior, Unicode,
-  descriptors, prepared statements, column binding, diagnostics, and logging;
-  the audit matrix records untested and partial behavior
+Use CTest to collect the full configured suite, including failures, before
+repairing a full-checkpoint batch. Do not use stop-on-failure or a feature filter
+for a full collection. Inventory varies with platform and enabled targets;
+[the command matrix](tools/development/COMMANDS.md) explains discovery and
+[the live-suite registrar](tests/development/live_suite/README.md) explains
+complete applicable live registration.
 
-### Running Tests
+```sh
+# Fast local checks without database fixtures:
+ctest --preset unixodbc-redshift-offline --output-junit offline.xml
 
-```bash
-# Setup test environment first
-source ./setup-test-env.sh
-
-# Build and run all tests
-./build-database.sh redshift
-ctest --test-dir build-redshift
-
-# Run specific test categories
-ctest --test-dir build-redshift -L unit         # Unit test executables
-ctest --test-dir build-redshift -L integration  # 10 including Driver Manager
-
-# Test specific functionality
-ctest --test-dir build-redshift -R prepared_statements
-ctest --test-dir build-redshift -R descriptor_apis
-ctest --test-dir build-redshift -R bind_col
+# After preparing the applicable database/TLS/DSN fixtures:
+ctest --preset unixodbc-redshift --output-junit full.xml --output-log full.log
 ```
 
-### Test Requirements
-
-- **Unit Tests**: No external dependencies
-- **Integration Tests**: Require valid DSN configuration in odbc.ini
-- **Database Access**: Integration tests need actual Redshift/PostgreSQL connection
-- **PostgreSQL Authentication**: The protocol layer supports cleartext, MD5, and
-  SCRAM-SHA-256 password authentication. CI validates SCRAM-SHA-256 against
-  PostgreSQL 17.
+Choose the corresponding Windows, macOS or iODBC preset for that host. Live
+Redshift targets are opt-in and require connection inputs, verified TLS and test
+fixtures; an ordinary default build does not register every cloud test. Missing
+fixtures, disabled targets and skipped cases are not live passes. Preserve raw
+CTest and GoogleTest results and diagnose with driver logs and ODBC diagnostics.
 
 ## Architecture
 
@@ -607,6 +416,10 @@ core/
 ```
 
 ## Adding New Database Support
+
+The following is an extension-development outline. `MYSQL` is not an available
+product configuration; its example configure command will be rejected until the
+backend and product integration are implemented and qualified.
 
 1. **Create protocol parser**:
    ```bash
@@ -638,11 +451,12 @@ core/
 
 ## License
 
-[Your License Here]
+ODBCPP is licensed under the [MIT License](LICENSE). Third-party dependencies
+retain their respective licenses.
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/your-repo/issues)
+- **Issues**: [GitHub Issues](https://github.com/vahid110/odbcpp/issues)
 - **Documentation**: See `examples/` directory
 - **Architecture**: See `docs/` directory (if available)
 

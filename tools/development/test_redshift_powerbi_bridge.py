@@ -84,6 +84,33 @@ class Controls(unittest.TestCase):
         with patch.object(bridge.time, 'sleep'):
             self.assertIsNone(self.b.poll(100))
 
+    def test_measurement_replacement_after_pin_verification_is_rejected(self):
+        self.b.app['comparison_target_cap'] = 5
+        pin = self.write('measurement.json', {'requested_cap': 6})
+        self.write('reviewed-measurement.ack.json', self.value(
+            'reviewed-measurement', status='ACK', measurement_pin=pin))
+        verify = bridge.verify_public_pin
+
+        def replace_after_verification(path, expected):
+            verify(path, expected)
+            self.write('measurement.json', {'requested_cap': 5})
+
+        with patch.object(bridge, 'verify_public_pin', side_effect=replace_after_verification):
+            with self.assertRaisesRegex(RuntimeError, 'reviewed_measurement_bytes_changed'):
+                self.b.poll(100)
+        self.assertIsNone(self.b.measurement)
+        self.assertNotIn('reviewed_measurement', self.b.seen)
+        self.assertEqual([], self.ops.calls)
+
+    def test_oversized_measurement_is_rejected_before_acceptance(self):
+        pin = self.write('measurement.json', {'padding': 'x' * (2 * 1024 * 1024)})
+        self.write('reviewed-measurement.ack.json', self.value(
+            'reviewed-measurement', status='ACK', measurement_pin=pin))
+        with self.assertRaisesRegex(RuntimeError, 'bounded_native_public_record'):
+            self.b.poll(100)
+        self.assertIsNone(self.b.measurement)
+        self.assertNotIn('reviewed_measurement', self.b.seen)
+
     def test_vendor_cannot_change_common_cap_from_referenced_own_run(self):
         self.b.app['comparison_target_cap'] = 5
         pin = self.write('measurement.json', {'requested_cap': 6})

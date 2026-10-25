@@ -5,13 +5,24 @@ The control executable is compiled from the real reload source with only its
 synthetic assertion arm enabled. No Python copy of the C++ policy is used.
 """
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[2] / 'tools/odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 
 CASES = {
@@ -58,7 +69,7 @@ def main():
     (work / 'stderr.txt').write_text(completed.stderr, encoding='utf-8')
     if completed.returncode != 8:
         raise RuntimeError('Expected actual failing CTest controls, got ' + str(completed.returncode))
-    root = ET.parse(work / 'ctest.xml').getroot()
+    root = parse_xml_file(work / 'ctest.xml')
     cases = list(root.iter('testcase'))
     if len(cases) != len(CASES) or {case.get('name') for case in cases} != set(CASES):
         raise RuntimeError('Missing or duplicate actual CTest controls')
@@ -89,14 +100,14 @@ def main():
     selected = [str(binary), '--gtest_filter=TraceReloadExitPolicyControl.Pass']
     default = work / 'odbcpp-trace-reload-gtest.xml'
     fallback = subprocess.run(selected, cwd=work, env=env, capture_output=True, text=True, timeout=5)
-    if fallback.returncode != 0 or ET.parse(default).getroot().get('tests') != '1':
+    if fallback.returncode != 0 or parse_xml_file(default).get('tests') != '1':
         raise RuntimeError('The empty-output default did not write standard native XML')
     previous_default = default.read_bytes()
     alternate = work / 'external-output.xml'
     external_env = dict(env, GTEST_OUTPUT='xml:' + alternate.as_posix())
     external = subprocess.run(selected, cwd=work, env=external_env,
                               capture_output=True, text=True, timeout=5)
-    if (external.returncode != 0 or ET.parse(alternate).getroot().get('tests') != '1'
+    if (external.returncode != 0 or parse_xml_file(alternate).get('tests') != '1'
             or default.read_bytes() != previous_default):
         raise RuntimeError('Existing GTEST_OUTPUT custody was overridden')
     result = {'scope': 'actual synthetic native/CTest exit policy only; no driver loaded',

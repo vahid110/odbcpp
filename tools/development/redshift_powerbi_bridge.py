@@ -222,8 +222,12 @@ class Bridge:
                 need(value['status'] == 'ACK', 'native_measurement_handoff')
                 measurement = value['measurement_pin']
                 verify_public_pin(measurement['path'], measurement['sha256'])
+                # Consume only the bounded bytes whose digest was reviewed.
+                # The path may have been replaced after verify_public_pin.
+                body, consumed_pin = read_public(measurement['path'])
+                need(consumed_pin['sha256'] == measurement['sha256'],
+                     'reviewed_measurement_bytes_changed')
                 if self.app['comparison_target_cap'] is not None:
-                    body = json.loads(Path(measurement['path']).read_text())
                     need(body['requested_cap'] == self.app['comparison_target_cap'],
                          'same_actual_comparison_cap')
                 event['measurement_pin'] = measurement

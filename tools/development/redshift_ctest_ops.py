@@ -495,6 +495,7 @@ class Operations:
         if role == ORDINARY:
             self.native.ordinary_held()
         config = self.native.config
+        self.native.ca_held()
         env = {**BASE_ENV, 'PGHOST': config['host'], 'PGPORT': '5439',
                'PGDATABASE': DATABASE, 'PGUSER': role, 'PGSSLMODE': 'verify-full',
                'PGSSLROOTCERT': config['ca'], 'PGCONNECT_TIMEOUT': '10',
@@ -767,6 +768,7 @@ class Operations:
             attempt(close_ordinary)
             if self.native.snapshot is not None:
                 attempt(lambda: need(self.native.snapshot.close(), 'snapshot_retained'))
+            attempt(self.native.close_ca_snapshot)
         need(not errors and self.input_residue is None,
              'private_input_cleanup_incomplete_retained')
         return True

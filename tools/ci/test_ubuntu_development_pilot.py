@@ -507,7 +507,7 @@ class ProductQualificationTests(unittest.TestCase):
         self.assertIn('type: boolean', input_block)
         self.assertIn('default: false', input_block)
         self.assertIn('cancel-in-progress: false', caller)
-        self.assertIn("(inputs.run_development_pilot || inputs.run_product_qualification)", caller)
+        self.assertIn("(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_sanitizer_only)", caller)
         product_job=reusable.split('  product:\n', 1)[1].split('  cold:\n', 1)[0]
         self.assertEqual(product_job.count('runs-on:'), 1)
         self.assertIn('runs-on: ubuntu-24.04', product_job)

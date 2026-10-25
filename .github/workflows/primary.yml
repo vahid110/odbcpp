@@ -14,6 +14,9 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
+# These jobs do not use dependency caches.
+cache-mode: none
+
 jobs:
   macos-iodbc-ucs4:
     runs-on: macos-latest
@@ -24,7 +27,7 @@ jobs:
       ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install deps
         run: brew install libiodbc unixodbc postgresql@17 python@3.12
@@ -119,7 +122,7 @@ jobs:
 
       - name: Retain macOS TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-openssl-UCS4-tls-proof
           path: |

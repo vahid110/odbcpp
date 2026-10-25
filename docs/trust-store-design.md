@@ -279,5 +279,57 @@ administrator distrust is respected through the distro tooling.
   qualification; local tests prove rejection of private CAs by the OS store
   and native chain/purpose evaluation with test-injected anchors.
 
+## 9. TLS strength policy
+
+The shared TLS adapter applies the same policy to fresh contexts and verified
+siblings, independently of the selected trust source. TLS 1.2 is the minimum;
+the internal minimum-version setter can raise it, but a lower value is rejected.
+TLS 1.2 permits authenticated ECDHE with AES-GCM or ChaCha20-Poly1305. TLS 1.3
+permits AES-GCM or ChaCha20-Poly1305. Key-exchange groups are X25519, P-256,
+P-384 and P-521; the completed handshake must actually have an ephemeral key.
+Static RSA key exchange, CBC-only peers and SHA-1 handshake signatures are not
+enabled by this policy. TLS 1.2 remains supported; TLS 1.3 is not required.
+
+Certificate RSA/RSA-PSS keys must have at least 2048 bits and EC keys at least
+224 bits. Ed25519/Ed448 certificate keys are accepted where the provider
+implements them; other certificate key types have no strength claim and are
+rejected. Issued certificate signatures must establish at least 112 security bits.
+For intrinsic Ed25519/Ed448 signatures, the exact OID must have absent parameters
+as required by RFC 8410. RSA-PSS parameters must decode completely, use SHA-224,
+SHA-256, SHA-384 or SHA-512 and MGF1 with the same hash, a nonnegative salt length
+representable as an int (omitted means 20), and trailer field 1 (also the default).
+Omitted hash/MGF parameters default to SHA-1 and are rejected. Different message
+and MGF hashes are deliberately unsupported even if each is independently strong.
+Provider/native cryptographic verification remains mandatory and establishes
+actual signature validity and PSS salt/modulus fit before these additional checks.
+Other supported signatures use the provider's reported security bits. This
+explicit handling is needed because AWS-LC can report a valid signature-info
+record with unset strength for Ed25519 and RSA-PSS; success alone is not strength.
+Trust-anchor public keys are checked too; an anchor's self-signature does not
+establish trust and is not subjected to the issued-signature check. Symmetric
+negotiation must provide at least 112 bits, and application reads/writes cannot
+start before successful handshake and policy checks.
+
+OpenSSL contexts use a security level of at least 2 without lowering a higher
+provider level. Explicit cipher, group, signature and certificate checks are
+also required: AWS-LC's compatibility security-level setters are no-ops. This
+does not enable the planned AWS-LC product profile or make a FIPS claim.
+
+Custom and Unix trust continue to use the provider's path builder. Native
+Windows/macOS trust still uses the OS's existing trust/purpose/offline policy,
+but returns owned DER for its actual accepted path, including locally found
+issuers and anchors. The TLS adapter checks that path rather than assuming that
+the peer supplied every issuer. No OS handle or provider pointer crosses the
+private platform contract; path size limits and the original deadline remain.
+
+The added GoogleTests cover strong TLS 1.2/1.3, weak leaf/issuer/anchor keys,
+issued SHA-1 signatures, non-PFS/CBC-only peers, frozen siblings and native path
+export. Raw in-memory provider controls deliberately allow each rejected peer
+to prove the fixture itself can handshake; they never weaken the production
+client. Compiler/runtime results for this strength extension must be bound to
+the final candidate and platform. Source review or an older trust-store pass is
+not qualification of the extension. Database authentication policy is separate:
+this extension changes no PostgreSQL/Redshift password or token mechanism.
+
 [aws-opts]: https://docs.aws.amazon.com/redshift/latest/mgmt/odbc20-configuration-options.html
 [aws-ssl]: https://docs.aws.amazon.com/redshift/latest/mgmt/connecting-ssl-support.html

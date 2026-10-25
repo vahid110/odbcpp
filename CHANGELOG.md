@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+These notes describe development changes, not a published release. For exact
+source history, see [main commits](https://github.com/vahid110/odbcpp/commits/main).
+
 ### Added
 - Operating-system TLS trust stores: Windows CryptoAPI chain policy, macOS Security framework evaluation and Linux/Unix distribution CA bundles, selected by default or with `UseSystemTrustStore=1`; custom `SSLCAFILE`/`SSLCADIR` trust fails closed on missing, empty or malformed input and never falls back. The Windows DSN Security page distinguishes inherited driver defaults from an explicit operating-system trust-store selection.
 - Indicator-only and row-wise result bindings, checked row and single-set parameter-binding offsets, and SQL_ATTR_RETRIEVE_DATA suppression with reset/rebind recovery
@@ -59,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux AddressSanitizer and UndefinedBehaviorSanitizer CI coverage
 - Complete ODBC descriptor API suite (SQLBindCol, SQLDescribeParam)
 - Enhanced SQLFetch with automatic bound column population
-- Comprehensive test coverage (19 unit and integration tests)
+- Expanded unit and integration tests; discover the current inventory with CTest
 - Column binding example and documentation
 - Development roadmap and changelog
 
@@ -78,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved test matrix with descriptor API coverage
 
 ### Fixed
+- Security tooling now rejects input/output file aliases before destructive cleanup in the MySQL test helpers; original failure evidence is retained.
+- Dependency downloads pin the GoogleTest archive digest. CI action references and candidate cache permissions are being hardened as part of the security baseline.
 - The declared POSTGRESQL build target no longer depends on missing database-specific converter files
 - Numeric and temporal conversion validation now rejects overflow, trailing characters, invalid booleans, and impossible dates
 - SQL injection test handling for malicious input
@@ -85,184 +90,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Connection synchronization after PostgreSQL query errors
 - DSN loading from build directory
 
-## [0.9.0] - 2024-12-XX
+## Historical draft entries
 
-### Added
-- Complete 4 ODBC descriptor implementations (IRD, APD, ARD, IPD)
-- SQLBindCol API for column binding
-- SQLDescribeParam API for parameter metadata
-- Descriptor field access framework
-- 23 core ODBC API functions implemented
-- Comprehensive prepared statement support
-- Real database integration with Redshift
-- Parameter substitution with type detection
-- 17 comprehensive tests (10 unit + 7 integration)
+[Earlier undated entries](docs/history/changelog-undated-entries.md) are preserved
+as historical draft notes, not authenticated release records. No formal release
+is asserted by those placeholder dates. Development snapshots are identified by
+full commit and build evidence; the CMake version alone is not unique.
 
-### Changed
-- Enhanced SQLFetch to auto-populate bound columns
-- Improved parameter binding with data type conversion
-- Updated build system for comprehensive test coverage
+## Release publication policy
 
-### Fixed
-- Prepared statement execution with real database
-- Parameter substitution for ODBC-style placeholders
-- Connection string parsing and DSN loading
-
-## [0.8.0] - 2024-12-XX
-
-### Added
-- Prepared statement support (SQLPrepare, SQLExecute, SQLBindParameter)
-- APD (Application Parameter Descriptor) implementation
-- Parameter binding with comprehensive data type support
-- Prepared statement test matrix with real database validation
-- SQL injection prevention through parameter binding
-
-### Changed
-- Enhanced PostgreSQL protocol parser for prepared statements
-- Improved parameter substitution mechanism
-- Updated test suite with prepared statement coverage
-
-### Fixed
-- Parameter binding for multiple data types
-- Prepared statement reuse and execution
-- Error handling for invalid parameters
-
-## [0.7.0] - 2024-12-XX
-
-### Added
-- Result set metadata APIs (SQLNumResultCols, SQLDescribeCol, SQLColAttribute)
-- IRD (Implementation Row Descriptor) implementation
-- Data type conversion framework
-- Comprehensive metadata test coverage
-- Cross-platform build system improvements
-
-### Changed
-- Enhanced ODBC handle management
-- Improved error handling and diagnostics
-- Updated documentation with metadata examples
-
-### Fixed
-- Column metadata extraction and conversion
-- Data type mapping between SQL and C types
-- Memory management in result processing
-
-## [0.6.0] - 2024-12-XX
-
-### Added
-- Core ODBC API framework (17 essential functions)
-- Handle management (SQLAllocHandle, SQLFreeHandle)
-- Connection management (SQLConnect, SQLDisconnect)
-- Statement execution (SQLExecDirect, SQLFetch, SQLGetData)
-- Error handling (SQLGetDiagRec)
-- Driver information (SQLGetInfo, SQLSetEnvAttr)
-
-### Changed
-- Established ODBC-compliant architecture
-- Implemented handle registry system
-- Added comprehensive error handling
-
-### Fixed
-- Handle validation and lifecycle management
-- Connection string parsing
-- Basic query execution workflow
-
-## [0.5.0] - 2024-12-XX
-
-### Added
-- PostgreSQL wire protocol implementation
-- Redshift database support
-- TLS/SSL connection support
-- Basic connection pooling
-- Async database operations
-
-### Changed
-- Modular database protocol architecture
-- Enhanced transport layer with TLS support
-- Improved connection management
-
-### Fixed
-- Network protocol handling
-- SSL/TLS handshake implementation
-- Connection stability and error recovery
-
-## [0.4.0] - 2024-12-XX
-
-### Added
-- Database factory pattern
-- Generic database connection interface
-- Transport layer abstraction
-- Socket and TLS transport implementations
-- Deadline-based timeout handling
-
-### Changed
-- Pluggable database architecture
-- Improved error handling with Result types
-- Enhanced async operation support
-
-### Fixed
-- Memory management in database operations
-- Thread safety in connection handling
-- Resource cleanup and lifecycle management
-
-## [0.3.0] - 2024-12-XX
-
-### Added
-- Core database abstraction layer
-- Protocol parser interface
-- Basic PostgreSQL message handling
-- Authentication support (cleartext, MD5)
-- Query execution framework
-
-### Changed
-- Established database protocol abstraction
-- Improved message parsing architecture
-- Enhanced authentication mechanisms
-
-### Fixed
-- Protocol message parsing
-- Authentication flow handling
-- Query result processing
-
-## [0.2.0] - 2024-12-XX
-
-### Added
-- CMake build system
-- Cross-platform support (macOS, Linux, Windows)
-- OpenSSL integration
-- Basic project structure
-- Example applications
-
-### Changed
-- Modular build configuration
-- Platform-specific optimizations
-- Dependency management
-
-### Fixed
-- Build system compatibility
-- Library linking issues
-- Platform-specific compilation
-
-## [0.1.0] - 2024-12-XX
-
-### Added
-- Initial project structure
-- Basic C++20 framework
-- Core utility classes
-- Error handling foundation
-- Platform abstraction layer
-
-### Changed
-- Established coding standards
-- Set up development environment
-- Created initial architecture
-
----
-
-## Legend
-
-- **Added** for new features
-- **Changed** for changes in existing functionality  
-- **Deprecated** for soon-to-be removed features
-- **Removed** for now removed features
-- **Fixed** for any bug fixes
-- **Security** for vulnerability fixes
+A future formal release must have a unique version bound to its exact source
+commit and package inventory, dated human-readable changes, and compatibility
+or upgrade notes. Include CVE or comparable identifiers for publicly known
+project runtime vulnerabilities fixed by that release, when applicable. The
+current CMake/MSI version is a package version, not evidence that a formal
+release with that name has been accepted.

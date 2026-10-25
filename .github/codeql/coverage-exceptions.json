@@ -1,0 +1,6 @@
+{
+  "cpp-source": {
+    "core/database/mysql/mysql_protocol_parser.h": "Legacy unreferenced placeholder header; not a supported MySQL product. The 2026-10-25 no-build database did not extract it.",
+    "tests/unit/test_backend_contract.cpp": "The 2026-10-25 no-build database omitted this source, including from its baseline denominator. The separate cpp-redshift manual analysis MUST extract it."
+  }
+}

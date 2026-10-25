@@ -24,10 +24,21 @@ inline constexpr std::size_t max_peer_certificate_bytes = 64 * 1024;
 // auto-update), so a missing intermediate or uninstalled root fails closed.
 bool native_verifier_available() noexcept;
 
+struct VerifiedCertificate {
+  DerCertificate der;
+  // Anchor self-signatures do not establish trust; their public keys still
+  // have to meet the TLS strength floor.
+  bool trust_anchor{false};
+};
+
 struct ChainEvaluation {
   bool trusted{false};
   // Bounded, secret-free reason for a rejection.
   std::string reason;
+  // On success, the actual OS-selected trust path, including locally found
+  // issuers/anchors. The TLS adapter applies its key/signature floor to these
+  // owned certificates rather than only the untrusted peer-supplied list.
+  std::vector<VerifiedCertificate> verified_chain{};
 };
 
 struct EvaluationOptions {
