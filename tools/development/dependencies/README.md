@@ -106,11 +106,12 @@ ctest --test-dir "$MQTT_BUILD" --output-on-failure --timeout 60 \
   -R '^mqtt5to3_adapter_subscribe_multi_oversized_suback$'
 ctest --test-dir "$MQTT_BUILD" --output-on-failure --timeout 60 \
   -R '^mqtt5to3_adapter_'
-cmake --install "$MQTT_BUILD"
+cmake --install "$MQTT_BUILD" --component Development
 ```
 
 `ENABLE_NET_TESTS=OFF` excludes upstream internet tests; the adapter tests use local
-mock servers. Do not run example/broker/cloud clients. Before accepting the copy,
+mock servers. Install only the `Development` component: an unrestricted install
+also tries to install unbuilt example clients. Do not run example/broker/cloud clients. Before accepting the copy,
 retain raw test inventory/results and prove: original source/prefix unchanged;
 new MQTT archive freshly compiled from the fixed source; arm64/static identity;
 public-header and exported-symbol compatibility; and every other SDK/CRT archive
@@ -121,7 +122,11 @@ alone cannot prove any of these binary properties.
 Finally compile and link a fresh offline consumer using the existing
 `cmake/NativeAwsSdkImport.cmake`, the new explicit `ODBCPP_AWS_SDK_INSTALL`, and
 reviewed OpenSSL/ZLIB discovery. Include SDK Redshift/STS constructors and an MQTT
-symbol reference so static linking actually selects the new archive; retain the
+symbol reference so static linking actually selects the new archive. Take a
+volatile function pointer to `aws_mqtt5_client_new` (declared in
+`aws/mqtt/v5/mqtt5_client.h`) and verify the map selects the new archive's
+`mqtt5_client.c.o`, which contains the advisory repair; an init-only reference
+does not establish selection of that object. Retain the
 link command/map and verify no original SDK prefix is selected. Do not execute
 the consumer, make AWS calls or alter operational configuration. Installed-prefix
 acceptance stays pending until this independent source/build/link review passes.
