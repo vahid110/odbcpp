@@ -168,9 +168,12 @@ class ActualBuildEvidence(unittest.TestCase):
         runs[0]["tool"]["driver"]["semanticVersion"] = "2.27.3"
         for metric in runs[0]["properties"]["metricResults"]:
             if metric["message"]["text"] == "compiler errors":
-                metric["value"] = 1
+                metric["value"] = 2
             elif metric["message"]["text"] == "compilations without errors":
                 metric["value"] -= 1
+        runs[0]["properties"]["metricResults"] += [
+            {"ruleId": "cpp/telemetry/compiler-errors", "message": {"text": message}, "value": 1}
+            for message in ("static assertion failed", "There was an error during this compilation")]
         path = str(self.root / source)
         notes = runs[0]["invocations"][0]["toolExecutionNotifications"]
         notes.append({"descriptor": {"id": "cpp/diagnostics/extraction-warnings"},
@@ -196,7 +199,9 @@ class ActualBuildEvidence(unittest.TestCase):
         original = json.dumps(runs)
         report = self.validate(runs)
         self.assertTrue(report["passed"], report["errors"])
-        self.assertEqual(report["extraction_metrics"]["compiler errors"], 1)
+        self.assertEqual(report["extraction_metrics"]["compiler errors"], 2)
+        self.assertEqual(report["accepted_extractor_limitations"][0]["compiler_error_buckets"],
+                         {"static assertion failed": 1, "There was an error during this compilation": 1})
         self.assertEqual(report["accepted_extractor_limitations"][0]["line"], 34)
         self.assertEqual(json.dumps(runs), original)
 
@@ -222,13 +227,32 @@ class ActualBuildEvidence(unittest.TestCase):
                 self.assertFalse(self.validate(runs)["passed"])
 
     def test_assertion_disposition_rejects_other_errors_or_partial_compilations(self):
-        for name, value in (("compiler errors", 2), ("syntax errors", 1),
+        for name, value in (("compiler errors", 1), ("compiler errors", 3), ("syntax errors", 1),
                             ("compilations without errors", 18)):
             with self.subTest(metric=name):
                 runs = self.known_assertion()
                 for metric in runs[0]["properties"]["metricResults"]:
                     if metric["message"]["text"] == name:
                         metric["value"] = value
+                self.assertFalse(self.validate(runs)["passed"])
+
+    def test_assertion_requires_exact_error_buckets_without_duplicate_overwrite(self):
+        for mutation in ("missing", "extra", "duplicate", "different", "count", "float-count"):
+            with self.subTest(mutation=mutation):
+                runs = self.known_assertion()
+                metrics = runs[0]["properties"]["metricResults"]
+                buckets = [m for m in metrics if m["ruleId"] == "cpp/telemetry/compiler-errors"]
+                if mutation == "missing":
+                    metrics.remove(buckets[0])
+                elif mutation == "extra":
+                    metrics.append({"ruleId": "cpp/telemetry/compiler-errors",
+                                    "message": {"text": "another failure"}, "value": 1})
+                elif mutation == "duplicate":
+                    metrics.append(dict(buckets[0]))
+                elif mutation == "different":
+                    buckets[0]["message"]["text"] = "another failure"
+                else:
+                    buckets[0]["value"] = 2 if mutation == "count" else 1.0
                 self.assertFalse(self.validate(runs)["passed"])
 
     def test_assertion_disposition_requires_compiled_object_and_only_one_partial_exit(self):
