@@ -191,6 +191,9 @@ set_tests_properties(test_odbc_trace_reload PROPERTIES LABELS "unit" TIMEOUT 60
 # The same native main with isolated synthetic assertions proves failure/skip
 # precedence through actual GoogleTest and CTest, without loading the driver.
 find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+add_test(NAME test_xml_evidence COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_xml_evidence.py")
+set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT 60)
 add_executable(trace_reload_exit_policy_control tests/unit/test_odbc_trace_reload.cpp)
 target_include_directories(trace_reload_exit_policy_control PRIVATE ${ODBC_INCLUDE_DIR})
 target_compile_definitions(trace_reload_exit_policy_control PRIVATE ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL=1)

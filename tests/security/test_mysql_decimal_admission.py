@@ -1230,7 +1230,11 @@ except Exception as error:
 """
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary).resolve()
-            owned=base/'owned'; owned.mkdir()
+            source=base/'source'
+            owned=source/'tests/security'; owned.mkdir(parents=True)
+            tools=source/'tools'; tools.mkdir()
+            parser=tools/'odbcpp_xml_evidence.py'
+            shutil.copy2(Path(live.__file__).resolve().parents[2]/'tools/odbcpp_xml_evidence.py', parser)
             other=base/'unrelated'; other.mkdir()
             runner=owned/'test_mysql_auth_live.py'
             shutil.copy2(Path(live.__file__).resolve(),runner)
@@ -1251,6 +1255,19 @@ except Exception as error:
                     self.assertEqual(result.stderr,'')
                     self.assertEqual(result.stdout.strip(),'PASS' if state=='valid' else
                                      'MySQL DATETIME receipt validator unavailable')
+            # A cwd impostor must never replace a missing/corrupt source parser.
+            (other/'odbcpp_xml_evidence.py').write_text("raise AssertionError('cwd parser imported')")
+            for state in ('missing-parser', 'malformed-parser'):
+                with self.subTest(state=state):
+                    if state=='missing-parser':
+                        parser.unlink()
+                    else:
+                        parser.write_text('invalid syntax @')
+                    result=subprocess.run([sys.executable,'-B','-c',code,str(runner)],
+                                          cwd=other,capture_output=True,text=True,timeout=10)
+                    self.assertEqual(result.returncode,0)
+                    self.assertEqual(result.stderr,'')
+                    self.assertEqual(result.stdout.strip(),'Bounded XML evidence parser unavailable')
 
 
 # Synthetic properties only: actual strict DECIMAL validator consumes this input,
@@ -1619,8 +1636,12 @@ class DecimalReceiptAdmissionTest(unittest.TestCase):
         import shutil
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
-            owned, other = base / 'owned', base / 'other'
-            owned.mkdir(); other.mkdir()
+            source = base / 'source'
+            owned, other = source / 'tests/security', base / 'other'
+            owned.mkdir(parents=True); other.mkdir()
+            tools = source / 'tools'; tools.mkdir()
+            shutil.copy2(Path(live.__file__).resolve().parents[2] / 'tools/odbcpp_xml_evidence.py',
+                         tools / 'odbcpp_xml_evidence.py')
             runner = owned / 'test_mysql_auth_live.py'
             shutil.copy2(Path(live.__file__), runner)
             shutil.copy2(Path(live.__file__).with_name('mysql_datetime_receipt_xml.py'),

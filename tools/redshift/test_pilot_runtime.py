@@ -101,6 +101,24 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, 'invalid_test_report'):
             runtime.test_summary(self.report(self.case()), ('Pilot.One', 'Pilot.One'))
 
+    def test_bounded_xml_and_encoding_aware_declaration_refusal(self):
+        path = self.report(self.case())
+        source = path.read_text()
+        for encoding in ('utf-8', 'utf-16-le', 'utf-16-be'):
+            path.write_bytes(source.encode(encoding))
+            with patch.object(Path, 'read_bytes', side_effect=AssertionError('whole XML read')):
+                self.assertEqual(runtime.test_summary(path, ('Pilot.One',))['passed'], 1)
+            for bad in ('<!DOCTYPE testsuites [<!ENTITY unused "x">]>' + source,
+                        '<r>' * 129 + '</r>' * 129,
+                        '<r a="' + 'x' * 70000 + '"/>', '<unclosed>'):
+                path.write_bytes(bad.encode(encoding))
+                with self.subTest(encoding=encoding, prefix=bad[:20]):
+                    with self.assertRaisesRegex(Blocked, '^invalid_test_report$'):
+                        runtime.test_summary(path, ('Pilot.One',))
+        path.write_bytes(b' ' * (1024 * 1024 + 1))
+        with self.assertRaisesRegex(Blocked, '^invalid_test_report$'):
+            runtime.test_summary(path, ('Pilot.One',))
+
     def test_persistent_or_unobservable_group_blocks(self):
         with patch.object(runtime, '_group_alive', return_value=True), \
              patch.object(runtime.os, 'killpg', side_effect=PermissionError):

@@ -6,6 +6,7 @@ peak working set is measured for the direct child only, not the concurrent tree.
 No cache implementation or service/native/registry/package execution is present.
 """
 import argparse
+import importlib.util
 import ctypes
 from datetime import datetime, timezone
 import hashlib
@@ -19,7 +20,16 @@ import subprocess
 import sys
 import threading
 import time
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 TARGETS = ('test_backend_contract', 'test_diagnostics_apis',
            'test_numeric_scale_conversion', 'test_redshift_data_conversion',
@@ -1003,7 +1013,7 @@ def gtest_names(text):
 
 
 def xml_result(path, expected):
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path)
     cases = list(root.iter('testcase'))
     names = [c.attrib['classname'] + '.' + c.attrib['name'] for c in cases]
     if sorted(names) != sorted(expected) or len(set(names)) != len(names):
@@ -1150,7 +1160,7 @@ def test():
         if sha(entry['path']) != entry['sha256']:
             raise ValueError('owning executable changed during tests')
         results[name] = xml_result(EVIDENCE / 'gtest' / (name + '.xml'), entry['names'])
-    root = ET.parse(EVIDENCE / 'ctest.xml').getroot()
+    root = parse_xml_file(EVIDENCE / 'ctest.xml')
     if sorted(c.attrib['name'] for c in root.iter('testcase')) != sorted(selected() + list(CHECKS)) or any(
             list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
         raise ValueError('exact successful selected CTest results required')
