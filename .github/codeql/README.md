@@ -13,7 +13,8 @@ denominator. A successful scanner process or a zero finding count was insufficie
 | `cpp-redshift` | Fresh Ubuntu 24.04/GCC Debug REDSHIFT, C++20, OpenSSL system shared, unixODBC/SQLWCHAR2; core/driver, existing ordinary test sources and generated SDK header-isolation units | Actual CMake compiler records and successful extraction must agree. No parser errors or incomplete compilations are accepted. `test_backend_contract.cpp` is required independently of CodeQL's baseline. |
 | `cpp-source` | Supplemental no-build analysis of all tracked C++ sources and headers, with a C++20 frontend | Prevents dormant/platform/backend/optional code from disappearing when adding a real build. Requires observed C++20 platform telemetry and reports extraction quality without presenting inferred code as actual-build proof. Only the two exact existing omissions in `coverage-exceptions.json` are allowed; new omissions fail. |
 | `python` | All tracked `.py` files, including workflow controls | Successful-extraction diagnostics must cover the Git inventory. This is not execution, secret-history or cloud admission proof. |
-| `actions` | All tracked workflow YAML | Successful-extraction diagnostics must cover the Git inventory. Standalone PowerShell, shell, CMake, C# and installer sources need their own review. |
+| `csharp` | All standalone tracked `.cs` files using supported no-build extraction | Requires each source, positive code/no-build telemetry and no extractor/compiler-error or low-database-quality diagnostic. Does not execute Windows APIs or scan C# embedded in PowerShell strings. |
+| `actions` | All tracked workflow YAML | Successful-extraction diagnostics must cover the Git inventory. Standalone PowerShell, shell, CMake and installer sources need their own review. |
 
 All profiles run the default security queries plus `security-extended`. The audit's
 `security-and-quality` experiment added thousands of maintainability results;
@@ -114,3 +115,19 @@ Primary references: [compiled-language build modes](https://docs.github.com/en/c
 [pinned analyze inputs](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/analyze/action.yml),
 [multiple SARIF categories](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file),
 [default-setup transition](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/results-different-than-expected).
+
+## Standalone C# scope
+
+The C# profile includes `tools/development/windows_local_process.cs`, the Windows
+job/process helper. No-build extraction is a source-analysis route on Linux; it
+neither starts the helper nor validates P/Invoke behavior. The two C# regions
+embedded in `test_windows_local_process.ps1` and `test_windows_dsn_gui.ps1` remain
+outside this tracked `.cs` inventory and require separate review.
+
+The pinned query source explains why source presence is insufficient:
+[`ExtractedFiles.ql`](https://github.com/github/codeql/blob/a1575b98a8cc19bcfa7bb6cb41be688cb3dae65c/csharp/ql/src/Diagnostics/ExtractedFiles.ql)
+selects source files even if their extraction had errors. The publication check
+also rejects `cs/diagnostics/extraction-errors` and
+`csharp/diagnostic/database-quality`, and requires positive code and no-build
+telemetry from `cs/telemetry/extraction-information`. This is checked against
+actual hosted SARIF before acceptance, not inferred from the requested mode.

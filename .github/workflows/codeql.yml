@@ -44,6 +44,9 @@ jobs:
           - profile: python
             language: python
             build-mode: none
+          - profile: csharp
+            language: csharp
+            build-mode: none
           - profile: actions
             language: actions
             build-mode: none
@@ -126,12 +129,14 @@ jobs:
           sarif_file: codeql-results
           category: /language:${{ matrix.language }}/profile:${{ matrix.profile }}
 
-      - name: Retain C++ extractor logs and diagnostics even after failure
-        if: always() && matrix.language == 'c-cpp'
+      - name: Retain compiled-language extractor logs and diagnostics even after failure
+        if: always() && (matrix.language == 'c-cpp' || matrix.language == 'csharp')
+        env:
+          ODBCPP_CODEQL_DATABASE: ${{ matrix.language == 'csharp' && 'csharp' || 'cpp' }}
         run: |
           mkdir -p codeql-evidence
           for kind in log diagnostic; do
-            source="$RUNNER_TEMP/codeql_databases/cpp/$kind"
+            source="$RUNNER_TEMP/codeql_databases/$ODBCPP_CODEQL_DATABASE/$kind"
             if [[ -d "$source" ]]; then
               cp -R "$source" "codeql-evidence/codeql-$kind"
             fi

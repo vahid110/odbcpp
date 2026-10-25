@@ -182,6 +182,44 @@ class SourceInventoryEvidence(unittest.TestCase):
         self.assertFalse(COVERAGE.validate("cpp-source", runs, {"a.cpp"},
                                           self.root, self.build, {})["passed"])
 
+    def csharp(self, paths):
+        runs = sarif(paths, language="cs")
+        runs[0]["properties"]["metricResults"] = [
+            {"ruleId": "cs/telemetry/extraction-information",
+             "message": {"text": key}, "value": value}
+            for key, value in [("Is extracted with build-mode set to 'none'", 1),
+                               ("Number of lines of code", 100)]]
+        return runs
+
+    def test_csharp_requires_every_standalone_tracked_source(self):
+        tracked = {"helper.cs", "second.cs", "embedded.ps1", "main.cpp"}
+        report = COVERAGE.validate("csharp", self.csharp({"helper.cs"}), tracked,
+                                   self.root, self.build, {})
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["missing"], ["second.cs"])
+        report = COVERAGE.validate("csharp", self.csharp({"helper.cs", "second.cs"}),
+                                   tracked, self.root, self.build, {})
+        self.assertTrue(report["passed"])
+
+    def test_csharp_errors_cannot_hide_behind_extracted_file_diagnostic(self):
+        for kind in ("cs/diagnostics/extraction-errors", "csharp/diagnostic/database-quality"):
+            with self.subTest(kind=kind):
+                runs = self.csharp({"helper.cs"})
+                runs[0]["invocations"][0]["toolExecutionNotifications"].append(
+                    {"descriptor": {"id": kind}})
+                report = COVERAGE.validate("csharp", runs, {"helper.cs"},
+                                           self.root, self.build, {})
+                self.assertFalse(report["passed"])
+
+    def test_csharp_rejects_absent_or_empty_code_telemetry(self):
+        for metrics in ([], [{"ruleId": "cs/telemetry/extraction-information",
+                             "message": {"text": "Number of lines of code"}, "value": 0}]):
+            with self.subTest(metrics=metrics):
+                runs = self.csharp({"helper.cs"})
+                runs[0]["properties"]["metricResults"] = metrics
+                self.assertFalse(COVERAGE.validate("csharp", runs, {"helper.cs"},
+                                                   self.root, self.build, {})["passed"])
+
     def test_exception_is_exact_and_profile_scoped(self):
         exceptions = {"cpp-source": {"legacy.h": "Reviewed unused placeholder"}}
         report = self.validate("cpp-source", {"a.cpp", "legacy.h"}, {"a.cpp"}, exceptions)

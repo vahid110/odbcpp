@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 
 
 LANGUAGE = {"cpp-redshift": "cpp", "cpp-source": "cpp",
-            "python": "py", "actions": "actions"}
+            "python": "py", "actions": "actions", "csharp": "cs"}
 CRITICAL_CPP = {
     "core/database/postgres/pg_protocol_parser.cpp",
     "odbc/odbc_api.cpp",
@@ -76,7 +76,9 @@ def evidence(runs, language, root):
                         if path:
                             extracted.add(path)
         for metric in run.get("properties", {}).get("metricResults", []):
-            if metric.get("ruleId") == "cpp/telemetry/extraction-metrics":
+            metric_id = ("cs/telemetry/extraction-information" if language == "cs"
+                         else "cpp/telemetry/extraction-metrics")
+            if metric.get("ruleId") == metric_id:
                 metrics[metric.get("message", {}).get("text")] = metric.get("value")
     if not extracted:
         raise ValueError("No successful-extraction diagnostics; file counts alone are insufficient")
@@ -177,6 +179,19 @@ def validate(profile, runs, tracked, root, build, exceptions):
                                 for version in standards):
             errors.append("Supplemental extraction requires actual C++20 platform telemetry")
         result["scope"] = "Supplemental inferred source extraction; quality metrics are reported, not actual-build proof"
+    elif profile == "csharp":
+        expected = {p for p in tracked if p.endswith(".cs")}
+        result["scope"] = "Standalone tracked C# source; no Windows execution or embedded PowerShell C# proof"
+        # ExtractedFiles includes files with errors: a file count alone is not
+        # evidence that method bodies and their references were analyzed.
+        for kind in ("cs/diagnostics/extraction-errors", "csharp/diagnostic/database-quality"):
+            if diagnostics.get(kind, 0):
+                errors.append("C# extraction has errors or low database quality: " + kind)
+        if metrics.get("Is extracted with build-mode set to 'none'") != 1:
+            errors.append("Missing C# no-build extraction telemetry")
+        lines = metrics.get("Number of lines of code")
+        if type(lines) not in (int, float) or not lines > 0:
+            errors.append("Missing positive C# code extraction telemetry")
     elif profile == "python":
         expected = {p for p in tracked if p.endswith(".py")}
         result["scope"] = "All tracked Python source; no runtime or secret-history proof"
