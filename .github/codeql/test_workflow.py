@@ -47,6 +47,16 @@ class ManualTracingBoundary(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Every matrix profile"):
             tracing_boundary(changed)
 
+    def test_raw_logs_precede_verification_and_publication(self):
+        text = WORKFLOW.read_text()
+        retained = re.search(r"(?m)^      - name: Retain (?:C\+\+|compiled-language) "
+                             r"extractor logs and diagnostics even after failure$", text)
+        self.assertIsNotNone(retained)
+        self.assertLess(retained.start(),
+                        text.index("      - name: Independently verify actual extraction"))
+        self.assertLess(text.index("      - name: Independently verify actual extraction"),
+                        text.index("      - name: Publish only the verified SARIF"))
+
 
 if __name__ == "__main__":
     unittest.main()

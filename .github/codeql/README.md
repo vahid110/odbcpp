@@ -10,7 +10,7 @@ denominator. A successful scanner process or a zero finding count was insufficie
 
 | Profile | Actual scope | Evidence and limits |
 |---|---|---|
-| `cpp-redshift` | Fresh Ubuntu 24.04/GCC Debug REDSHIFT, C++20, OpenSSL system shared, unixODBC/SQLWCHAR2; core/driver, existing ordinary test sources and generated SDK header-isolation units | Actual CMake compiler records and successful extraction must agree. No parser errors or incomplete compilations are accepted. `test_backend_contract.cpp` is required independently of CodeQL's baseline. |
+| `cpp-redshift` | Fresh Ubuntu 24.04/GCC Debug REDSHIFT, C++20, OpenSSL system shared, unixODBC/SQLWCHAR2; core/driver, existing ordinary test sources and generated SDK header-isolation units | Actual CMake compiler records and source extraction must agree. Errors fail except the single pinned compile-time assertion limitation below. `test_backend_contract.cpp` remains independently required. |
 | `cpp-source` | Supplemental no-build analysis of all tracked C++ sources and headers, with a C++20 frontend | Prevents dormant/platform/backend/optional code from disappearing when adding a real build. Requires observed C++20 platform telemetry and reports extraction quality without presenting inferred code as actual-build proof. Only the two exact existing omissions in `coverage-exceptions.json` are allowed; new omissions fail. |
 | `python` | All tracked `.py` files, including workflow controls | Successful-extraction diagnostics must cover the Git inventory. This is not execution, secret-history or cloud admission proof. |
 | `actions` | All tracked workflow YAML | Successful-extraction diagnostics must cover the Git inventory. Standalone PowerShell, shell, CMake, C# and installer sources need their own review. |
@@ -35,6 +35,28 @@ ordinary test and generated SDK header units remain traced and checked against
 `compile_commands.json`. The configure log is retained. This ordering does not
 turn an extractor error in an actual build unit into an accepted exception.
 
+### Pinned compile-time assertion limitation
+
+CodeQL 2.27.3 reports a failed private-member `requires` assertion at line 34 of
+`tests/unit/test_session_owner.cpp` although the actual GCC build accepts it.
+The supplemental Clang-based extraction reports the same diagnostic; this is
+not established as a GCC-only issue. Original assertions and raw SARIF remain
+unchanged. The publication gate accepts only that exact diagnostic with pinned
+test/header SHA256, extractor version, path, line and complete message. It also
+requires the actual GCC unit object, every owned compiled source/header unit,
+zero syntax errors, one compiler error in one partial compilation, and retained
+logs proving the sole nonzero extractor exit is this unit's partial exit 3.
+Missing evidence, drift, another error/partial compilation or any hard abort
+fails. Original errors remain in the report beside `accepted_extractor_limitations`.
+
+This is an accepted scanner limitation, not error-free extraction or proof that
+every function body in that test TU was extracted. The retained hosted artifact
+has no database/TRAP relations with which to establish that stronger claim.
+[GitHub's extraction-error guidance](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/extraction-errors-in-the-database)
+supports assessing a small number of errors in context; it does not justify a
+general error budget. A future tool/source change requires renewed review of
+this exact limitation. No runtime assertion or security query is suppressed.
+
 The manual profile does not qualify POSTGRESQL-only composition, Windows setup/
 registry/IOCP, Apple trust APIs, alternate ODBC widths, installed packages, runtime
 TLS, or the default-off native AWS SDK modules. Those native modules require a
@@ -48,7 +70,8 @@ inventory, actual CMake cache and compiler commands. For the manual profile it
 requires real C++20 arguments, both REDSHIFT composition compile records, every
 owned compiled translation unit, every generated SDK header unit and six named
 critical sources. It also requires positive complete compilation metrics and
-zero extractor compiler/syntax errors. It does not infer extraction from an
+zero extractor compiler/syntax errors except the exact documented limitation
+above. It does not infer extraction from an
 archive, baseline denominator, native compiler success or result count.
 The supplemental source profile sets the supported `cpp.frontend_options`
 extractor option to `--c++20` and independently requires all reported C++ platform

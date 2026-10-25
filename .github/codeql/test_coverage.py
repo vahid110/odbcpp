@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -145,6 +146,118 @@ class ActualBuildEvidence(unittest.TestCase):
         for entry in self.commands:
             entry["command"] = shlex.join(entry.pop("arguments"))
         self.assertTrue(self.validate()["passed"])
+
+    def known_assertion(self):
+        """Synthetic control evidence; never a claim that this object was compiled."""
+        source = COVERAGE.STATIC_ASSERT_SOURCE
+        self.tracked.add(source)
+        self.paths.add(source)
+        self.commands = [c for c in self.commands if not c["file"].endswith(source)]
+        command = self.command(source)
+        self.obj = self.build / "CMakeFiles/test_session_owner.dir/test_session_owner.cpp.o"
+        self.obj.parent.mkdir(parents=True, exist_ok=True)
+        self.obj.write_bytes(b"synthetic compiler object for offline control")
+        command["arguments"] += ["-o", str(self.obj)]
+        self.commands.append(command)
+        repository = Path(__file__).resolve().parents[2]
+        for path in COVERAGE.STATIC_ASSERT_BINDINGS:
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((repository / path).read_bytes())
+        runs = sarif(self.paths)
+        runs[0]["tool"]["driver"]["semanticVersion"] = "2.27.3"
+        for metric in runs[0]["properties"]["metricResults"]:
+            if metric["message"]["text"] == "compiler errors":
+                metric["value"] = 1
+            elif metric["message"]["text"] == "compilations without errors":
+                metric["value"] -= 1
+        path = str(self.root / source)
+        notes = runs[0]["invocations"][0]["toolExecutionNotifications"]
+        notes.append({"descriptor": {"id": "cpp/diagnostics/extraction-warnings"},
+                      "locations": [{"physicalLocation": {
+                          "artifactLocation": {"uri": source}, "region": {"startLine": 34}}}],
+                      "message": {"text":
+                          f'Extraction failed in {path} with warning "{path}", line 34: error: static assertion failed\n'
+                          '  static_assert(!ExposesRawSession<SessionLease> && !ExposesPhysicalSession<SessionLease>);\n'
+                          '  ^\n\n'}})
+        notes.append({"descriptor": {"id": "cpp/extractor/summary"},
+                      "properties": {"attributes": {"extractor-failures": 1,
+                                                     "extractor-successes": 19}}})
+        logs = self.root / "codeql-evidence/codeql-log/extractor"
+        if logs.exists():
+            shutil.rmtree(logs)
+        logs.mkdir(parents=True)
+        self.log = logs / "session.log"
+        self.log.write_text("Command: extractor " + path + "\nExtractor exiting with code 3\n")
+        return runs
+
+    def test_only_exact_reviewed_assertion_is_recorded_without_editing_sarif(self):
+        runs = self.known_assertion()
+        original = json.dumps(runs)
+        report = self.validate(runs)
+        self.assertTrue(report["passed"], report["errors"])
+        self.assertEqual(report["extraction_metrics"]["compiler errors"], 1)
+        self.assertEqual(report["accepted_extractor_limitations"][0]["line"], 34)
+        self.assertEqual(json.dumps(runs), original)
+
+    def test_assertion_disposition_rejects_source_header_version_and_message_drift(self):
+        for mutation in ("source", "header", "version", "message", "line", "warning-count"):
+            with self.subTest(mutation=mutation):
+                runs = self.known_assertion()
+                notes = runs[0]["invocations"][0]["toolExecutionNotifications"]
+                warning = notes[-2]
+                if mutation in ("source", "header"):
+                    path = (COVERAGE.STATIC_ASSERT_SOURCE if mutation == "source"
+                            else "sdk/internal/odbcpp/session/session_owner.h")
+                    with (self.root / path).open("a") as stream:
+                        stream.write("\n// changed source\n")
+                elif mutation == "version":
+                    runs[0]["tool"]["driver"]["semanticVersion"] = "2.27.4"
+                elif mutation == "message":
+                    warning["message"]["text"] += "another error"
+                elif mutation == "line":
+                    warning["locations"][0]["physicalLocation"]["region"]["startLine"] = 35
+                else:
+                    notes.append(warning)
+                self.assertFalse(self.validate(runs)["passed"])
+
+    def test_assertion_disposition_rejects_other_errors_or_partial_compilations(self):
+        for name, value in (("compiler errors", 2), ("syntax errors", 1),
+                            ("compilations without errors", 18)):
+            with self.subTest(metric=name):
+                runs = self.known_assertion()
+                for metric in runs[0]["properties"]["metricResults"]:
+                    if metric["message"]["text"] == name:
+                        metric["value"] = value
+                self.assertFalse(self.validate(runs)["passed"])
+
+    def test_assertion_disposition_requires_compiled_object_and_only_one_partial_exit(self):
+        for mutation in ("object", "empty-object", "compiler", "logs", "hard-exit", "extra-partial", "summary"):
+            with self.subTest(mutation=mutation):
+                runs = self.known_assertion()
+                if mutation == "object":
+                    self.obj.unlink()
+                elif mutation == "empty-object":
+                    self.obj.write_bytes(b"")
+                elif mutation == "compiler":
+                    self.commands[-1]["arguments"][0] = "/usr/bin/clang++"
+                elif mutation == "logs":
+                    self.log.unlink()
+                elif mutation == "hard-exit":
+                    self.log.write_text(self.log.read_text().replace("code 3", "code 4"))
+                elif mutation == "extra-partial":
+                    self.log.with_name("other.log").write_text("Extractor exiting with code 3\n")
+                else:
+                    runs[0]["invocations"][0]["toolExecutionNotifications"][-1]["properties"]["attributes"]["extractor-failures"] = 2
+                self.assertFalse(self.validate(runs)["passed"])
+
+    def test_assertion_disposition_does_not_allow_a_missing_source(self):
+        runs = self.known_assertion()
+        notes = runs[0]["invocations"][0]["toolExecutionNotifications"]
+        notes[:] = [note for note in notes if not (note.get("locations") and
+                    note["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] ==
+                    "tests/unit/test_backend_contract.cpp")]
+        self.assertFalse(self.validate(runs)["passed"])
 
 
 class SourceInventoryEvidence(unittest.TestCase):
