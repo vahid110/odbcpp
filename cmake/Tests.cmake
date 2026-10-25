@@ -194,6 +194,18 @@ find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 add_test(NAME test_xml_evidence COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_xml_evidence.py")
 set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT 60)
+add_test(NAME test_aws_sdk_provenance COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/dependencies/test_aws_sdk_provenance.py")
+add_test(NAME test_pilot_startup_tls_policy COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/redshift/test_pilot_startup_tls_policy.py")
+set_tests_properties(test_aws_sdk_provenance test_pilot_startup_tls_policy
+  PROPERTIES LABELS "unit;security" TIMEOUT 60)
+# This lifecycle runs on the POSIX coordinator (including WSL), not native Windows.
+if(UNIX)
+  add_test(NAME test_redshift_ca_snapshot COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/test_redshift_ca_snapshot.py")
+  set_tests_properties(test_redshift_ca_snapshot PROPERTIES LABELS "unit;security" TIMEOUT 60)
+endif()
 # Compile the dependency regressions against the exact patched bundled headers.
 add_executable(test_bundled_fmt_security tools/ci/test_bundled_fmt_security.cpp)
 target_include_directories(test_bundled_fmt_security PRIVATE "${SPDLOG_INCLUDE_DIR}")
