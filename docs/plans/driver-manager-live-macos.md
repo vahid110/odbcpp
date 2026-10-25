@@ -31,7 +31,7 @@ Probes behind the D buckets ran on the disposable loopback PostgreSQL fixture us
 | T1 | test oracle | 1 | 1 | | `ReportsSupportedTypeInformation` expects 17 Redshift rows. The catalog now has 20: `super` (ab4a2a7) and `geometry`/`geography` (0dfa6c2). None of the three has a literal prefix, suffix or create parameters. unixODBC never reaches the assertion (`FailedCallForgetsOpenCursor`). |
 | T2 | test | | 1 | 1 | `MissingSchemaUsesOdbcSqlstate`: the cursor-close step for a failed `SQLMoreResults` ran on the Redshift branch too. There, the batch fails at `SQLExecDirect`, so no cursor exists. |
 | T3 | test | | | 1 | `DescribesPreparedResultsBeforeExecution` (Redshift branch): a known bucket W deviation (unixODBC writes -1 to the row count on error) that this branch did not apply. |
-| D1 | manager | | (masked) | 27 | On an unconnected handle the manager answers `SQL_ATTR_LOGIN_TIMEOUT` itself: unixODBC 15 (`SQL_LOGIN_TIMEOUT_DEFAULT`), iODBC 0 with 8 bytes written and length 0 (bucket J). The direct driver reports 30. This is live bucket R1; the re-run refined the model (see [R1](#live-deviations-r1r10)). |
+| D1 | manager | | (masked) | 27 | On an unconnected handle the manager answers `SQL_ATTR_LOGIN_TIMEOUT` itself: unixODBC 15 (`SQL_LOGIN_TIMEOUT_DEFAULT`), iODBC 0 with 8 bytes written and length 0 (bucket J). The direct driver reports 30. This is live bucket R1; the re-run refined the model (see [R1](#live-deviations-r1r16)). |
 | D2 | manager | | (masked) | 1 | `NegativeTests` passes a connection string as `SQLConnect` ServerName. The manager reads it as a DSN name and refuses it: unixODBC HY090 (longer than `SQL_MAX_DSN_LENGTH`), iODBC IM002. This is live bucket R2. |
 | D3 | manager | | (masked) | 1 | `SQLGetDiagRecW` through a manager reports the record's UTF-8 byte count as its length in characters. Probe: 62 from both managers, 56 direct. The text itself is complete. This is live bucket R3. |
 | D4 | manager | | (masked) | 1 | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns `SQL_SUCCESS`. iODBC returns `SQL_ERROR` as the driver does, but the record is still gone. This is live bucket R4. |
@@ -104,7 +104,26 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
   - The iODBC ReadOnly case failed partway (bucket A) and left its owned schema `odbcpp_readonly_2026101500000001`, with table `payload`. The harness reported this as residual and doesn't DROP automatically.
   - After the run, the cluster was resumed once. The exact identity was checked against the harness record: schema OID 1398783, table OID 1398784, owner OID 101, one column, one row. The table and schema were dropped with RESTRICT, the schema count was then 0, and the cluster was paused again.
 
-## Live deviations R1–R10
+## Third run `dm-live-macos-7d678b9-a`
+
+- **Source and time:** source `7d678b9`, CI green (runs 40227092963 and 40227092940); 1,288 s.
+- **Result:** 22 of 1,495 failed. Cleanup completed with nothing left over, and the cluster was paused and verified.
+
+| build | pass | fail |
+|---|---|---|
+| direct | 523 | 1 |
+| iODBC | 468 | 17 |
+| unixODBC | 482 | 4 |
+
+- **Timeouts:** the only direct failure, and one in each manager build, is `DirectThousandFourKiBExactCountsAndOwningRecovery` with HYT00. It pulls a ~4 MB result within the 5-second statement budget. It passed in the first run (946 s) and timed out in the slower second and third runs, so it is classified as this connection's throughput, not the code.
+- **Other failures:** the cases now run further, so failures that earlier ones had hidden became visible. Each is fixed in the source after this run:
+  - R12 (9 iODBC catalog cases);
+  - R3 truncation of the copied text (both managers);
+  - bucket L ANSI statement text (2 iODBC cases);
+  - bucket E bound-wide length (1);
+  - R13 (1), R14 (1), R15 (1) and R16 (1).
+
+## Live deviations R1–R16
 
 All were measured on the loopback PostgreSQL fixture unless marked live.
 
@@ -123,6 +142,13 @@ All were measured on the loopback PostgreSQL fixture unless marked live.
 | R9 | iODBC | `SQLPutData(NULL, 0)` is refused with HY009. The ODBC reference allows a NULL pointer with length 0. |
 | R10 | iODBC | `SQLDescribeCol` on column 0 is refused with S1002 (07009) while bookmarks are on (live). |
 | R11 | unixODBC | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or after a failed fetch before any row, raises 24000 from the manager. The driver reports 0 (P1). |
+| R12 | iODBC | A second `SQLFetch` after `SQL_NO_DATA` on a Redshift catalog result is refused with HY010 (live). The ODBC state table allows it and the driver returns `SQL_NO_DATA`. It didn't reproduce on the PostgreSQL fixture. |
+| R13 | iODBC | `SQLFetchScroll` with an unknown orientation raises HY092. The ODBC 3 state is HY106, which is what the driver returns. |
+| R14 | iODBC | Every connect re-applies the login timeout stored before the driver was first loaded, over a later value and the keyword. |
+| R15 | unixODBC | A login timeout the driver refused while connected is replayed to the driver before the next connect. The driver then ignores an invalid `LOGINTIMEOUT` keyword, as it does for any application value. |
+| R16 | unixODBC | `SQLCancelHandle` on an idle statement with an open cursor closes the cursor (the ODBC 2.x meaning): the next `SQLFetch` raises HY010. |
+
+Bucket L also applies in more places: ANSI statement text with UTF-8 identifiers or values. Where that text is incidental to the case, the fixture sends it through the wide API instead (`exec_utf8`, `utf8_direct`). Where ANSI input is the point of the case, the case asserts the widened result and stops.
 
 ## Next run
 

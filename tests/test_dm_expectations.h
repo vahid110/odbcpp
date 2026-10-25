@@ -74,6 +74,11 @@ enum class Deviation {
   PutDataNullEmptyPieceRejected,
   BookmarkColumnDescribeRejected,
   RowNumberOffRowRefused,
+  CatalogRefetchAfterNoDataRefused,
+  FetchOrientationState,
+  ConnectReappliesPreloadLoginTimeout,
+  RefusedLoginTimeoutReplayedOnConnect,
+  CancelClosesIdleCursor,
 };
 
 }  // namespace dm
@@ -186,6 +191,12 @@ inline constexpr Entry kEntries[] = {
     {Deviation::PutDataNullEmptyPieceRejected, kIodbc35216, nullptr, "live bucket R9"},
     {Deviation::BookmarkColumnDescribeRejected, kIodbc35216, nullptr, "live bucket R10"},
     {Deviation::RowNumberOffRowRefused, kUnixodbc2314, nullptr, "live bucket R11"},
+    {Deviation::CatalogRefetchAfterNoDataRefused, kIodbc35216, nullptr, "live bucket R12"},
+    // value: the SQLSTATE the manager raises for an unknown fetch orientation.
+    {Deviation::FetchOrientationState, kIodbc35216, "HY092", "live bucket R13"},
+    {Deviation::ConnectReappliesPreloadLoginTimeout, kIodbc35216, nullptr, "live bucket R14"},
+    {Deviation::RefusedLoginTimeoutReplayedOnConnect, kUnixodbc2314, nullptr, "live bucket R15"},
+    {Deviation::CancelClosesIdleCursor, kUnixodbc2314, nullptr, "live bucket R16"},
 };
 
 inline const Entry* entry(Deviation deviation) {

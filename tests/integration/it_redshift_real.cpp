@@ -275,6 +275,33 @@ protected:
         connection_string_in, string_length1, connection_string_out, buffer_length,
         string_length2, driver_completion));
   }
+  // The second SQLFetch after SQL_NO_DATA on a catalog result. The driver
+  // returns SQL_NO_DATA again; iODBC 3.52.16 refuses it itself with HY010
+  // (CatalogRefetchAfterNoDataRefused, live bucket R12).
+  void refetch_after_no_data() {
+    if (odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::CatalogRefetchAfterNoDataRefused)) {
+      EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt_));
+      EXPECT_EQ("HY010", get_error(SQL_HANDLE_STMT, hstmt_));
+      return;
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+  }
+  // Executes fixture SQL whose UTF-8 text is incidental to the case. A manager
+  // that widens ANSI text byte by byte (AnsiTextWidenedPerByte, bucket L)
+  // would send other text, so through it the same statement goes in wide.
+  SQLRETURN exec_utf8(SQLHSTMT statement, const std::string& sql) {
+    if (!odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+      std::string text = sql;
+      return SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS);
+    }
+    auto wide = odbcpp::test::text::utf8_to_wide(sql);
+    if (!wide) {
+      ADD_FAILURE() << "Fixture SQL must be valid UTF-8";
+      return SQL_ERROR;
+    }
+    wide->push_back(0);
+    return SQLExecDirectW(statement, wide->data(), SQL_NTS);
+  }
   // StringLength2 after a failed SQLDriverConnect(W) that started at
   // `sentinel`. The driver leaves it alone; a manager may write its own value
   // (FailedDriverConnectWritesLength), still leaving the output buffer alone.
@@ -463,7 +490,7 @@ protected:
     expect_catalog_fields(fields);
     ASSERT_FALSE(HasFatalFailure());
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
-    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+    refetch_after_no_data();
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   }
 
@@ -1000,7 +1027,7 @@ void RedshiftRealTest::odbc_primary_key_edge_contract(const char* mode, bool quo
     }
   }
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+  refetch_after_no_data();
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   // One success-path recovery statement, with scalar and typed-NULL output.
   // Per-operation15s timeout remains; future runner supplies its outer bound.
@@ -1064,7 +1091,7 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyMissingLegacyContract) {
   expect_catalog_fields(fields);
   ASSERT_FALSE(HasFatalFailure());
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+  refetch_after_no_data();
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   // Preserve the inherited original window and refresh its remaining operation cap.
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), reinterpret_cast<SQLCHAR*>(
@@ -1596,19 +1623,30 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
       nullptr, 0, &units));
   const auto required = static_cast<SQLSMALLINT>(expected_units->size());
   // A manager reports the record's UTF-8 byte count as its wide length
-  // (WideDiagLengthInUtf8Bytes); the text it copies is still complete.
+  // (WideDiagLengthInUtf8Bytes).
   const auto reported = odbcpp::test::dm::value(
       odbcpp::test::dm::Deviation::WideDiagLengthInUtf8Bytes, required, narrow_bytes);
   EXPECT_EQ(reported, units);
   const SQLWCHAR expected_state[]{'4', '2', 'S', '0', '2', 0};
   EXPECT_EQ(0, std::memcmp(state, expected_state, sizeof(expected_state)));
+  if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::WideDiagLengthInUtf8Bytes)) {
+    // The same manager converts the record itself from its UTF-8 copy, so
+    // capacities and truncation are measured in its byte count. A buffer that
+    // holds that count returns the complete text; the driver's wide truncation
+    // edges below are not reachable through it.
+    std::vector<SQLWCHAR> complete(static_cast<std::size_t>(reported) + 2, SQLWCHAR{0x5a});
+    units = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+        complete.data(), static_cast<SQLSMALLINT>(reported + 1), &units));
+    EXPECT_EQ(reported, units);
+    EXPECT_TRUE(std::equal(expected_units->begin(), expected_units->end(), complete.begin()));
+    EXPECT_EQ(SQLWCHAR{0}, complete[static_cast<std::size_t>(required)]);
+    return;
+  }
 
   std::vector<SQLWCHAR> wide(static_cast<std::size_t>(required) + 2, SQLWCHAR{0x5a});
   units = -1;
-  // The same manager compares its byte count with this exact-fit buffer and
-  // reports truncation, although it copies the whole text.
-  ASSERT_EQ(reported > required ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS,
-      SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
       wide.data(), static_cast<SQLSMALLINT>(required + 1), &units));
   EXPECT_EQ(reported, units);
   EXPECT_TRUE(std::equal(expected_units->begin(), expected_units->end(), wide.begin()));
@@ -1726,8 +1764,8 @@ TEST_F(RedshiftRealTest, WideZeroCapacityAndDescriptorUnicodeColumnNames) {
   }
   std::string query = std::string("SELECT 1 AS \"") + unicode_identifier + "\", 2 AS \"" +
       long_name + "\"";
-  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
-      reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, exec_utf8(checkpoint_statement(hstmt_), query))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
   SQLHDESC ird = nullptr;
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
   ASSERT_NE(nullptr, ird);
@@ -3241,7 +3279,10 @@ TEST_F(RedshiftUnicodeChunkRealTest, PreparedWideChunksBoundTruncationAndNull) {
       EXPECT_TRUE(guards(bound));
       if(trial==0) {
         EXPECT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_));
-        EXPECT_EQ(static_cast<SQLLEN>(expected.size()*sizeof(SQLWCHAR)),bound_length);
+        // iODBC 3.52.16 replaces the driver's total with the bytes it copied
+        // (BoundWideIndicatorIsCopiedBytes, bucket E): one unit here.
+        EXPECT_EQ(odbcpp::test::dm::value(odbcpp::test::dm::Deviation::BoundWideIndicatorIsCopiedBytes,
+            static_cast<SQLLEN>(expected.size()*sizeof(SQLWCHAR)),static_cast<SQLLEN>(sizeof(SQLWCHAR))),bound_length);
         EXPECT_EQ(SQLWCHAR('A'),bound.value[0]);EXPECT_EQ(SQLWCHAR{},bound.value[1]);
         EXPECT_EQ(poison,bound.value[2]);EXPECT_EQ(poison,bound.value[3]);owned_bound={bound.value[0]};
         owned_chunks.clear();const auto full=static_cast<SQLLEN>(expected.size()*sizeof(SQLWCHAR));
@@ -4617,7 +4658,9 @@ TEST_F(RedshiftBufferedLifecycleRealTest, MaxRowsAndForwardOnlyRefusalsPreserveP
       for(const auto orientation:{SQL_FETCH_FIRST,SQL_FETCH_ABSOLUTE}) {
         EXPECT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,static_cast<SQLSMALLINT>(orientation),1));EXPECT_TRUE(get_error(SQL_HANDLE_STMT,hstmt_)=="HYC00");
       }
-      EXPECT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,static_cast<SQLSMALLINT>(999),0));EXPECT_TRUE(get_error(SQL_HANDLE_STMT,hstmt_)=="HY106");
+      // A manager may refuse the unknown orientation itself with its own state (FetchOrientationState).
+      EXPECT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,static_cast<SQLSMALLINT>(999),0));
+      EXPECT_EQ(odbcpp::test::dm::text(odbcpp::test::dm::Deviation::FetchOrientationState,"HY106"),get_error(SQL_HANDLE_STMT,hstmt_));
       ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));
       setting=99;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,&setting,sizeof(setting),nullptr));EXPECT_EQ(2u,setting);
       // Restore the existing scalar buffers and next-row advancement contract.
@@ -5481,7 +5524,7 @@ protected:
   void close_cursor() {ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));}
   void empty_result() {
     std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());
-    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();close_cursor();ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();refetch_after_no_data();close_cursor();ASSERT_FALSE(HasFailure());
   }
   void recovery() {
     close_cursor();ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
@@ -5800,7 +5843,7 @@ TEST_F(RedshiftShowColumnsRealTest, ColumnLikeFilterPreservesTypeDimensions) {
 TEST_F(RedshiftShowColumnsRealTest, NoMatchEmptyColumnFilterAndRecovery) {
   connect_bounded();ASSERT_FALSE(HasFailure());columns(std::string{},false);ASSERT_FALSE(HasFailure());
   std::array<ColumnDescriptor,18> descriptors;column_metadata(descriptors);ASSERT_FALSE(HasFailure());
-  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();close_cursor();ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();refetch_after_no_data();close_cursor();ASSERT_FALSE(HasFailure());
   recovery();ASSERT_FALSE(HasFailure());EXPECT_EQ(1u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
 }
 
@@ -8232,7 +8275,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
   struct IntCell { std::array<unsigned char,8> before;SQLINTEGER value;std::array<unsigned char,8> after; } output_{};
   SQLLEN output_length_{97};
   SQLINTEGER sibling_snapshot_{-1};
-  std::optional<SQLUINTEGER> application_login_timeout_;
+  std::optional<SQLUINTEGER> application_login_timeout_,preload_login_timeout_;
   static std::string typed_sql(){return "SELECT CAST(? AS INTEGER)";}
   void SetUp() override {
     setup_admitted("ODBCPP_REDSHIFT_LOGIN_TIMEOUT_ADMISSION",
@@ -8265,7 +8308,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     // keyword tests must not accidentally exercise that overriding application value.
     ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_DBC,henv_,&hdbc_));
-    application_login_timeout_.reset();connect_attempted_=false;
+    application_login_timeout_.reset();preload_login_timeout_.reset();connect_attempted_=false;
     ASSERT_NO_FATAL_FAILURE(readback(30));
   }
   // Fixture forwards record each login timeout the application sets, whether
@@ -8279,6 +8322,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
   SQLRETURN note_login_timeout(SQLHDBC connection,SQLINTEGER attribute,SQLPOINTER value,SQLRETURN result){
     if(connection==hdbc_&&attribute==SQL_ATTR_LOGIN_TIMEOUT){
       application_login_timeout_=static_cast<SQLUINTEGER>(reinterpret_cast<std::uintptr_t>(value));
+      if(!connect_attempted_){preload_login_timeout_=application_login_timeout_;}
     }
     return result;
   }
@@ -8320,6 +8364,12 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     if(!connect_attempted_&&odbcpp::test::dm::deviates(Deviation::ManagerAnswersLoginTimeoutBeforeDriverLoad)){
       expected=application_login_timeout_.value_or(
           manager_default(Deviation::ManagerAnswersLoginTimeoutBeforeDriverLoad));
+    }
+    if(connected_&&preload_login_timeout_&&
+       odbcpp::test::dm::deviates(Deviation::ConnectReappliesPreloadLoginTimeout)){
+      // The manager applies the value it stored before the driver was first
+      // loaded on every connect, over later values and the keyword.
+      expected=*preload_login_timeout_;
     }
     if(manager_attribute(SQL_ATTR_LOGIN_TIMEOUT,expected)){
       return;
@@ -8410,6 +8460,20 @@ TEST_F(RedshiftLoginTimeoutOptionsRealTest, KeywordsAAndWLocalRefusalAndSameDbcH
   ASSERT_NO_FATAL_FAILURE(readback(2));
   ASSERT_NO_FATAL_FAILURE(release_connection());
   ASSERT_NO_FATAL_FAILURE(readback(2));
+  if(odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::RefusedLoginTimeoutReplayedOnConnect)){
+    // The manager replays the 3 the driver refused while connected before
+    // this connect, so the driver has an application value and ignores the
+    // invalid keyword, as it does directly: the connect succeeds.
+    ASSERT_TRUE(cap(window_end_,false));
+    auto text=odbcpp::test::text::utf8_to_wide(keyword_input("LOGINTIMEOUT","not-decimal"));ASSERT_TRUE(text);text->push_back(0);
+    SQLWCHAR output[4]{};SQLSMALLINT bytes=66;
+    const auto result=SQLDriverConnectW(hdbc_,nullptr,text->data(),SQL_NTS,output,4,&bytes,SQL_DRIVER_NOPROMPT);
+    if(result==SQL_SUCCESS||result==SQL_SUCCESS_WITH_INFO){connected_=true;}
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO,result)<<get_error(SQL_HANDLE_DBC,hdbc_);
+    ASSERT_NO_FATAL_FAILURE(readback(3));
+    ASSERT_NO_FATAL_FAILURE(release_connection());
+    return;
+  }
   ASSERT_NO_FATAL_FAILURE(invalid_selected(true,2));
   ASSERT_NO_FATAL_FAILURE(login("LT","3",3,true));
   ASSERT_NO_FATAL_FAILURE(readback(3));
@@ -9042,7 +9106,7 @@ TEST_F(RedshiftVarcharSizingRealTest, ReportedMetadataPreservesValuesParametersN
   ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
   const auto direct = std::string("SELECT CAST('") + value + "' AS VARCHAR(300)) AS sizing_value";
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
-  ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(direct.c_str())), SQL_NTS)));
+  ASSERT_TRUE(known_sql(exec_utf8(sibling_, direct)));
   ASSERT_NO_FATAL_FAILURE(sizing_descriptor(sibling_, SQL_LONGVARCHAR, 17));
   auto prepared = odbcpp::test::text::utf8_to_wide("SELECT CAST(? AS VARCHAR(300)) AS sizing_value"); ASSERT_TRUE(prepared); prepared->push_back(0);
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, prepared->data(), SQL_NTS)));
@@ -9381,6 +9445,14 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
   }
   EXPECT_EQ(SQL_FALSE, supported);
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::CancelClosesIdleCursor)) {
+    // The manager treats SQLCancelHandle on the idle sibling as closing its
+    // cursor (the ODBC 2.x meaning) and refuses the fetch itself; the rest of
+    // the case reads that cursor.
+    EXPECT_EQ(SQL_ERROR, SQLFetch(sibling_));
+    EXPECT_EQ("HY010", get_error(SQL_HANDLE_STMT, sibling_));
+    return;
+  }
   result = SQLFetch(sibling_); if (result != SQL_SUCCESS) unknown_completion_ = true;
   ASSERT_EQ(SQL_SUCCESS, result);
   SQLINTEGER value = -1; SQLLEN length = 97;
