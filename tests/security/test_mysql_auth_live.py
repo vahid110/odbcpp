@@ -234,13 +234,13 @@ def main():
                               (date_parameters_binary, 'DATE parameter'), (receipt_binary, 'DATETIME receipt'), (decimal_receipt_binary, 'DECIMAL receipt')):
             if binary is not None and (not binary.is_file() or not os.access(binary, os.X_OK)):
                 parser.error(label + ' binary must be executable')
-        inputs = [Path(args.probe).resolve()] + [binary for binary in
-            (decimal_binary, datetime_binary, date_parameters_binary, receipt_binary, decimal_receipt_binary) if binary is not None]
-        outputs = [output] + [junit for junit in
-            (decimal_junit, datetime_junit, date_parameters_junit, receipt_junit, decimal_receipt_junit) if junit is not None]
-        if (any(same_artifact(out, source) for out in outputs for source in inputs)
-                or any(same_artifact(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])):
-            parser.error('result paths must be distinct from inputs and other results')
+    inputs = [Path(args.probe).resolve()] + [binary for binary in
+        (decimal_binary, datetime_binary, date_parameters_binary, receipt_binary, decimal_receipt_binary) if binary is not None]
+    outputs = [output] + [junit for junit in
+        (decimal_junit, datetime_junit, date_parameters_junit, receipt_junit, decimal_receipt_junit) if junit is not None]
+    if (any(same_artifact(out, source) for out in outputs for source in inputs)
+            or any(same_artifact(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])):
+        parser.error('result paths must be distinct from inputs and other results')
     if decimal_binary is not None:
         if not decimal_binary.is_file() or not os.access(decimal_binary, os.X_OK):
             parser.error('decimal binary must be executable')
