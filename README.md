@@ -2,6 +2,10 @@
 
 A modern C++20 framework for building database-specific ODBC drivers with pluggable protocol support.
 
+Licensed under the [MIT License](LICENSE). See [Contributing](CONTRIBUTING.md)
+for changes and bug reports, and [Security](SECURITY.md) for private vulnerability
+reports. Third-party components retain their own licenses.
+
 ## Features
 
 - **ODBC API Foundation**: 76 entry points (49 non-wide, 27 Unicode) with diagnostics and descriptor storage
