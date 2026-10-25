@@ -294,10 +294,20 @@ class LocalValidationTests(unittest.TestCase):
             self.receipt[field] = old
 
     def test_control_only_source_applicability_is_narrow(self):
-        with patch.object(checkpoint.subprocess, 'check_output', return_value='tools/development/live_checkpoint.py\n'):
+        control_changes = ('tools/development/live_checkpoint.py\n'
+                           'tools/development/redshift_powerbi_app_checkpoint.py\n'
+                           'tools/development/test_redshift_powerbi_app_checkpoint.py\n'
+                           'tools/development/redshift_powerbi_sessions.py\n'
+                           'tools/development/test_redshift_powerbi_sessions.py\n'
+                           'tools/development/redshift_powerbi_session_ops.py\n'
+                           'tools/development/test_redshift_powerbi_session_ops.py\n'
+                           'tools/development/windows_powerbi_owner.py\n'
+                           'tools/development/test_windows_powerbi_publication.py\n')
+        with patch.object(checkpoint.subprocess, 'check_output', return_value=control_changes):
             checkpoint.same_validation_product('a'*40, 'b'*40)
-        for path in ('sdk/security.cpp', 'tools/development/redshift_resource.py'):
-            with patch.object(checkpoint.subprocess, 'check_output', return_value=path+'\n'):
+        for path in ('sdk/security.cpp', 'CMakeLists.txt', 'odbc/handles.cpp',
+                     'tools/development/redshift_resource.py'):
+            with patch.object(checkpoint.subprocess, 'check_output', return_value=control_changes+path+'\n'):
                 with self.assertRaises(checkpoint.lifecycle.Refused):
                     checkpoint.same_validation_product('a'*40, 'b'*40)
 
