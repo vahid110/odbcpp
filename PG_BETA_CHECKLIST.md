@@ -104,6 +104,14 @@ not a cap on new tests required by code changes. In G0 add exact selected
 application/server/OS/Driver Manager versions and case-level evidence for the
 surfaces above; until then this is not a frozen release profile.
 
+`test_connection_pool` and `it_connection_pool` below retain quarantined prototype
+regression coverage; they do not prove production Driver Manager pooling. SDK
+lease and backend reset tests likewise qualify only their own contracts. The
+separate [pooling acceptance matrix](CONNECTION_POOLING.md#qualification-and-remaining-gaps)
+requires real DM reuse, observable reset boundaries, thread handoff and state/
+security isolation for each advertised profile. Its #101/#102 follow-ups remain
+open; an optional SDK pool is not a beta prerequisite for ordinary DM pooling.
+
 - `test_api_validation`
 - `test_async_tls_transport`
 - `test_async_transport`

@@ -9,6 +9,8 @@ import copy
 import hashlib
 import json
 import os
+from pathlib import Path
+import re
 import stat
 import time
 
@@ -18,16 +20,30 @@ from tools.development.redshift_ctest_lifecycle import need, record, verify_publ
 from tools.development.redshift_ctest_ops import Operations
 
 
-def plan():
-    # Minimal relationship6/62SQL, cap7/70SQL, startup5/23SQL and
+def plan(resource_kind='provisioned'):
+    # Derive relationship and cap costs; retain startup5/23SQL and
     # capture+max16 guarded termination+two zero probes4/47SQL.
-    return {'total_helpers': 22, 'total_SQL': 202, 'total_logins': 22,
-            'total_inclusive': 224, 'network_helpers_separate': 1,
-            'maximum_cleanup_targets': 16, 'relationship': relationship.plan(),
-            'session_controls': sessions.public_plan(),
+    need(resource_kind in ('provisioned', 'serverless'), 'app_plan_resource_kind')
+    if resource_kind == 'serverless':
+        from tools.development.redshift_ctest_ops import serverless_fixture_reserve
+        return dict(serverless_fixture_reserve('app'),
+                    relationship=relationship.plan(resource_kind),
+                    session_controls=sessions.public_plan(resource_kind),
+                    no_resource_or_admission_effects=True)
+    relationship_plan = relationship.plan()
+    session_controls = sessions.public_plan()
+    cap = session_controls['maximum_changed_path']
+    helpers = relationship_plan['total_helpers'] + cap['helpers']
+    statements = (relationship_plan['total_SQL'] + cap['SQL'] +
+                  47 - relationship_plan['principal_cleanup_reserve']['SQL'])
+    result = {'total_helpers': helpers, 'total_SQL': statements, 'total_logins': helpers,
+            'total_inclusive': statements + helpers, 'network_helpers_separate': 1,
+            'maximum_cleanup_targets': 16, 'relationship': relationship_plan,
+            'session_controls': session_controls,
             'principal_cleanup': {'helpers': 4, 'SQL': 47},
             'scope': 'single minimal app partition; no full native fixtures or repeated vendor cycle',
             'no_resource_or_admission_effects': True}
+    return result
 
 
 class PowerBiSessionOperations(Operations):
@@ -37,7 +53,8 @@ class PowerBiSessionOperations(Operations):
         need(self.approval.get('inventory_scope') == 'complete_app_checkpoint_partition',
              'fresh_app_partition_admission_required')
         authority = self.approval['powerbi_sessions']
-        self.powerbi_session_state = sessions.new_state(**authority)
+        self.powerbi_session_state = sessions.new_state(**authority,
+            **({'resource_kind': 'serverless'} if self.resource_kind == 'serverless' else {}))
         now_ms, monotonic = self.utc_ms(), self.now()
         need(authority['admitted_ms'] <= now_ms < authority['execution_deadline_ms'] and
              authority['cleanup_deadline_ms'] - authority['admitted_ms'] <= 7200000,
@@ -83,7 +100,7 @@ class PowerBiSessionOperations(Operations):
         need(self.now() < deadline <= original, 'original_session_monotonic_deadline')
 
     def session_step(self, kind, deadline):
-        need(kind in sessions.STAGES, 'fixed_session_stage')
+        need(kind in sessions.ALL_STAGES, 'fixed_session_stage')
         self._session_deadline(kind, deadline)
         if kind in ('quiesce', 'restore'):
             need(self.readers_known and self.principals_quiescent and
@@ -123,6 +140,10 @@ class PowerBiSessionOperations(Operations):
 
     def decide_session_cap(self, measurement_pin, deadline):
         self._session_deadline('snapshot', deadline)
+        # The unchanged-cap protocol has a closed decision filename. Route it
+        # through its path guard before even the initial descriptor read.
+        if Path(measurement_pin['path']).name == 'retention.json':
+            return self.retain_original_cap(measurement_pin, deadline)
         verify_public_pin(measurement_pin['path'], measurement_pin['sha256'])
         descriptor = os.open(measurement_pin['path'], os.O_RDONLY | os.O_NOFOLLOW)
         try:
@@ -134,6 +155,8 @@ class PowerBiSessionOperations(Operations):
         finally:
             os.close(descriptor)
         measurement = json.loads(body)
+        if type(measurement) is dict and measurement.get('decision_kind') == 'retain_original_cap':
+            return self.retain_original_cap(measurement_pin, deadline)
         # These pins refer to actual reviewed client-demand/server observations.
         # This verifies their bytes, never invents or parses a measured demand.
         decided = sessions.decide(self.powerbi_session_state, measurement, now_ms=self.utc_ms())
@@ -144,6 +167,91 @@ class PowerBiSessionOperations(Operations):
         self.session_sequence += 1
         self._publish_session('decision', {'state': decided, 'measurement': measurement_pin})
         self._session_deadline('snapshot', deadline)
+        self.powerbi_session_state = decided
+        return copy.deepcopy(decided)
+
+    def retain_original_cap(self, decision_pin, deadline):
+        """Distinct unchanged-cap route; baseline/cap proof is never demand."""
+        self._session_deadline('baseline_revalidate', deadline)
+        need(self.readers_known and self.native is not None and self.native.readers_known,
+             'retention_requires_known_baseline_readers')
+
+        from tools.development.redshift_powerbi_bridge import BASE as native_base
+        run = self.approval.get('run_name')
+        need(type(run) is str and re.fullmatch(r'powerbi007-(?:own|aws2)-[A-Za-z0-9_-]{1,64}', run)
+             and self.directory.is_absolute() and self.directory.name == run and
+             '..' not in self.directory.parts and
+             self.approval.get('run_directory') == str(self.directory), 'retention_actual_admitted_run')
+        decision_path = self.directory / 'retention.json'
+        zero_path = self.directory / 'baseline-exact-zero.json'
+        review_path = self.directory / 'retention-review.json'
+        baseline_path = native_base / run / 'baseline-closed.json'
+
+        def bound(ref, expected):
+            need(type(ref) is dict and set(ref) == {'path', 'sha256'} and
+                 ref['path'] == str(expected), 'retention_fixed_evidence_path')
+
+        def load(ref, expected, maximum=16384):
+            bound(ref, expected)
+            verify_public_pin(str(expected), ref['sha256'])
+            descriptor = os.open(expected, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(descriptor)
+                need(stat.S_ISREG(info.st_mode) and info.st_size <= maximum, 'bounded_retention_evidence')
+                body = os.read(descriptor, maximum + 1)
+                need(len(body) == info.st_size and hashlib.sha256(body).hexdigest() == ref['sha256'],
+                     'retention_evidence_changed')
+            finally:
+                os.close(descriptor)
+            return json.loads(body)
+
+        decision = load(decision_pin, decision_path)
+        need(type(decision) is dict and {'exact_zero', 'baseline_closed', 'review'} <= set(decision),
+             'retention_fixed_evidence_path')
+        for key, expected in (('exact_zero', zero_path), ('baseline_closed', baseline_path),
+                              ('review', review_path)):
+            bound(decision[key], expected)
+        sessions._retention(decision, self.powerbi_session_state, self.utc_ms())
+        # This is the bridge's actual completed baseline, not a fabricated
+        # replacement for an observed query result or native-reader proof.
+        zero = load(decision['exact_zero'], zero_path)
+        baseline = load(decision['baseline_closed'], baseline_path, maximum=2 * 1024 * 1024)
+        load(decision['review'], review_path)
+        need(set(zero) == {'source_head', 'run_id', 'native_baseline',
+                          'exact_principal_zero', 'SQL_proof'} and
+             zero['source_head'] == self.approval['source_head'] and
+             zero['run_id'] == self.approval['run_name'] and
+             zero['native_baseline'] == decision['baseline_closed'] and
+             zero['exact_principal_zero'] is True and
+             zero['SQL_proof'] == self.proofs.get('principal_zero') and
+             type(zero['SQL_proof']) is dict and set(zero['SQL_proof']) == {'raw', 'intent', 'status'},
+             'retention_requires_actual_current_baseline_zero')
+        from tools.development.windows_powerbi_contract import safe_readers
+        need(baseline['source_head'] == self.approval['source_head'] and
+             baseline['run_id'] == self.approval['run_name'] and
+             baseline['phase'] == 0 and baseline['normal_close'] is True and
+             baseline['workload_sha256'] == self.powerbi_session_state['input_profile_sha256'] and
+             safe_readers(baseline['process']), 'retention_requires_actual_closed_baseline')
+        for ref in zero['SQL_proof'].values():
+            verify_public_pin(ref['path'], ref['sha256'])
+        # One new read helper replaces neither the baseline proof nor its
+        # query-zero assertion. Its exact frame parser rereads identity/caps and
+        # broad session zero after the app has stopped, under normal counters.
+        refreshed = self.session_step('baseline_revalidate', deadline)
+        need('powerbi_sessions_baseline_revalidate' in self.proofs,
+             'retention_requires_actual_revalidation_SQL_proof')
+        decided = sessions.retain_original_cap(refreshed, decision, now_ms=self.utc_ms())
+        # Recheck the exact decision/evidence after the read dispatch, before
+        # durably publishing. No readback can authorize a changed decision.
+        need(load(decision_pin, decision_path) == decision and load(decision['exact_zero'], zero_path) == zero,
+             'retention_decision_or_baseline_changed')
+        verify_public_pin(str(baseline_path), decision['baseline_closed']['sha256'])
+        verify_public_pin(str(review_path), decision['review']['sha256'])
+        self._session_deadline('baseline_revalidate', deadline)
+        self.session_sequence += 1
+        self._publish_session('decision', {'state': decided, 'retention': decision_pin,
+            'revalidation_SQL_proof': self.proofs['powerbi_sessions_baseline_revalidate']})
+        self._session_deadline('baseline_revalidate', deadline)
         self.powerbi_session_state = decided
         return copy.deepcopy(decided)
 

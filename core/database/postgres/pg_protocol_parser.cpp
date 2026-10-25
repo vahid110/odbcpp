@@ -986,6 +986,23 @@ bool PgProtocolParser::is_error_response(const Message& msg) {
   return msg.tag == 'E';
 }
 
+bool PgProtocolParser::is_terminal_error_response(const Message& msg) {
+  if (msg.tag != 'E') return false;
+  const auto error = decode_error_fields(msg.payload);
+  // V is the protocol's nonlocalized severity. Prefer it over S, which may be
+  // localized; old servers without V still expose the standard S spelling.
+  if (const auto severity = error.fields.find('V'); severity != error.fields.end()) {
+    if (severity->second != "ERROR" && severity->second != "FATAL" &&
+        severity->second != "PANIC") {
+      throw std::runtime_error("Invalid PostgreSQL error severity");
+    }
+    return severity->second == "FATAL" || severity->second == "PANIC";
+  }
+  const auto& severity = error.fields.at('S');
+  if (severity.empty()) throw std::runtime_error("Empty PostgreSQL error severity");
+  return severity == "FATAL" || severity == "PANIC";
+}
+
 std::string PgProtocolParser::extract_error_message(const Message& msg) {
   if (msg.tag != 'E') return "";
   

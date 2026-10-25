@@ -11692,12 +11692,14 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   SQLCHAR query[] =
       "SELECT JSON_PARSE('{\"a\":1,\"b\":[true,null]}') AS o, JSON_PARSE('[1,\"abc\",null]') AS a, "
       "JSON_PARSE('\"s\"') AS s, JSON_PARSE('null') AS jn, CAST(NULL AS SUPER) AS sn, "
-      "JSON_PARSE('\"\xe2\x82\xac\"') AS u";
+      "JSON_PARSE('\"\xe2\x82\xac\"') AS u, "
+      "JSON_SERIALIZE(JSON_PARSE('null')) AS serialized_jn, "
+      "JSON_TYPEOF(JSON_PARSE('null')) AS type_jn";
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS))
       << get_error(SQL_HANDLE_STMT, hstmt_);
   SQLSMALLINT count = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count));
-  ASSERT_EQ(6, count);
+  ASSERT_EQ(8, count);
   for (SQLUSMALLINT column = 1; column <= 6; ++column) {
     SQLSMALLINT type = -1;
     SQLULEN size = 99;
@@ -11714,8 +11716,10 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   EXPECT_EQ("{\"a\":1,\"b\":[true,null]}", text_cell(1, length));
   EXPECT_EQ("[1,\"abc\",null]", text_cell(2, length));
   EXPECT_EQ("\"s\"", text_cell(3, length));
-  // Redshift makes a top-level JSON null SQL NULL: JSON_PARSE('null') IS NULL
-  // is true on the server (docs/redshift-special-types.md).
+  // The live protocol returns raw SUPER null as SQL NULL. Explicit JSON
+  // serialization is a VARCHAR containing four bytes, not a NULL indicator.
+  // Scripted-wire tests separately preserve an actual SUPER text payload
+  // containing "null" when the server sends those four bytes.
   text_cell(4, length);
   EXPECT_EQ(SQL_NULL_DATA, length);
   text_cell(5, length);
@@ -11724,6 +11728,10 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   const auto unicode = text_cell(6, length);
   RecordProperty("super_unicode_serialization", unicode);
   EXPECT_TRUE(unicode == "\"\xe2\x82\xac\"" || unicode == "\"\\u20ac\"") << unicode;
+  EXPECT_EQ("null", text_cell(7, length));
+  EXPECT_EQ(4, length);
+  EXPECT_EQ("null", text_cell(8, length));
+  EXPECT_EQ(4, length);
   ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 }

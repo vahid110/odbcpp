@@ -10,10 +10,21 @@ ADMIN_KEYS = {'zero','permission_initial','grant','permission_check','revoke','p
 
 class TimeoutFactory:
     ADMIN_KEYS = ADMIN_KEYS
-    def __init__(self, table, expected_principal):
+    def __init__(self, table, expected_principal=None, *, allow_current_identity=False,
+                 resource_kind='provisioned'):
         need(re.fullmatch(r'odbcpp_timeout_gate_[A-Za-z0-9_]+', table) is not None,
              'admitted_timeout_table')
-        need(set(expected_principal) == {'database','owner','owner_oid','schema_oid','schema_owner_oid'}
+        need(type(allow_current_identity) is bool and resource_kind in ('provisioned', 'serverless'),
+             'timeout_identity_mode')
+        self.resource_kind = resource_kind
+        self.allow_current_identity = allow_current_identity
+        self.TABLE = table
+        self.EXPECTED_PRINCIPAL = None
+        if allow_current_identity:
+            need(resource_kind == 'serverless' and expected_principal is None,
+                 'current_identity_serverless_only')
+            return
+        need(type(expected_principal) is dict and set(expected_principal) == {'database','owner','owner_oid','schema_oid','schema_owner_oid'}
              and expected_principal['database'] == DATABASE
              and expected_principal['owner'] == ORDINARY, 'admitted_timeout_principal')
         self.TABLE = table
@@ -21,7 +32,53 @@ class TimeoutFactory:
         for key in ('owner_oid','schema_oid','schema_owner_oid'):
             self.EXPECTED_PRINCIPAL[key] = str(self.positive(expected_principal[key]))
 
+    def bind_current_principal(self, value):
+        """Bind once from the admitted read-only permission row before any DDL.
+
+        The fixed SQL resolves existing exact names. Empty/missing or duplicate
+        rows are rejected by the caller's exact-one-row CSV parser. No role or
+        schema is created to satisfy this discovery.
+        """
+        need(self.allow_current_identity and self.EXPECTED_PRINCIPAL is None,
+             'current_identity_one_use')
+        fields = {'database', 'owner', 'owner_oid', 'schema_oid', 'schema_owner_oid'}
+        if type(value) is dict and set(value) == fields:
+            need(value['database'] == DATABASE and value['owner'] == ORDINARY,
+                 'current_identity_exact_database_principal')
+            for key in ('owner_oid', 'schema_oid', 'schema_owner_oid'):
+                self.positive(value[key])
+            need(value['owner_oid'] != value['schema_owner_oid'], 'current_identity_distinct_principals')
+        else:
+            # Retain the existing permission-row API for historical controls.
+            self.permission(value, absent='t')
+        self.EXPECTED_PRINCIPAL = {key: value[key] for key in
+            ('database', 'owner', 'owner_oid', 'schema_oid', 'schema_owner_oid')}
+        return dict(self.EXPECTED_PRINCIPAL)
+
+    def current_identity_stage(self):
+        """Existing exact principals/schema, independent of any fixture table.
+
+        Called before the first fixture mutation in every Serverless partition.
+        It neither creates missing resources nor requires an unrelated timeout
+        table to be absent. Ordinary fixture privilege/absence checks still run
+        at their original stages after the identity has been bound.
+        """
+        need(self.resource_kind == 'serverless' and self.allow_current_identity and
+             self.EXPECTED_PRINCIPAL is None, 'current_identity_one_use')
+        headers = ('database', 'owner', 'owner_oid', 'schema_oid', 'schema_owner_oid')
+        query = ("SELECT current_database() AS database,TRIM(u.usename) AS owner,"
+                 "u.usesysid AS owner_oid,n.oid AS schema_oid,n.nspowner AS schema_owner_oid "
+                 "FROM pg_catalog.pg_namespace n CROSS JOIN pg_catalog.pg_user u "
+                 "CROSS JOIN pg_catalog.pg_user a WHERE current_database()='odbcpp_pilot' "
+                 "AND current_user='odbcpp_pilot_admin' AND n.nspname='odbcpp_fixture' "
+                 "AND u.usename='odbcpp_pilot_test' AND NOT u.usesuper "
+                 "AND a.usename='odbcpp_pilot_admin' AND a.usesuper "
+                 "AND a.usesysid<>u.usesysid AND n.nspowner=a.usesysid LIMIT 2;")
+        return {'stage': 'current_identity', 'role': 'admin', 'query': query,
+                'statements': 1, 'headers': headers, 'maxrows': 1}
+
     def _bind_oids(self, queries):
+        need(self.EXPECTED_PRINCIPAL is not None, 'timeout_current_identity_unbound')
         result = {}
         for key, (sql, headers, maximum, count) in queries.items():
             fields = {'107830': 'schema_oid', '101': 'owner_oid', '100': 'schema_owner_oid'}
@@ -86,6 +143,14 @@ class TimeoutFactory:
         def guard(predicate, body, label='held'):
             return 'SELECT (' + predicate + ') AS ' + label + '\n\\gset\n\\if :' + label + '\n' + body + '\n\\else\n\\quit 4\n\\endif'
         q = {'permission_initial': (permission_sql, ph, 1, 4), 'permission_check': (permission_sql, ph, 1, 4), 'permission_final': (permission_sql, ph, 1, 4), 'inspect': (inspect, ph, 1, 4)}
+        if self.EXPECTED_PRINCIPAL is None:
+            need(self.allow_current_identity and not facts, 'unbound_identity_before_mutation_only')
+            # A current OID is evidence only for the exact existing namespace
+            # owned by the admitted database administrator, never a foreign
+            # schema found under a familiar name.
+            current_sql = permission_sql.replace(' LIMIT 2;',
+                " AND n.nspowner=(SELECT usesysid FROM pg_catalog.pg_user WHERE usename='odbcpp_pilot_admin') LIMIT 2;")
+            return {'permission_initial': (current_sql, ph, 1, 4)}
         if 'permission' not in facts:
             return self._bind_oids(q)
         initial = self.permission(facts['permission'], absent='t')

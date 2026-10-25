@@ -73,7 +73,7 @@ class PartitionTests(unittest.TestCase):
     def test_complete_operational_reserve_stays_within_unchanged_caps(self):
         plan = validate_fixture_plan(partition.plan())
         self.assertEqual((plan['total_helpers'], plan['total_SQL'],
-                          plan['total_logins'], plan['total_inclusive']), (15, 116, 15, 131))
+                          plan['total_logins'], plan['total_inclusive']), (15, 124, 15, 139))
         self.assertEqual(plan['maximum_cleanup_targets'], 8)
 
     def test_only_own_DSN_profile_accepts_actual_distinct_OIDs(self):

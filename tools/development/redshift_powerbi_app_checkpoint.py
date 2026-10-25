@@ -295,8 +295,15 @@ def _manifest(plan, checkpoint, plan_path):
             *plan['public_pins'], plan['checkpoint_plan'], plan['native_plan'],
             plan['operator_policy']]
     refs += [checkpoint[name] for name in ('index', 'expected', 'profiles', 'specs',
-                                          'ci_receipt', 'checkpoint_expected',
-                                          'checkpoint_partitions')]
+                                          'checkpoint_expected', 'checkpoint_partitions')]
+    # The canonical reader has already validated the selected launch route.
+    # Keep its actual evidence pinned without turning local validation into CI.
+    for name in ('ci_receipt', 'local_validation'):
+        if checkpoint.get(name):
+            ref = checkpoint[name]
+            if name == 'local_validation':
+                ref = dict(path=str(canonical.validation_file(ref)), sha256=ref['sha256'])
+            refs.append(ref)
     for ref in refs:
         path = str(pin_file(ref))
         need(path not in pins or pins[path] == ref['sha256'], 'conflicting_app_public_pin')
@@ -324,7 +331,9 @@ def execute(plan_path, admission_path):
         deadlines = _deadlines(components, admission, monotonic, wall)
         deadlines.validate(time.clock_gettime(time.CLOCK_MONOTONIC))
         from tools.development.redshift_ctest_lifecycle import record, validate_fixture_plan
-        fixture_plan = validate_fixture_plan(components.fixture_plan())
+        resource_kind = checkpoint['resource'].get('kind', 'provisioned')
+        fixture_plan = validate_fixture_plan(components.fixture_plan(
+            **({'resource_kind': resource_kind} if resource_kind == 'serverless' else {})))
         tools, manifest = _manifest(plan, checkpoint, plan_path)
         profiles = json.loads(pin_file(checkpoint['profiles']).read_text(encoding='utf-8-sig'))
         specs = json.loads(pin_file(checkpoint['specs']).read_text(encoding='utf-8-sig'))

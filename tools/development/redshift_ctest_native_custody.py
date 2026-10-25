@@ -126,6 +126,12 @@ def _observe(ops, deadline, state):
 
 def before(ops, deadline):
     state = {'baseline': None, 'after': None, 'complete': False}
+    if getattr(ops, 'resource_kind', 'provisioned') == 'serverless':
+        expected = ops.timeout_factory.EXPECTED_PRINCIPAL
+        _need(type(expected) is dict and expected.get('database') == 'odbcpp_pilot' and
+              expected.get('owner') == 'odbcpp_pilot_test' and
+              _positive(expected.get('owner_oid')), 'census_current_owner_unbound', state)
+        state['owner_oid'] = int(expected['owner_oid'])
     ops.native_custody_state = state
     state['baseline'] = _observe(ops, deadline, state)
     return state
@@ -144,8 +150,13 @@ def after(ops, state, deadline):
     removed = sorted(baseline - current)
     schemas = {r[0] for r in residual if r[0] != 'public'}
     # A changed owner or unrecognized child is debt, never deletion authority.
-    owned = all(int(r[4]) == OWNER and
-                (r[0] == 'public' or int(r[6]) == OWNER) for r in residual)
+    owner = state.get('owner_oid', OWNER)
+    if getattr(ops, 'resource_kind', 'provisioned') == 'serverless':
+        expected = ops.timeout_factory.EXPECTED_PRINCIPAL
+        _need(type(expected) is dict and owner == int(expected['owner_oid']),
+              'census_current_owner_changed', state)
+    owned = all(int(r[4]) == owner and
+                (r[0] == 'public' or int(r[6]) == owner) for r in residual)
     receipt = {'complete': not residual and not removed,
                'residual': residual, 'baseline_removed_or_changed': removed,
                'within_source_schema_count': len(schemas) <= MAX_NEW_SCHEMAS,

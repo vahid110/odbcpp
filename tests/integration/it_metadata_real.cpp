@@ -354,8 +354,9 @@ private:
     }
     bool identity(SQLHSTMT statement, const std::string& prefix) {
         std::array<std::string, 4> fields;
-        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), starttime FROM stv_sessions "
-            "WHERE process=pg_backend_pid() AND user_name=current_user AND db_name=current_database()") ||
+        if (!query(statement, "SELECT current_user, current_database(), pg_backend_pid(), start_time FROM sys_session_history "
+            "WHERE session_id=pg_backend_pid() AND CAST(user_id AS INTEGER)=CURRENT_USER_ID "
+            "AND database_name=current_database() AND status='active'") ||
             !row(statement, fields) || !end_row(statement)) return false;
         if (!timeout_positive_id(fields[2]) || fields[3].empty()) return fail("session birth identity");
         property(prefix + "_owner_raw_size", std::to_string(fields[0].size()));
@@ -2281,9 +2282,6 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         const char* name;
         SQLSMALLINT data_type;
         SQLINTEGER column_size;
-        // SUPER and the EWKB spatial types have no literal syntax and no
-        // create parameters (core/database/postgres/pg_type_catalog.cpp).
-        bool object_type = false;
     };
     constexpr std::array<ExpectedType, 18> postgres_types{{
         {"boolean", SQL_BIT, 1},
@@ -2308,14 +2306,12 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
 
     // Redshift DDL advertisements are separate from PostgreSQL limits and from
     // actual result dimensions; no PostgreSQL server_version_num query is used.
-    // Rows are ordered by DATA_TYPE; SUPER (ab4a2a7) and GEOMETRY/GEOGRAPHY
-    // (0dfa6c2) follow varbyte with their documented object limits.
     constexpr std::array<ExpectedType, 20> redshift_types{{
         {"boolean", SQL_BIT, 1}, {"bigint", SQL_BIGINT, 19},
         {"varbyte", SQL_LONGVARBINARY, 16777216},
-        {"geometry", SQL_LONGVARBINARY, 1048447, true},
-        {"geography", SQL_LONGVARBINARY, 1048447, true},
-        {"super", SQL_LONGVARCHAR, 16777216, true},
+        {"geometry", SQL_LONGVARBINARY, 1048447},
+        {"geography", SQL_LONGVARBINARY, 1048447},
+        {"super", SQL_LONGVARCHAR, 16777216},
         {"char", SQL_CHAR, 4096}, {"numeric", SQL_NUMERIC, 38},
         {"decimal", SQL_DECIMAL, 38}, {"integer", SQL_INTEGER, 10},
         {"smallint", SQL_SMALLINT, 5}, {"real", SQL_REAL, 7},
@@ -2335,6 +2331,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     EXPECT_EQ(static_cast<SQLLEN>(expected_types.size()), row_count);
 
     for (std::size_t index = 0; index < expected_types.size(); ++index) {
+        SCOPED_TRACE(expected_types[index].name);
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
         if (index == 0) {
             EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, SQL_INTEGER));
@@ -2350,14 +2347,18 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         EXPECT_EQ(expected_types[index].data_type, data_type);
 
         const auto type = expected_types[index].data_type;
+        // SUPER and EWKB expose result families without a SQL literal or
+        // length parameter; VARBYTE still advertises its length parameter.
+        const bool super_type = redshift &&
+            std::string_view(expected_types[index].name) == "super";
+        const bool varbyte_type = redshift &&
+            std::string_view(expected_types[index].name) == "varbyte";
         const bool character_type = type == SQL_CHAR ||
             type == SQL_VARCHAR || type == SQL_LONGVARCHAR;
-        const bool object_type = expected_types[index].object_type;
-        const bool quoted_type = !object_type && (character_type ||
-            type == SQL_VARBINARY ||
+        const bool quoted_type = (character_type && !super_type) || type == SQL_VARBINARY ||
             type == SQL_DATE || type == SQL_TIME || type == SQL_TIMESTAMP ||
             type == SQL_TYPE_DATE || type == SQL_TYPE_TIME ||
-            type == SQL_TYPE_TIMESTAMP);
+            type == SQL_TYPE_TIMESTAMP;
         const bool numeric_type = type == SQL_BIGINT || type == SQL_NUMERIC ||
             type == SQL_DECIMAL || type == SQL_INTEGER ||
             type == SQL_SMALLINT || type == SQL_REAL || type == SQL_DOUBLE;
@@ -2376,8 +2377,7 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
                   text_cell(hstmt, 4));
         EXPECT_EQ(quoted_type ? std::optional<std::string>("'") : std::nullopt,
                   text_cell(hstmt, 5));
-        if (!object_type &&
-            (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARBINARY)) {
+        if (type == SQL_CHAR || type == SQL_VARCHAR || varbyte_type) {
             EXPECT_EQ(std::optional<std::string>("length"), text_cell(hstmt, 6));
         } else if (type == SQL_NUMERIC || type == SQL_DECIMAL) {
             EXPECT_EQ(std::optional<std::string>("precision,scale"),
