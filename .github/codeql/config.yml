@@ -1,0 +1,6 @@
+name: ODBCPP security analysis
+
+# Keep the default security queries and add the supported extended suite.
+# No source paths or security rules are excluded here.
+queries:
+  - uses: security-extended
