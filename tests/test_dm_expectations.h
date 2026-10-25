@@ -62,11 +62,17 @@ enum class Deviation {
   SpecialColumnsNullableDropped,
   ColumnCountNullOutputAccepted,
   ReconnectAfterInternalCloseRefused,
-  ManagerAnswersLoginTimeoutBeforeConnect,
+  ManagerAnswersLoginTimeoutWhileDisconnected,
+  ManagerAnswersLoginTimeoutBeforeDriverLoad,
   ServerNameIsDataSourceName,
   WideDiagLengthInUtf8Bytes,
   LegacyErrorNullBufferConsumesRecord,
   BracedDriverValueLoadedVerbatim,
+  FailedDriverConnectWritesLength,
+  WideConnectStringStopsAtSupplementary,
+  GetFunctionsRefusesOdbc38Id,
+  PutDataNullEmptyPieceRejected,
+  BookmarkColumnDescribeRejected,
 };
 
 }  // namespace dm
@@ -157,8 +163,10 @@ inline constexpr Entry kEntries[] = {
     {Deviation::ReconnectAfterInternalCloseRefused, kUnixodbc2314, nullptr, "bucket Y"},
     // Live Redshift buckets (docs/plans/driver-manager-live-macos.md).
     // value: the manager's own default while no application value is set.
-    {Deviation::ManagerAnswersLoginTimeoutBeforeConnect, kIodbc35216, "0", "live bucket R1"},
-    {Deviation::ManagerAnswersLoginTimeoutBeforeConnect, kUnixodbc2314, "15", "live bucket R1"},
+    // iODBC answers until the first connect attempt loads the driver;
+    // unixODBC whenever the handle is not connected.
+    {Deviation::ManagerAnswersLoginTimeoutBeforeDriverLoad, kIodbc35216, "0", "live bucket R1"},
+    {Deviation::ManagerAnswersLoginTimeoutWhileDisconnected, kUnixodbc2314, "15", "live bucket R1"},
     // value: the SQLSTATE the manager raises for a connection string passed
     // as SQLConnect ServerName.
     {Deviation::ServerNameIsDataSourceName, kIodbc35216, "IM002", "live bucket R2"},
@@ -169,6 +177,13 @@ inline constexpr Entry kEntries[] = {
     {Deviation::LegacyErrorNullBufferConsumesRecord, kIodbc35216, "-1", "live bucket R4"},
     {Deviation::LegacyErrorNullBufferConsumesRecord, kUnixodbc2314, "0", "live bucket R4"},
     {Deviation::BracedDriverValueLoadedVerbatim, kIodbc35216, nullptr, "live bucket R5"},
+    // value: the StringLength2 the manager writes after a failed connect.
+    {Deviation::FailedDriverConnectWritesLength, kIodbc35216, "1", "live bucket R6"},
+    {Deviation::WideConnectStringStopsAtSupplementary, kUnixodbc2314, nullptr, "live bucket R7"},
+    // value: the SQLSTATE the manager raises.
+    {Deviation::GetFunctionsRefusesOdbc38Id, kUnixodbc2314, "HY095", "live bucket R8"},
+    {Deviation::PutDataNullEmptyPieceRejected, kIodbc35216, nullptr, "live bucket R9"},
+    {Deviation::BookmarkColumnDescribeRejected, kIodbc35216, nullptr, "live bucket R10"},
 };
 
 inline const Entry* entry(Deviation deviation) {

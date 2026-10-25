@@ -31,7 +31,7 @@ Probes behind the D buckets ran on the disposable loopback PostgreSQL fixture us
 | T1 | test oracle | 1 | 1 | | `ReportsSupportedTypeInformation` expects 17 Redshift rows. The catalog now has 20: `super` (ab4a2a7) and `geometry`/`geography` (0dfa6c2). None of the three has a literal prefix, suffix or create parameters. unixODBC never reaches the assertion (`FailedCallForgetsOpenCursor`). |
 | T2 | test | | 1 | 1 | `MissingSchemaUsesOdbcSqlstate`: the cursor-close step for a failed `SQLMoreResults` ran on the Redshift branch too. There, the batch fails at `SQLExecDirect`, so no cursor exists. |
 | T3 | test | | | 1 | `DescribesPreparedResultsBeforeExecution` (Redshift branch): a known bucket W deviation (unixODBC writes -1 to the row count on error) that this branch did not apply. |
-| D1 | manager | | (masked) | 27 | On an unconnected handle the manager answers `SQL_ATTR_LOGIN_TIMEOUT` itself. It returns the value the application set, or its own default: unixODBC 15 (`SQL_LOGIN_TIMEOUT_DEFAULT`), iODBC 0 with 8 bytes written and length 0 (bucket J). A value the driver took from a `LOGINTIMEOUT=` keyword isn't visible after disconnect. The direct driver reports 30. This is live bucket R1. |
+| D1 | manager | | (masked) | 27 | On an unconnected handle the manager answers `SQL_ATTR_LOGIN_TIMEOUT` itself: unixODBC 15 (`SQL_LOGIN_TIMEOUT_DEFAULT`), iODBC 0 with 8 bytes written and length 0 (bucket J). The direct driver reports 30. This is live bucket R1; the re-run refined the model (see [R1](#live-deviations-r1r10)). |
 | D2 | manager | | (masked) | 1 | `NegativeTests` passes a connection string as `SQLConnect` ServerName. The manager reads it as a DSN name and refuses it: unixODBC HY090 (longer than `SQL_MAX_DSN_LENGTH`), iODBC IM002. This is live bucket R2. |
 | D3 | manager | | (masked) | 1 | `SQLGetDiagRecW` through a manager reports the record's UTF-8 byte count as its length in characters. Probe: 62 from both managers, 56 direct. The text itself is complete. This is live bucket R3. |
 | D4 | manager | | (masked) | 1 | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns `SQL_SUCCESS`. iODBC returns `SQL_ERROR` as the driver does, but the record is still gone. This is live bucket R4. |
@@ -47,10 +47,10 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
 | W1 | The inventory adds `ODBCPP_TEST_DSN` to the two suites' profile. The full connection string is a valid ServerName for the in-process driver. | The case passes the TLS check and fails only at connect, against `example.invalid`. |
 | W2 | `redshift_fixture_factory.build_profile_connection` emits `DRIVER=<path>` bare and refuses a driver path containing `;`, `{`, `}` or `=`. In `it_redshift_real`, the seven duplicated serializer loops are now one `connection_text()`, which leaves `DRIVER` bare through iODBC (live bucket R5, `BracedDriverValueLoadedVerbatim`). | iODBC and unixODBC both load the driver from the bare path and reach the network. Through iODBC, a path-loaded driver round-trips wide text as UCS4 with no registration. |
 | B1 | The inventory records both cases through a manager as `MANAGER_BUILD_BOUNDARY`. | The inventory now has 1,495 cases and 104 boundaries. |
-| T1 | The oracle has 20 rows in DATA_TYPE order, with an `object_type` flag (no literal syntax, no create parameters). | Compiles. The PostgreSQL rows are unchanged, and `it_metadata_real` passes on PostgreSQL direct and through both managers. |
+| T1 | `main` fixed this independently: 20 rows, with SUPER and EWKB rows that have no literal and no length parameter. The merge keeps main's version. | Passed live in the re-run. |
 | T2 | The cursor-close step moves into the PostgreSQL branch. | As T1. |
 | T3 | Uses `untouched_row_count(93)`. | As T1. |
-| O1 | Column 4 expects `SQL_NULL_DATA`. | Server check (below). |
+| O1 | Column 4 expects `SQL_NULL_DATA`. `main` made the same change independently; the doc correction is this branch's. | Server check (below); passed live in the re-run. |
 | D1–D4 | New entries R1–R4 in `tests/test_dm_expectations.h`. `RedshiftLoginTimeoutOptionsRealTest` records the login timeout the application sets on an unconnected handle (fixture forwards) and expects the manager's answer while disconnected. D4 asserts the manager's result and the drained record, then stops the case (`dm_case_stopped_by`). | Expected values come from the probes and the unixODBC live result. The iODBC rows need the re-run. |
 
 ## Needs a decision
@@ -75,9 +75,59 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
 - **Driver:** returned `SQL_NULL_DATA`, which is correct. The test's `text_cell` returns an empty string for a NULL cell, and that was the `""` in the failure.
 - **Fix:** The oracle now expects `SQL_NULL_DATA` for column 4. `docs/redshift-special-types.md` is corrected. A nested JSON null stays in the text, which the array column already checks.
 
+## Re-run `dm-live-macos-c6d6793-a`
+
+- **Source and resource:** source `c6d6793`, after `main` was merged in, with exact-head CI green (runs 40218714493 and 40218714501). The same cluster, paused before and after.
+- **Inventory:** 1,495 cases, 104 boundaries.
+- **Time:** 1,740 s, against 946 s for the first run.
+- **Result:** 85 failed.
+
+| build | pass | fail | first-run failures fixed |
+|---|---|---|---|
+| direct | 522 | 2 | 12 of 12 |
+| iODBC | 410 | 75 | 72 of 149 |
+| unixODBC | 478 | 8 | 28 of 37 |
+
+- **iODBC `it_redshift_real` (75):** these cases ran for the first time, because W2 had hidden them.
+  - Most are wave-1 deviations that this suite didn't apply:
+    - the NULL-buffer `SQLGetDiagRec` call (A), behind about 40 of them through `get_error()`, `observed(…, state)` and direct checks;
+    - ANSI text widened per byte (L), 9;
+    - `SQL_ARD_TYPE` rejected (D), 6;
+    - driver-connect outputs (I);
+    - pre-connect attributes written as 8 bytes (J).
+  - Four are new iODBC deviations (R6, R9 and R10 below, and the zero-capacity connect length).
+  - Seven fail on a repeated `SQLFetch` after the end of an empty Redshift catalog result. That doesn't reproduce on PostgreSQL. The fix only adds the diagnostic to those assertions, so the next run shows the refusing component and its SQLSTATE.
+- **Timeouts (direct 2, unixODBC 1, iODBC 2):** `RedshiftMaterializedEnvelopeRealTest`'s 1,000-row and 8 KiB materializations got HYT00. With the run taking nearly twice as long overall, this is classified as execution environment for now. It needs another look if it repeats.
+- **unixODBC (other than the timeout):**
+  - P1, 2 cases;
+  - the D1 model was incomplete (see R1);
+  - three new deviations (R3 truncation, R7, R8);
+  - the ReadOnly case, which failed because of the leftover schema below.
+- **Cleanup incomplete:**
+  - The iODBC ReadOnly case failed partway (bucket A) and left its owned schema `odbcpp_readonly_2026101500000001`, with table `payload`. The harness reported this as residual and doesn't DROP automatically.
+  - After the run, the cluster was resumed once. The exact identity was checked against the harness record: schema OID 1398783, table OID 1398784, owner OID 101, one column, one row. The table and schema were dropped with RESTRICT, the schema count was then 0, and the cluster was paused again.
+
+## Live deviations R1–R10
+
+All were measured on the loopback PostgreSQL fixture unless marked live.
+
+| bucket | manager | behaviour |
+|---|---|---|
+| R1 | both | `SQL_ATTR_LOGIN_TIMEOUT` is not the driver's value on an unconnected handle. |
+| | iODBC | Answers itself until the first connect attempt loads the driver, even a failed one: the application's value or 0, 8 bytes written, length 0. After that the driver answers. |
+| | unixODBC | Answers whenever the handle is not connected: the last value the application set, even one the driver refused while connected, or 15. |
+| R2 | both | A connection string passed as `SQLConnect` ServerName is refused: unixODBC HY090, iODBC IM002. |
+| R3 | both | `SQLGetDiagRecW` reports the record's UTF-8 byte count as its length, and reports truncation (SUCCESS_WITH_INFO) for a buffer that fits the text exactly. The text and its terminator are complete. |
+| R4 | both | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns SQL_SUCCESS; iODBC returns SQL_ERROR. |
+| R5 | iODBC | A braced `DRIVER={path}` value is passed to dlopen with its braces. |
+| R6 | iODBC | A failed `SQLDriverConnect(W)` writes 1 to StringLength2 and leaves the output buffer alone. |
+| R7 | unixODBC | A wide connection string loses everything after a character outside the BMP, so the manager raises IM002. |
+| R8 | unixODBC | `SQLGetFunctions` for the individual ODBC 3.8 ID 1022 raises HY095. The ODBC 3 bitmap carries the driver's answer. |
+| R9 | iODBC | `SQLPutData(NULL, 0)` is refused with HY009. The ODBC reference allows a NULL pointer with length 0. |
+| R10 | iODBC | `SQLDescribeCol` on column 0 is refused with S1002 (07009) while bookmarks are on (live). |
+
 ## Next run
 
-Same three builds after the fixes, against the new inventory:
-- 1,495 cases, with the B1 boundaries excluded.
-- Expected to fail: P1 (2 unixODBC cases) until it is decided.
-- iODBC `it_redshift_real` runs for the first time.
+The same three builds after these fixes, with the same 1,495 cases:
+- **Expected to fail:** P1 (2 unixODBC cases) until it is decided. Also the HYT00 cases if the slowness repeats.
+- **To diagnose:** the repeated `SQLFetch` on empty catalog results through iODBC.

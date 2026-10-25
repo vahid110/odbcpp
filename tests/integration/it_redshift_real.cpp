@@ -233,6 +233,73 @@ public:
 
 class RedshiftRealTest : public ::testing::Test {
 protected:
+  // Fixture-local forwards for every derived fixture and case. Manager builds
+  // check NULL-buffer diagnostics against the expectation table and still
+  // return the record (odbcpp::test::diag_rec), and learn which connection
+  // records came from a connect call; direct builds call the driver unchanged.
+  SQLRETURN SQLGetDiagRec(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT record,
+      SQLCHAR* state, SQLINTEGER* native, SQLCHAR* message, SQLSMALLINT length,
+      SQLSMALLINT* text_length) {
+    return odbcpp::test::diag_rec(type, handle, record, state, native, message, length,
+        text_length);
+  }
+  // Whether a connect call was made on hdbc_. iODBC loads the driver on the
+  // first attempt, even a failed one, and answers attributes itself until then.
+  bool connect_attempted_{};
+  void note_attempt(SQLHDBC connection) {
+    if (connection == hdbc_) {
+      connect_attempted_ = true;
+    }
+  }
+  SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
+      SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
+      SQLSMALLINT name_length3) {
+    note_attempt(connection);
+    return odbcpp::test::note_connect(connection, ::SQLConnect(connection, server_name,
+        name_length1, user_name, name_length2, authentication, name_length3));
+  }
+  SQLRETURN SQLDriverConnect(SQLHDBC connection, SQLHWND window_handle,
+      SQLCHAR* connection_string_in, SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
+      SQLSMALLINT buffer_length, SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion) {
+    note_attempt(connection);
+    return odbcpp::test::note_connect(connection, ::SQLDriverConnect(connection, window_handle,
+        connection_string_in, string_length1, connection_string_out, buffer_length,
+        string_length2, driver_completion));
+  }
+  SQLRETURN SQLDriverConnectW(SQLHDBC connection, SQLHWND window_handle,
+      SQLWCHAR* connection_string_in, SQLSMALLINT string_length1,
+      SQLWCHAR* connection_string_out, SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
+      SQLUSMALLINT driver_completion) {
+    note_attempt(connection);
+    return odbcpp::test::note_connect(connection, ::SQLDriverConnectW(connection, window_handle,
+        connection_string_in, string_length1, connection_string_out, buffer_length,
+        string_length2, driver_completion));
+  }
+  // StringLength2 after a failed SQLDriverConnect(W) that started at
+  // `sentinel`. The driver leaves it alone; a manager may write its own value
+  // (FailedDriverConnectWritesLength), still leaving the output buffer alone.
+  static SQLSMALLINT failed_connect_length(SQLSMALLINT sentinel) {
+    using odbcpp::test::dm::Deviation;
+    return odbcpp::test::dm::value(Deviation::FailedDriverConnectWritesLength, sentinel,
+        static_cast<SQLSMALLINT>(std::atoi(odbcpp::test::dm::text(
+            Deviation::FailedDriverConnectWritesLength, "0"))));
+  }
+  // iODBC 3.52.16 rejects SQL_ARD_TYPE in SQLGetData without calling the
+  // driver (GetDataArdTypeRejected, bucket D). Asserts that and reports
+  // whether the case must end, since the rest needs the ARD-typed value.
+  bool ard_type_get_data_rejected(SQLUSMALLINT column, SQLPOINTER target,
+      SQLLEN buffer_length, SQLLEN* indicator) {
+    if (!odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::GetDataArdTypeRejected)) {
+      return false;
+    }
+    EXPECT_EQ(SQL_ERROR, ::SQLGetData(hstmt_, column, SQL_ARD_TYPE, target, buffer_length,
+        indicator));
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt_, 1, state, nullptr, nullptr,
+        0, nullptr));
+    EXPECT_STREQ("HY003", reinterpret_cast<char*>(state));
+    return true;
+  }
   // Created before any derived SetUp, never renewed by reconnect or retry.
   const Deadline checkpoint_end_ =
       Clock::now() + std::chrono::seconds{40};
@@ -395,8 +462,8 @@ protected:
   void expect_empty_catalog(std::span<const CatalogField> fields) {
     expect_catalog_fields(fields);
     ASSERT_FALSE(HasFatalFailure());
-    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
-    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   }
 
@@ -661,6 +728,13 @@ TEST_F(RedshiftDeferredInputRealTest, NullEmptyAndReboundLengthReusePreparedStat
   ASSERT_NO_FATAL_FAILURE(expect_deferred_value(nullptr));
 
   ASSERT_NO_FATAL_FAILURE(request_deferred());
+  if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::PutDataNullEmptyPieceRejected)) {
+    // The manager refuses a NULL, zero-length piece itself, which the ODBC
+    // reference allows; the rest of the case needs that piece.
+    EXPECT_EQ(SQL_ERROR, SQLPutData(hstmt_, nullptr, 0));
+    EXPECT_EQ("HY009", get_error(SQL_HANDLE_STMT, hstmt_));
+    return;
+  }
   ASSERT_EQ(SQL_SUCCESS, SQLPutData(hstmt_, nullptr, 0));
   ASSERT_NO_FATAL_FAILURE(expect_deferred_value(""));
 
@@ -925,8 +999,8 @@ void RedshiftRealTest::odbc_primary_key_edge_contract(const char* mode, bool quo
       }
     }
   }
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   // One success-path recovery statement, with scalar and typed-NULL output.
   // Per-operation15s timeout remains; future runner supplies its outer bound.
@@ -989,8 +1063,8 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyMissingLegacyContract) {
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(absent)), SQL_NTS)));
   expect_catalog_fields(fields);
   ASSERT_FALSE(HasFatalFailure());
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)) << metadata_diagnostic();
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   // Preserve the inherited original window and refresh its remaining operation cap.
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), reinterpret_cast<SQLCHAR*>(
@@ -1531,7 +1605,10 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
 
   std::vector<SQLWCHAR> wide(static_cast<std::size_t>(required) + 2, SQLWCHAR{0x5a});
   units = -1;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
+  // The same manager compares its byte count with this exact-fit buffer and
+  // reports truncation, although it copies the whole text.
+  ASSERT_EQ(reported > required ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS,
+      SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt_, 1, state, &native,
       wide.data(), static_cast<SQLSMALLINT>(required + 1), &units));
   EXPECT_EQ(reported, units);
   EXPECT_TRUE(std::equal(expected_units->begin(), expected_units->end(), wide.begin()));
@@ -1736,8 +1813,18 @@ TEST_F(RedshiftRealTest, WideDriverConnectZeroCapacityOutputReportsTruncation) {
     connected_ = true;
   }
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO, result) << get_error(SQL_HANDLE_DBC, hdbc_);
-  EXPECT_EQ("01004", get_error(SQL_HANDLE_DBC, hdbc_));
-  EXPECT_EQ(input_units, length);
+  if (odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::DriverConnectOutputs)) {
+    // The manager drops the driver's 01004 record and does not report the
+    // total length (bucket I); the length it writes is not stable (4 on the
+    // loopback fixture, 15 live), so it is recorded, not asserted.
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_NO_DATA, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    RecordProperty("dm_zero_capacity_connect_length", length);
+  } else {
+    EXPECT_EQ("01004", get_error(SQL_HANDLE_DBC, hdbc_));
+    EXPECT_EQ(input_units, length);
+  }
   EXPECT_EQ(SQLWCHAR{0x5a}, output[0]);
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_));
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
@@ -2064,6 +2151,10 @@ TEST_F(RedshiftNumericResultBoundaryRealTest, ExactDecimalAndNull) {
     SQL_NUMERIC_STRUCT value;
     std::memset(&value, 0x5a, sizeof(value));
     SQLLEN length = 93;
+    if (ard_type_get_data_rejected(static_cast<SQLUSMALLINT>(column), &value, sizeof(value),
+            &length)) {
+      return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, static_cast<SQLUSMALLINT>(column),
         SQL_ARD_TYPE, &value, sizeof(value), &length));
     if (column == 4) {
@@ -3700,6 +3791,24 @@ TEST_F(RedshiftUnicodeAliasMetadataRealTest, DirectAndPreparedUnicodeAliasNamesA
     static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4);
     expected_wide.push_back(static_cast<SQLWCHAR>(0x1f600));
   }
+  if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+    // The manager widens the ANSI statement byte by byte, so the server names
+    // the column with the Latin-1 reading of these 9 bytes (bucket L). The
+    // case asserts that name and ends.
+    std::string query = "SELECT CAST(7 AS INTEGER) AS \"" + expected + "\"";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
+        reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+    std::array<SQLWCHAR, 32> wide{};
+    SQLSMALLINT units = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(checkpoint_statement(hstmt_), 1, wide.data(),
+        static_cast<SQLSMALLINT>(wide.size()), &units, nullptr, nullptr, nullptr, nullptr));
+    ASSERT_EQ(static_cast<SQLSMALLINT>(expected.size()), units);
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      EXPECT_EQ(static_cast<SQLWCHAR>(static_cast<unsigned char>(expected[i])), wide[i]);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+    return;
+  }
   std::array<std::string, 2> owned_names;
   std::array<std::vector<SQLWCHAR>, 2> owned_wide_names;
   const auto trials = [&]() {
@@ -3958,6 +4067,21 @@ protected:
     if(column) { std::fill(column->begin(),column->end(),'!'); }ws.assign(ws.size(),'!');wt.assign(wt.size(),'!');wc.assign(wc.size(),'!');
     return result;
   }
+  // A manager that widens ANSI text byte by byte (AnsiTextWidenedPerByte,
+  // bucket L) sends the server the Latin-1 reading of these UTF-8 names, so
+  // an ANSI lookup finds no object. Asserts that on the ANSI table lookup and
+  // reports whether the case must end.
+  bool ansi_names_find_nothing() {
+    if(!odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+      return false;
+    }
+    EXPECT_EQ(SQL_SUCCESS,tables(false,table_pattern_,Name::TablePattern));
+    EXPECT_EQ(5u,descriptors(false).size());
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));
+    close_cursor();
+    recovery();
+    return true;
+  }
   void table_row(bool use_wide,std::string* discovered_schema=nullptr,std::string* discovered_table=nullptr) {
     text(1,"odbcpp_pilot",{'o','d','b','c','p','p','_','p','i','l','o','t'},use_wide);
     text(2,schema_,wide(Name::Schema),use_wide,discovered_schema);
@@ -3980,6 +4104,9 @@ protected:
 
 TEST_F(RedshiftUnicodeCatalogRealTest, FixedQuotedObjectsAndUnicodeNullRows) {
   ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  if(ansi_names_find_nothing()) {
+    return;
+  }
   std::string owned_value;std::vector<SQLWCHAR> owned_wide;
   const auto trial=[&]() {
     auto sql="SELECT "+quote(id_)+","+quote(value_)+","+quote(value_)+" FROM "+qualified()+" ORDER BY "+quote(id_);
@@ -4008,6 +4135,9 @@ TEST_F(RedshiftUnicodeCatalogRealTest, FixedQuotedObjectsAndUnicodeNullRows) {
 
 TEST_F(RedshiftUnicodeCatalogRealTest, AnsiWideCatalogIdentitiesTypesAndOrdinals) {
   ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  if(ansi_names_find_nothing()) {
+    return;
+  }
   std::vector<Descriptor> owned_tables,owned_columns;
   const auto trials=[&]() {
     for(bool use_wide:{false,true}) {
@@ -4028,6 +4158,9 @@ TEST_F(RedshiftUnicodeCatalogRealTest, AnsiWideCatalogIdentitiesTypesAndOrdinals
 
 TEST_F(RedshiftUnicodeCatalogRealTest, EscapedWildcardsAndNoMatchKeepUnicodeIdentity) {
   ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  if(ansi_names_find_nothing()) {
+    return;
+  }
   const auto trials=[&]() {
     struct TablePattern {bool use_wide;std::string pattern;Name literal;bool matches;};
     const TablePattern table_patterns[]{{false,table_pattern_,Name::TablePattern,true},
@@ -4052,6 +4185,9 @@ TEST_F(RedshiftUnicodeCatalogRealTest, EscapedWildcardsAndNoMatchKeepUnicodeIden
 
 TEST_F(RedshiftUnicodeCatalogRealTest, DiscoveredQuotedIdentifiersPrepareUnicodeNullAndRecover) {
   ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  if(ansi_names_find_nothing()) {
+    return;
+  }
   std::string discovered_schema,discovered_table;std::array<std::string,2> discovered_columns;
   std::array<std::string,2> owned_values;std::array<std::vector<SQLWCHAR>,2> owned_markers;
   const auto trials=[&]() {
@@ -4755,6 +4891,9 @@ TEST_F(RedshiftCommonTypeBoundariesRealTest, PreparedDecimal38ExactNullOverflowA
       text(hstmt_,1,decimal_text[trial],false);ASSERT_FALSE(HasFailure());
     } else {
       EXPECT_EQ(SQL_NULL_DATA,output_length_);EXPECT_TRUE(poisoned(numeric_.value));
+      if(ard_type_get_data_rejected(1,&numeric_.value,sizeof(numeric_.value),&output_length_)){
+        return;
+      }
       poison(numeric_);output_length_=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_ARD_TYPE,&numeric_.value,sizeof(numeric_.value),&output_length_));
       EXPECT_EQ(SQL_NULL_DATA,output_length_);EXPECT_TRUE(poisoned(numeric_.value));guards(numeric_);
     }
@@ -4827,6 +4966,9 @@ TEST_F(RedshiftCommonTypeBoundariesRealTest, NumericRescaleOverflowTextRetryNull
   // Failed bound conversion leaves the row positioned; retrieve the cell and its unbound neighbor explicitly.
   text(hstmt_,1,"1234.567890",false);ASSERT_FALSE(HasFailure());integer(hstmt_,2,42);ASSERT_FALSE(HasFailure());
   poison(numeric_);output_length_=73;ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));EXPECT_EQ(SQL_ROW_SUCCESS,row_status_);EXPECT_EQ(SQL_NULL_DATA,output_length_);EXPECT_TRUE(poisoned(numeric_.value));guards(numeric_);
+  if(ard_type_get_data_rejected(1,&numeric_.value,sizeof(numeric_.value),nullptr)){
+    return;
+  }
   poison(numeric_);ASSERT_EQ(SQL_ERROR,SQLGetData(hstmt_,1,SQL_ARD_TYPE,&numeric_.value,sizeof(numeric_.value),nullptr));EXPECT_EQ("22002",get_error(SQL_HANDLE_STMT,hstmt_));EXPECT_TRUE(poisoned(numeric_.value));
   output_length_=73;ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_ARD_TYPE,&numeric_.value,sizeof(numeric_.value),&output_length_));EXPECT_EQ(SQL_NULL_DATA,output_length_);EXPECT_TRUE(poisoned(numeric_.value));guards(numeric_);
   integer(hstmt_,2,42);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));EXPECT_EQ(static_cast<SQLULEN>(0),rows_fetched_);EXPECT_EQ(SQL_ROW_NOROW,row_status_);
@@ -5339,7 +5481,7 @@ protected:
   void close_cursor() {ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));}
   void empty_result() {
     std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());
-    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();close_cursor();ASSERT_FALSE(HasFailure());
   }
   void recovery() {
     close_cursor();ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
@@ -5658,7 +5800,7 @@ TEST_F(RedshiftShowColumnsRealTest, ColumnLikeFilterPreservesTypeDimensions) {
 TEST_F(RedshiftShowColumnsRealTest, NoMatchEmptyColumnFilterAndRecovery) {
   connect_bounded();ASSERT_FALSE(HasFailure());columns(std::string{},false);ASSERT_FALSE(HasFailure());
   std::array<ColumnDescriptor,18> descriptors;column_metadata(descriptors);ASSERT_FALSE(HasFailure());
-  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_))<<metadata_diagnostic();close_cursor();ASSERT_FALSE(HasFailure());
   recovery();ASSERT_FALSE(HasFailure());EXPECT_EQ(1u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
 }
 
@@ -5901,6 +6043,13 @@ TEST_F(RedshiftRecentFeaturesRealTest, VariableBookmarkMetadataLiteralOffsetsChu
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_FETCH_DIRECTION,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_FD_FETCH_BOOKMARK);
   SQLCHAR name[2]{0x5a,0x5a}; SQLWCHAR wide_name[2]{0x5a,0x5a};
   SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1; SQLULEN size=0; SQLLEN display=-1,unsigned_value=-1;
+  if(odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::BookmarkColumnDescribeRejected)) {
+    // The manager refuses column 0 itself although bookmarks are on; the
+    // rest of the case reads the bookmark column.
+    EXPECT_EQ(SQL_ERROR,SQLDescribeCol(hstmt_,0,name,2,&length,&type,&size,&scale,&nullable));
+    EXPECT_EQ("07009",get_error(SQL_HANDLE_STMT,hstmt_));
+    return;
+  }
   ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,0,name,2,&length,&type,&size,&scale,&nullable));
   EXPECT_EQ(0,length); EXPECT_EQ(0,name[0]); EXPECT_EQ(0x5a,name[1]); EXPECT_EQ(SQL_BINARY,type); EXPECT_EQ(24u,size); EXPECT_EQ(0,scale); EXPECT_EQ(SQL_NO_NULLS,nullable);
   ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(hstmt_,0,wide_name,2,&length,&type,&size,&scale,&nullable)); EXPECT_EQ(0,length); EXPECT_EQ(0,wide_name[0]); EXPECT_EQ(0x5a,wide_name[1]);
@@ -6383,6 +6532,12 @@ TEST_F(RedshiftMetadataIdentifierNativeRealTest, QuotedExactVersusEscapedPattern
   mode(false); ASSERT_FALSE(HasFailure()); unicode_names(false);
   ASSERT_EQ(SQL_SUCCESS,request(Route::Tables,false)) << get_error(SQL_HANDLE_STMT,hstmt_);
   metadata(fields(Route::Tables),owned_descriptors_); ASSERT_FALSE(HasFailure()); const auto tables_owned=owned_descriptors_;
+  if(odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+    // The manager widens the ANSI Unicode names byte by byte (bucket L), so
+    // the lookup finds no object; the case asserts that and ends.
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close();
+    return;
+  }
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); expect_table(false); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,request(Route::Columns,false)) << get_error(SQL_HANDLE_STMT,hstmt_);
@@ -6631,6 +6786,18 @@ class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
     } else { result=SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS); }
     ASSERT_TRUE(known_sql(result));
   }
+  // Fixture SQL carrying UTF-8 literals. A manager that widens ANSI text byte
+  // by byte (AnsiTextWidenedPerByte, bucket L) would store other text, so
+  // through it the statement goes in through the wide API unchanged.
+  void utf8_direct(std::string_view text) {
+    if(!odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+      ASSERT_NO_FATAL_FAILURE(direct(text));
+      return;
+    }
+    ASSERT_TRUE(cap(window_end_,true));
+    auto wide=odbcpp::test::text::utf8_to_wide(std::string(text));ASSERT_TRUE(wide);wide->push_back(0);
+    ASSERT_TRUE(known_sql(SQLExecDirectW(hstmt_,wide->data(),SQL_NTS)));
+  }
   void fixture() {
     ASSERT_NO_FATAL_FAILURE(connect_bounded());
     ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_temporal_escape_scope (id INTEGER)"));
@@ -6811,7 +6978,7 @@ class RedshiftLocateEscapeRealTest : public RedshiftTemporalEscapeRealTest {
     ASSERT_NO_FATAL_FAILURE(connect_bounded());
     ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_locate_escape_scope (id INTEGER, hay VARCHAR(32))"));
     table_owned_=true; // Exact successful CREATE on this session, not intent/name.
-    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_locate_escape_scope VALUES "
+    ASSERT_NO_FATAL_FAILURE(utf8_direct("INSERT INTO odbcpp_locate_escape_scope VALUES "
         "(1,'\xC3\xA9\xE8\xA1\xA8" "fish'),(2,'plain'),(3,NULL)"));
   }
   void metadata(SQLSMALLINT expected) {
@@ -6953,7 +7120,7 @@ class RedshiftLengthEscapeRealTest : public RedshiftLocateEscapeRealTest {
     ASSERT_NO_FATAL_FAILURE(connect_bounded());
     ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_length_escape_scope (id INTEGER,c CHAR(6),v VARCHAR(32))"));
     table_owned_=true; // Exact confirmed SQL_SUCCESS CREATE on this session only.
-    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_length_escape_scope VALUES "
+    ASSERT_NO_FATAL_FAILURE(utf8_direct("INSERT INTO odbcpp_length_escape_scope VALUES "
         "(1,'cat','cat   '),(2,'cat',' \xC3\xA9\xE8\xA1\xA8  '),(3,'cat','a\t '),(4,'   ','   '),(5,'',''),(6,NULL,NULL)"));
   }
   void length_fetch(SQLRETURN expected) {
@@ -8090,11 +8257,11 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     // keyword tests must not accidentally exercise that overriding application value.
     ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_DBC,henv_,&hdbc_));
-    application_login_timeout_.reset();
+    application_login_timeout_.reset();connect_attempted_=false;
     ASSERT_NO_FATAL_FAILURE(readback(30));
   }
-  // Fixture forwards record the login timeout the application set on the
-  // unconnected handle: that is the value a manager answers with itself.
+  // Fixture forwards record each login timeout the application sets, whether
+  // or not the driver accepts it: that is the value a manager answers with.
   SQLRETURN SQLSetConnectAttr(SQLHDBC connection,SQLINTEGER attribute,SQLPOINTER value,SQLINTEGER length){
     return note_login_timeout(connection,attribute,value,::SQLSetConnectAttr(connection,attribute,value,length));
   }
@@ -8102,7 +8269,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     return note_login_timeout(connection,attribute,value,::SQLSetConnectAttrW(connection,attribute,value,length));
   }
   SQLRETURN note_login_timeout(SQLHDBC connection,SQLINTEGER attribute,SQLPOINTER value,SQLRETURN result){
-    if(connection==hdbc_&&attribute==SQL_ATTR_LOGIN_TIMEOUT&&result==SQL_SUCCESS&&!connected_){
+    if(connection==hdbc_&&attribute==SQL_ATTR_LOGIN_TIMEOUT){
       application_login_timeout_=static_cast<SQLUINTEGER>(reinterpret_cast<std::uintptr_t>(value));
     }
     return result;
@@ -8116,22 +8283,37 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     EXPECT_TRUE(options==odbcpp::test::connection_string::parse(result))<<"Login input preservation failed";
     return result;
   }
+  static SQLUINTEGER manager_default(odbcpp::test::dm::Deviation deviation){
+    return static_cast<SQLUINTEGER>(std::strtoul(odbcpp::test::dm::text(deviation,""),nullptr,10));
+  }
+  // Before the first connect attempt loads the driver, iODBC answers
+  // connection attributes itself: it writes a SQLULEN and reports length 0
+  // (bucket J). Returns whether that path applied and was checked.
+  bool manager_attribute(SQLINTEGER attribute,SQLUINTEGER expected){
+    if(connect_attempted_||!odbcpp::test::dm::deviates(
+           odbcpp::test::dm::Deviation::ManagerAnswersLoginTimeoutBeforeDriverLoad)){
+      return false;
+    }
+    alignas(SQLULEN) unsigned char storage[2*sizeof(SQLULEN)];std::memset(storage,0xab,sizeof(storage));SQLINTEGER bytes=-1;
+    EXPECT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(hdbc_,attribute,storage,sizeof(SQLUINTEGER),&bytes));
+    SQLUINTEGER value=0;std::memcpy(&value,storage,sizeof(value));
+    EXPECT_EQ(expected,value);EXPECT_EQ(0xab,storage[sizeof(SQLULEN)]);EXPECT_EQ(0,bytes);
+    return true;
+  }
   void readback(SQLUINTEGER expected){
     using odbcpp::test::dm::Deviation;
-    if(!connected_&&odbcpp::test::dm::deviates(Deviation::ManagerAnswersLoginTimeoutBeforeConnect)){
-      // An unconnected handle is the manager's: a value the driver took from
-      // a connection-string keyword is gone, and the manager reports the
-      // application's value or its own default.
-      expected=application_login_timeout_.value_or(static_cast<SQLUINTEGER>(std::strtoul(
-          odbcpp::test::dm::text(Deviation::ManagerAnswersLoginTimeoutBeforeConnect,""),nullptr,10)));
+    if(!connected_&&odbcpp::test::dm::deviates(Deviation::ManagerAnswersLoginTimeoutWhileDisconnected)){
+      // A disconnected handle is the manager's: a value the driver took from
+      // a connection-string keyword is gone, and the manager reports the last
+      // value the application set (even one the driver refused) or its default.
+      expected=application_login_timeout_.value_or(
+          manager_default(Deviation::ManagerAnswersLoginTimeoutWhileDisconnected));
     }
-    if(!connected_&&odbcpp::test::dm::deviates(Deviation::LoginTimeoutWritesEightBytes)){
-      // The manager writes a SQLULEN and reports length 0 (bucket J); the
-      // declared 4 bytes are the value.
-      alignas(SQLULEN) unsigned char storage[2*sizeof(SQLULEN)];std::memset(storage,0xab,sizeof(storage));SQLINTEGER bytes=-1;
-      ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,storage,sizeof(SQLUINTEGER),&bytes));
-      SQLUINTEGER value=0;std::memcpy(&value,storage,sizeof(value));
-      EXPECT_EQ(expected,value);EXPECT_EQ(0xab,storage[sizeof(SQLULEN)]);EXPECT_EQ(0,bytes);
+    if(!connect_attempted_&&odbcpp::test::dm::deviates(Deviation::ManagerAnswersLoginTimeoutBeforeDriverLoad)){
+      expected=application_login_timeout_.value_or(
+          manager_default(Deviation::ManagerAnswersLoginTimeoutBeforeDriverLoad));
+    }
+    if(manager_attribute(SQL_ATTR_LOGIN_TIMEOUT,expected)){
       return;
     }
     struct {SQLUINTEGER value;SQLUINTEGER guard;} captured{97,0x12345678u};SQLINTEGER bytes=-1;
@@ -8169,7 +8351,7 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
     // This exact local invalid-option refusal is known, not an uncertain native
     // operation. Any other return/state fences the subsequent recovery login.
     if(result==SQL_SUCCESS||result==SQL_SUCCESS_WITH_INFO){connected_=true;}
-    if(result!=SQL_ERROR){unknown_completion_=true;}ASSERT_EQ(SQL_ERROR,result);EXPECT_EQ(66,bytes);
+    if(result!=SQL_ERROR){unknown_completion_=true;}ASSERT_EQ(SQL_ERROR,result);EXPECT_EQ(failed_connect_length(66),bytes);
     SQLCHAR state[6]{},message[128]{};
     ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_DBC,hdbc_,1,state,nullptr,message,sizeof(message),nullptr));
     if(std::string_view(reinterpret_cast<const char*>(state))!="HY000"||std::string_view(reinterpret_cast<const char*>(message))!="Invalid LoginTimeout value"){unknown_completion_=true;}
@@ -8265,6 +8447,9 @@ class RedshiftAccessModeHintRealTest : public RedshiftLoginTimeoutOptionsRealTes
     setup_admitted("ODBCPP_REDSHIFT_ACCESS_MODE_ADMISSION", "access_mode_hint_happy_v1");
   }
   void mode_readback(SQLUINTEGER expected) {
+    if (manager_attribute(SQL_ATTR_ACCESS_MODE, expected)) {
+      return;
+    }
     struct { SQLUINTEGER value; SQLUINTEGER guard; } output{97, 0x12345678u};
     SQLINTEGER length = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(hdbc_, SQL_ATTR_ACCESS_MODE,
@@ -8336,6 +8521,20 @@ TEST_F(RedshiftApplicationNameRealTest, AnsiWideNamesAndEmptyReconnectKeepTypedN
   for (std::size_t i = 0; i < names.size(); ++i) {
     connection_string_ = base;
     connection_string_ = keyword_input("APPLICATIONNAME", names[i].c_str());
+    const bool supplementary = std::any_of(names[i].begin(), names[i].end(),
+        [](char ch) { return (static_cast<unsigned char>(ch) & 0xf8) == 0xf0; });
+    if (i != 0 && supplementary &&
+        odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::WideConnectStringStopsAtSupplementary)) {
+      // The manager loses the wide connection string after a character outside
+      // the BMP, finds no driver and refuses the connect itself, before any I/O.
+      auto text = odbcpp::test::text::utf8_to_wide(keyword_input("LOGINTIMEOUT", "5"));
+      ASSERT_TRUE(text);
+      text->push_back(0);
+      EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, nullptr, 0,
+          nullptr, SQL_DRIVER_NOPROMPT));
+      EXPECT_EQ("IM002", get_error(SQL_HANDLE_DBC, hdbc_));
+      continue;
+    }
     ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, i != 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_MAX_ROWS, nullptr, 0));
     auto text = odbcpp::test::text::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
@@ -8677,7 +8876,7 @@ class RedshiftKeepaliveOptionsRealTest : public RedshiftLoginTimeoutOptionsRealT
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, output, 4, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
     if (rc != SQL_ERROR) unknown_completion_ = true;
-    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(failed_connect_length(66), length);
     EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
     SQLCHAR state[6]{}, message[128]{};
     ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message,
@@ -8766,7 +8965,7 @@ class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, guard, 3, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
     if (rc != SQL_ERROR) unknown_completion_ = true;
-    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(failed_connect_length(66), length);
     EXPECT_EQ(static_cast<SQLWCHAR>('x'), guard[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), guard[2]);
     SQLCHAR state[6]{}, message[128]{};
     ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message,
@@ -8886,7 +9085,7 @@ class RedshiftBooleanCharacterRealTest : public RedshiftKeepaliveOptionsRealTest
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
     if (rc != SQL_ERROR) unknown_completion_ = true;
-    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(failed_connect_length(66), length);
     EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
     SQLCHAR state[6]{}, message[128]{};
     ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message, sizeof(message), nullptr)));
@@ -9012,7 +9211,7 @@ class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &length, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
     if (rc != SQL_ERROR) unknown_completion_ = true;
-    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(failed_connect_length(66), length);
     EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
     SQLCHAR state[6]{}, message[128]{};
     ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message, sizeof(message), nullptr)));
@@ -9160,7 +9359,18 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
   ASSERT_EQ(SQL_ERROR, SQLCancelHandle(SQL_HANDLE_DBC, hdbc_));
   EXPECT_EQ("IM001", get_error(SQL_HANDLE_DBC, hdbc_));
   SQLUSMALLINT supported = SQL_TRUE;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(hdbc_, SQL_API_SQLCANCELHANDLE, &supported));
+  if (odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::GetFunctionsRefusesOdbc38Id)) {
+    // The manager refuses an individual ODBC 3.8 function ID itself; its
+    // ODBC 3 bitmap still carries the driver's answer.
+    EXPECT_EQ(SQL_ERROR, SQLGetFunctions(hdbc_, SQL_API_SQLCANCELHANDLE, &supported));
+    EXPECT_EQ(odbcpp::test::dm::text(odbcpp::test::dm::Deviation::GetFunctionsRefusesOdbc38Id, ""),
+        get_error(SQL_HANDLE_DBC, hdbc_));
+    std::array<SQLUSMALLINT, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE> all{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(hdbc_, SQL_API_ODBC3_ALL_FUNCTIONS, all.data()));
+    supported = SQL_FUNC_EXISTS(all.data(), SQL_API_SQLCANCELHANDLE) ? SQL_TRUE : SQL_FALSE;
+  } else {
+    ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(hdbc_, SQL_API_SQLCANCELHANDLE, &supported));
+  }
   EXPECT_EQ(SQL_FALSE, supported);
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
   result = SQLFetch(sibling_); if (result != SQL_SUCCESS) unknown_completion_ = true;
@@ -9205,7 +9415,7 @@ class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
     const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &bytes, SQL_DRIVER_NOPROMPT);
     connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
     if (rc != SQL_ERROR) unknown_completion_ = true;
-    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, bytes); EXPECT_EQ('x', output[0]); EXPECT_EQ('y', output[2]);
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(failed_connect_length(66), bytes); EXPECT_EQ('x', output[0]); EXPECT_EQ('y', output[2]);
     SQLCHAR state[6]{}, message[128]{};
     ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message,
         static_cast<SQLSMALLINT>(sizeof(message)), nullptr)));
@@ -9568,6 +9778,9 @@ TEST_F(RedshiftNegativeNumericScaleRealTest, DescriptorLossNullOwnershipAndRecov
   EXPECT_EQ(SQL_ROW_SUCCESS, status); EXPECT_EQ(1u, fetched);
   ASSERT_NO_FATAL_FAILURE(dimensions(ard, 2, 2, -1));
   ASSERT_TRUE(cap(window_end_, true));
+  if (ard_type_get_data_rejected(2, &numeric, 0, &length)) {
+    return;
+  }
   ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE, &numeric, 0, &length),
       SQL_SUCCESS_WITH_INFO, "01S07"));
   ASSERT_NO_FATAL_FAILURE(expect_small_numeric(numeric, 2, -1, 12, 0));
@@ -9929,6 +10142,9 @@ TEST_F(RedshiftFixedNumericCompletionRealTest, FractionWholeNullAndVariableSourc
   const auto wide_poison = wide;
   length = 73;
   ASSERT_TRUE(cap(window_end_, true));
+  if (ard_type_get_data_rejected(2, wide.data() + 1, 3 * sizeof(SQLWCHAR), &length)) {
+    return;
+  }
   ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE,
       wide.data() + 1, 3 * sizeof(SQLWCHAR), &length), SQL_ERROR, "22003"));
   EXPECT_EQ(wide_poison, wide);
@@ -10190,6 +10406,9 @@ TEST_F(RedshiftFixedTemporalCompletionRealTest, FractionWholeNullWideAndVariable
   const auto wide_poison = wide; length = 73;
   for (const SQLLEN capacity : {SQLLEN{sizeof(SQLWCHAR) - 1}, SQLLEN{19 * sizeof(SQLWCHAR)}}) {
     ASSERT_TRUE(cap(window_end_, true));
+    if (ard_type_get_data_rejected(2, wide.data() + 1, capacity, &length)) {
+      return;
+    }
     ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE,
         wide.data() + 1, capacity, &length), SQL_ERROR, "22003"));
     EXPECT_EQ(wide_poison, wide); EXPECT_EQ(73, length);
@@ -11727,7 +11946,12 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   // Server JSON serialization of U+20AC; either escaped or literal is recorded.
   const auto unicode = text_cell(6, length);
   RecordProperty("super_unicode_serialization", unicode);
-  EXPECT_TRUE(unicode == "\"\xe2\x82\xac\"" || unicode == "\"\\u20ac\"") << unicode;
+  // A manager that widens ANSI text byte by byte sends the server the
+  // Latin-1 reading of the literal (AnsiTextWidenedPerByte, bucket L).
+  const std::string euro = odbcpp::test::dm::value(
+      odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte, std::string("\xe2\x82\xac"),
+      odbcpp::test::dm::latin1_widened("\xe2\x82\xac"));
+  EXPECT_TRUE(unicode == "\"" + euro + "\"" || unicode == "\"\\u20ac\"") << unicode;
   EXPECT_EQ("null", text_cell(7, length));
   EXPECT_EQ(4, length);
   EXPECT_EQ("null", text_cell(8, length));
