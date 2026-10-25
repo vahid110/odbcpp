@@ -1,5 +1,11 @@
 # ODBCPP - Multi-Database ODBC Driver Framework
 
+[![CodeQL](https://github.com/vahid110/odbcpp/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/vahid110/odbcpp/actions/workflows/codeql.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15911/badge)](https://www.bestpractices.dev/projects/15911)
+
+The badges report main-branch scan status and documented project practices.
+The Best Practices record is in progress; neither badge is a security certification.
+
 A modern C++20 framework for building database-specific ODBC drivers with pluggable protocol support.
 
 Licensed under the [MIT License](LICENSE). See [Contributing](CONTRIBUTING.md)
