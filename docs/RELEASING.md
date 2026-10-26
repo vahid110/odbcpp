@@ -105,6 +105,14 @@ signing/notarization remain explicit follow-ups; a developer certificate is not
 provided by this workflow. Qualify a supported OpenSSL provider before releasing;
 the existing OpenSSL 3.6 line's support expiry is already tracked separately.
 
+## Minimum support contract
+
+See [proposed minimum support and binary checks](MINIMUM_SUPPORT.md) and
+[the machine-readable profiles](../packaging/release/support-profiles.json).
+Build-tool versions are separate from runtime requirements. Ubuntu 22.04,
+RHEL 9 and Amazon Linux 2023 are proposed independent baselines; Windows/macOS
+minimum OS versions remain unresolved. None is newly declared qualified here.
+
 ## Distribution sequence
 
 | Audience | Package choice | Qualification boundary |
@@ -112,7 +120,7 @@ the existing OpenSSL 3.6 line's support expiry is already tracked separately.
 | Windows 11 x64 first | Separate PostgreSQL/Redshift `.msi` | Native Windows DM, SQLWCHAR 2; installer lifecycle and customer-app evidence required |
 | Ubuntu LTS amd64 next | `.deb`, plus diagnostic `.tar.gz` | Name actual Ubuntu baseline, glibc/libstdc++/OpenSSL minimums and unixODBC ABI; WSL alone is not distro installer acceptance |
 | macOS next | Native `.pkg`; optional `.dmg` outer container | Separately qualified x86_64/arm64 and iODBC/unixODBC profiles; no universal-binary or interchangeable SQLWCHAR 2/4 claim |
-| RHEL-family later | `.rpm` | Build and test on the actual supported distribution/runtime baseline; do not convert a DEB and claim compatibility |
+| RHEL 9 and Amazon Linux 2023 later | Separate `.rpm` targets | Independently build/test each actual distribution/runtime baseline; do not infer common compatibility from glibc 2.34 or the RPM format |
 | Advanced users / CI | Explicitly labelled `.tar.gz` | Staged runtime only, pinned OS/CPU/DM/Unicode/provider profile and dependency instructions; not a universal Linux binary |
 
 Do not implement every installer at once. This batch ships Windows candidate
@@ -122,6 +130,8 @@ or qualified Unix customer packages. Stage the driver runtime with
 then `python3 tools/release/artifacts.py archive --stage <stage> --output <archive.tar.gz>
 --profile <explicit-os-cpu-dm-ucs-provider-profile>`. That helper reads existing
 files only; it never builds or installs on the host. It preserves contained
-symlink target bytes, rejects symlink escapes, and writes a checksum. Shared
+symlink target bytes, rejects symlink escapes, and writes a checksum. Linux ELF
+artifacts also require the dependency scan described above; unresolved C++ runtime
+ceilings currently prevent Linux archive qualification. Shared
 runtime dependencies and licensing must be resolved for each profile before
 customer distribution. Full SDK installation is deliberately a separate component.

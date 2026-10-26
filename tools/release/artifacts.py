@@ -9,6 +9,7 @@ import shutil
 import tarfile
 import xml.etree.ElementTree as ET
 from version import derive
+from elf_dependencies import profile_contract, scan
 
 
 def digest(path):
@@ -50,6 +51,10 @@ def seal(build, package, output, expected_revision, product):
         name = item["file"]
         if Path(name).name != name or digest(regular(stage / name)).lower() != item["sha256"].lower():
             raise ValueError("Staged runtime does not match inventory")
+    support = profile_contract("windows-x86-64-windowsdm-ucs2-openssl-bundled-shared")
+    crypto = json.loads(regular(stage / "odbcpp-crypto-manifest.json").read_text())
+    if crypto.get("provider") != support["crypto"]["provider"] or crypto.get("requestedLinkage") != support["crypto"]["linkage"]:
+        raise ValueError("Staged crypto identity differs from Windows release profile")
     unit_count = verify_unit_report(build / "release-unit.xml")
     output.mkdir(parents=True, exist_ok=False)
     msi = regular(package / f'odbcpp-{product.lower()}-{version["semver"]}-x64.msi')
@@ -61,7 +66,9 @@ def seal(build, package, output, expected_revision, product):
         shutil.copyfile(path, output / path.name)
     payload = {p.name: digest(p) for p in sorted(output.iterdir())}
     receipt = {"schemaVersion": 1, "sourceRevision": expected_revision, "semanticVersion": version["semver"],
-               "product": product, "profile": "windows-2025-x64-windowsdm-ucs2-openssl-bundled-shared",
+               "product": product, "profile": "windows-x86-64-windowsdm-ucs2-openssl-bundled-shared",
+               "buildEnvironment": "windows-2025",
+               "runtimeSupport": support,
                "signed": False, "qualification": {"unitCases": unit_count, "installerLifecycle": "pending",
                    "live": "pending", "releaseAccepted": False}, "files": payload}
     (output / "provenance.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -110,6 +117,21 @@ def archive(stage, output, profile):
             raise ValueError("Archive staging contains a special or dangling file")
         if path.is_symlink() and (not path.resolve().is_relative_to(root) or path.is_dir()):
             raise ValueError("Archive symlinks must resolve to files inside staging")
+    # Reject an ELF disguised under a non-Linux profile. Linux archives require
+    # measured baseline ceilings; pending support policy cannot silently pass.
+    has_elf = False
+    for path in files:
+        if path.is_file():
+            with path.open("rb") as candidate:
+                has_elf = has_elf or candidate.read(4) == b"\x7fELF"
+    if profile.startswith("linux-") or has_elf:
+        contract = profile_contract(profile)
+        if crypto["requestedLinkage"] != contract["crypto"]["linkage"] or crypto.get("provider") != contract["crypto"]["provider"]:
+            raise ValueError("Stage crypto linkage differs from Linux profile")
+        report = scan(stage, profile)
+        output.with_suffix(output.suffix + ".dependencies.json").write_text(json.dumps(report, indent=2) + "\n")
+        if report["status"] != "pass":
+            raise ValueError("Linux dependency check " + report["status"] + "; see dependency report")
     # cmake --install --component ODBCPPDriverRuntime creates staging; this never builds.
     with output.open("xb") as stream, tarfile.open(fileobj=stream, mode="w:gz", dereference=True) as tar:
         for path in files:

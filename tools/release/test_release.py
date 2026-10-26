@@ -157,10 +157,10 @@ class Artifacts(unittest.TestCase):
         self.stage.mkdir(parents=True)
         (self.stage / "odbcpp.dll").write_bytes(b"synthetic fixture; not a real DLL")
         (self.stage / "LICENSE").write_text("fixture license")
-        for name in ("spdlog-LICENSE.txt", "fmt-LICENSE.txt"):
+        for name in ("spdlog-LICENSE.txt", "fmt-LICENSE.txt", "OpenSSL-LICENSE.txt"):
             (self.stage / name).write_text("fixture notice")
         for name in ("odbcpp-crypto-manifest.json", "odbcpp-crypto-artifact-evidence.json"):
-            (self.stage / name).write_text('{"fixture": true, "requestedLinkage": "SYSTEM_SHARED"}')
+            (self.stage / name).write_text('{"fixture": true, "provider": "OPENSSL", "requestedLinkage": "BUNDLED_SHARED"}')
         for name in ("package-load.log", "release-msi-inspection.log"):
             (self.build / name).write_text("Synthetic control fixture only; not package execution")
         (self.stage / "odbcpp-version.json").write_text(json.dumps(self.value))
@@ -176,7 +176,10 @@ class Artifacts(unittest.TestCase):
 
     def test_seal_verify_and_detect_tampering(self):
         self.make()
-        self.assertEqual(verify(self.out, REVISION)["qualification"]["unitCases"], 3)
+        receipt = verify(self.out, REVISION)
+        self.assertEqual(receipt["qualification"]["unitCases"], 3)
+        self.assertIsNone(receipt["runtimeSupport"]["minimumOsVersion"])
+        self.assertEqual(receipt["runtimeSupport"]["status"], "proposed-unqualified")
         with self.assertRaises(ValueError):
             verify(self.out, "b" * 40)
         (self.out / "LICENSE").write_text("modified")
@@ -197,6 +200,12 @@ class Artifacts(unittest.TestCase):
             generate({**self.value, key: val}, self.build / "version")
             with self.assertRaises(ValueError):
                 self.make()
+
+    def test_seal_rejects_wrong_runtime_profile(self):
+        (self.stage / "odbcpp-crypto-manifest.json").write_text(json.dumps({"provider": "OPENSSL", "requestedLinkage": "SYSTEM_SHARED"}))
+        with self.assertRaisesRegex(ValueError, "crypto identity"):
+            self.make()
+        self.assertFalse(self.out.exists())
 
     def test_no_empty_failed_or_skipped_unit_receipts(self):
         for xml in ['<testsuite tests="0"/>', '<testsuite tests="1" skipped="1"/>', '<testsuite tests="1" failures="1"/>', '<testsuite tests="1" errors="1"/>']:
@@ -221,14 +230,32 @@ class Artifacts(unittest.TestCase):
         link = self.stage / "libdriver.so"
         link.symlink_to("odbcpp.dll")
         target = self.root / "profile.tar.gz"
-        archive(self.stage, target, "linux-ubuntu24.04-amd64-unixodbc-ucs2")
+        archive(self.stage, target, "fixture-portable-stage")
         with tarfile.open(target) as tar:
-            body = tar.extractfile("linux-ubuntu24.04-amd64-unixodbc-ucs2/libdriver.so").read()
+            body = tar.extractfile("fixture-portable-stage/libdriver.so").read()
             self.assertEqual(body, (self.stage / "odbcpp.dll").read_bytes())
         link.unlink()
         link.symlink_to(self.build / "release-unit.xml")
         with self.assertRaises(ValueError):
-            archive(self.stage, self.root / "bad.tar.gz", "linux-amd64-unixodbc-ucs2")
+            archive(self.stage, self.root / "bad.tar.gz", "fixture-portable-stage")
+
+    def test_linux_archive_cannot_bypass_dependency_check(self):
+        (self.stage / "odbcpp-crypto-manifest.json").write_text(json.dumps({"provider": "OPENSSL", "requestedLinkage": "SYSTEM_SHARED"}))
+        profile = "linux-ubuntu22.04-x86-64-unixodbc-ucs2-openssl-system-shared"
+        target = self.root / "linux.tar.gz"
+        for status in ("fail", "pending-baseline"):
+            with mock.patch("artifacts.scan", return_value={"status": status}) as inspect:
+                with self.assertRaisesRegex(ValueError, status):
+                    archive(self.stage, target, profile)
+                inspect.assert_called_once_with(self.stage, profile)
+                self.assertFalse(target.exists())
+        (self.stage / "driver.so").write_bytes(b"\x7fELF" + b"synthetic")
+        with self.assertRaisesRegex(ValueError, "Unknown support profile"):
+            archive(self.stage, target, "fixture-disguised-elf")
+        with mock.patch("artifacts.scan", return_value={"status": "pass"}):
+            archive(self.stage, target, profile)
+            self.assertTrue(target.exists())
+            self.assertEqual(json.loads(target.with_suffix(".gz.dependencies.json").read_text())["status"], "pass")
 
     def test_draft_only_reuses_assets_and_refuses_existing_release(self):
         # Duplicate only synthetic fixtures to exercise publication control.

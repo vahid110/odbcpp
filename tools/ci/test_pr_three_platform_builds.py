@@ -21,6 +21,8 @@ FLAGS = ('run_development_pilot', 'run_product_qualification',
 # Reviewed job bodies, excluding only their top-level event condition. Preserve
 # 526b with reviewed packaging/checkpoint repairs (2026-10-22), then action pins
 # and literal cache-token grants (2026-10-25); build/test commands are unchanged.
+# 2026-10-26 windows-live: three historical 1.0.x package invocations now
+# explicitly use -LifecycleFixture; release packaging cannot impersonate fixtures.
 BODY_SHA256 = {
     'sanitizer-only': 'c5f8920828e11b4356e9c2536c4a5b263bb1bbcd3b28e8e759b87afd6b0ff27c',
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
@@ -28,7 +30,7 @@ BODY_SHA256 = {
     'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
     'build-and-test': '120c7398a37e6948412a148f75fb8e46918c4279ed3e5a42a0db73b8c206f43e',
     'redshift-build': '0ba6d9fa6afb30d14b63859e433d7adf193213c86aead5fa022f9963fc401873',
-    'windows-live': '8fe7c5494f85d087ba55417bc5385d92a8715c8ebbf705be34589cefe1f8663c',
+    'windows-live': '72abd690c7d78fb5f2d568251fb8cfbf11bae84264c5f8540ebd196c157c5b02',
     'windows-package': '8df1d4a83f758b3784a83918338f9c17fd4c5fbedcaf84f1bc45cd9e6d955c97',
     'windows-linked-server': 'dc898d0acd712fc9de23110b50e64dfa9669d37aa4ae6cbf7353219b4ac458d6',
     'linux-sanitizers': '4c56808487402d87e94b067b4a761a0170eb705b5590a935c752cdaafebce5fe',
