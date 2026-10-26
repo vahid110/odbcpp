@@ -3109,8 +3109,8 @@ tests/driver_manager/it_redshift_package_live.cpp,212,TEST_F,RedshiftPackageLive
 tests/driver_manager/test_dm_identity.cpp,16,TEST,DriverManagerIdentity,ExactQualifiedBuildAndProfileMatch,,no-odbc-entry,none,,,,,0
 tests/driver_manager/test_dm_identity.cpp,25,TEST,DriverManagerIdentity,SameSqlDmVersionCannotEnrollUnknownOrOtherBuild,,no-odbc-entry,none,,,,,0
 tests/driver_manager/test_dm_identity.cpp,39,TEST,DriverManagerIdentity,SameSqlDmVersionCannotSelectAnotherAbiOrEnvironment,,no-odbc-entry,none,,,,,0
-tests/driver_manager/test_dm_identity.cpp,57,TEST,DriverManagerIdentity,ActualProviderAndNullBufferRouteShareQualification,,public-only,none,,,,,5
-tests/driver_manager/test_dm_identity.cpp,78,TEST,DriverManagerIdentity,ByteComparisonRejectsDifferentBuildAndLength,,no-odbc-entry,none,,,,,0
+tests/driver_manager/test_dm_identity.cpp,57,TEST,DriverManagerIdentity,ActualProviderAndNullBufferRouteShareQualification,,public-only,none,,,,,6
+tests/driver_manager/test_dm_identity.cpp,95,TEST,DriverManagerIdentity,ByteComparisonRejectsDifferentBuildAndLength,,no-odbc-entry,none,,,,,0
 tests/security/awslc/test_postgres_live.cpp,87,TEST_P,AwsLcPostgresLive,VerifiedScramAndPreparedQuery,1,no-odbc-entry,none,,,body,AsyncTlsTransport AuthenticationRequest ConnectionSettings EpollTransport GenericDatabaseConnection PgProtocolParser QueryParameter QueryParameterType,0
 tests/security/awslc/test_postgres_live.cpp,105,TEST_P,AwsLcPostgresLive,WrongPasswordRetiresSessionAndAllowsFreshScram,1,no-odbc-entry,none,,,body,AsyncTlsTransport AuthenticationRequest ConnectionSettings DbErrorCode EpollTransport GenericDatabaseConnection PgProtocolParser ThreadPoolTransport,0
 tests/security/awslc/test_postgres_live.cpp,118,TEST_P,AwsLcPostgresLive,RejectsWrongTrustBeforeAuthenticationAndRecovers,1,no-odbc-entry,none,,,helpers,AsyncTlsTransport AuthenticationRequest ConnectionSettings EpollTransport GenericDatabaseConnection PgProtocolParser ThreadPoolTransport make_deadline,0

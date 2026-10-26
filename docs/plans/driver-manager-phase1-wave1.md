@@ -48,10 +48,9 @@ Nothing moved into `sdk/`, and no product or driver file changed.
 
 The `dm_it_*` targets always build whenever a manager library is configured, so the three-platform PR builds compile them.
 
-CTest registers them only with `-DODBCPP_DM_INTEGRATION_TESTS=ON`, under the labels `integration;dm-integration`. They're opt-in because:
-- `primary.yml` runs `ctest -L integration` on macOS iODBC for every PR;
-- the manager deviations below aren't yet asserted as expectations; that's Phase 3;
-- registering them by default would turn every full run red on known manager behaviour.
+CTest registers the complete connected suites with `-DODBCPP_DM_INTEGRATION_TESTS=ON`, under `integration;dm-integration`. They remain opt-in because they need a configured database and an applicable manager profile. Known deviations now have explicit, profile-bound expectations in `tests/test_dm_expectations.h`; unknown profiles retain the direct expectations.
+
+The database-free `dm-offline` subset always registers when the manager targets exist. Ordinary Windows, Ubuntu and macOS PR CI executes it and retains exact-case GoogleTest XML, CTest JUnit and observed provider/profile evidence. See [the offline subset and coverage limits](driver-manager-offline-ci.md). It does not enable or replace the complete connected suites.
 
 To run them, configure with `-DODBCPP_DM_INTEGRATION_TESTS=ON` and register the driver privately:
 - **iODBC:** `ODBCINI` and `ODBCINSTINI` are full paths.
@@ -75,7 +74,7 @@ Final runs are on `10d664c` with a clean worktree and `-DODBCPP_DM_INTEGRATION_T
 
 One `it_handle_lifecycle` case crashed in the final iODBC run but failed in the earlier one (6 crashes against 5). That matches bucket J, whose crashes depend on memory layout.
 
-With the option off (the default), CTest lists 133 tests and no `dm_*`.
+At the original wave-1 revision, the option-off inventory contained 133 tests and no `dm_*`. Current builds additionally register the bounded offline subset described above.
 
 Windows ODBC and Linux runs aren't part of this wave.
 

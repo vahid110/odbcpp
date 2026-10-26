@@ -58,8 +58,8 @@ option(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS "Build separately admitted inst
 option(ODBCPP_REDSHIFT_OFFICIAL_IMPORT_LIVE_TESTS "Build separately admitted official Redshift import comparison tests" OFF)
 option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification peer" OFF)
-# The dm_it_* targets always build; their known manager deviations are not yet
-# asserted as expectations, so CTest registers them only on request.
+# The dm_it_* targets always build. Connected suites remain opt-in because they
+# need a configured database; the bounded dm-offline subset always registers.
 option(ODBCPP_DM_INTEGRATION_TESTS "Register the integration suites built against the Driver Manager" OFF)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
 target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
@@ -579,6 +579,12 @@ if(UNIX OR WIN32)
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME test_dm_identity COMMAND test_dm_identity)
     set_tests_properties(test_dm_identity PROPERTIES LABELS "unit;dm-identity" TIMEOUT 30)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dm-offline")
+    add_test(NAME dm_offline_identity COMMAND test_dm_identity
+      "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/identity.xml")
+    set_tests_properties(dm_offline_identity PROPERTIES
+      LABELS "dm-offline" TIMEOUT 30
+      FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
     # Optional relationship partition; no core link and no PostgreSQL registration.
     if(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS)
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
@@ -847,6 +853,29 @@ if(UNIX OR WIN32)
           LABELS "integration;dm-integration")
       endif()
     endforeach()
+
+    # Reuse public pre-connect API assertions on both routes. These fixtures
+    # allocate/free ENV/DBC handles but never call SQLConnect/SQLDriverConnect.
+    foreach(_route direct manager)
+      if(_route STREQUAL "direct")
+        set(_offline_target it_handle_lifecycle)
+      else()
+        set(_offline_target dm_it_handle_lifecycle)
+      endif()
+      add_test(NAME dm_offline_${_route}_login_timeout COMMAND ${_offline_target}
+        --gtest_filter=ConnectionAttributeIntegrationTest.LoginTimeoutOutputWidth
+        "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/${_route}-login-timeout.xml")
+      set_tests_properties(dm_offline_${_route}_login_timeout PROPERTIES
+        LABELS "dm-offline" TIMEOUT 30
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
+    endforeach()
+    # This checks the Unicode fixture conversion, not a manager API call.
+    add_test(NAME dm_offline_unicode_conversion COMMAND it_driver_manager_unicode
+      --gtest_filter=DriverManagerUnicodeHarnessTest.OverrideTextDecodesCompleteScalarsIntoManagerUnits
+      "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/unicode-conversion.xml")
+    set_tests_properties(dm_offline_unicode_conversion PROPERTIES
+      LABELS "dm-offline" TIMEOUT 30
+      FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
     unset(_dm_redshift_product)
     unset(_dm_suites)
   elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")

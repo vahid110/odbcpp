@@ -55,6 +55,23 @@ TEST(DriverManagerIdentity, SameSqlDmVersionCannotSelectAnotherAbiOrEnvironment)
 }
 
 TEST(DriverManagerIdentity, ActualProviderAndNullBufferRouteShareQualification) {
+  // Exercise the diagnostic API as well as the version observer's allocation
+  // and SQLGetInfo calls, with no driver registration or database connection.
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                                      reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  SQLCHAR state[6]{};
+  EXPECT_EQ(SQL_NO_DATA, SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1,
+                                      state, nullptr, nullptr, 0, nullptr));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+  const auto observed_path = record_observed_manager_profile();
+  ASSERT_FALSE(observed_path.empty());
+  EXPECT_TRUE(std::filesystem::u8path(observed_path).is_absolute());
+  EXPECT_TRUE(std::filesystem::is_regular_file(std::filesystem::u8path(observed_path)));
+  ASSERT_FALSE(manager_version().empty());
+  EXPECT_EQ(SQL_OV_ODBC3, manager_odbc_profile().odbc_version);
+  EXPECT_TRUE(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4);
   if (!configured_unix_manager().version.empty()) {
     const auto file = loaded_manager_file_identity();
     EXPECT_EQ(configured_unix_manager().library_path, file.path);

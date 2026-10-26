@@ -143,6 +143,28 @@ inline const std::string& manager_version() {
   return manager_odbc_profile().version;
 }
 
+// Reproducibility facts, not qualification authority. Unknown versions still
+// run with direct expectations. Configuration values/connection strings are
+// deliberately excluded from the result properties.
+inline std::string record_observed_manager_profile() {
+  const auto path = observed_manager_library_path();
+  const auto& profile = manager_odbc_profile();
+  ::testing::Test::RecordProperty("dm_version", profile.version);
+  ::testing::Test::RecordProperty("dm_loaded_library", path);
+  ::testing::Test::RecordProperty("dm_pointer_bytes", static_cast<int>(sizeof(void*)));
+  ::testing::Test::RecordProperty("dm_application_sqlwchar_bytes", static_cast<int>(sizeof(SQLWCHAR)));
+#ifdef ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE
+  // The driver is not loaded by this offline observation: report the configured
+  // driver ABI separately from the actual application-side sizeof(SQLWCHAR).
+  ::testing::Test::RecordProperty("dm_configured_driver_sqlwchar_bytes", ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE);
+#else
+  ::testing::Test::RecordProperty("dm_configured_driver_sqlwchar_bytes", "unspecified");
+#endif
+  ::testing::Test::RecordProperty("dm_odbc_environment", static_cast<int>(profile.odbc_version));
+  ::testing::Test::RecordProperty("dm_configuration_provenance", manager_configuration_provenance());
+  return path;
+}
+
 inline constexpr const char* kIodbc35216 = "03.52.1623.0502";
 inline constexpr const char* kUnixodbc2314 = "03.52.0002.0003";
 inline constexpr const char* kWindows38126100 = "03.81.26100.0000";

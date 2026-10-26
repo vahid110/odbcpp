@@ -51,6 +51,12 @@ struct ManagerFileIdentity {
   std::string sha256;
 };
 
+// Observation only: available even when no known-deviation receipt applies.
+// An observed path must never grant a manager-specific expectation by itself.
+std::string observed_manager_library_path();
+// Fixed provenance labels and set/unset facts only; never environment values.
+std::string manager_configuration_provenance();
+
 // Resolves the loaded manager's API provider, rather than trusting a linker
 // search path, executable version label or SQL_DM_VER alone.
 ManagerFileIdentity loaded_manager_file_identity();
