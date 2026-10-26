@@ -35,7 +35,7 @@ Probes behind the D buckets ran on the disposable loopback PostgreSQL fixture us
 | D2 | manager | | (masked) | 1 | `NegativeTests` passes a connection string as `SQLConnect` ServerName. The manager reads it as a DSN name and refuses it: unixODBC HY090 (longer than `SQL_MAX_DSN_LENGTH`), iODBC IM002. This is live bucket R2. |
 | D3 | manager | | (masked) | 1 | `SQLGetDiagRecW` through a manager reports the record's UTF-8 byte count as its length in characters. Probe: 62 from both managers, 56 direct. The text itself is complete. This is live bucket R3. |
 | D4 | manager | | (masked) | 1 | `SQLErrorW` with a NULL buffer and length -1 consumes the record. unixODBC returns `SQL_SUCCESS`. iODBC returns `SQL_ERROR` as the driver does, but the record is still gone. This is live bucket R4. |
-| P1 | manager (R11) | | | 2 | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or before any fetch: the driver returns `SQL_SUCCESS` with 0, and unixODBC raises 24000 itself. Recorded as R11; the product question stays open ([P1](#p1-static-cursor-row_number-off-a-row)). |
+| P1 | manager (R11) | | | 2 | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or before any fetch: the driver returned `SQL_SUCCESS` with 0, and unixODBC raised 24000 itself. Recorded as R11; resolved as a product change in issue #120 (driver now raises 24000/HY109 itself; the 0-vs-24000 clause of R11 is dropped, the failed-fetch interception clause is retained as `RowNumberUnfetchableIntercepted`) ([P1](#p1-static-cursor-row_number-off-a-row)). |
 | O1 | test oracle | 1 | | 1 | `SuperResultsPreserveServerJsonText` expected the text `null` for `JSON_PARSE('null')`. The driver correctly returned `SQL_NULL_DATA`, because the server makes a top-level JSON null SQL NULL. See [O1](#o1-super-json-null). |
 
 All 198 failures are assigned to a bucket. The case-by-case list is in the private evidence (`classified.json`).
@@ -55,16 +55,16 @@ All 198 failures are assigned to a bucket. The case-by-case list is in the priva
 
 ## Needs a decision
 
-### P1: static-cursor ROW_NUMBER off a row
+### P1: static-cursor ROW_NUMBER off a row (resolved: driver raises 24000/HY109)
 
 - **Spec:** `SQLGetStmtAttr` says two different things here:
   - The attribute description says: "If the number of the current row cannot be determined or there is no current row, the driver returns 0."
-  - The diagnostics table lists 24000 when the attribute is `SQL_ATTR_ROW_NUMBER` and the cursor is not open, or is positioned before the start or after the end of the result set.
-- **Driver:** The driver follows the diagnostics table for forward-only cursors (`MetadataIntegrationTest.ReportsCurrentRowNumberOnlyWhilePositioned`). For static cursors it follows the attribute description, through a deliberate carve-out added with static scrolling (`8ee2cfc`, `odbc/odbc_handles.cpp` `SQL_ATTR_ROW_NUMBER`). Unit tests in `tests/unit/test_backend_contract.cpp` assert the 0, and so does `RedshiftRecentFeaturesRealTest`.
-- **unixODBC:** It applies the diagnostics table itself and returns 24000 after `SQL_NO_DATA`, before the call reaches the driver.
-- **Done in this branch:** the driver is unchanged, and the unixODBC behaviour is recorded as live bucket R11 (`RowNumberOffRowRefused`). The two live `row_number(…,0)` checks expect the manager's 24000 there.
-  - The authorization for this branch covers test infrastructure only. Changing the driver would also mean reversing a deliberate design that 11 static-cursor unit assertions in `tests/unit/test_backend_contract.cpp` check, so it isn't made here.
-- **Open product question, for a separate product change:** whether static cursors should raise 24000 like forward-only cursors. That would give one rule for both cursor types and match the diagnostics table. The plan: change the static-cursor unit tests first, as failing-before evidence; then remove the carve-out; then drop R11.
+  - The diagnostics table lists 24000 when the attribute is `SQL_ATTR_ROW_NUMBER` and the cursor is not open, or is positioned before the start or after the end of the result set, and HY109 when the row had been deleted or could not be fetched.
+- **Driver:** The driver follows the diagnostics table for forward-only cursors (`MetadataIntegrationTest.ReportsCurrentRowNumberOnlyWhilePositioned`). For static cursors it followed the attribute description, through a deliberate carve-out added with static scrolling (`8ee2cfc`, `odbc/odbc_handles.cpp` `SQL_ATTR_ROW_NUMBER`). Unit tests in `tests/unit/test_backend_contract.cpp` asserted the 0, and so did `RedshiftRecentFeaturesRealTest`.
+- **unixODBC:** It applies the diagnostics table itself and returned 24000 after `SQL_NO_DATA`, before the call reached the driver.
+- **Done in this branch:** the driver was unchanged, and the unixODBC behaviour was recorded as live bucket R11 (`RowNumberOffRowRefused`). The two live `row_number(…,0)` checks expected the manager's 24000 there.
+  - The authorization for this branch covered test infrastructure only. Changing the driver would also have meant reversing a deliberate design that 10 static-cursor unit assertions in `tests/unit/test_backend_contract.cpp` checked, so it wasn't made here.
+- **Resolution (issue #120, product change):** the carve-out is removed. `SQLGetStmtAttr(SQL_ATTR_ROW_NUMBER)` now returns 24000 when the cursor is not open on a result set or is positioned before the start or after the end, HY109 when the requested row could not be fetched (an HY111 bookmark failure or an all-slots bulk fetch failure), the positioned row number when positioned, and 0 only for a sparse bulk bookmark rowset whose current row cannot be determined. Each of the 10 unit assertion sites was classified before the change: 7 became 24000, 1 became HY109, 2 (successful bulk bookmark fetches) kept 0. The two live checks in `RedshiftRecentFeaturesRealTest` now expect the driver's own 24000 (after `SQL_NO_DATA`) and HY109 (after a stale-bookmark refusal); their actual live execution remains pending. The old 0-vs-24000 R11 deviation is retired, but its failed-fetch interception clause stays real: unixODBC answers 24000 itself for the HY109 case too, so that clause is retained as `RowNumberUnfetchableIntercepted` in `tests/test_dm_expectations.h` and the live helper maps the HY109 expectation to 24000 through that manager.
 
 ### O1: SUPER JSON null (resolved: test oracle)
 
@@ -164,7 +164,7 @@ All were measured on the loopback PostgreSQL fixture unless marked live.
 | R8 | unixODBC | `SQLGetFunctions` for the individual ODBC 3.8 ID 1022 raises HY095. The ODBC 3 bitmap carries the driver's answer. |
 | R9 | iODBC | `SQLPutData(NULL, 0)` is refused with HY009. The ODBC reference allows a NULL pointer with length 0. |
 | R10 | iODBC | `SQLDescribeCol` on column 0 is refused with S1002 (07009) while bookmarks are on (live). |
-| R11 | unixODBC | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or after a failed fetch before any row, raises 24000 from the manager. The driver reports 0 (P1). |
+| R11 | unixODBC | Static-cursor `SQL_ATTR_ROW_NUMBER` after `SQL_NO_DATA`, or after a failed fetch before any row, raises 24000 from the manager. The driver reports 0 (P1). *Resolved by the issue #120 product change: the driver now raises 24000/HY109 itself. The 0-vs-24000 clause is retired; the failed-fetch interception clause remains, because unixODBC still answers 24000 for the driver's HY109, and is retained as `RowNumberUnfetchableIntercepted`.* |
 | R12 | iODBC | A second `SQLFetch` after `SQL_NO_DATA` on a Redshift catalog result is refused with HY010 (live). The ODBC state table allows it and the driver returns `SQL_NO_DATA`. It didn't reproduce on the PostgreSQL fixture. |
 | R13 | iODBC | `SQLFetchScroll` with an unknown orientation raises HY092. The ODBC 3 state is HY106, which is what the driver returns. |
 | R14 | iODBC | Every connect re-applies the login timeout stored before the driver was first loaded, over a later value and the keyword. |

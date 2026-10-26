@@ -712,6 +712,9 @@ private:
   std::string prepared_sql_;
   size_t current_row_ = 0;
   bool row_positioned_ = false;
+  // True when the most recent fetch attempt could not fetch its requested
+  // row (for example an HY111 bookmark failure) and left the cursor off-row.
+  bool fetch_failed_ = false;
   bool executed_ = false;
   bool prepared_ = false;
   bool prepared_metadata_available_ = false;
