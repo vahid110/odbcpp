@@ -1,4 +1,7 @@
 import json
+import os
+import shutil
+import sys
 from pathlib import Path
 import subprocess
 import tarfile
@@ -6,16 +9,22 @@ import tempfile
 import unittest
 from unittest import mock
 
-from version import derive, generate
+from version import derive, generate, metadata
 from artifacts import archive, digest, seal, verify, verify_unit_report
 from draft import draft
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE = json.loads((ROOT / "version.json").read_text())
+# Stable test vector: changing the real product version must not require
+# rewriting test-fixture identities or editing a second version authority.
+BASE = {"schemaVersion": 1, "major": 1, "minor": 1, "patch": 0,
+        "prerelease": "beta", "sequence": 1, "abi": 1}
 REVISION = "a" * 40
 
 
 class Versions(unittest.TestCase):
+    def test_checked_in_manifest_is_valid(self):
+        derive(json.loads((ROOT / "version.json").read_text()))
+
     def test_known_identity(self):
         value = derive(BASE)
         self.assertEqual((value["semver"], value["msi"], value["odbc"]),
@@ -45,12 +54,74 @@ class Versions(unittest.TestCase):
         with self.assertRaises(ValueError):
             derive({**BASE, "prerelease": ""})
 
+    def make_repository(self, source):
+        source.mkdir(parents=True, exist_ok=True)
+        (source / "version.json").write_text(json.dumps(BASE))
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(source), *args],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        git("init")
+        git("add", "version.json")
+        git("-c", "user.name=Release Control Test", "-c", "user.email=test@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-m", "fixture")
+        return git("rev-parse", "HEAD")
+
+    def test_export_build_metadata_without_git_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "export"
+            source.mkdir()
+            (source / "version.json").write_text(json.dumps(BASE))
+            output = Path(tmp) / "generated"
+            environment = {**os.environ, "PATH": ""}
+            subprocess.run([sys.executable, str(ROOT / "tools/release/version.py"),
+                            "--source", str(source), "--output", str(output)],
+                           env=environment, check=True)
+            value = json.loads((output / "odbcpp-version.json").read_text())
+            self.assertEqual(value["semver"], "1.1.0-beta.1")
+            self.assertEqual(value["display"], "1.1.0-beta.1+export.unknown")
+            self.assertEqual(value["sourceProvenance"], "export")
+            self.assertIsNone(value["sourceRevision"])
+            self.assertIsNone(value["trackedSourceClean"])
+            # Consume generated identity through actual CMake; no repository exists.
+            script = Path(tmp) / "export.cmake"
+            script.write_text(f'include("{output.as_posix()}/odbcpp-version.cmake")\n'
+                              'if(NOT ODBCPP_VERSION_CORE STREQUAL "1.1.0")\n'
+                              '  message(FATAL_ERROR "Export version changed")\nendif()\n')
+            subprocess.run([shutil.which("cmake"), "-P", str(script)], env=environment, check=True)
+
+    def test_nested_export_cannot_borrow_parent_repository_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "unrelated"
+            parent_head = self.make_repository(parent)
+            child = parent / "vendor" / "odbcpp"
+            child.mkdir(parents=True)
+            (child / "version.json").write_text(json.dumps(BASE))
+            value = metadata(child)
+            self.assertEqual(value["sourceProvenance"], "export")
+            self.assertEqual(value["provenanceReason"], "no-repository-metadata")
+            self.assertIsNone(value["sourceRevision"])
+            self.assertNotIn(parent_head[:12], value["display"])
+
+    def test_exact_git_repository_and_git_unavailable_are_distinct(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "project"
+            head = self.make_repository(source)
+            value = metadata(source)
+            self.assertEqual(value["sourceProvenance"], "git")
+            self.assertEqual(value["sourceRevision"], head)
+            self.assertIs(value["trackedSourceClean"], True)
+            with mock.patch("version.subprocess.check_output", side_effect=FileNotFoundError):
+                unknown = metadata(source)
+            self.assertEqual(unknown["provenanceReason"], "git-unavailable")
+            self.assertIsNone(unknown["sourceRevision"])
+            self.assertIsNone(unknown["trackedSourceClean"])
+
     def test_cmake_generated_identity_and_prerelease_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             cmake_dir = directory.as_posix()
             cmake_root = ROOT.as_posix()
-            value = {**derive(BASE), "sourceRevision": REVISION, "trackedSourceClean": True, "display": "1.1.0-beta.1+gaaaaaaaaaaaa"}
+            value = {**derive(BASE), "sourceProvenance": "git", "sourceRevision": REVISION, "trackedSourceClean": True, "display": "1.1.0-beta.1+gaaaaaaaaaaaa"}
             generate(value, directory)
             for ack, expected in [("", False), ("1.1.0-beta.2", False), ("1.1.0-beta.1", True)]:
                 script = directory / "check.cmake"
@@ -80,7 +151,7 @@ class Artifacts(unittest.TestCase):
         self.build = self.root / "build"
         self.package = self.root / "package"
         self.out = self.root / "out"
-        self.value = {**derive(BASE), "sourceRevision": REVISION, "trackedSourceClean": True, "display": "test"}
+        self.value = {**derive(BASE), "sourceProvenance": "git", "sourceRevision": REVISION, "trackedSourceClean": True, "display": "test"}
         generate(self.value, self.build / "version")
         self.stage = self.package / "payload-1.1.1"
         self.stage.mkdir(parents=True)
@@ -122,7 +193,7 @@ class Artifacts(unittest.TestCase):
         (self.stage / "odbcpp.dll").write_text("changed after packaging")
         with self.assertRaises(ValueError):
             self.make()
-        for key, val in [("trackedSourceClean", False), ("sourceRevision", "b" * 40)]:
+        for key, val in [("trackedSourceClean", False), ("sourceRevision", "b" * 40), ("sourceProvenance", "export")]:
             generate({**self.value, key: val}, self.build / "version")
             with self.assertRaises(ValueError):
                 self.make()
@@ -174,9 +245,31 @@ class Artifacts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 draft(release, REVISION)
             self.assertEqual(run.call_count, 1)
-        with mock.patch("draft.subprocess.run") as run:
-            run.return_value.returncode = 1
-            run.return_value.stderr = b"HTTP 404"
+        missing = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"HTTP 404")
+        existing_draft = subprocess.CompletedProcess([], 0, stdout=json.dumps([
+            [{"tag_name": "v0.0.1", "draft": False}],
+            [{"tag_name": "v1.1.0-beta.1", "draft": True}]]).encode(), stderr=b"")
+        with mock.patch("draft.subprocess.run", side_effect=[missing, missing, existing_draft]) as run:
+            with self.assertRaisesRegex(ValueError, "draft already exists"):
+                draft(release, REVISION)
+            self.assertEqual(run.call_count, 3)
+            self.assertIn("--paginate", run.call_args.args[0])
+            self.assertFalse(any(call.args[0][1:3] == ["release", "create"] for call in run.call_args_list))
+        refused_listings = [
+            (subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"HTTP 403"), RuntimeError),
+            (subprocess.CompletedProcess([], 0, stdout=b'{"unexpected": true}', stderr=b""), ValueError)]
+        for listing, exception in refused_listings:
+            with mock.patch("draft.subprocess.run", side_effect=[missing, missing, listing]) as run:
+                with self.assertRaises(exception):
+                    draft(release, REVISION)
+                self.assertEqual(run.call_count, 3)
+        def absent_then_create(command, **kwargs):
+            if "--paginate" in command:
+                return subprocess.CompletedProcess(command, 0, stdout=b"[[]]", stderr=b"")
+            if command[1] == "api":
+                return missing
+            return subprocess.CompletedProcess(command, 0)
+        with mock.patch("draft.subprocess.run", side_effect=absent_then_create) as run:
             draft(release, REVISION)
             command = run.call_args.args[0]
             self.assertIn("--draft", command)

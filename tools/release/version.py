@@ -2,6 +2,7 @@
 """Derive every product version from version.json; no dependency or release I/O."""
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -28,12 +29,36 @@ def derive(raw):
 
 
 def metadata(source):
+    source = source.resolve()
     value = derive(json.loads((source / "version.json").read_text()))
-    def git(*args):
-        return subprocess.check_output(["git", "-C", str(source), *args], text=True).strip()
-    value.update(sourceRevision=git("rev-parse", "HEAD"),
-                 trackedSourceClean=not bool(git("status", "--porcelain", "--untracked-files=no")))
-    value["display"] = value["semver"] + "+g" + value["sourceRevision"][:12] + ("" if value["trackedSourceClean"] else ".dirty")
+    # Archives and vendored source exports remain buildable without Git. Never
+    # discover a repository above this project and borrow its unrelated HEAD.
+    value.update(sourceProvenance="export", sourceRevision=None,
+                 trackedSourceClean=None, provenanceReason="no-repository-metadata")
+    if (source / ".git").exists():
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(source), *args],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        try:
+            repository_root = Path(git("rev-parse", "--show-toplevel")).resolve()
+            if repository_root != source:
+                value["provenanceReason"] = "repository-root-mismatch"
+            else:
+                revision = git("rev-parse", "HEAD")
+                if not re.fullmatch(r"[0-9a-f]{40}", revision):
+                    raise ValueError("Unsupported Git revision identity")
+                clean = not bool(git("status", "--porcelain", "--untracked-files=no"))
+                value.update(sourceProvenance="git", sourceRevision=revision,
+                             trackedSourceClean=clean, provenanceReason="exact-project-repository")
+        except FileNotFoundError:
+            value["provenanceReason"] = "git-unavailable"
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            value["provenanceReason"] = "git-inspection-failed"
+    if value["sourceProvenance"] == "git":
+        suffix = "+g" + value["sourceRevision"][:12] + ("" if value["trackedSourceClean"] else ".dirty")
+    else:
+        suffix = "+export.unknown"
+    value["display"] = value["semver"] + suffix
     return value
 
 

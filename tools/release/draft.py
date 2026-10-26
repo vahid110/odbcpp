@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create a draft from verified candidate bytes; publishing is deliberately absent."""
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import re
@@ -28,6 +29,21 @@ def draft(directory, revision):
             raise ValueError("Release or tag already exists; never replace an existing version")
         if b"HTTP 404" not in result.stderr:
             raise RuntimeError("Cannot verify absence of existing release/tag; refusing draft creation")
+    # The by-tag endpoint can return 404 for an unpublished draft without a tag.
+    # The authenticated releases listing includes drafts; inspect every page.
+    listing = subprocess.run(["gh", "api", "--paginate", "--slurp",
+                              "repos/{owner}/{repo}/releases?per_page=100"], capture_output=True)
+    if listing.returncode != 0:
+        raise RuntimeError("Cannot verify absence of existing drafts; refusing draft creation")
+    pages = json.loads(listing.stdout)
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise ValueError("Unexpected paginated releases response")
+    for page in pages:
+        for release in page:
+            if not isinstance(release, dict) or not isinstance(release.get("tag_name"), str):
+                raise ValueError("Unexpected release identity in listing")
+            if release["tag_name"] == tag:
+                raise ValueError("Release or draft already exists; never duplicate an existing version")
     notes = f"""Candidate {version}, source `{revision}`.
 
 Unsigned Windows x64 PostgreSQL and Redshift MSI candidates. Unit tests,

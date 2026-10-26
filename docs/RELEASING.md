@@ -6,7 +6,14 @@ resources, package versions and a generated build identity. Do not independently
 edit these values in C++, PowerShell or CI. Both PostgreSQL and Redshift products
 use the same source version but retain separate driver registrations and MSI
 UpgradeCodes. Git revision and tracked-source dirty status are separate from
-SemVer ordering. Package from a fresh, clean, exact-commit configuration; the
+SemVer ordering. Source archives and vendored exports also build without Git:
+their provenance explicitly says `export`, revision/cleanliness are unknown, and
+the display suffix is `+export.unknown`. An export nested in another repository
+never borrows that repository's HEAD. Missing Git cannot block ordinary version
+derivation. Release packaging/sealing requires exact, clean Git provenance and
+refuses exported/unknown source identities.
+
+Package from a fresh, clean, exact-commit configuration; the
 packager rejects a stale configure-time identity. Reconfigure after a commit.
 
 The proposed first tagged release is **1.1.0-beta.1**, not a declaration that a
@@ -70,7 +77,8 @@ workflow does not accept an arbitrary candidate branch or run for PR events.
 5. Optionally download those exact artifacts in the draft job, verify their hashes
    and source, then create a **draft prerelease**, with a transport archive per
    product containing the original MSI/evidence bytes. Publishing never rebuilds
-   binaries. Existing tags/releases are refused; no overwrite/clobber path exists.
+   binaries. Existing tags/releases, including unpublished drafts found through the paginated
+   authenticated release listing, are refused; no overwrite/clobber path exists.
 
 Default token permission is read-only; only the optional main-only draft job has
 contents-write permission. Checkout credentials are not persisted. There is no

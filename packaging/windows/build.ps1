@@ -44,7 +44,7 @@ Assert ($LASTEXITCODE -eq 0 -and !$sourceStatus) 'Package the immutable tracked 
 $packagingRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $versionPath = Join-Path $build 'version/odbcpp-version.json'
 $versionInfo = Get-Content -LiteralPath $versionPath -Raw | ConvertFrom-Json
-Assert ($versionInfo.sourceRevision -ceq $sourceRevision -and $versionInfo.trackedSourceClean -eq $true) 'Reconfigure the clean exact source before packaging; version provenance is stale'
+Assert ($versionInfo.sourceProvenance -ceq 'git' -and $versionInfo.sourceRevision -ceq $sourceRevision -and $versionInfo.trackedSourceClean -eq $true) 'Reconfigure the clean exact source before packaging; version provenance is stale'
 Assert (!$Version -or $LifecycleFixture) 'Version overrides are reserved for explicit non-release LifecycleFixture packages'
 Assert (!$FailureFixture -or $LifecycleFixture) 'Rollback fixtures cannot be release packages'
 Assert ($LifecycleFixture -or $versionInfo.prerelease -cin @('beta', 'rc')) 'This recipe is for prerelease candidates only'

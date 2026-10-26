@@ -34,7 +34,7 @@ def verify_unit_report(path):
 
 def seal(build, package, output, expected_revision, product):
     version = json.loads(regular(build / "version/odbcpp-version.json").read_text(encoding="utf-8-sig"))
-    if (version["sourceRevision"] != expected_revision or not re.fullmatch(r"[0-9a-f]{40}", expected_revision)
+    if (version.get("sourceProvenance") != "git" or version["sourceRevision"] != expected_revision or not re.fullmatch(r"[0-9a-f]{40}", expected_revision)
             or version["trackedSourceClean"] is not True or not version["prerelease"]):
         raise ValueError("Require clean exact-source prerelease metadata")
     derived = derive({key: version[key] for key in ("schemaVersion", "major", "minor", "patch", "prerelease", "sequence", "abi")})
