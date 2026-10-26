@@ -12,7 +12,12 @@ namespace rs::core::auth::aws::detail {
 // records endpoint/scheme/signing observations and refuses any non-approved
 // target, mirroring the pinned-endpoint guarantee that production enforces via
 // endpointOverride + a verified TLS connection.
-enum class FakeHttpScenario : unsigned { Success, Denied, LateCompletion, CancelDuringTransport };
+enum class FakeHttpScenario : unsigned {
+  Success, Denied, LateCompletion, CancelDuringTransport,
+  // Parsed service errors, separate from Denied's client-side error flag.
+  StsAccessDenied, StsInvalidIdentityToken, StsIdpRejectedClaim,
+  StsThrottled, StsServerError, StsMalformedError, TransportFailure
+};
 
 struct FakeHttpObservation {
   std::atomic<unsigned> sends{0};
@@ -24,10 +29,14 @@ struct FakeHttpObservation {
   std::atomic<unsigned> get_credentials{0};
   std::atomic<unsigned> late_completion{0};
   std::atomic<unsigned> continuation_denied{0};
+  // STS sends that were AssumeRoleWithWebIdentity (a subset of assume_role),
+  // and approved sends that carried an Authorization header.
+  std::atomic<unsigned> web_identity{0};
+  std::atomic<unsigned> signed_requests{0};
   void reset() noexcept {
     sends = 0; approved = 0; foreign_scheme = 0; foreign_authority = 0;
     denied = 0; assume_role = 0; get_credentials = 0; late_completion = 0;
-    continuation_denied = 0;
+    continuation_denied = 0; web_identity = 0; signed_requests = 0;
   }
 };
 

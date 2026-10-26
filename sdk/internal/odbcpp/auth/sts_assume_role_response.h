@@ -14,7 +14,10 @@ namespace rs::core::auth {
 enum class StsAssumeRolePartition { Aws, AwsCn, AwsUsGov };
 enum class StsAssumeRoleFailure {
   UnsupportedPartition, InvalidAcquisition, InvalidResponse,
-  ExpiryRange, TimeConversionFailed, Cancelled, AllocationFailed, DeadlineElapsed
+  ExpiryRange, TimeConversionFailed, Cancelled, AllocationFailed, DeadlineElapsed,
+  // A parsed, modeled STS identity/trust rejection. Distinct from local,
+  // transport and response-shape failures; no remote message is retained.
+  ServiceRejected
 };
 struct StsAssumeRoleError {
   StsAssumeRoleFailure failure;
@@ -39,6 +42,14 @@ struct StsAssumeRoleTarget {
   unsigned duration_seconds;
   bool operator==(const StsAssumeRoleTarget&) const = default;
 };
+// Local split of arn:<partition>:iam::<12-digit account>:role/<name, optional
+// path>. Syntax only (the role-name subset above); STS decides whether the role
+// exists and trusts the caller.
+struct StsRoleArn {
+  StsAssumeRolePartition partition;
+  std::string account, role_name;
+};
+std::optional<StsRoleArn> parse_sts_role_arn(std::string_view arn);
 // Dedicated operation policy, not evidence that any AWS call occurred. The
 // explicitly injected production issuer must retain authenticated pairing.
 class StsAssumeRoleAcquisition final {
