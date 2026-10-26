@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 from version import derive, generate, metadata
-from artifacts import archive, digest, seal, verify, verify_unit_report
+from artifacts import archive, digest, seal, verify, verify_unit_report, _xml_module
 from draft import draft
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -244,11 +244,13 @@ class Artifacts(unittest.TestCase):
         profile = "linux-ubuntu22.04-x86-64-unixodbc-ucs2-openssl-system-shared"
         target = self.root / "linux.tar.gz"
         for status in ("fail", "pending-baseline"):
+            target = self.root / (status + ".tar.gz")
             with mock.patch("artifacts.scan", return_value={"status": status}) as inspect:
                 with self.assertRaisesRegex(ValueError, status):
                     archive(self.stage, target, profile)
-                inspect.assert_called_once_with(self.stage, profile)
+                inspect.assert_called_once_with(self.stage.resolve(), profile)
                 self.assertFalse(target.exists())
+        target = self.root / "passing.tar.gz"
         (self.stage / "driver.so").write_bytes(b"\x7fELF" + b"synthetic")
         with self.assertRaisesRegex(ValueError, "Unknown support profile"):
             archive(self.stage, target, "fixture-disguised-elf")
@@ -256,6 +258,59 @@ class Artifacts(unittest.TestCase):
             archive(self.stage, target, profile)
             self.assertTrue(target.exists())
             self.assertEqual(json.loads(target.with_suffix(".gz.dependencies.json").read_text())["status"], "pass")
+
+    def test_archive_preserves_existing_archive_and_sidecars(self):
+        for occupied in ("candidate.tar.gz", "candidate.tar.gz.sha256", "candidate.tar.gz.dependencies.json"):
+            directory = self.root / occupied.replace(".", "-")
+            directory.mkdir()
+            target = directory / "candidate.tar.gz"
+            existing = directory / occupied
+            existing.write_bytes(b"original evidence")
+            before = {path.name: path.read_bytes() for path in directory.iterdir()}
+            with mock.patch("artifacts.scan") as inspect:
+                with self.assertRaises(FileExistsError):
+                    archive(self.stage, target, "linux-ubuntu22.04-x86-64-unixodbc-ucs2-openssl-system-shared")
+                inspect.assert_not_called()
+            self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, before)
+
+    def test_malicious_xml_is_rejected_without_modifying_evidence(self):
+        path = self.build / "release-unit.xml"
+        documents = [
+            '<!DOCTYPE testsuite [<!ENTITY x "expanded">]><testsuite tests="1">&x;</testsuite>',
+            '<!DOCTYPE testsuite SYSTEM "file:///unreadable"><testsuite tests="1"/>',
+            '<testsuite tests="1">' + '<x>' * 129 + '</x>' * 129 + '</testsuite>']
+        for encoding in ("utf-8", "utf-16"):
+            for text in documents:
+                data = text.encode(encoding)
+                path.write_bytes(data)
+                with self.assertRaises(_xml_module.XmlSafetyError):
+                    verify_unit_report(path)
+                self.assertEqual(path.read_bytes(), data)
+
+    def test_untrusted_member_names_and_parent_links_rejected(self):
+        for name in ("../outside", "/absolute", "C:\\outside", "nested/../../outside", "../LICENSE", "odbcpp.dll:stream"):
+            self.inventory["files"][0]["file"] = name
+            (self.stage / "inventory.json").write_text(json.dumps(self.inventory))
+            with self.assertRaises(ValueError):
+                self.make()
+            self.assertFalse(self.out.exists())
+        self.inventory["files"][0]["file"] = "odbcpp.dll"
+        (self.stage / "inventory.json").write_text(json.dumps(self.inventory))
+        escaped = self.root / "outside-payload"
+        self.stage.rename(escaped)
+        self.stage.symlink_to(escaped, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            self.make()
+        self.assertFalse(self.out.exists())
+
+    def test_archive_checks_links_before_reading_manifest(self):
+        manifest = self.stage / "odbcpp-crypto-manifest.json"
+        manifest.unlink()
+        outside = self.root / "outside-manifest.json"
+        outside.write_text("must not parse this invalid JSON")
+        manifest.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            archive(self.stage, self.root / "escaping.tar.gz", "fixture-portable-stage")
 
     def test_draft_only_reuses_assets_and_refuses_existing_release(self):
         # Duplicate only synthetic fixtures to exercise publication control.

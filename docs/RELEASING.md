@@ -135,3 +135,27 @@ artifacts also require the dependency scan described above; unresolved C++ runti
 ceilings currently prevent Linux archive qualification. Shared
 runtime dependencies and licensing must be resolved for each profile before
 customer distribution. Full SDK installation is deliberately a separate component.
+
+## Filesystem and XML trust boundaries
+
+These are local operator tools, not a service accepting remote filesystem paths.
+The caller intentionally selects source, build, package, intake and output roots;
+out-of-tree builds and exported sources outside the checkout remain supported.
+Use directories owned against concurrent untrusted writers. The tools run with
+the caller's ordinary permissions and do not promise a hostile shared-directory
+sandbox or protection against another process racing filesystem mutations.
+
+Package/checksum metadata cannot select another root: members reject absolute,
+drive/stream, traversal and parent-symlink escapes. Archive staging validates
+contained portable members before reading manifests. Generated version files use
+atomic replacement instead of writing through existing symlinks/hardlinks.
+Archives, dependency sidecars and checksums are created exclusively: an occupied
+destination is refused before output, including when qualification would fail.
+A failed/pending dependency report remains evidence; use a fresh destination for
+a later attempt rather than overwriting it.
+
+Unit XML uses the project's bounded evidence parser, rejecting DTD/entity
+declarations (including UTF-16), external entities and excessive input/depth/node
+resources. Raw input remains untouched. These controls are distinct from the
+reviewed qualification assertions and do not turn a synthetic report into actual
+execution evidence.

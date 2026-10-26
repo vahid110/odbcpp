@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 import subprocess
+from paths import member, regular, selected_root, write_generated
 
 
 def derive(raw):
@@ -29,8 +30,8 @@ def derive(raw):
 
 
 def metadata(source):
-    source = source.resolve()
-    value = derive(json.loads((source / "version.json").read_text()))
+    source = selected_root(source)
+    value = derive(json.loads(regular(member(source, "version.json")).read_text()))
     # Archives and vendored source exports remain buildable without Git. Never
     # discover a repository above this project and borrow its unrelated HEAD.
     value.update(sourceProvenance="export", sourceRevision=None,
@@ -64,10 +65,10 @@ def metadata(source):
 
 def generate(value, output):
     output.mkdir(parents=True, exist_ok=True)
-    (output / "odbcpp-version.json").write_text(json.dumps(value, indent=2) + "\n")
+    write_generated(member(output, "odbcpp-version.json"), json.dumps(value, indent=2) + "\n")
     cmake = {"CORE": value["core"], "SEMVER": value["semver"], "ODBC": value["odbc"], "ABI": value["abi"]}
-    (output / "odbcpp-version.cmake").write_text("".join(f'set(ODBCPP_VERSION_{key} "{val}")\n' for key, val in cmake.items()))
-    (output / "odbcpp-version.rc").write_text('''#include <windows.h>
+    write_generated(member(output, "odbcpp-version.cmake"), "".join(f'set(ODBCPP_VERSION_{key} "{val}")\n' for key, val in cmake.items()))
+    write_generated(member(output, "odbcpp-version.rc"), '''#include <windows.h>
 1 VERSIONINFO
 FILEVERSION %s
 PRODUCTVERSION %s

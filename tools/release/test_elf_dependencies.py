@@ -25,7 +25,7 @@ def elf(machine=62):
     return data
 
 
-DYNAMIC = 'Dynamic section at offset 0x10 contains 1 entry:\n 0x1 (NEEDED) Shared library: [libc.so.6]\n'
+DYNAMIC = 'Dynamic section at offset 0x10 contains 2 entries:\n 0x1 (NEEDED) Shared library: [libc.so.6]\n 0x0 (NULL) 0x0\n'
 
 
 class ElfControls(unittest.TestCase):
@@ -50,6 +50,16 @@ class ElfControls(unittest.TestCase):
                 parse_needs(invalid)
         with self.assertRaises(ValueError):
             parse_dynamic('')
+
+    def test_dynamic_truncation_and_malformed_needed_fail(self):
+        for text in ('Dynamic section at offset 0x10 contains 2 entries:\n',
+                     DYNAMIC.replace('Shared library: [libc.so.6]', 'unrecognized value'),
+                     DYNAMIC.replace('2 entries', '3 entries'),
+                     DYNAMIC.replace(' 0x0 (NULL) 0x0\n', '')):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_dynamic(text)
+        self.assertEqual(parse_dynamic('Dynamic section at offset 0x10 contains 1 entry:\n 0x0 (NULL) 0x0\n'), [])
+        self.assertEqual(parse_dynamic('There is no dynamic section in this file.'), [])
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

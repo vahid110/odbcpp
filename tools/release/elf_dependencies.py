@@ -71,9 +71,31 @@ def parse_needs(text):
 
 
 def parse_dynamic(text):
-    if 'Dynamic section at offset ' not in text and 'There is no dynamic section in this file.' not in text:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines == ['There is no dynamic section in this file.']:
+        return []
+    if not lines:
         raise ValueError('Unrecognized readelf dynamic output')
-    return sorted(set(re.findall(r'\(NEEDED\).*Shared library: \[([^\]]+)\]', text)))
+    header = re.fullmatch(r'Dynamic section at offset 0x[0-9a-fA-F]+ contains (\d+) entr(?:y|ies):', lines[0])
+    if not header:
+        raise ValueError('Unrecognized readelf dynamic output')
+    entries = []
+    needed = []
+    for line in lines[1:]:
+        if re.fullmatch(r'Tag\s+Type\s+Name/Value', line):
+            continue
+        row = re.fullmatch(r'0x[0-9a-fA-F]+\s+\(([A-Za-z0-9_]+)\)\s+(.*)', line)
+        if not row:
+            raise ValueError('Malformed dynamic entry')
+        entries.append(row[1])
+        if row[1] == 'NEEDED':
+            library = re.fullmatch(r'Shared library: \[([^\]\r\n]+)\]', row[2])
+            if not library:
+                raise ValueError('Malformed NEEDED entry')
+            needed.append(library[1])
+    if len(entries) != int(header[1]) or not entries or entries[-1] != 'NULL':
+        raise ValueError('Truncated dynamic section')
+    return sorted(set(needed))
 
 
 def readelf(tool, option, path):
