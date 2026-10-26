@@ -46,7 +46,7 @@ if ($head -cne $env:GITHUB_SHA) { throw 'Package source differs from dispatched 
     -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2 -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
 & cmake --build $build --config Release --target odbcpp_driver odbcpp_setup --parallel 2
 foreach ($version in @('1.0.0','1.0.1','1.0.2')) {
-    & (Join-Path $source 'packaging/windows/build.ps1') -BuildDirectory $build -Version $version -FailureFixture:($version -eq '1.0.2')
+    & (Join-Path $source 'packaging/windows/build.ps1') -BuildDirectory $build -LifecycleFixture -Version $version -FailureFixture:($version -eq '1.0.2')
 }
 foreach ($entry in @(@{database='POSTGRESQL';build=$setupPg},@{database='REDSHIFT';build=$setupRs})) {
     & cmake -S (Join-Path $source 'tests/windows/installed_setup') -B $entry.build -A x64 ('-DTARGET_DATABASE='+$entry.database)

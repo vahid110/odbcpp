@@ -11,6 +11,7 @@ These notes describe development changes, not a published release. For exact
 source history, see [main commits](https://github.com/vahid110/odbcpp/commits/main).
 
 ### Added
+- Unified build, ODBC, DLL and package version metadata, with an explicit beta-to-MSI upgrade mapping and a build-once Windows draft-prerelease workflow. New customer MSI lifecycle and live qualification remain pending.
 - Operating-system TLS trust stores: Windows CryptoAPI chain policy, macOS Security framework evaluation and Linux/Unix distribution CA bundles, selected by default or with `UseSystemTrustStore=1`; custom `SSLCAFILE`/`SSLCADIR` trust fails closed on missing, empty or malformed input and never falls back. The Windows DSN Security page distinguishes inherited driver defaults from an explicit operating-system trust-store selection.
 - Indicator-only and row-wise result bindings, checked row and single-set parameter-binding offsets, and SQL_ATTR_RETRIEVE_DATA suppression with reset/rebind recovery
 - Expanded SQLGetInfo/SQLGetInfoW identity, naming, catalog, schema, cursor, and SQLGetData capability reporting

@@ -12,7 +12,12 @@ identity. The configured `TARGET_DATABASE` selects the product; an optional
     pwsh packaging/windows/build.ps1 -BuildDirectory build-windows-redshift -TargetDatabase REDSHIFT -OpenSslRoot 'C:/absolute/OpenSSL3'
 
 Output defaults to `<BuildDirectory>/package`. The packages are named
-`odbcpp-postgresql-<version>-x64.msi` and `odbcpp-redshift-<version>-x64.msi`.
+`odbcpp-postgresql-<semver>-x64.msi` and `odbcpp-redshift-<semver>-x64.msi`.
+The authoritative `version.json` generates the MSI numeric version, DLL resources
+and installed `odbcpp-version.json`; see [release policy](../../docs/RELEASING.md)
+for prerelease ordering and exact-source requirements. Ordinary packaging does
+not accept an independent version override. Explicit `-LifecycleFixture -Version`
+is reserved for the historical non-release installer tests.
 They have separate upgrade/component identities, driver registrations
 (`ODBCPP PostgreSQL` / `ODBCPP Redshift`) and install directories under
 `Program Files/ODBCPP`. Installing or upgrading one must preserve the other.
@@ -65,7 +70,7 @@ and removal refuse a conflicting or externally repointed registration; restore
 that registration deliberately before retrying. Do not delete registry trees as
 a workaround. Use verbose MSI logging to diagnose failures:
 
-    msiexec /i odbcpp-postgresql-1.0.0-x64.msi /l*v install.log
+    msiexec /i odbcpp-postgresql-1.1.0-beta.1-x64.msi /l*v install.log
 
 The PostgreSQL CI uses a separate fresh Windows runner for package acceptance, excluding build
 paths from PATH, adding hostile same-name PATH decoys, checking actual loaded

@@ -228,7 +228,7 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
   const std::array<std::pair<SQLUSMALLINT, std::string_view>, 33>
       expected_values{{
           {SQL_DRIVER_NAME, ODBCPP_EXPECT_DRIVER_FILENAME},
-          {SQL_DRIVER_VER, "01.00.0000"},
+          {SQL_DRIVER_VER, ODBCPP_DRIVER_VERSION},
           {SQL_DRIVER_ODBC_VER, "03.80"},
           {SQL_ODBC_VER, "03.80"},
           {SQL_DBMS_NAME, redshift_profile_ ? "Amazon Redshift" : "PostgreSQL"},

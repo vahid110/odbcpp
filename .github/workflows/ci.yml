@@ -643,9 +643,9 @@ jobs:
         shell: pwsh
         run: |
           ./packaging/windows/test-inputs.ps1
-          ./packaging/windows/build.ps1 -Version 1.0.0
-          ./packaging/windows/build.ps1 -Version 1.0.1
-          ./packaging/windows/build.ps1 -Version 1.0.2 -FailureFixture
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.0
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.1
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.2 -FailureFixture
           New-Item build-windows/package-acceptance -ItemType Directory | Out-Null
           Copy-Item build-windows/package/*.msi build-windows/package-acceptance
           Copy-Item build-windows/tests/Release/it_driver_manager.exe,build-windows/tests/Release/it_setup.exe,build-windows/tests/Release/it_package_load.exe build-windows/package-acceptance
