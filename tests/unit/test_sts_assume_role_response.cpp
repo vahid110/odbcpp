@@ -228,3 +228,29 @@ TEST(StsAssumeRoleResponseTest, SafeErrorsAreClosedWithoutSourcePayloads) {
   }
 }
 } // namespace
+namespace {
+TEST(StsRoleArnTest, SplitsPartitionAccountAndRoleNameWithPath) {
+  auto plain = parse_sts_role_arn("arn:aws:iam::123456789012:role/MyRole");
+  ASSERT_TRUE(plain.has_value());
+  EXPECT_EQ(StsAssumeRolePartition::Aws, plain->partition);
+  EXPECT_EQ("123456789012", plain->account);
+  EXPECT_EQ("MyRole", plain->role_name);
+  auto path = parse_sts_role_arn("arn:aws-us-gov:iam::123456789012:role/team/runtime");
+  ASSERT_TRUE(path.has_value());
+  EXPECT_EQ(StsAssumeRolePartition::AwsUsGov, path->partition);
+  EXPECT_EQ("team/runtime", path->role_name);
+  auto cn = parse_sts_role_arn("arn:aws-cn:iam::123456789012:role/r");
+  ASSERT_TRUE(cn.has_value());
+  EXPECT_EQ(StsAssumeRolePartition::AwsCn, cn->partition);
+}
+TEST(StsRoleArnTest, RefusesForeignShapes) {
+  for (std::string_view arn : {"", "MyRole", "arn:aws:iam::123456789012:user/alice",
+      "arn:aws:sts::123456789012:role/MyRole", "arn:aws:iam:us-east-1:123456789012:role/MyRole",
+      "arn:aws:iam::12345678901:role/MyRole", "arn:aws:iam::12345678901x:role/MyRole",
+      "arn:aws-iso:iam::123456789012:role/MyRole", "arn:aws:iam::123456789012:role/",
+      "arn:aws:iam::123456789012:role/a//b", "arn:aws:iam::123456789012:role/bad name",
+      "arn:aws:iam::123456789012"}) {
+    EXPECT_FALSE(parse_sts_role_arn(arn).has_value()) << arn;
+  }
+}
+} // namespace
