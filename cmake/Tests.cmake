@@ -61,6 +61,14 @@ option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification pee
 # The dm_it_* targets always build. Connected suites remain opt-in because they
 # need a configured database; the bounded dm-offline subset always registers.
 option(ODBCPP_DM_INTEGRATION_TESTS "Register the integration suites built against the Driver Manager" OFF)
+# Offline graph check: an opt-in registration must not name an image that the
+# ordinary build skips, or a full collection reports it "Not Run".
+add_test(NAME test_registered_test_images COMMAND ${CMAKE_COMMAND}
+  -DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+  -DBUILD_DIR=${CMAKE_BINARY_DIR}
+  -DCONFIG=$<CONFIG>
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckRegisteredTestImages.cmake)
+set_tests_properties(test_registered_test_images PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
 target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
 apply_compiler_settings(crypto_identity_probe)
