@@ -107,6 +107,9 @@ TEST(ServerlessJwtIamAuth, WebIdentityGetCredentialsAndVerifiedTlsLogin){
   EXPECT_FALSE(result.error.has_value());
   ASSERT_EQ(result.rows.size(),1U);ASSERT_EQ(result.rows[0].size(),3U);
   EXPECT_TRUE(result.rows[0][0].has_value()&&*result.rows[0][0]==spec->database);
+  ASSERT_TRUE(result.rows[0][1].has_value());
+  EXPECT_TRUE(*result.rows[0][1] == issued->user)
+      << "Authenticated database principal differs from the issued user";
   EXPECT_TRUE(result.rows[0][2].has_value()&&*result.rows[0][2]=="1");
   connection.disconnect();
 }
