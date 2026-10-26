@@ -67,8 +67,10 @@ TEST(DriverManagerIdentity, ActualProviderAndNullBufferRouteShareQualification) 
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
   const auto observed_path = record_observed_manager_profile();
   ASSERT_FALSE(observed_path.empty());
-  EXPECT_TRUE(std::filesystem::u8path(observed_path).is_absolute());
-  EXPECT_TRUE(std::filesystem::is_regular_file(std::filesystem::u8path(observed_path)));
+  const std::filesystem::path observed_file{
+      std::u8string(observed_path.begin(), observed_path.end())};
+  EXPECT_TRUE(observed_file.is_absolute());
+  EXPECT_TRUE(std::filesystem::is_regular_file(observed_file));
   ASSERT_FALSE(manager_version().empty());
   EXPECT_EQ(SQL_OV_ODBC3, manager_odbc_profile().odbc_version);
   EXPECT_TRUE(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4);
