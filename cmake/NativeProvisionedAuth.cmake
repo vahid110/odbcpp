@@ -61,6 +61,7 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_assume_ro
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/serverless_credentials_owner.h" "${_native_stage}/odbcpp/auth/aws/serverless_credentials_owner.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_serverless_fake_http.h" "${_native_stage}/odbcpp/auth/aws/sts_serverless_fake_http.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/profile_role_assumption.h" "${_native_stage}/odbcpp/auth/aws/profile_role_assumption.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/jwt_iam_auth.h" "${_native_stage}/odbcpp/auth/aws/jwt_iam_auth.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_pg_connector.h" "${_native_stage}/odbcpp/auth/aws/provisioned_pg_connector.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
@@ -75,6 +76,7 @@ add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/serverless_credentials_owner.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_serverless_fake_http.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/profile_role_assumption.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/jwt_iam_auth.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/provisioned_query_transport.cpp")
 target_compile_features(odbcpp_auth_aws_provisioned PRIVATE cxx_std_20)
 target_include_directories(odbcpp_auth_aws_provisioned PRIVATE
@@ -118,7 +120,11 @@ add_executable(test_provisioned_sdk_runtime EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_sdk_runtime.cpp")
 add_executable(test_sts_serverless_owner EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_sts_serverless_owner.cpp")
-foreach(_consumer it_redshift_native_auth it_redshift_serverless_sts_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime test_sts_serverless_owner)
+add_executable(it_redshift_serverless_jwt_iam_auth EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/integration/it_redshift_serverless_jwt_iam_auth.cpp")
+add_executable(test_jwt_iam_auth EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/unit/test_jwt_iam_auth.cpp")
+foreach(_consumer it_redshift_native_auth it_redshift_serverless_sts_auth it_redshift_serverless_jwt_iam_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime test_sts_serverless_owner test_jwt_iam_auth)
   target_include_directories(${_consumer} PRIVATE
     "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
   target_include_directories(${_consumer} SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
@@ -135,6 +141,7 @@ target_include_directories(test_provisioned_pg_connector PRIVATE "${ODBCPP_INTER
 target_link_libraries(test_provisioned_pg_connector PRIVATE odbcpp_auth_aws_provisioned_pg)
 target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core odbcpp_auth_pg_consumer odbcpp_auth_aws_provisioned_pg)
 target_link_libraries(it_redshift_serverless_sts_auth PRIVATE odbcpp::core)
+target_link_libraries(it_redshift_serverless_jwt_iam_auth PRIVATE odbcpp::core)
 target_link_options(it_redshift_native_auth PRIVATE
   "LINKER:-map,${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-link.map")
 # No add_test/discovery/postbuild execution. A manually selected build is not

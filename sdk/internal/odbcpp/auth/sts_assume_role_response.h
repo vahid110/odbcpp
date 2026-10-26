@@ -39,6 +39,14 @@ struct StsAssumeRoleTarget {
   unsigned duration_seconds;
   bool operator==(const StsAssumeRoleTarget&) const = default;
 };
+// Local split of arn:<partition>:iam::<12-digit account>:role/<name, optional
+// path>. Syntax only (the role-name subset above); STS decides whether the role
+// exists and trusts the caller.
+struct StsRoleArn {
+  StsAssumeRolePartition partition;
+  std::string account, role_name;
+};
+std::optional<StsRoleArn> parse_sts_role_arn(std::string_view arn);
 // Dedicated operation policy, not evidence that any AWS call occurred. The
 // explicitly injected production issuer must retain authenticated pairing.
 class StsAssumeRoleAcquisition final {
