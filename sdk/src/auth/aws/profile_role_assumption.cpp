@@ -4,33 +4,6 @@
 
 namespace rs::core::auth::aws::profile_role {
 namespace {
-bool parse_role_arn(std::string_view arn, StsAssumeRolePartition& partition, std::string& account,
-    std::string& role_name) noexcept {
-  if (!arn.starts_with("arn:")) return false;
-  arn.remove_prefix(4);
-  auto next = [&]() -> std::string_view {
-    const auto p = arn.find(':');
-    if (p == std::string_view::npos) return {};
-    const auto part = arn.substr(0, p);
-    arn.remove_prefix(p + 1);
-    return part;
-  };
-  const auto part = next();
-  if (part == "aws") partition = StsAssumeRolePartition::Aws;
-  else if (part == "aws-cn") partition = StsAssumeRolePartition::AwsCn;
-  else if (part == "aws-us-gov") partition = StsAssumeRolePartition::AwsUsGov;
-  else return false;
-  if (next() != "iam") return false;
-  if (!next().empty()) return false; // iam::<account> has an empty service field
-  const auto acct = next();
-  if (acct.size() != 12) return false;
-  for (char c : acct) if (c < '0' || c > '9') return false;
-  account.assign(acct);
-  if (!arn.starts_with("role/")) return false;
-  role_name.assign(arn.substr(5));
-  if (role_name.empty()) return false;
-  return true;
-}
 std::optional<SecretBytes> to_secret(const Aws::String& value) {
   auto made = SecretBytes::create(std::as_bytes(std::span{value.data(), value.size()}));
   if (!made) return std::nullopt;
@@ -64,15 +37,14 @@ StsOutcome<StsAssumeRoleResponseUtc> resolve_assumed_role_credentials(
     }
     if (source.GetAWSAccessKeyId().empty() || source.GetAWSSecretKey().empty())
       return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
-    StsAssumeRolePartition partition;
-    std::string account, role_name;
-    if (!parse_role_arn(role_arn, partition, account, role_name))
-      return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
+    auto arn = parse_sts_role_arn(role_arn);
+    if (!arn) return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
     auto access = to_secret(source.GetAWSAccessKeyId());
     auto secret = to_secret(source.GetAWSSecretKey());
     auto token = to_secret(source.GetSessionToken());
     if (!access || !secret || !token) return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
-    StsAssumeRoleTarget target_{partition, account, region, role_name, role_session_name, duration_seconds};
+    StsAssumeRoleTarget target_{arn->partition, std::move(arn->account), region, std::move(arn->role_name),
+        role_session_name, duration_seconds};
     auto owner = sts::StsAssumeRoleOwner::create(std::move(target_), std::move(*access), std::move(*secret),
         std::move(*token), deadline, cancel);
     if (!owner.owner) return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
