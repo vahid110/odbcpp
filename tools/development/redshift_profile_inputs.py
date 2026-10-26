@@ -163,7 +163,7 @@ def prepare_profile_inputs(directory, config, factory, profiles, manifest, *, de
             connection = factory.build_profile_connection(local_config, profile)
             connection_file = owned('connection.txt', connection)
             if private['kind'] == 'OWN_DSN':
-                part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.dsn_documents(config, profile['limits'], driver['path']))
+                part['dsn'] = _prepare_private_dsn(child / 'dsn', factory.dsn_documents(config, profile['limits'], driver['path'], driver_manager=profile.get('driver_manager')))
                 # unixODBC resolves ODBCINSTINI relative to ODBCSYSINI; an
                 # absolute filename prevents its real manager from finding
                 # this DSN. Preserve iODBC's working absolute selector.

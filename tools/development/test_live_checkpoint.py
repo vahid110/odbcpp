@@ -207,7 +207,6 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('/private/tmp/',source)
         self.assertNotIn('protected-lifecycle-extension',source)
 
-
 class LocalValidationTests(unittest.TestCase):
     """Pinned synthetic coordinator assessments; no product/live acceptance."""
     def setUp(self):

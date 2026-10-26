@@ -120,6 +120,28 @@ jobs:
       - name: Run mandatory macOS TLS and SCRAM profile tests
         run: tools/ci/run-crypto-profile-live.sh build-iodbc macos-openssl-live.xml
 
+      - name: Run offline Driver Manager subset
+        if: always()
+        run: |
+          set +e
+          ctest --test-dir build-iodbc -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          result=$?
+          printf '%s\n' "$result" > build-iodbc/dm-offline/ctest-exit.txt
+          exit "$result"
+      - name: Verify actual offline execution
+        if: always()
+        run: python3 -B tools/development/check_dm_offline_evidence.py --build build-iodbc --ctest-exit-file build-iodbc/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-macos-iodbc-ucs4
+          path: |
+            build-iodbc/dm-offline/
+            build-iodbc/Testing/Temporary/
+            build-iodbc/CMakeCache.txt
+          if-no-files-found: error
+
       - name: Retain macOS TLS qualification inputs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -58,6 +58,9 @@ option(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS "Build separately admitted inst
 option(ODBCPP_REDSHIFT_OFFICIAL_IMPORT_LIVE_TESTS "Build separately admitted official Redshift import comparison tests" OFF)
 option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification peer" OFF)
+# The dm_it_* targets always build. Connected suites remain opt-in because they
+# need a configured database; the bounded dm-offline subset always registers.
+option(ODBCPP_DM_INTEGRATION_TESTS "Register the integration suites built against the Driver Manager" OFF)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
 target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
 apply_compiler_settings(crypto_identity_probe)
@@ -549,6 +552,39 @@ if(UNIX OR WIN32)
     find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
   endif()
   if(ODBC_DRIVER_MANAGER_LIBRARY)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DmQualifiedIdentity.cmake")
+    add_library(odbcpp_test_dm_identity STATIC tests/support/dm_identity.cpp)
+    target_include_directories(odbcpp_test_dm_identity PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/dm-identity")
+    target_link_libraries(odbcpp_test_dm_identity PRIVATE ${CMAKE_DL_LIBS})
+    apply_compiler_settings(odbcpp_test_dm_identity)
+    add_executable(test_dm_identity tests/driver_manager/test_dm_identity.cpp)
+    target_include_directories(test_dm_identity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      target_include_directories(test_dm_identity BEFORE PRIVATE ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    endif()
+    target_compile_definitions(test_dm_identity PRIVATE ODBCPP_TEST_VIA_DRIVER_MANAGER=1)
+    if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+      target_compile_definitions(test_dm_identity PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+    endif()
+    if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+      target_compile_definitions(test_dm_identity PRIVATE
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
+    target_link_libraries(test_dm_identity PRIVATE
+      GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} odbcpp_test_dm_identity)
+    apply_compiler_settings(test_dm_identity)
+    set_target_properties(test_dm_identity PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    add_test(NAME test_dm_identity COMMAND test_dm_identity)
+    set_tests_properties(test_dm_identity PROPERTIES LABELS "unit;dm-identity" TIMEOUT 30)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dm-offline")
+    add_test(NAME dm_offline_identity COMMAND test_dm_identity
+      "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/identity.xml")
+    set_tests_properties(dm_offline_identity PROPERTIES
+      LABELS "dm-offline" TIMEOUT 30
+      FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
     # Optional relationship partition; no core link and no PostgreSQL registration.
     if(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS)
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
@@ -766,6 +802,82 @@ if(UNIX OR WIN32)
     set_tests_properties(it_driver_manager_unicode PROPERTIES LABELS "integration" TIMEOUT 90)
     set_target_properties(it_driver_manager_unicode PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+    # The same integration sources built against the manager and the
+    # registered driver instead of odbcpp_core. The direct targets above stay
+    # the diagnostic baseline; cases that need driver internals are compiled
+    # out by ODBCPP_TEST_VIA_DRIVER_MANAGER. See docs/plans/driver-manager-test-layer.md.
+    if(TARGET_DATABASE STREQUAL "REDSHIFT")
+      set(_dm_redshift_product 1)
+    else()
+      set(_dm_redshift_product 0)
+    endif()
+    set(_dm_suites it_prepared_statements_real it_bind_col_real
+        it_native_sql it_handle_lifecycle it_diagnostics it_get_info
+        it_metadata_real)
+    # Like its direct target, the real Redshift suite exists only in Redshift builds.
+    if(TARGET_DATABASE STREQUAL "REDSHIFT")
+      list(APPEND _dm_suites it_redshift_real)
+    endif()
+    foreach(_dm_suite IN LISTS _dm_suites)
+      set(_dm_target dm_${_dm_suite})
+      add_executable(${_dm_target} tests/integration/${_dm_suite}.cpp)
+      if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+        target_include_directories(${_dm_target} BEFORE PRIVATE
+          ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      endif()
+      target_include_directories(${_dm_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+      target_link_libraries(${_dm_target} PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} odbcpp_test_dm_identity)
+      target_compile_definitions(${_dm_target} PRIVATE
+        ODBCPP_TEST_VIA_DRIVER_MANAGER=1
+        ODBCPP_TEST_REDSHIFT_PRODUCT=${_dm_redshift_product})
+      if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+        target_compile_definitions(${_dm_target} PRIVATE
+          ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+      endif()
+      if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+        target_compile_definitions(${_dm_target} PRIVATE
+          ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+      endif()
+      if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+        target_compile_definitions(${_dm_target} PRIVATE ODBCPP_TEST_IODBC=1)
+      endif()
+      add_dependencies(${_dm_target} ${PROJECT_NAME}_driver)
+      apply_compiler_settings(${_dm_target})
+      set_target_properties(${_dm_target} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      if(ODBCPP_DM_INTEGRATION_TESTS)
+        add_test(NAME ${_dm_target} COMMAND ${_dm_target})
+        set_tests_properties(${_dm_target} PROPERTIES
+          LABELS "integration;dm-integration")
+      endif()
+    endforeach()
+
+    # Reuse public pre-connect API assertions on both routes. These fixtures
+    # allocate/free ENV/DBC handles but never call SQLConnect/SQLDriverConnect.
+    foreach(_route direct manager)
+      if(_route STREQUAL "direct")
+        set(_offline_target it_handle_lifecycle)
+      else()
+        set(_offline_target dm_it_handle_lifecycle)
+      endif()
+      add_test(NAME dm_offline_${_route}_login_timeout COMMAND ${_offline_target}
+        --gtest_filter=ConnectionAttributeIntegrationTest.LoginTimeoutOutputWidth
+        "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/${_route}-login-timeout.xml")
+      set_tests_properties(dm_offline_${_route}_login_timeout PROPERTIES
+        LABELS "dm-offline" TIMEOUT 30
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
+    endforeach()
+    # This checks the Unicode fixture conversion, not a manager API call.
+    add_test(NAME dm_offline_unicode_conversion COMMAND it_driver_manager_unicode
+      --gtest_filter=DriverManagerUnicodeHarnessTest.OverrideTextDecodesCompleteScalarsIntoManagerUnits
+      "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/unicode-conversion.xml")
+    set_tests_properties(dm_offline_unicode_conversion PROPERTIES
+      LABELS "dm-offline" TIMEOUT 30
+      FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
+    unset(_dm_redshift_product)
+    unset(_dm_suites)
   elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
     message(FATAL_ERROR
       "ODBC driver-manager library was not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")

@@ -92,14 +92,38 @@ def build_contract(block, platform):
                      'cmake --build build-pr-windows --config Release --parallel 2']
     if any(value not in block for value in required):
         raise ValueError('missing exact PR build profile/source/bound')
-    if len(re.findall(r'^    if:', block, re.M)) != 1 or re.search(r'^      - .*\n\s+if:', block):
+    if len(re.findall(r'^    if:', block, re.M)) != 1:
         raise ValueError('build must not be conditional on draft/path/status')
+    for step in re.split(r'(?m)^      - ', block)[1:]:
+        if re.search(r'(?m)^        if:', step):
+            if (not step.startswith(('name: Verify actual offline execution\n',
+                                     'name: Retain offline Driver Manager evidence\n')) or
+                    re.findall(r'(?m)^        if: (.*)$', step) != ['always()']):
+                raise ValueError('only evidence collection may have an always condition')
+    build = 'build-pr-ubuntu' if platform == 'Ubuntu' else 'build-pr-windows'
+    config = '' if platform == 'Ubuntu' else ' -C Release'
+    expected_ctest = (f"ctest --test-dir {build}{config} -L '^dm-offline$' "
+                      '--no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml')
+    ctest_lines = [line.strip() for line in block.splitlines() if 'ctest --' in line]
+    if ctest_lines != [expected_ctest]:
+        raise ValueError('exact offline CTest subset required; no connected runtime')
+    validator_config = '' if platform == 'Ubuntu' else ' --config Release'
+    required_evidence = [f'check_dm_offline_evidence.py --build {build}{validator_config} '
+                         f'--ctest-exit-file {build}/dm-offline/ctest-exit.txt',
+                         'if-no-files-found: error', f'{build}/dm-offline/',
+                         f'{build}/CMakeCache.txt', f'{build}/Testing/Temporary/']
+    required_evidence += (['result=$?', 'exit "$result"',
+                          f'> {build}/dm-offline/ctest-exit.txt'] if platform == 'Ubuntu' else
+                         ['$result = $LASTEXITCODE', 'exit $result',
+                          f'Set-Content -LiteralPath {build}/dm-offline/ctest-exit.txt -Value $result'])
+    if any(value not in block for value in required_evidence):
+        raise ValueError('actual exit, strict offline verification and evidence retention required')
     for forbidden in ['services:', 'container:', 'secrets.', 'secrets:', 'self-hosted',
-                      'actions/cache', 'restore-keys:', 'ctest', '--gtest_', '--target',
+                      'actions/cache', 'restore-keys:', '--gtest_', '--target',
                       'windows-postgres', 'windows-package', 'reg.exe', 'msiexec',
                       'continue-on-error:', 'needs:', 'inputs.', 'github.event.pull_request.draft']:
         if forbidden in block:
-            raise ValueError('PR build cannot restore binaries, skip work, or run tests/live/installers')
+            raise ValueError('PR build cannot restore binaries, skip work, or run live/installers')
     if re.search(r'\b(?:docker|aws|psql)\s', block):
         raise ValueError('no services, paid or SQL operation')
     build_lines = [line.strip() for line in block.splitlines() if 'cmake --build ' in line]
@@ -253,8 +277,12 @@ class ThreePlatformScheduling(unittest.TestCase):
         self.assertIn('cmake --build build-iodbc --parallel 2', block)
         self.assertIn('-DTARGET_DATABASE=POSTGRESQL', block)
         self.assertIn('-DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=4', block)
+        self.assertIn("ctest --test-dir build-iodbc -L '^dm-offline$' --no-tests=error", block)
+        self.assertIn('check_dm_offline_evidence.py --build build-iodbc', block)
+        self.assertIn('build-iodbc/dm-offline/ctest-exit.txt', block)
+        self.assertIn('name: dm-offline-macos-iodbc-ucs4', block)
 
-    def test_two_build_profiles_are_cold_default_ALL_without_runtime(self):
+    def test_two_build_profiles_are_cold_default_ALL_with_offline_runtime(self):
         for name, platform in zip(PR_JOBS, ['Ubuntu','Windows']):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
@@ -294,6 +322,11 @@ class ThreePlatformScheduling(unittest.TestCase):
                          base.replace('ref: ${{ github.sha }}','ref: main'),
                          base.replace('-DODBCPP_CRYPTO_TLS_PROOF=OFF','-DODBCPP_CRYPTO_TLS_PROOF=ON'),
                          base.replace("if: github.event_name == 'pull_request'", "if: github.event_name == 'pull_request' && !github.event.pull_request.draft")]
+            mutations += [base.replace("-L '^dm-offline$'", '-L integration'),
+                          base.replace('--no-tests=error', '--no-tests=ignore'),
+                          base.replace('check_dm_offline_evidence.py', 'unverified.py'),
+                          base.replace('if-no-files-found: error', 'if-no-files-found: ignore'),
+                          base.replace('if: always()', 'if: success()', 1)]
             mutations += [base+'\n    '+x+'\n' for x in ['services: {}','needs: other-job','continue-on-error: true','secrets: inherit','container: paid-image','restore-keys: binary','run: ctest --test-dir build','run: docker run postgres','run: aws sts get-caller-identity']]
             for mutant in mutations:
                 with self.subTest(job=name,mutation=mutations.index(mutant)), self.assertRaises(ValueError):

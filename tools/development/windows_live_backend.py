@@ -470,6 +470,8 @@ def build_inputs(payload, rows, factory, tree, run):
         if private['driver'] is not None:
             private['driver'].update(path=str(DRIVER), sha256=DRIVER_SHA, wchar_bytes=2)
         factory.validate_profile(profile)
+        # iODBC/unixODBC profiles are POSIX; Windows uses its registered manager.
+        need('driver_manager' not in profile, 'posix_driver_manager_profile')
         variables = dict(entry['variables'])
         kind = private['kind']
         if kind == 'OWN_DSN':
