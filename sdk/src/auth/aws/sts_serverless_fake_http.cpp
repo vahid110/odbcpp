@@ -94,6 +94,40 @@ std::shared_ptr<Aws::Http::HttpResponse> client_error_response(
   return response;
 }
 
+std::shared_ptr<Aws::Http::HttpResponse> sts_error_response(
+    const std::shared_ptr<Aws::Http::HttpRequest>& request, FakeHttpScenario scenario) {
+  auto response = Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>(tag, request);
+  response->AddHeader("content-type", "text/xml");
+  response->SetResponseCode(Aws::Http::HttpResponseCode::FORBIDDEN);
+  const char* code = "AccessDenied";
+  switch (scenario) {
+    case FakeHttpScenario::StsInvalidIdentityToken:
+      code = "InvalidIdentityToken";
+      response->SetResponseCode(Aws::Http::HttpResponseCode::BAD_REQUEST);
+      break;
+    case FakeHttpScenario::StsIdpRejectedClaim:
+      code = "IDPRejectedClaim";
+      break;
+    case FakeHttpScenario::StsThrottled:
+      code = "Throttling";
+      response->SetResponseCode(Aws::Http::HttpResponseCode::BAD_REQUEST);
+      break;
+    case FakeHttpScenario::StsServerError:
+      // Even a recognized rejection code must not classify a 5xx as rejection.
+      response->SetResponseCode(Aws::Http::HttpResponseCode::INTERNAL_SERVER_ERROR);
+      break;
+    default:
+      break;
+  }
+  const std::string body = scenario == FakeHttpScenario::StsMalformedError
+      ? "not an XML service error"
+      : std::string("<ErrorResponse><Error><Type>Sender</Type><Code>") + code +
+          "</Code><Message>Synthetic issuer error</Message></Error>"
+          "<RequestId>synthetic-request-id</RequestId></ErrorResponse>";
+  response->GetResponseBody().write(body.data(), static_cast<std::streamsize>(body.size()));
+  return response;
+}
+
 class FakeHttpClient final : public Aws::Http::HttpClient {
  public:
   FakeHttpClient(std::string authority, bool sts) : authority_(std::move(authority)), sts_(sts) {}
@@ -114,6 +148,17 @@ class FakeHttpClient final : public Aws::Http::HttpClient {
       if (sts_) ++obs.assume_role; else ++obs.get_credentials;
       const auto scenario = static_cast<FakeHttpScenario>(config().scenario.load());
       if (scenario == FakeHttpScenario::Denied) { ++obs.denied; return client_error_response(request, Aws::Client::CoreErrors::ACCESS_DENIED); }
+      if (scenario == FakeHttpScenario::TransportFailure)
+        return client_error_response(request, Aws::Client::CoreErrors::NETWORK_CONNECTION);
+      if (sts_ && (scenario == FakeHttpScenario::StsAccessDenied ||
+                   scenario == FakeHttpScenario::StsInvalidIdentityToken ||
+                   scenario == FakeHttpScenario::StsIdpRejectedClaim ||
+                   scenario == FakeHttpScenario::StsThrottled ||
+                   scenario == FakeHttpScenario::StsServerError ||
+                   scenario == FakeHttpScenario::StsMalformedError)) {
+        ++obs.denied;
+        return sts_error_response(request, scenario);
+      }
       if (scenario == FakeHttpScenario::CancelDuringTransport) {
         if (config().cancellation) config().cancellation->cancel();
       }

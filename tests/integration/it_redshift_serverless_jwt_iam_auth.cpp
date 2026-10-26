@@ -131,7 +131,11 @@ TEST(ServerlessJwtIamAuth, TamperedTokenIsRefusedBySts){
   auto tampered=a::SecretBytes::create(std::as_bytes(std::span{text.data(),text.size()}));
   std::fill(text.begin(),text.end(),'\0');
   ASSERT_TRUE(tampered);
-  EXPECT_FALSE(issue_credentials(*spec,std::move(tampered).value()).has_value());
+  auto refused = jwt::assume_role_with_jwt(spec->role_arn, std::move(tampered).value(),
+      spec->region, "", spec->duration_seconds, deadline_60s(),
+      std::make_shared<a::aws::provisioned_native::WorkerCancellation>());
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(a::StsAssumeRoleFailure::ServiceRejected, refused.error().failure);
 }
 TEST(ServerlessJwtIamAuth, UntrustedRoleIsRefusedBySts){
   if(!admitted()){
@@ -143,6 +147,10 @@ TEST(ServerlessJwtIamAuth, UntrustedRoleIsRefusedBySts){
   const auto slash=foreign.role_arn.rfind('/');
   ASSERT_NE(std::string::npos,slash);
   foreign.role_arn=foreign.role_arn.substr(0,slash+1)+"definitely-not-a-real-role";
-  EXPECT_FALSE(issue_credentials(foreign,std::move(*token)).has_value());
+  auto refused = jwt::assume_role_with_jwt(foreign.role_arn, std::move(*token), foreign.region,
+      "", foreign.duration_seconds, deadline_60s(),
+      std::make_shared<a::aws::provisioned_native::WorkerCancellation>());
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(a::StsAssumeRoleFailure::ServiceRejected, refused.error().failure);
 }
 } // namespace

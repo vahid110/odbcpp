@@ -12,7 +12,12 @@ namespace rs::core::auth::aws::detail {
 // records endpoint/scheme/signing observations and refuses any non-approved
 // target, mirroring the pinned-endpoint guarantee that production enforces via
 // endpointOverride + a verified TLS connection.
-enum class FakeHttpScenario : unsigned { Success, Denied, LateCompletion, CancelDuringTransport };
+enum class FakeHttpScenario : unsigned {
+  Success, Denied, LateCompletion, CancelDuringTransport,
+  // Parsed service errors, separate from Denied's client-side error flag.
+  StsAccessDenied, StsInvalidIdentityToken, StsIdpRejectedClaim,
+  StsThrottled, StsServerError, StsMalformedError, TransportFailure
+};
 
 struct FakeHttpObservation {
   std::atomic<unsigned> sends{0};

@@ -131,6 +131,63 @@ TEST(StsWebIdentityOwner, DeniedAssumptionRefuses) {
   EXPECT_TRUE(made.owner->close());
 }
 
+TEST(JwtIamAuthPlugin, OnlyParsedStsIdentityRejectionsCountAsServiceRejection) {
+  struct Case {
+    detail::FakeHttpScenario scenario;
+    a::StsAssumeRoleFailure expected;
+  };
+  const Case cases[] = {
+      {detail::FakeHttpScenario::StsAccessDenied, a::StsAssumeRoleFailure::ServiceRejected},
+      {detail::FakeHttpScenario::StsInvalidIdentityToken, a::StsAssumeRoleFailure::ServiceRejected},
+      {detail::FakeHttpScenario::StsIdpRejectedClaim, a::StsAssumeRoleFailure::ServiceRejected},
+      // Denied is a client-side ACCESS_DENIED flag carrying a 4xx status, not
+      // a parsed issuer error. It must not satisfy either live negative test.
+      {detail::FakeHttpScenario::Denied, a::StsAssumeRoleFailure::InvalidResponse},
+      {detail::FakeHttpScenario::TransportFailure, a::StsAssumeRoleFailure::InvalidResponse},
+      {detail::FakeHttpScenario::StsThrottled, a::StsAssumeRoleFailure::InvalidResponse},
+      {detail::FakeHttpScenario::StsServerError, a::StsAssumeRoleFailure::InvalidResponse},
+      {detail::FakeHttpScenario::StsMalformedError, a::StsAssumeRoleFailure::InvalidResponse}};
+  for (const auto& item : cases) {
+    SCOPED_TRACE(static_cast<unsigned>(item.scenario));
+    detail::fake_http_observation().reset();
+    detail::fake_http_configure(item.scenario, 0, nullptr);
+    auto result = jwt::assume_role_with_jwt(role_arn, token(R"({"email":"a@example.com"})"),
+        "eu-north-1", "", 900, deadline_ms(20000), cancel());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(item.expected, result.error().failure);
+    EXPECT_FALSE(result.error().safe_message().empty());
+    if (item.expected == a::StsAssumeRoleFailure::ServiceRejected) {
+      EXPECT_EQ("STS AssumeRole service rejected identity or role trust", result.error().safe_message());
+    }
+    EXPECT_EQ(1U, detail::fake_http_observation().web_identity.load());
+    EXPECT_EQ(1U, detail::fake_http_observation().sends.load());
+    EXPECT_EQ(0U, detail::fake_http_observation().get_credentials.load());
+  }
+}
+
+TEST(JwtIamAuthPlugin, LocalInputFailureCannotCountAsStsRejection) {
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::StsAccessDenied, 0, nullptr);
+  auto result = jwt::assume_role_with_jwt("not-a-role-arn", token(R"({"email":"a@example.com"})"),
+      "eu-north-1", "", 900, deadline_ms(20000), cancel());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(a::StsAssumeRoleFailure::InvalidResponse, result.error().failure);
+  EXPECT_EQ(0U, detail::fake_http_observation().sends.load());
+}
+
+TEST(StsWebIdentityOwner, LateTransportResponseCannotCountAsStsRejection) {
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::LateCompletion, 250, nullptr);
+  auto made = sts::StsAssumeRoleOwner::create_web_identity(target(), token(R"({"email":"a@example.com"})"),
+      deadline_ms(200), cancel());
+  ASSERT_TRUE(made.owner);
+  auto result = made.owner->acquire();
+  ASSERT_FALSE(result);
+  EXPECT_EQ(a::StsAssumeRoleFailure::DeadlineElapsed, result.error().failure);
+  EXPECT_EQ(1U, detail::fake_http_observation().continuation_denied.load());
+  EXPECT_TRUE(made.owner->close());
+}
+
 TEST(StsWebIdentityOwner, CancellationDuringTransportRefuses) {
   detail::fake_http_observation().reset();
   auto c = cancel();

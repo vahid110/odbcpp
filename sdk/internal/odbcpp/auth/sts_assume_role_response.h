@@ -14,7 +14,10 @@ namespace rs::core::auth {
 enum class StsAssumeRolePartition { Aws, AwsCn, AwsUsGov };
 enum class StsAssumeRoleFailure {
   UnsupportedPartition, InvalidAcquisition, InvalidResponse,
-  ExpiryRange, TimeConversionFailed, Cancelled, AllocationFailed, DeadlineElapsed
+  ExpiryRange, TimeConversionFailed, Cancelled, AllocationFailed, DeadlineElapsed,
+  // A parsed, modeled STS identity/trust rejection. Distinct from local,
+  // transport and response-shape failures; no remote message is retained.
+  ServiceRejected
 };
 struct StsAssumeRoleError {
   StsAssumeRoleFailure failure;

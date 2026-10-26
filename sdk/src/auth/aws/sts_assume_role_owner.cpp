@@ -7,6 +7,7 @@
 #include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/crt/io/HostResolver.h>
 #include <aws/sts/STSClient.h>
+#include <aws/sts/STSErrors.h>
 #include <aws/sts/model/AssumeRoleRequest.h>
 #include <aws/sts/model/AssumeRoleResult.h>
 #include <aws/sts/model/AssumeRoleWithWebIdentityRequest.h>
@@ -22,6 +23,24 @@
 namespace rs::core::auth::aws::sts {
 namespace {
 constexpr const char* tag = "StsAssumeRoleOwner";
+bool service_rejected(const Aws::STS::STSError& error) {
+  const auto status = error.GetResponseCode();
+  if ((status != Aws::Http::HttpResponseCode::BAD_REQUEST &&
+       status != Aws::Http::HttpResponseCode::FORBIDDEN) ||
+      error.GetExceptionName().empty()) return false;
+  // The SDK may attach a 4xx status even to a local/client error. Require its
+  // parsed modeled exception as well; metadata alone is not rejection proof.
+  switch (error.GetErrorType()) {
+    case Aws::STS::STSErrors::ACCESS_DENIED:
+      return error.GetExceptionName() == "AccessDenied" || error.GetExceptionName() == "AccessDeniedException";
+    case Aws::STS::STSErrors::INVALID_IDENTITY_TOKEN:
+      return error.GetExceptionName() == "InvalidIdentityToken";
+    case Aws::STS::STSErrors::I_D_P_REJECTED_CLAIM:
+      return error.GetExceptionName() == "IDPRejectedClaim";
+    default:
+      return false;
+  }
+}
 bool main_entry() noexcept {
 #if defined(__APPLE__)
   return ::pthread_main_np() != 0;
@@ -298,7 +317,8 @@ StsOutcome<StsAssumeRoleResponseUtc> StsAssumeRoleOwner::finish(State& s, const 
     if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
       return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
     if (s.cancellation && s.cancellation->cancelled()) return StsAssumeRoleError{StsAssumeRoleFailure::Cancelled};
-    if (!result.IsSuccess()) return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
+    if (!result.IsSuccess()) return StsAssumeRoleError{service_rejected(result.GetError())
+        ? StsAssumeRoleFailure::ServiceRejected : StsAssumeRoleFailure::InvalidResponse};
     const auto& creds = result.GetResult().GetCredentials();
     const auto millis = creds.GetExpiration().Millis();
     if (millis <= 0 || millis > (std::numeric_limits<std::int64_t>::max)() / 1000)

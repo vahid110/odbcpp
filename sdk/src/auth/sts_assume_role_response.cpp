@@ -110,6 +110,7 @@ std::string_view StsAssumeRoleError::safe_message() const noexcept {
     case StsAssumeRoleFailure::Cancelled: return "STS AssumeRole credential admission cancelled";
     case StsAssumeRoleFailure::AllocationFailed: return "STS AssumeRole credential allocation unavailable";
     case StsAssumeRoleFailure::DeadlineElapsed: return "STS AssumeRole credential deadline elapsed";
+    case StsAssumeRoleFailure::ServiceRejected: return "STS AssumeRole service rejected identity or role trust";
   }
   return "STS AssumeRole credential response malformed";
 }
