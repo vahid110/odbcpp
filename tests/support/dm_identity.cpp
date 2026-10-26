@@ -196,7 +196,15 @@ std::string manager_configuration_provenance() {
   for (const char* name : {"ODBCINI", "ODBCSYSINI", "ODBCINSTINI"}) {
     result += ';';
     result += name;
+#ifdef _WIN32
+    std::size_t length = 0;
+    if (getenv_s(&length, nullptr, 0, name) != 0) {
+      return {};
+    }
+    result += length != 0 ? "=set" : "=unset";
+#else
     result += std::getenv(name) ? "=set" : "=unset";
+#endif
   }
   return result;
 }
