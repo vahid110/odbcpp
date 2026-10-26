@@ -552,6 +552,33 @@ if(UNIX OR WIN32)
     find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
   endif()
   if(ODBC_DRIVER_MANAGER_LIBRARY)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DmQualifiedIdentity.cmake")
+    add_library(odbcpp_test_dm_identity STATIC tests/support/dm_identity.cpp)
+    target_include_directories(odbcpp_test_dm_identity PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/dm-identity")
+    target_link_libraries(odbcpp_test_dm_identity PRIVATE ${CMAKE_DL_LIBS})
+    apply_compiler_settings(odbcpp_test_dm_identity)
+    add_executable(test_dm_identity tests/driver_manager/test_dm_identity.cpp)
+    target_include_directories(test_dm_identity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      target_include_directories(test_dm_identity BEFORE PRIVATE ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    endif()
+    target_compile_definitions(test_dm_identity PRIVATE ODBCPP_TEST_VIA_DRIVER_MANAGER=1)
+    if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+      target_compile_definitions(test_dm_identity PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+    endif()
+    if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+      target_compile_definitions(test_dm_identity PRIVATE
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
+    target_link_libraries(test_dm_identity PRIVATE
+      GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} odbcpp_test_dm_identity)
+    apply_compiler_settings(test_dm_identity)
+    set_target_properties(test_dm_identity PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    add_test(NAME test_dm_identity COMMAND test_dm_identity)
+    set_tests_properties(test_dm_identity PROPERTIES LABELS "unit;dm-identity" TIMEOUT 30)
     # Optional relationship partition; no core link and no PostgreSQL registration.
     if(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS)
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
@@ -795,13 +822,17 @@ if(UNIX OR WIN32)
       endif()
       target_include_directories(${_dm_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
       target_link_libraries(${_dm_target} PRIVATE
-        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY})
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} odbcpp_test_dm_identity)
       target_compile_definitions(${_dm_target} PRIVATE
         ODBCPP_TEST_VIA_DRIVER_MANAGER=1
         ODBCPP_TEST_REDSHIFT_PRODUCT=${_dm_redshift_product})
       if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
         target_compile_definitions(${_dm_target} PRIVATE
           ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+      endif()
+      if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+        target_compile_definitions(${_dm_target} PRIVATE
+          ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
       endif()
       if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
         target_compile_definitions(${_dm_target} PRIVATE ODBCPP_TEST_IODBC=1)

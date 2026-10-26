@@ -11,6 +11,7 @@
 // Direct builds compile none of this: diag_rec is ::SQLGetDiagRec itself.
 #ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "tests/test_dm_odbc.h"
+#include "tests/test_dm_identity.h"
 
 #include <gtest/gtest.h>
 
@@ -84,7 +85,6 @@ enum class Deviation {
   AnsiColAttributeLengthInWideBytes,
   NumericAttributeNegativeBufferRejected,
   DriverConnectAppendsSemicolon,
-  DisconnectInvalidatesManagerChildren,
   WindowsFunctionsReported,
   Odbc2FunctionBitmapOmitsBulkAndAllocHandleStd,
   BookmarkBindTypeRejected,
@@ -107,29 +107,80 @@ inline Origin record_origin(std::string_view message) {
              : Origin::Driver;
 }
 
-// The manager's own version (SQL_DM_VER), read once on an unconnected handle.
-inline const std::string& manager_version() {
-  static const std::string version = [] {
+struct ManagerOdbcProfile {
+  std::string version;
+  SQLINTEGER odbc_version{};
+};
+
+// Observe the version and actual environment profile on an unconnected handle.
+// SQL_DM_VER alone is not a unixODBC build identity: 2.3.x releases alias it.
+inline const ManagerOdbcProfile& manager_odbc_profile() {
+  static const ManagerOdbcProfile profile = [] {
+    ManagerOdbcProfile result;
     SQLHENV environment = SQL_NULL_HENV;
     SQLHDBC connection = SQL_NULL_HDBC;
     SQLCHAR value[64]{};
     if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment) == SQL_SUCCESS) {
-      SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
-                    reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0);
-      if (SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection) == SQL_SUCCESS) {
-        SQLGetInfo(connection, SQL_DM_VER, value, sizeof(value), nullptr);
-        SQLFreeHandle(SQL_HANDLE_DBC, connection);
+      if (SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                       reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0) == SQL_SUCCESS &&
+          SQLGetEnvAttr(environment, SQL_ATTR_ODBC_VERSION, &result.odbc_version,
+                       sizeof(result.odbc_version), nullptr) == SQL_SUCCESS) {
+        if (SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection) == SQL_SUCCESS) {
+          if (SQLGetInfo(connection, SQL_DM_VER, value, sizeof(value), nullptr) == SQL_SUCCESS) {
+            result.version = reinterpret_cast<const char*>(value);
+          }
+          SQLFreeHandle(SQL_HANDLE_DBC, connection);
+        }
       }
       SQLFreeHandle(SQL_HANDLE_ENV, environment);
     }
-    return std::string(reinterpret_cast<const char*>(value));
+    return result;
   }();
-  return version;
+  return profile;
+}
+
+inline const std::string& manager_version() {
+  return manager_odbc_profile().version;
 }
 
 inline constexpr const char* kIodbc35216 = "03.52.1623.0502";
 inline constexpr const char* kUnixodbc2314 = "03.52.0002.0003";
 inline constexpr const char* kWindows38126100 = "03.81.26100.0000";
+
+inline bool qualified_manager_version(std::string_view candidate) {
+  const auto& profile = manager_odbc_profile();
+  if (profile.version != candidate || profile.odbc_version != SQL_OV_ODBC3 ||
+      sizeof(void*) != 8) {
+    return false;
+  }
+#ifndef ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE
+  return false;
+#else
+  if (candidate == kUnixodbc2314) {
+    static const auto file = loaded_manager_file_identity();
+#if defined(__APPLE__)
+    constexpr auto platform = "Darwin";
+#elif defined(__linux__)
+    constexpr auto platform = "Linux";
+#else
+    constexpr auto platform = "unsupported";
+#endif
+    return qualified_unixodbc2314(configured_unix_manager(),
+        {profile.version, file.path, file.sha256, platform, sizeof(void*),
+         sizeof(SQLWCHAR), ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE,
+         static_cast<unsigned>(profile.odbc_version)});
+  }
+  if (candidate == kIodbc35216) {
+    return sizeof(SQLWCHAR) == 4 && ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 4;
+  }
+#ifdef _WIN32
+  if (candidate == kWindows38126100) {
+    return sizeof(SQLWCHAR) == 2 && ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 2;
+  }
+#endif
+  return false;
+#endif
+}
 
 struct Entry {
   Deviation deviation;
@@ -149,8 +200,6 @@ inline constexpr Entry kEntries[] = {
     {Deviation::Odbc2FunctionBitmapOmitsBulkAndAllocHandleStd, kWindows38126100, nullptr, "Windows W3"},
     {Deviation::GetFunctionsAcceptsNullOutput, kWindows38126100, "", "Windows W3"},
     {Deviation::DriverConnectAppendsSemicolon, kWindows38126100, nullptr, "Windows W4"},
-    {Deviation::DisconnectInvalidatesManagerChildren, kWindows38126100, nullptr, "Windows W5"},
-    {Deviation::DisconnectInvalidatesManagerChildren, kUnixodbc2314, nullptr, "Linux W5"},
     {Deviation::BookmarkBindTypeRejected, kWindows38126100, nullptr, "Windows W6"},
     {Deviation::GetDataBeforeExecuteIsSequenceError, kWindows38126100, nullptr, "Windows W7"},
     {Deviation::StateTableAfterFailedCall, kWindows38126100, nullptr, "Windows W7"},
@@ -230,7 +279,7 @@ inline constexpr Entry kEntries[] = {
 
 inline const Entry* entry(Deviation deviation) {
   for (const auto& candidate : kEntries) {
-    if (candidate.deviation == deviation && manager_version() == candidate.manager_version) {
+    if (candidate.deviation == deviation && qualified_manager_version(candidate.manager_version)) {
       return &candidate;
     }
   }
@@ -271,13 +320,12 @@ struct NullBufferDiagExpectation {
 
 inline NullBufferDiagExpectation null_buffer_diag_expectation(Origin origin,
                                                               bool from_connect) {
-  const auto& version = manager_version();
-  if (version == "03.52.1623.0502" && origin == Origin::Driver) {
+  if (qualified_manager_version(kIodbc35216) && origin == Origin::Driver) {
     // iODBC 3.52.16 passes the driver a non-null 0-length scratch buffer, so
     // the driver reports truncation, and iODBC does not copy the SQLSTATE.
     return {SQL_SUCCESS_WITH_INFO, false, "wave 1 bucket A (iODBC 3.52.16)"};
   }
-  if (version == "03.52.0002.0003" && (origin == Origin::Manager || from_connect)) {
+  if (qualified_manager_version(kUnixodbc2314) && (origin == Origin::Manager || from_connect)) {
     // unixODBC 2.3.14 reports truncation for records it holds itself: the
     // ones it raised, and the driver's connect records it copied.
     return {SQL_SUCCESS_WITH_INFO, true, "wave 1 bucket A2 (unixODBC 2.3.14)"};

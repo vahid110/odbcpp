@@ -349,17 +349,16 @@ TEST_F(HandleLifecycleIntegrationTest,
             SQLAllocHandle(SQL_HANDLE_DESC, connection_, &descriptor));
 
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
-  if (odbcpp::test::dm::deviates(
-          odbcpp::test::dm::Deviation::DisconnectInvalidatesManagerChildren)) {
-    // The manager has freed these application handles. Calling them again
-    // dereferences freed storage before the driver can validate a tombstone.
-    RecordProperty("dm_unreachable_probe", "freed child handle tombstone validation");
-  } else {
-    EXPECT_EQ(SQL_INVALID_HANDLE,
-              SQLFreeHandle(SQL_HANDLE_STMT, statement_));
-    EXPECT_EQ(SQL_INVALID_HANDLE,
-              SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
-  }
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+  // A manager owns these application handles and may release their storage
+  // at disconnect. Driver tombstones cannot make a manager's freed pointer safe.
+  RecordProperty("dm_unreachable_probe", "driver-only child handle tombstone validation");
+#else
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLFreeHandle(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+#endif
   statement_ = SQL_NULL_HSTMT;
   // The connection remains reusable even though its old children are gone.
   ASSERT_EQ(SQL_SUCCESS,
@@ -553,10 +552,11 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ(SQL_CD_TRUE, dead);
   const auto disconnected = SQLDisconnect(connection_);
   EXPECT_EQ(SQL_SUCCESS, disconnected);
-  if (disconnected == SQL_SUCCESS && odbcpp::test::dm::deviates(
-          odbcpp::test::dm::Deviation::DisconnectInvalidatesManagerChildren)) {
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+  if (disconnected == SQL_SUCCESS) {
     statement_ = SQL_NULL_HSTMT;
   }
+#endif
 }
 
 // SQL_ATTR_LOGIN_TIMEOUT is a 32-bit SQLUINTEGER and the driver writes 4

@@ -2657,8 +2657,10 @@ TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
         SQLLEN stored_length = -1;
         ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
             stored, sizeof(stored), &stored_length));
-        ASSERT_GE(stored_length, 0);
-        EXPECT_EQ(odbcpp::test::dm::latin1_widened("AéZ"),
+        const auto expected_stored = odbcpp::test::dm::latin1_widened("AéZ");
+        ASSERT_EQ(static_cast<SQLLEN>(expected_stored.size()), stored_length);
+        ASSERT_LE(stored_length, static_cast<SQLLEN>(sizeof(stored)));
+        EXPECT_EQ(expected_stored,
                   std::string(reinterpret_cast<const char*>(stored),
                               static_cast<std::size_t>(stored_length)));
         return;

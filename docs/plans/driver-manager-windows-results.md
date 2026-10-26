@@ -121,11 +121,53 @@ but GDB reproduced the crash in the complete suite. This allocator-sensitive
 result is not proof that freed pointers are valid. The trace, original CTest
 crash, isolated-case collection and debugger stack are retained in private
 `wsl-pg-collection02`, `wsl-lifecycle-isolated02` and `wsl-lifecycle-gdb03` evidence.
-The existing W5 fixture correction now also applies to measured unixODBC
-`03.52.0002.0003`; direct tombstone assertions and positive reconnect/new-child
-checks remain. The complete rerun of that follow-up is pending.
+At `54ebedf`, the complete follow-up passed on both Windows and WSL: each
+collected all 386 direct and 373 manager cases with no failures or skips.
+All three default ALL rebuilds passed, and independent review verified every
+suite image and both driver images against the `pg-collection03` and
+`wsl-pg-collection03` receipts. Both owned DSNs were retired and the isolated
+server stopped. The unit results at `5665f6d` apply to `54ebedf`: that delta
+changes only the W5 table entry and this document, with no unit-test consumer.
 
 The native direct Redshift checkpoint remains outstanding; no live pass is
 inferred from compilation or PostgreSQL execution. Windows Redshift DM live is
 still the unsupported follow-up described in the handoff. Remaining cross-platform
 regression for the repaired fixtures is required before final acceptance.
+
+## Review corrections after `54ebedf`
+
+The `54ebedf` evidence remains immutable. The successor corrects three issues
+identified by the independent Mac review, with fresh local qualification pending:
+
+- unixODBC's `03.52.0002.0003` string aliases multiple patch releases. Known
+  expectations now require an explicit reviewed 2.3.14 library receipt, its
+  configure-time SHA256 and canonical path, the matching loaded API provider's
+  bytes, and the qualified ODBC 3, pointer and driver/manager SQLWCHAR profile.
+  Without matching evidence, both table and null-buffer diagnostic selection
+  retain direct expectations. Windows and iODBC retain their distinct version
+  matches with explicit ABI/environment guards.
+- An expected ANSI escape error no longer returns from the whole native-SQL
+  case: independent wide translation and ASCII quote execution assertions run.
+  Both stored binary length and wide translation length are checked before
+  constructing a string or span over a fixed buffer.
+- Driver-only tombstone probes never reuse a manager-owned child pointer after
+  disconnect, including on an unqualified manager. Direct assertions and the
+  positive reconnect/fresh-child checks remain.
+
+`tests/test_dm_identity.h` owns the test qualification predicate and data types;
+`tests/support/dm_identity.cpp` owns loaded-provider discovery and bounded byte
+comparison. `cmake/DmQualifiedIdentity.cmake` validates the reviewed receipt and
+creates the build-local manager snapshot through `DmQualifiedIdentity.h.in`.
+`cmake/Tests.cmake` connects that helper to manager test targets. These are test
+infrastructure, not reusable product/SDK services: their purpose is selecting
+measured test expectations. Permitted dependencies are standard C++, POSIX
+loader APIs, the selected ODBC manager and GoogleTest; no driver core or crypto
+dependency is added. The executable and reference snapshot are trusted build
+inputs, not protection against a hostile writer modifying a running build.
+
+`tests/driver_manager/test_dm_identity.cpp` adds five offline GoogleTests for
+positive and negative identity/profile selection, actual provider selection and
+byte comparison. Nine offline CMake receipt checks passed, including mismatched
+hash, version and profile rejection and missing-receipt default behavior. The
+generated Phase 0 CSV/counts now match the current 3,132 source case definitions;
+these lexical counts do not substitute for executable discovery or live results.

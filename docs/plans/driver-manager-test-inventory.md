@@ -1,6 +1,6 @@
 # Driver-manager test inventory (Phase 0)
 
-Phase 0 of [driver-manager-test-layer.md](driver-manager-test-layer.md): this phase classifies tests only. It changes no product code, test code or CTest registration.
+Phase 0 of [driver-manager-test-layer.md](driver-manager-test-layer.md) classified tests only. Its narrative below describes that original snapshot. The generated CSV and counts are refreshed against the current source; they now contain 3,132 case definitions, including five manager-identity tests. Use those generated files for current source counts and built-binary discovery for executable inventory.
 
 - **Per-case table:** [driver-manager-test-inventory.csv](driver-manager-test-inventory.csv), one row per GoogleTest case.
 - **Generated counts:** [driver-manager-test-inventory-counts.md](driver-manager-test-inventory-counts.md), by directory, file and suite.

@@ -513,18 +513,21 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
   ASSERT_TRUE(ansi_expected.has_value());
   auto* const ansi_text = reinterpret_cast<SQLCHAR*>(ansi_input->data());
   SQLCHAR output[sizeof(expected)]{};
-  // The manager widens ANSI text byte by byte, so the driver sees a
-  // two-character escape and rejects it; the case cannot continue.
-  if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+  // Byte-wise widening makes this ANSI escape two characters. Only its
+  // execution depends on that translation; wide and ASCII checks still apply.
+  const bool ansi_widened = odbcpp::test::dm::deviates(
+      odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte);
+  if (ansi_widened) {
+    RecordProperty("dm_ansi_execution_blocked_by", "AnsiTextWidenedPerByte");
     EXPECT_EQ(SQL_ERROR, SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
                                       sizeof(output), nullptr));
     EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
-    return;
+  } else {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
+                           sizeof(output), nullptr));
+    EXPECT_STREQ(ansi_expected->c_str(), reinterpret_cast<const char*>(output));
   }
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
-                         sizeof(output), nullptr));
-  EXPECT_STREQ(ansi_expected->c_str(), reinterpret_cast<const char*>(output));
 
   auto wide_input = odbcpp::test::text::utf8_to_wide(
       reinterpret_cast<const char*>(unicode));
@@ -538,19 +541,22 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
                           static_cast<SQLINTEGER>(wide_output.size()),
                           &wide_length));
   ASSERT_GE(wide_length, 0);
+  ASSERT_LT(static_cast<std::size_t>(wide_length), wide_output.size());
   const auto native_wide = odbcpp::test::text::wide_to_utf8(
       std::span<const SQLWCHAR>(wide_output.data(), wide_length));
   ASSERT_TRUE(native_wide.has_value());
   EXPECT_EQ(expected, *native_wide);
 
-  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, ansi_text, SQL_NTS));
-  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
   SQLCHAR matched[4]{};
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
-                       nullptr));
-  EXPECT_STREQ("1", reinterpret_cast<const char*>(matched));
-  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+  if (!ansi_widened) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, ansi_text, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
+                         nullptr));
+    EXPECT_STREQ("1", reinterpret_cast<const char*>(matched));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+  }
 
   SQLCHAR quoted[] = "SELECT 'a%b' LIKE 'a''%b' {escape ''''}";
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, quoted, SQL_NTS));
