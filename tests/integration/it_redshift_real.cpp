@@ -5994,14 +5994,16 @@ protected:
   }
   void row_number(SQLHSTMT statement,SQLULEN expected) {
     SQLULEN row=99;
-    if(expected==0&&odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::RowNumberOffRowRefused)) {
-      // The driver reports 0 when the static cursor is on no row; the manager
-      // applies the SQLGetStmtAttr 24000 rule itself and leaves the output.
-      ASSERT_EQ(SQL_ERROR,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr));
-      EXPECT_EQ("24000",get_error(SQL_HANDLE_STMT,statement)); EXPECT_EQ(99u,row);
-      return;
-    }
     ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr)); EXPECT_EQ(expected,row);
+  }
+  // Off-row row-number queries are refused uniformly by the driver; the
+  // SQLSTATE depends on why the cursor is off-row: 24000 before the start or
+  // after the end of the result set, HY109 when the row could not be fetched.
+  // The output buffer stays untouched.
+  void row_number_refused(SQLHSTMT statement,const char* sqlstate) {
+    SQLULEN row=99;
+    ASSERT_EQ(SQL_ERROR,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr));
+    EXPECT_EQ(sqlstate,get_error(SQL_HANDLE_STMT,statement)); EXPECT_EQ(99u,row);
   }
   void saved_fetch(SQLLEN delta=0) {
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));
@@ -6089,7 +6091,7 @@ TEST_F(RedshiftRecentFeaturesRealTest, StaticRowsetsPositionNullOldSizeAndSiblin
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0)); row_number(hstmt_,3); ASSERT_FALSE(HasFailure()); integer(hstmt_,1,3); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_PRIOR,0)); row_number(hstmt_,2); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_ABSOLUTE,-1)); row_number(hstmt_,3); ASSERT_FALSE(HasFailure());
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0)); EXPECT_EQ(0u,fetched_); EXPECT_EQ(SQL_ROW_NOROW,row_statuses_.slots[0]); row_number(hstmt_,0); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0)); EXPECT_EQ(0u,fetched_); EXPECT_EQ(SQL_ROW_NOROW,row_statuses_.slots[0]); row_number_refused(hstmt_,"24000"); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_FIRST,0));
   native_direct(second_,"SELECT CAST(9 AS INTEGER)"); ASSERT_FALSE(HasFailure()); scalar(second_,9); ASSERT_FALSE(HasFailure());
   integer(hstmt_,1,1); ASSERT_FALSE(HasFailure()); EXPECT_EQ(0xc3,row_statuses_.before); EXPECT_EQ(0xd4,row_statuses_.after);
@@ -6148,7 +6150,7 @@ TEST_F(RedshiftRecentFeaturesRealTest, VariableBookmarkMetadataLiteralOffsetsChu
   EXPECT_NE(0,std::memcmp(saved_,sibling_token_,8));
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE)); native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));
-  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",get_error(SQL_HANDLE_STMT,hstmt_)); row_number(hstmt_,0); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",get_error(SQL_HANDLE_STMT,hstmt_)); row_number_refused(hstmt_,"HY109"); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_FIRST,0)); integer(hstmt_,1,1); ASSERT_FALSE(HasFailure());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(second_,SQL_FETCH_NEXT,0)); integer(second_,1,2); ASSERT_FALSE(HasFailure());
   EXPECT_EQ(2,saved_[23]); EXPECT_EQ(1,sibling_token_[23]);

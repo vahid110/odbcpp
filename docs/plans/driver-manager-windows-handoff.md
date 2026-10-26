@@ -44,7 +44,7 @@ The rules in AGENTS.md and DEVELOPMENT_WORKFLOW.md apply unchanged:
 
 | item | where | state |
 |---|---|---|
-| P1 | static-cursor `SQL_ATTR_ROW_NUMBER` off a row | Driver unchanged (returns 0); unixODBC refuses with 24000 (R11). Whether static cursors should raise 24000 is a product question outside this branch. |
+| P1 | static-cursor `SQL_ATTR_ROW_NUMBER` off a row | Driver unchanged (returns 0); unixODBC refuses with 24000 (R11). Resolved by the issue #120 product change: the driver now raises 24000/HY109 itself and R11 is retired. |
 | HYT00 | `RedshiftMaterializedEnvelopeRealTest` ~4 MB materialization in a 5 s statement budget | Timed out in the second and third macOS runs on a slow link and passed in the fourth and fifth. Depends on throughput, not code. Watch for it on Windows. |
 | R12 | `SQLFetch` after `SQL_NO_DATA` on Redshift catalog results through iODBC | iODBC raises HY010 itself. Recorded and asserted; macOS/iODBC only. |
 | B1 | shared timeout fixture through a manager | Unrun boundary: its verified-TLS check needs the driver's own DSN parser. |
