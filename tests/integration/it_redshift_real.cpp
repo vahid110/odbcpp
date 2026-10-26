@@ -17,6 +17,7 @@
 #include <chrono>
 #include <vector>
 #include <array>
+#include <bit>
 #include <limits>
 #include <algorithm>
 #include <cctype>
@@ -469,8 +470,10 @@ protected:
   void expect_catalog_fields(std::span<const CatalogField> fields) {
     SQLSMALLINT count = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(checkpoint_statement(hstmt_), &count));
+    ASSERT_GE(count, 0);
     ASSERT_EQ(fields.size(), static_cast<std::size_t>(count));
-    for (SQLUSMALLINT column = 1; column <= fields.size(); ++column) {
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      const auto column = static_cast<SQLUSMALLINT>(index + 1);
       SQLCHAR name[128]{}; SQLSMALLINT type = 0, digits = 0, nullable = 0;
       SQLULEN size = 0;
       ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(checkpoint_statement(hstmt_), column, name, sizeof(name),
@@ -478,8 +481,8 @@ protected:
       std::string actual(reinterpret_cast<char*>(name));
       std::transform(actual.begin(), actual.end(), actual.begin(),
           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-      EXPECT_EQ(fields[column - 1].name, actual);
-      EXPECT_EQ(fields[column - 1].type, type);
+      EXPECT_EQ(fields[index].name, actual);
+      EXPECT_EQ(fields[index].type, type);
       RecordProperty(actual + "_column_size", std::to_string(size));
       RecordProperty(actual + "_decimal_digits", std::to_string(digits));
       RecordProperty(actual + "_nullable", std::to_string(nullable));
@@ -2631,10 +2634,12 @@ protected:
   void descriptors(std::span<const CatalogField> fields,
                    DescriptorScope scope=DescriptorScope::Tables) {
     SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));
+    ASSERT_GE(count, 0);
     ASSERT_EQ(fields.size(),static_cast<std::size_t>(count));
     catalog_descriptors_.clear();
-    for(SQLUSMALLINT column=1;column<=fields.size();++column) {
-      SCOPED_TRACE(fields[column-1].name); // Closed field label, never returned data.
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      const auto column = static_cast<SQLUSMALLINT>(index + 1);
+      SCOPED_TRACE(fields[index].name); // Closed field label, never returned data.
       std::array<SQLCHAR,64> name{};SQLSMALLINT length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
       ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),fixture_smallint_length(name.size()),&length,&type,&size,&digits,&nullable));
       ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLSMALLINT>(name.size()));
@@ -2644,7 +2649,7 @@ protected:
         ASSERT_LE(column,names.size());EXPECT_EQ(names[column-1],actual);
       }
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
-      EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);
+      EXPECT_TRUE(actual==fields[index].name);EXPECT_EQ(fields[index].type,type);
       EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
       if(type==SQL_SMALLINT) {
         EXPECT_EQ(5U,size);
@@ -4076,14 +4081,15 @@ protected:
     EXPECT_EQ(SQL_SUCCESS,status); EXPECT_EQ(fields.size(),static_cast<std::size_t>(count));
     if(status!=SQL_SUCCESS || count<0 || static_cast<std::size_t>(count)!=fields.size()) { return {}; }
     std::vector<Descriptor> owned;
-    for(SQLUSMALLINT column=1;column<=fields.size();++column) {
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      const auto column = static_cast<SQLUSMALLINT>(index + 1);
       std::array<SQLCHAR,64> name;name.fill(0x5a);SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1;SQLULEN size=99;
       const auto described=SQLDescribeCol(checkpoint_statement(hstmt_),column,name.data(),static_cast<SQLSMALLINT>(name.size()),&length,&type,&size,&scale,&nullable);
       EXPECT_EQ(SQL_SUCCESS,described);EXPECT_GE(length,0);EXPECT_LT(length,static_cast<SQLSMALLINT>(name.size()));
       if(described!=SQL_SUCCESS || length<0 || static_cast<std::size_t>(length)>=name.size()) { return {}; }
       std::string actual(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(length));
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char ch){return static_cast<char>(std::tolower(ch));});
-      EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+      EXPECT_TRUE(actual==fields[index].name);EXPECT_EQ(fields[index].type,type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
       if(type==SQL_SMALLINT) { EXPECT_EQ(5u,size); }
       else if(type==SQL_INTEGER) { EXPECT_EQ(10u,size); }
       else { EXPECT_LE(size,65535u); }
@@ -9993,7 +9999,10 @@ TEST_F(RedshiftNumericTargetRescaleRealTest, PreparedFractionWholeNullAndOwningR
   std::array<unsigned char, sizeof(input) + 2> storage{};
   SQLLEN input_length = sizeof(input);
   const auto bind = [&](SQLSMALLINT scale) {
-    storage.fill(0x5a); std::memcpy(storage.data() + 1, &input, sizeof(input));
+    storage.fill(0x5a);
+    const auto input_bytes =
+        std::bit_cast<std::array<unsigned char, sizeof(input)>>(input);
+    std::copy(input_bytes.begin(), input_bytes.end(), storage.begin() + 1);
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT,
         SQL_C_NUMERIC, SQL_DECIMAL, 4, 2, storage.data() + 1,
         sizeof(input), &input_length));
