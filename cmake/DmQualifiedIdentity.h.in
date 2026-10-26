@@ -1,0 +1,10 @@
+#pragma once
+#define ODBCPP_DM_QUALIFIED_VERSION "@_dm_qualified_version@"
+#define ODBCPP_DM_QUALIFIED_PATH R"dm(@_dm_qualified_library_path@)dm"
+#define ODBCPP_DM_QUALIFIED_SHA256 "@_dm_qualified_library_sha256@"
+#define ODBCPP_DM_QUALIFIED_SNAPSHOT R"dm(@_dm_qualified_snapshot@)dm"
+#define ODBCPP_DM_QUALIFIED_PLATFORM "@_dm_qualified_platform@"
+#define ODBCPP_DM_QUALIFIED_POINTER_BYTES @_dm_qualified_pointer_bytes@
+#define ODBCPP_DM_QUALIFIED_SQLWCHAR_BYTES @_dm_qualified_sqlwchar_bytes@
+#define ODBCPP_DM_QUALIFIED_DRIVER_SQLWCHAR_BYTES @_dm_qualified_driver_sqlwchar_bytes@
+#define ODBCPP_DM_QUALIFIED_ODBC_VERSION @_dm_qualified_odbc_version@
