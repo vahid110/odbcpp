@@ -96,3 +96,105 @@ check_fixture(canonical_mismatch "" "odbcpp/database/other.h\n" "logical/physica
 file(WRITE "${FIXTURE_DIR}/sdk/header_owners.txt" "odbcpp/database/leaf.h|../escape.h\n")
 check_fixture(canonical_escape "" "odbcpp/database/leaf.h\n" "Invalid canonical SDK owner entry")
 file(WRITE "${FIXTURE_DIR}/sdk/header_owners.txt" "${_owner}")
+
+# Both checks run in one child process. Separate children let each negative
+# mutation terminate precisely without hiding the remaining regression cases.
+function(check_recheck_fixture name before mutation expected)
+  set(_template [=[
+cmake_minimum_required(VERSION 3.20)
+include("@SOURCE_DIR@/cmake/InternalIncludes.cmake")
+set(_root "@FIXTURE_DIR@/recheck-@name@")
+file(MAKE_DIRECTORY "${_root}/sdk/include/odbcpp/database" "${_root}/odbc")
+set(_leaf "${_root}/sdk/include/odbcpp/database/leaf.h")
+# Remove a link left by a previous run before writing the owned fixture file.
+file(REMOVE "${_leaf}")
+file(WRITE "${_leaf}" "#pragma once\n")
+set(_owner "odbcpp/database/leaf.h|sdk/include/odbcpp/database/leaf.h\n")
+file(WRITE "${_root}/sdk/header_owners.txt" "${_owner}")
+file(WRITE "${_root}/headers.txt" "odbcpp/database/leaf.h\n")
+file(WRITE "${_root}/odbc/probe.cpp" "#include \"../sdk/include/odbcpp/database/leaf.h\"\n")
+@before@
+odbcpp_check_internal_includes("${_root}" "${_root}/headers.txt" "${_root}/odbc/probe.cpp")
+message(STATUS "RECHECK_INITIAL_VALID")
+@mutation@
+odbcpp_check_internal_includes("${_root}" "${_root}/headers.txt" "${_root}/odbc/probe.cpp")
+]=])
+  string(CONFIGURE "${_template}" _contents @ONLY)
+  set(_script "${FIXTURE_DIR}/recheck-${name}.cmake")
+  file(WRITE "${_script}" "${_contents}")
+  execute_process(COMMAND "${CMAKE_COMMAND}" -P "${_script}"
+    RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+  if(NOT "${_out}${_err}" MATCHES "RECHECK_INITIAL_VALID")
+    message(FATAL_ERROR "Initial ${name} check failed before mutation: ${_out}${_err}")
+  endif()
+  if(expected STREQUAL "PASS")
+    if(NOT _result EQUAL 0)
+      message(FATAL_ERROR "Valid ${name} recheck failed: ${_out}${_err}")
+    endif()
+  elseif(_result EQUAL 0 OR NOT "${_out}${_err}" MATCHES "${expected}")
+    message(FATAL_ERROR "Invalid ${name} recheck was not rejected precisely: ${_out}${_err}")
+  endif()
+endfunction()
+
+check_recheck_fixture(duplicate_map "" [=[
+file(APPEND "${_root}/sdk/header_owners.txt" "${_owner}")
+]=] "Duplicate or ambiguous canonical SDK owner")
+check_recheck_fixture(unused_missing_owner "" [=[
+file(APPEND "${_root}/sdk/header_owners.txt"
+  "odbcpp/database/unused.h|sdk/include/odbcpp/database/unused.h\n")
+]=] "Missing canonical SDK owner")
+check_recheck_fixture(deleted_owner "" [=[
+file(REMOVE "${_leaf}")
+]=] "Missing canonical SDK owner")
+check_recheck_fixture(changed_header "" [=[
+file(APPEND "${_leaf}" "#include \"private.h\"\n")
+]=] "Forbidden internal include")
+check_recheck_fixture(remapped_owner "" [=[
+file(MAKE_DIRECTORY "${_root}/sdk/internal/odbcpp/database")
+file(WRITE "${_root}/sdk/internal/odbcpp/database/leaf.h" "#pragma once\n")
+file(WRITE "${_root}/sdk/header_owners.txt"
+  "odbcpp/database/leaf.h|sdk/internal/odbcpp/database/leaf.h\n")
+file(WRITE "${_root}/odbc/probe.cpp" "#include \"../sdk/internal/odbcpp/database/leaf.h\"\n")
+]=] PASS)
+check_recheck_fixture(separate_root "" [=[
+set(_root "${_root}-other")
+file(MAKE_DIRECTORY "${_root}/sdk/internal/odbcpp/database" "${_root}/odbc")
+file(WRITE "${_root}/sdk/internal/odbcpp/database/leaf.h" "#pragma once\n")
+file(WRITE "${_root}/sdk/header_owners.txt"
+  "odbcpp/database/leaf.h|sdk/internal/odbcpp/database/leaf.h\n")
+file(WRITE "${_root}/headers.txt" "odbcpp/database/leaf.h\n")
+file(WRITE "${_root}/odbc/probe.cpp" "#include \"../sdk/internal/odbcpp/database/leaf.h\"\n")
+]=] PASS)
+
+# Retargeting a symlink must be noticed even when the map bytes are unchanged.
+# The earlier symlink fixture reports unsupported hosts explicitly.
+if(_link_result STREQUAL "0")
+  check_recheck_fixture(retargeted_owner [=[
+file(WRITE "${_root}/inside.h" "#pragma once\n")
+file(REMOVE "${_leaf}")
+file(CREATE_LINK "${_root}/inside.h" "${_leaf}" SYMBOLIC RESULT _created)
+if(NOT _created STREQUAL "0")
+  message(FATAL_ERROR "Cannot create initial owner symlink: ${_created}")
+endif()
+]=] [=[
+file(WRITE "${_root}/../recheck-outside.h" "#pragma once\n")
+file(REMOVE "${_leaf}")
+file(CREATE_LINK "${_root}/../recheck-outside.h" "${_leaf}" SYMBOLIC RESULT _created)
+if(NOT _created STREQUAL "0")
+  message(FATAL_ERROR "Cannot retarget owner symlink: ${_created}")
+endif()
+]=] "Canonical SDK owner escapes source root")
+  check_recheck_fixture(aliased_unused_owner [=[
+set(_other "${_root}/sdk/include/odbcpp/database/other.h")
+file(REMOVE "${_other}")
+file(WRITE "${_other}" "#pragma once\n")
+file(APPEND "${_root}/sdk/header_owners.txt"
+  "odbcpp/database/other.h|sdk/include/odbcpp/database/other.h\n")
+]=] [=[
+file(REMOVE "${_other}")
+file(CREATE_LINK "${_leaf}" "${_other}" SYMBOLIC RESULT _created)
+if(NOT _created STREQUAL "0")
+  message(FATAL_ERROR "Cannot alias unused owner symlink: ${_created}")
+endif()
+]=] "Aliased canonical SDK physical owner")
+endif()
