@@ -150,6 +150,7 @@ inline constexpr Entry kEntries[] = {
     {Deviation::GetFunctionsAcceptsNullOutput, kWindows38126100, "", "Windows W3"},
     {Deviation::DriverConnectAppendsSemicolon, kWindows38126100, nullptr, "Windows W4"},
     {Deviation::DisconnectInvalidatesManagerChildren, kWindows38126100, nullptr, "Windows W5"},
+    {Deviation::DisconnectInvalidatesManagerChildren, kUnixodbc2314, nullptr, "Linux W5"},
     {Deviation::BookmarkBindTypeRejected, kWindows38126100, nullptr, "Windows W6"},
     {Deviation::GetDataBeforeExecuteIsSequenceError, kWindows38126100, nullptr, "Windows W7"},
     {Deviation::StateTableAfterFailedCall, kWindows38126100, nullptr, "Windows W7"},

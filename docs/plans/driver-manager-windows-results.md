@@ -105,8 +105,27 @@ unchanged on its owning host: 166 POSIX cases and 99 Windows cases, then the
 remaining native image-dependent smoke passed with the freshly built image
 (five tests, including intentional CTest failure/continuation and cleanup).
 
-The repaired C++ suites still require their complete rerun. The native direct
-Redshift checkpoint also remains outstanding; no live pass is inferred from
-compilation or PostgreSQL execution. Windows Redshift DM live is still the
-unsupported follow-up described in the handoff. Cross-platform builds and
-regression for the repaired fixtures remain required before final acceptance.
+At repair `5665f6d`, both Windows default ALL rebuilds passed and both unit
+collections passed 130/130. The complete PostgreSQL rerun passed all 386 direct
+and 373 manager cases, with no skips. All 14 executable hashes match their
+receipts; the driver DLL stayed unchanged, the owned DSN was retired and the
+isolated PostgreSQL server stopped. Independent result review accepted these
+local results. All 15 manager executable/project pairs import ODBC32 and link
+without `odbcpp_core` or an ODBCPP DLL dependency.
+
+The matching Linux/GCC 15 unixODBC 2.3.14 default ALL build and 129 unit tests
+passed. Its full PostgreSQL collection exposed an additional W5 fixture defect:
+the lifecycle suite crashed in `libodbc.so.2` while using a child handle after
+successful disconnect. All 13 lifecycle cases passed in separate processes,
+but GDB reproduced the crash in the complete suite. This allocator-sensitive
+result is not proof that freed pointers are valid. The trace, original CTest
+crash, isolated-case collection and debugger stack are retained in private
+`wsl-pg-collection02`, `wsl-lifecycle-isolated02` and `wsl-lifecycle-gdb03` evidence.
+The existing W5 fixture correction now also applies to measured unixODBC
+`03.52.0002.0003`; direct tombstone assertions and positive reconnect/new-child
+checks remain. The complete rerun of that follow-up is pending.
+
+The native direct Redshift checkpoint remains outstanding; no live pass is
+inferred from compilation or PostgreSQL execution. Windows Redshift DM live is
+still the unsupported follow-up described in the handoff. Remaining cross-platform
+regression for the repaired fixtures is required before final acceptance.
