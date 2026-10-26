@@ -645,9 +645,14 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
                        sizeof(driver_name), &required));
   EXPECT_EQ(0, std::memcmp(driver_name, ODBCPP_EXPECT_DRIVER_FILENAME, 4));
   EXPECT_EQ(0, driver_name[4]);
-  // iODBC 3.52.16 reports the ANSI characters it copied, not the total.
+  // iODBC reports copied characters; the Windows manager preserves the
+  // driver's required wide byte count when converting this truncated result.
+  const auto ansi_required = odbcpp::test::dm::value(
+      odbcpp::test::dm::Deviation::AnsiGetInfoLengthInWideBytes,
+      sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1,
+      (sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1) * sizeof(SQLWCHAR));
   EXPECT_EQ(odbcpp::test::dm::value(odbcpp::test::dm::Deviation::AnsiGetInfoStringLengths,
-                                    sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1,
+                                    ansi_required,
                                     sizeof(driver_name) - 1),
             static_cast<std::size_t>(required));
   EXPECT_EQ("01004", diagnostic_state(connection_));
@@ -668,7 +673,7 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
             SQLGetInfo(connection_, SQL_DRIVER_NAME, nullptr, 0, &required));
   // iODBC 3.52.16 hands the ANSI caller the driver's wide byte count.
   EXPECT_EQ(odbcpp::test::dm::value(odbcpp::test::dm::Deviation::AnsiGetInfoStringLengths,
-                                    sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1,
+                                    ansi_required,
                                     (sizeof(ODBCPP_EXPECT_DRIVER_FILENAME) - 1) * sizeof(SQLWCHAR)),
             static_cast<std::size_t>(required));
   wide_required = -1;
@@ -727,7 +732,13 @@ TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetFunctions(connection_, SQL_API_ALL_FUNCTIONS, odbc2));
   for (SQLUSMALLINT id = 0; id < 100; ++id) {
-    EXPECT_EQ(expected_support(id) ? SQL_TRUE : SQL_FALSE, odbc2[id])
+    // This manager omits SQLBulkOperations and SQLAllocHandleStd from the
+    // ODBC 2 bitmap, while its ODBC 3 bitmap reports both.
+    const bool expected = (id == SQL_API_SQLBULKOPERATIONS || id == 73) &&
+        odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::Odbc2FunctionBitmapOmitsBulkAndAllocHandleStd)
+        ? false : expected_support(id);
+    EXPECT_EQ(expected ? SQL_TRUE : SQL_FALSE, odbc2[id])
         << id;
   }
 

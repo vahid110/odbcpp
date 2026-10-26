@@ -112,7 +112,18 @@ SQLCHAR* test_dsn() {
 // The driver-connect output length the application sees for a truncated
 // output of `capacity` characters. iODBC 3.52.16 reports the characters it
 // copied instead of the total (DriverConnectOutputs, bucket I).
-std::size_t connect_output_length(std::size_t total, std::size_t capacity) {
+std::string connect_output_text(std::string_view input) {
+  std::string expected(input);
+  if (odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::DriverConnectAppendsSemicolon) &&
+      !expected.ends_with(';')) {
+    expected.push_back(';');
+  }
+  return expected;
+}
+
+std::size_t connect_output_length(std::string_view input, std::size_t capacity) {
+  const auto total = connect_output_text(input).size();
   return odbcpp::test::dm::value(odbcpp::test::dm::Deviation::DriverConnectOutputs,
                                  total, std::min(total, capacity - 1));
 }
@@ -338,11 +349,24 @@ TEST_F(HandleLifecycleIntegrationTest,
             SQLAllocHandle(SQL_HANDLE_DESC, connection_, &descriptor));
 
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
-  EXPECT_EQ(SQL_INVALID_HANDLE,
-            SQLFreeHandle(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_INVALID_HANDLE,
-            SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+  if (odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::DisconnectInvalidatesManagerChildren)) {
+    // The manager has freed these application handles. Calling them again
+    // dereferences freed storage before the driver can validate a tombstone.
+    RecordProperty("dm_unreachable_probe", "freed child handle tombstone validation");
+  } else {
+    EXPECT_EQ(SQL_INVALID_HANDLE,
+              SQLFreeHandle(SQL_HANDLE_STMT, statement_));
+    EXPECT_EQ(SQL_INVALID_HANDLE,
+              SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+  }
   statement_ = SQL_NULL_HSTMT;
+  // The connection remains reusable even though its old children are gone.
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS, nullptr, 0, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DESC, connection_, &descriptor));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
 }
 
 TEST_F(HandleLifecycleIntegrationTest,
@@ -527,7 +551,12 @@ TEST_F(HandleLifecycleIntegrationTest,
             SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
                               sizeof(dead), nullptr));
   EXPECT_EQ(SQL_CD_TRUE, dead);
-  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+  const auto disconnected = SQLDisconnect(connection_);
+  EXPECT_EQ(SQL_SUCCESS, disconnected);
+  if (disconnected == SQL_SUCCESS && odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::DisconnectInvalidatesManagerChildren)) {
+    statement_ = SQL_NULL_HSTMT;
+  }
 }
 
 // SQL_ATTR_LOGIN_TIMEOUT is a 32-bit SQLUINTEGER and the driver writes 4
@@ -655,8 +684,9 @@ TEST_F(DriverConnectIntegrationTest,
                   connection, nullptr, test_dsn(), SQL_NTS, output,
                   static_cast<SQLSMALLINT>(sizeof(output)), &output_length,
                   completion));
-    EXPECT_STREQ(input, reinterpret_cast<const char*>(output));
-    EXPECT_EQ(std::strlen(input), static_cast<std::size_t>(output_length));
+    const auto expected = connect_output_text(input);
+    EXPECT_EQ(expected, reinterpret_cast<const char*>(output));
+    EXPECT_EQ(expected.size(), static_cast<std::size_t>(output_length));
     EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   }
@@ -684,7 +714,7 @@ TEST_F(DriverConnectIntegrationTest,
                              &output_length,
                              SQL_DRIVER_NOPROMPT));
   EXPECT_STREQ("DSN", reinterpret_cast<const char*>(output));
-  EXPECT_EQ(connect_output_length(std::strlen(reinterpret_cast<const char*>(test_dsn())),
+  EXPECT_EQ(connect_output_length(reinterpret_cast<const char*>(test_dsn()),
                                   sizeof(output)),
             static_cast<std::size_t>(output_length));
   expect_connect_warnings(connection, {"01004"});
@@ -739,7 +769,7 @@ TEST_F(DriverConnectIntegrationTest,
             SQLDriverConnect(
                 connection, nullptr, test_dsn(), input_length, nullptr, 0,
                 &output_length, SQL_DRIVER_NOPROMPT));
-  EXPECT_EQ(input_length, output_length);
+  EXPECT_EQ(connect_output_text(input).size(), static_cast<std::size_t>(output_length));
   release_connection(connection);
 
   output_length = -1;
@@ -751,7 +781,7 @@ TEST_F(DriverConnectIntegrationTest,
                 connection, nullptr, test_dsn(), input_length,
                 ansi_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, ansi_terminator[0]);
-  EXPECT_EQ(connect_output_length(static_cast<std::size_t>(input_length),
+  EXPECT_EQ(connect_output_length(input,
                                   sizeof(ansi_terminator)),
             static_cast<std::size_t>(output_length));
   expect_connect_warnings(connection, {"01004"});
@@ -765,7 +795,7 @@ TEST_F(DriverConnectIntegrationTest,
                 connection, nullptr,
                 const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
                 nullptr, 0, &output_length, SQL_DRIVER_NOPROMPT));
-  EXPECT_EQ(wide_input_length, output_length);
+  EXPECT_EQ(connect_output_text(input).size(), static_cast<std::size_t>(output_length));
   release_connection(connection);
 
   output_length = -1;
@@ -778,7 +808,7 @@ TEST_F(DriverConnectIntegrationTest,
                 const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
                 wide_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, wide_terminator[0]);
-  EXPECT_EQ(connect_output_length(static_cast<std::size_t>(wide_input_length),
+  EXPECT_EQ(connect_output_length(input,
                                   std::size(wide_terminator)),
             static_cast<std::size_t>(output_length));
   expect_connect_warnings(connection, {"01004"});
@@ -810,7 +840,7 @@ TEST_F(DriverConnectIntegrationTest,
                 SQL_NTS, ansi_output, 1, &ansi_output_length,
                 SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, ansi_output[0]);
-  EXPECT_EQ(connect_output_length(input.size(), sizeof(ansi_output)),
+  EXPECT_EQ(connect_output_length(input, sizeof(ansi_output)),
             static_cast<std::size_t>(ansi_output_length));
   expect_connect_warnings(connection, {"01004", "01S00"});
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
@@ -826,7 +856,7 @@ TEST_F(DriverConnectIntegrationTest,
                               wide_output, 1, &wide_output_length,
                               SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, wide_output[0]);
-  EXPECT_EQ(connect_output_length(wide_input.size() - 1, std::size(wide_output)),
+  EXPECT_EQ(connect_output_length(input, std::size(wide_output)),
             static_cast<std::size_t>(wide_output_length));
   expect_connect_warnings(connection, {"01004", "01S00"});
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));

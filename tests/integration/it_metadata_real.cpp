@@ -861,7 +861,9 @@ TEST_F(MetadataIntegrationTest, ReportsAnsiColumnNameTruncation) {
     EXPECT_STREQ("long", name);
     // iODBC 3.52.16 reports the ANSI characters it copied, not the total.
     EXPECT_EQ(odbcpp::test::dm::value(
-                  odbcpp::test::dm::Deviation::AnsiTruncatedLengthIsCopied, 16, 4),
+                  odbcpp::test::dm::Deviation::AnsiColAttributeLengthInWideBytes,
+                  odbcpp::test::dm::value(
+                      odbcpp::test::dm::Deviation::AnsiTruncatedLengthIsCopied, 16, 4), 32),
               length);
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
@@ -1533,9 +1535,23 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
         char ignored_text[]{"keep"};
         SQLSMALLINT ignored_length = 82;
         SQLLEN value = -1;
-        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        const auto result = SQLColAttribute(
             hstmt, 1, attribute.field, ignored_text, -7, &ignored_length,
-            &value));
+            &value);
+        if (odbcpp::test::dm::deviates(
+                odbcpp::test::dm::Deviation::NumericAttributeNegativeBufferRejected)) {
+            EXPECT_EQ(SQL_ERROR, result);
+            EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+            EXPECT_EQ(-1, value);
+            EXPECT_STREQ("keep", ignored_text);
+            EXPECT_EQ(82, ignored_length);
+            // Retain the numeric-value assertion after the manager's refusal
+            // by repeating with a valid, still ignored, text-buffer length.
+            ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+                hstmt, 1, attribute.field, ignored_text, 0, &ignored_length, &value));
+        } else {
+            ASSERT_EQ(SQL_SUCCESS, result);
+        }
         EXPECT_EQ(attribute.expected, value);
         EXPECT_STREQ("keep", ignored_text);
         EXPECT_EQ(82, ignored_length);
@@ -1544,9 +1560,21 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
     char ignored_text[]{"keep"};
     SQLSMALLINT ignored_length = 83;
     SQLLEN count = -1;
-    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+    const auto count_result = SQLColAttribute(
         hstmt, 999, SQL_DESC_COUNT, ignored_text, -7, &ignored_length,
-        &count));
+        &count);
+    if (odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::NumericAttributeNegativeBufferRejected)) {
+        EXPECT_EQ(SQL_ERROR, count_result);
+        EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        EXPECT_EQ(-1, count);
+        EXPECT_STREQ("keep", ignored_text);
+        EXPECT_EQ(83, ignored_length);
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, 999, SQL_DESC_COUNT, ignored_text, 0, &ignored_length, &count));
+    } else {
+        ASSERT_EQ(SQL_SUCCESS, count_result);
+    }
     EXPECT_EQ(2, count);
     EXPECT_STREQ("keep", ignored_text);
     EXPECT_EQ(83, ignored_length);
@@ -1804,7 +1832,9 @@ TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
         sizeof(short_type_name), &required_length, nullptr));
     EXPECT_STREQ("num", short_type_name);
     EXPECT_EQ(odbcpp::test::dm::value(
-                  odbcpp::test::dm::Deviation::AnsiTruncatedLengthIsCopied, 7, 3),
+                  odbcpp::test::dm::Deviation::AnsiColAttributeLengthInWideBytes,
+                  odbcpp::test::dm::value(
+                      odbcpp::test::dm::Deviation::AnsiTruncatedLengthIsCopied, 7, 3), 14),
               required_length);
     EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
@@ -2463,11 +2493,17 @@ TEST_F(MetadataIntegrationTest, BackendColumnCatalogsPreserveDomainDimensionsAnd
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_batch_domain AS numeric(8,3)",
         SQL_NTS));
+    auto create_table = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE TEMP TABLE \"odbcpp'catalog_%é\"(\"id'é\" pg_temp.odbcpp_catalog_batch_domain PRIMARY KEY)");
+    ASSERT_TRUE(create_table.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'catalog_%é\"(\"id'é\" pg_temp.odbcpp_catalog_batch_domain PRIMARY KEY)",
-        SQL_NTS));
-    SQLCHAR pattern[] = "odbcpp'catalog\\_\\%é";
-    SQLCHAR name[] = "odbcpp'catalog_%é";
+        hstmt, reinterpret_cast<SQLCHAR*>(create_table->data()), SQL_NTS));
+    auto pattern_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'catalog\\_\\%é");
+    ASSERT_TRUE(pattern_text.has_value());
+    auto* pattern = reinterpret_cast<SQLCHAR*>(pattern_text->data());
+    auto name_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'catalog_%é");
+    ASSERT_TRUE(name_text.has_value());
+    auto* name = reinterpret_cast<SQLCHAR*>(name_text->data());
     ASSERT_EQ(SQL_SUCCESS, SQLColumns(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
@@ -2520,11 +2556,15 @@ TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAnd
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_routine_batch_domain AS varchar(11)",
         SQL_NTS));
+    auto create_routine = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE FUNCTION pg_temp.\"odbcpp'routine_%é\"(\"arg'é\" pg_temp.odbcpp_routine_batch_domain) "
+        "RETURNS pg_temp.odbcpp_routine_batch_domain LANGUAGE SQL AS 'SELECT $1'");
+    ASSERT_TRUE(create_routine.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE FUNCTION pg_temp.\"odbcpp'routine_%é\"(\"arg'é\" pg_temp.odbcpp_routine_batch_domain) "
-                        "RETURNS pg_temp.odbcpp_routine_batch_domain LANGUAGE SQL AS 'SELECT $1'",
-        SQL_NTS));
-    SQLCHAR pattern[] = "odbcpp'routine\\_\\%é";
+        hstmt, reinterpret_cast<SQLCHAR*>(create_routine->data()), SQL_NTS));
+    auto pattern_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'routine\\_\\%é");
+    ASSERT_TRUE(pattern_text.has_value());
+    auto* pattern = reinterpret_cast<SQLCHAR*>(pattern_text->data());
     SQLCHAR empty[] = "";
     ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
         hstmt, empty, SQL_NTS, nullptr, 0, pattern, SQL_NTS));
@@ -2560,13 +2600,19 @@ TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAnd
 }
 
 TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
+    auto create_parent = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE TEMP TABLE \"odbcpp'parent_%é\"(id integer PRIMARY KEY)");
+    ASSERT_TRUE(create_parent.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'parent_%é\"(id integer PRIMARY KEY)",
-        SQL_NTS));
+        hstmt, reinterpret_cast<SQLCHAR*>(create_parent->data()), SQL_NTS));
+    auto create_child = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE TEMP TABLE \"odbcpp'child_%é\"(id integer REFERENCES \"odbcpp'parent_%é\"(id))");
+    ASSERT_TRUE(create_child.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'child_%é\"(id integer REFERENCES \"odbcpp'parent_%é\"(id))",
-        SQL_NTS));
-    SQLCHAR pattern[] = "odbcpp'parent\\_\\%é";
+        hstmt, reinterpret_cast<SQLCHAR*>(create_child->data()), SQL_NTS));
+    auto pattern_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'parent\\_\\%é");
+    ASSERT_TRUE(pattern_text.has_value());
+    auto* pattern = reinterpret_cast<SQLCHAR*>(pattern_text->data());
     SQLCHAR types[] = " 'local temporary', 'unknown' ";
     ASSERT_EQ(SQL_SUCCESS, SQLTables(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, types, SQL_NTS));

@@ -506,19 +506,25 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
       "SELECT 'a%b' LIKE 'a\xC3\xA9%b' {escape '\xC3\xA9'}";
   constexpr char expected[] =
       "SELECT 'a%b' LIKE 'a\xC3\xA9%b' ESCAPE '\xC3\xA9'";
+  auto ansi_input = odbcpp::test::text::utf8_to_ansi_input(
+      reinterpret_cast<const char*>(unicode));
+  auto ansi_expected = odbcpp::test::text::utf8_to_ansi_input(expected);
+  ASSERT_TRUE(ansi_input.has_value());
+  ASSERT_TRUE(ansi_expected.has_value());
+  auto* const ansi_text = reinterpret_cast<SQLCHAR*>(ansi_input->data());
   SQLCHAR output[sizeof(expected)]{};
   // The manager widens ANSI text byte by byte, so the driver sees a
   // two-character escape and rejects it; the case cannot continue.
   if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
-    EXPECT_EQ(SQL_ERROR, SQLNativeSql(connection_, unicode, SQL_NTS, output,
+    EXPECT_EQ(SQL_ERROR, SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
                                       sizeof(output), nullptr));
     EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
     return;
   }
   ASSERT_EQ(SQL_SUCCESS,
-            SQLNativeSql(connection_, unicode, SQL_NTS, output,
+            SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
                          sizeof(output), nullptr));
-  EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
+  EXPECT_STREQ(ansi_expected->c_str(), reinterpret_cast<const char*>(output));
 
   auto wide_input = odbcpp::test::text::utf8_to_wide(
       reinterpret_cast<const char*>(unicode));
@@ -537,7 +543,7 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
   ASSERT_TRUE(native_wide.has_value());
   EXPECT_EQ(expected, *native_wide);
 
-  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, unicode, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, ansi_text, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
   SQLCHAR matched[4]{};
   ASSERT_EQ(SQL_SUCCESS,

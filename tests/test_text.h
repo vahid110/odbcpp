@@ -1,5 +1,10 @@
 #pragma once
 
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+
 // UTF-8 <-> SQLWCHAR conversion for suite-side buffers. Direct builds use the
 // driver's converters unchanged; Driver Manager builds cannot link them, so
 // they use this strict equivalent (no terminator, nullopt on invalid input).
@@ -105,3 +110,40 @@ using rs::odbc::utf8_to_wide;
 using rs::odbc::wide_to_utf8;
 }  // namespace odbcpp::test::text
 #endif
+
+namespace odbcpp::test::text {
+
+// ANSI calls through the Windows manager consume the active code page, while
+// direct and POSIX fixtures use UTF-8. Refuse lossy conversion so Unicode
+// assertions cannot silently test replacement characters or best-fit text.
+inline std::optional<std::string> utf8_to_ansi_input(std::string_view input) {
+#if defined(_WIN32) && defined(ODBCPP_TEST_VIA_DRIVER_MANAGER)
+  const auto wide = utf8_to_wide(input);
+  if (!wide || wide->size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    return std::nullopt;
+  }
+  if (wide->empty()) {
+    return std::string{};
+  }
+  const bool utf8_code_page = GetACP() == CP_UTF8;
+  const DWORD flags = utf8_code_page ? 0 : WC_NO_BEST_FIT_CHARS;
+  BOOL used_default = FALSE;
+  auto* const report = utf8_code_page ? nullptr : &used_default;
+  const int count = static_cast<int>(wide->size());
+  const int size = WideCharToMultiByte(CP_ACP, flags, wide->data(), count,
+                                     nullptr, 0, nullptr, report);
+  if (size <= 0 || used_default) {
+    return std::nullopt;
+  }
+  std::string result(static_cast<std::size_t>(size), '\0');
+  if (WideCharToMultiByte(CP_ACP, flags, wide->data(), count,
+                          result.data(), size, nullptr, report) != size || used_default) {
+    return std::nullopt;
+  }
+  return result;
+#else
+  return std::string(input);
+#endif
+}
+
+}  // namespace odbcpp::test::text

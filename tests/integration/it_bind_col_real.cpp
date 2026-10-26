@@ -436,6 +436,10 @@ protected:
       return fixture_statement_budget(fixture_end_, statement)
           ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
     }
+    SQLRETURN SQLExecDirectW(SQLHSTMT statement, SQLWCHAR* statement_text, SQLINTEGER text_length) {
+      return fixture_statement_budget(fixture_end_, statement)
+          ? ::SQLExecDirectW(statement, statement_text, text_length) : SQL_ERROR;
+    }
     SQLRETURN SQLFetch(SQLHSTMT statement) {
       return fixture_statement_budget(fixture_end_, statement)
           ? ::SQLFetch(statement) : SQL_ERROR;
@@ -2639,8 +2643,10 @@ TEST_F(BindColIntegrationTest, BoundApproximateNumericUsesScale) {
 }
 
 TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
+    auto first_sql = odbcpp::test::text::utf8_to_ansi_input("SELECT 'AéZ'::text, ''::text");
+    ASSERT_TRUE(first_sql.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 'AéZ'::text, ''::text", SQL_NTS));
+        reinterpret_cast<SQLCHAR*>(first_sql->data()), SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
     // stores two characters for the UTF-8 'é'. The byte checks below assume
@@ -2681,8 +2687,10 @@ TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
     EXPECT_EQ(0, length);
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    auto second_sql = odbcpp::test::text::utf8_to_ansi_input("SELECT 'AéZ'::text, 'AéZ'::text");
+    ASSERT_TRUE(second_sql.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
-        (SQLCHAR*)"SELECT 'AéZ'::text, 'AéZ'::text", SQL_NTS));
+        reinterpret_cast<SQLCHAR*>(second_sql->data()), SQL_NTS));
     SQLCHAR full[4]{};
     SQLCHAR truncated[2]{0x55, 0x55};
     SQLLEN full_length = -1;
@@ -3175,10 +3183,19 @@ TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
         odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte,
         std::string("A\xf0\x9f\x99\x82" "BC"),
         odbcpp::test::dm::latin1_widened("A\xf0\x9f\x99\x82" "BC"));
+#if defined(_WIN32) && defined(ODBCPP_TEST_VIA_DRIVER_MANAGER)
+    // Supplementary characters cannot be represented by every Windows ANSI
+    // code page. They are fixture data for this wide-output chunking test.
+    auto sql = odbcpp::test::text::utf8_to_wide("SELECT 'A\xf0\x9f\x99\x82" "BC'::text");
+    ASSERT_TRUE(sql.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirectW(
+        hstmt, sql->data(), static_cast<SQLINTEGER>(sql->size())));
+#else
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"SELECT 'A\xf0\x9f\x99\x82" "BC'::text",
         SQL_NTS));
+#endif
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     std::string assembled;
@@ -4257,8 +4274,15 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
     SQLCHAR sqlstate[6], message[256];
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("07009", (char*)sqlstate);
-    EXPECT_TRUE(strstr((char*)message, "column number") != nullptr);
+    if (odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::BookmarkBindTypeRejected)) {
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(sqlstate));
+        EXPECT_TRUE(std::string_view(reinterpret_cast<char*>(message)).starts_with(
+            "[Microsoft][ODBC Driver Manager]"));
+    } else {
+        EXPECT_STREQ("07009", (char*)sqlstate);
+        EXPECT_TRUE(strstr((char*)message, "column number") != nullptr);
+    }
     
     // Test SQLFetch without execution
     SQLHSTMT new_stmt;

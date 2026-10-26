@@ -80,6 +80,14 @@ enum class Deviation {
   RefusedLoginTimeoutReplayedOnConnect,
   CancelClosesIdleCursor,
   AnsiNameLengthInCharacters,
+  AnsiGetInfoLengthInWideBytes,
+  AnsiColAttributeLengthInWideBytes,
+  NumericAttributeNegativeBufferRejected,
+  DriverConnectAppendsSemicolon,
+  DisconnectInvalidatesManagerChildren,
+  WindowsFunctionsReported,
+  Odbc2FunctionBitmapOmitsBulkAndAllocHandleStd,
+  BookmarkBindTypeRejected,
 };
 
 }  // namespace dm
@@ -121,6 +129,7 @@ inline const std::string& manager_version() {
 
 inline constexpr const char* kIodbc35216 = "03.52.1623.0502";
 inline constexpr const char* kUnixodbc2314 = "03.52.0002.0003";
+inline constexpr const char* kWindows38126100 = "03.81.26100.0000";
 
 struct Entry {
   Deviation deviation;
@@ -130,6 +139,23 @@ struct Entry {
 };
 
 inline constexpr Entry kEntries[] = {
+    // Windows x64, SQLWCHAR 2, ODBC 3: trace/probe evidence in
+    // docs/plans/driver-manager-windows-results.md. These entries describe
+    // the measured manager version, not all Windows managers.
+    {Deviation::ManagerOdbcVersion, kWindows38126100, "03.80.0000", "Windows W1"},
+    {Deviation::AnsiGetInfoLengthInWideBytes, kWindows38126100, nullptr, "Windows W2"},
+    {Deviation::AnsiColAttributeLengthInWideBytes, kWindows38126100, nullptr, "Windows W2"},
+    {Deviation::WindowsFunctionsReported, kWindows38126100, nullptr, "Windows W3"},
+    {Deviation::Odbc2FunctionBitmapOmitsBulkAndAllocHandleStd, kWindows38126100, nullptr, "Windows W3"},
+    {Deviation::GetFunctionsAcceptsNullOutput, kWindows38126100, "", "Windows W3"},
+    {Deviation::DriverConnectAppendsSemicolon, kWindows38126100, nullptr, "Windows W4"},
+    {Deviation::DisconnectInvalidatesManagerChildren, kWindows38126100, nullptr, "Windows W5"},
+    {Deviation::BookmarkBindTypeRejected, kWindows38126100, nullptr, "Windows W6"},
+    {Deviation::GetDataBeforeExecuteIsSequenceError, kWindows38126100, nullptr, "Windows W7"},
+    {Deviation::StateTableAfterFailedCall, kWindows38126100, nullptr, "Windows W7"},
+    {Deviation::MoreResultsErrorKeepsCursorOpen, kWindows38126100, nullptr, "Windows W8"},
+    {Deviation::ReconnectAfterInternalCloseRefused, kWindows38126100, nullptr, "Windows W9"},
+    {Deviation::NumericAttributeNegativeBufferRejected, kWindows38126100, "HY090", "Windows W10"},
     {Deviation::ManagerRaisesOdbc2States, kIodbc35216, nullptr, "bucket C"},
     {Deviation::ManagerOdbcVersion, kIodbc35216, "03.52.0000", "bucket F"},
     {Deviation::ManagerOdbcVersion, kUnixodbc2314, "03.52", "bucket F"},
@@ -307,6 +333,16 @@ inline std::string latin1_widened(std::string_view text) {
 // driver's ODBC 3 functions, and functions it implements itself. Numeric,
 // because not every manager's headers define all of these names.
 inline bool manager_reports_function(unsigned id) {
+  if (deviates(Deviation::WindowsFunctionsReported)) {
+    // Measured full bitmap, including manager-owned connection enumeration.
+    // Unlike unixODBC, this manager does not advertise SQLSetScrollOptions.
+    static constexpr unsigned kWindowsIds[] = {
+        1, 2, 3, 14, 15, 22, 23, 42, 46, 50, 51, 57, 64, 71, 73, 1002, 1550, 1551};
+    for (const auto candidate : kWindowsIds) {
+      if (candidate == id) return true;
+    }
+    return false;
+  }
   if (!deviates(Deviation::Odbc2FunctionsReported)) return false;
   static constexpr unsigned kIds[] = {
       1,     // SQLAllocConnect
