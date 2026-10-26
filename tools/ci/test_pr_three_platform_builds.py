@@ -19,21 +19,22 @@ FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-packag
 FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
 # Reviewed job bodies, excluding only their top-level event condition. Preserve
-# 526b with reviewed packaging and complete-checkpoint repairs (2026-10-22).
+# 526b with reviewed packaging/checkpoint repairs (2026-10-22), then action pins
+# and literal cache-token grants (2026-10-25); build/test commands are unchanged.
 BODY_SHA256 = {
-    'sanitizer-only': 'fbc8b8a9ef873d8d1b13f429b3110338f360adf941936543f1a0df31e71909b7',
+    'sanitizer-only': 'c5f8920828e11b4356e9c2536c4a5b263bb1bbcd3b28e8e759b87afd6b0ff27c',
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
     'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
-    'windows-product-qualification': '6bffeb8c5f8356015036a032d0f37128180fbf8c011084bbfd208ce1a40e80e6',
-    'build-and-test': 'b32c7d9de760bb69e3d2bcfe0c67f069b9a8d365f0ba24767bd89ff0641969c4',
-    'redshift-build': '83dd943e7dad86a66e4c44124163bbd612194b914c19abba7fd702d218787048',
-    'windows-live': '5a29e36575588fc11bb84eb04dde40bfdab303a57951770d427b1ae01cde100f',
-    'windows-package': 'd3191013a82d6c6a45fe352f17c7d8888f12996877775fcd53991a99620842d8',
-    'windows-linked-server': 'f7f15d6261db38ead9993bb28ea275523b1af5835780e1c28ed075844f536c0d',
-    'linux-sanitizers': 'e302e94886a90342a0abf1b386d46afb5b36d13ea49c6802034ffbc12188d2ab',
-    'linux-openssl-static': 'd378c269986bf275a2dbe9402a4feccc143c8b38ad6e337f206252af6c202028',
-    'awslc-adapter-proof': '19230fd79ff37164624bd764631ad194679a7ef63c3aaf3594d5d4826970969d',
-    'iodbc-unicode': '6e631a1796a3658177c740bec25ba93fdf484ca82fc9c899d735bbe46cf1f726',
+    'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
+    'build-and-test': '120c7398a37e6948412a148f75fb8e46918c4279ed3e5a42a0db73b8c206f43e',
+    'redshift-build': '0ba6d9fa6afb30d14b63859e433d7adf193213c86aead5fa022f9963fc401873',
+    'windows-live': '8fe7c5494f85d087ba55417bc5385d92a8715c8ebbf705be34589cefe1f8663c',
+    'windows-package': '8df1d4a83f758b3784a83918338f9c17fd4c5fbedcaf84f1bc45cd9e6d955c97',
+    'windows-linked-server': 'dc898d0acd712fc9de23110b50e64dfa9669d37aa4ae6cbf7353219b4ac458d6',
+    'linux-sanitizers': '4c56808487402d87e94b067b4a761a0170eb705b5590a935c752cdaafebce5fe',
+    'linux-openssl-static': '85c7236f48df08e2b65315759d47e42105d2ea2f995e53106c1620954b6e2fe9',
+    'awslc-adapter-proof': 'e35d492a94a007c87df9208cbee56b779f4021e89eda12aed2c322cb7fd40922',
+    'iodbc-unicode': 'c1d6b9e0e42def7fc46f3ac2c4bad4ca055ff1be49639ee70db63a27923fd0d3',
 }
 
 
@@ -104,6 +105,80 @@ def build_contract(block, platform):
     build_lines = [line.strip() for line in block.splitlines() if 'cmake --build ' in line]
     if len(build_lines) != 1 or not build_lines[0].endswith('--parallel 2'):
         raise ValueError('one default ALL build j2 required')
+
+
+def cache_mode(text, job=False):
+    """Read the literal token grant; no hosted token behavior is simulated."""
+    pattern = r'^    cache-mode: ([a-z-]+)$' if job else r'^cache-mode: ([a-z-]+)$'
+    values = re.findall(pattern, text, re.M)
+    if len(values) > 1:
+        raise ValueError('duplicate cache authority')
+    return values[0] if values else None
+
+
+def candidate_cache_contract(ci, ubuntu, windows):
+    """Fail closed on candidate write grants or mutable producer identity."""
+    blocks = jobs(ubuntu)
+    inherited = cache_mode(ubuntu)
+    if inherited != 'read' or cache_mode(blocks['product'], job=True) != 'read':
+        raise ValueError('arbitrary product candidates require a read-only cache token')
+    writers = {name for name, block in blocks.items()
+               if (cache_mode(block, job=True) or inherited) in ('write', 'write-only')}
+    if writers != {'cold', 'seed-a'}:
+        raise ValueError('only reviewed source producers may write caches')
+    if ('ref: ${{ github.sha }}' not in blocks['cold'] or
+            blocks['cold'].count('uses: actions/checkout@') != 1):
+        raise ValueError('same-head producer must execute only the dispatch source')
+    if 'PILOT_EXPECTED_HEAD: cac4e780dcc9ce84fcc8a3d104ab1afbf4ba0547' not in blocks['seed-a']:
+        raise ValueError('seed producer checkout must use the literal reviewed source')
+    if 'ref: ${{ env.PILOT_EXPECTED_HEAD }}' not in blocks['seed-a']:
+        raise ValueError('seed checkout must use its fixed source identity')
+    if 'uses: actions/cache/save@' in blocks['product']:
+        raise ValueError('candidate job must not advertise a cache producer')
+    ci_blocks = jobs(ci)
+    if (cache_mode(ci_blocks['sanitizer-only'], job=True) != 'none' or
+            cache_mode(ci_blocks['windows-product-qualification'], job=True) != 'none' or
+            cache_mode(windows) != 'none'):
+        raise ValueError('cold sanitizer/Windows candidates require no cache access')
+    for block, check in [(blocks['product'], 'run: test "$ACTIONS_CACHE_MODE" = read'),
+                         (ci_blocks['sanitizer-only'], 'run: test "$ACTIONS_CACHE_MODE" = none'),
+                         (jobs(windows)['product'], "if ($env:ACTIONS_CACHE_MODE -ne 'none')")]:
+        if check not in block or block.index(check) > block.index('uses: actions/checkout@'):
+            raise ValueError('require the runner-reported cache grant before candidate checkout')
+
+
+class CITrustBoundaries(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ci = (ROOT / '.github/workflows/ci.yml').read_text()
+        cls.ubuntu = (ROOT / '.github/workflows/ubuntu-development-pilot.yml').read_text()
+        cls.windows = (ROOT / '.github/workflows/windows-product-qualification.yml').read_text()
+
+    def test_candidate_token_caps_and_safe_producers(self):
+        candidate_cache_contract(self.ci, self.ubuntu, self.windows)
+        for filename in ['primary.yml', 'scorecard.yml']:
+            self.assertEqual(cache_mode((ROOT / '.github/workflows' / filename).read_text()), 'none')
+
+    def test_candidate_write_or_mutable_seed_is_rejected(self):
+        mutations = [self.ubuntu.replace('cache-mode: read', 'cache-mode: write', 1),
+                     self.ubuntu.replace('  product:\n    cache-mode: read', '  product:\n    cache-mode: write'),
+                     self.ubuntu.replace('PILOT_EXPECTED_HEAD: cac4e780dcc9ce84fcc8a3d104ab1afbf4ba0547',
+                                         'PILOT_EXPECTED_HEAD: ${{ inputs.seed_head }}'),
+                     self.ubuntu.replace('  warm:\n', '  warm:\n    cache-mode: write\n')]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                candidate_cache_contract(self.ci, mutation, self.windows)
+        with self.assertRaises(ValueError):
+            candidate_cache_contract(self.ci.replace('cache-mode: none', 'cache-mode: write', 1),
+                                     self.ubuntu, self.windows)
+
+    def test_all_external_actions_use_full_commit_pins(self):
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            for action in re.findall(r'^\s+(?:- )?uses: ([^\s#]+)', path.read_text(), re.M):
+                if action.startswith('./'):
+                    continue
+                with self.subTest(path=path.name, action=action):
+                    self.assertRegex(action, r'^[\w.-]+/[\w./-]+@[0-9a-f]{40}$')
 
 
 class ThreePlatformScheduling(unittest.TestCase):

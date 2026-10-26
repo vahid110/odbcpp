@@ -1,163 +1,76 @@
-# ODBCPP Build System Configuration
+# Building and installing ODBCPP
 
-> **Current versus planned:** the implementation currently links through
-> OpenSSL CMake targets selected by a strict build-time provider/linkage
-> profile. Artifact inspection and AWS-LC qualification remain open. The full contract is
-> [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). Examples below describe
-> the OpenSSL build and must not be read as AWS-LC,
-> linkage, packaging or FIPS support claims.
+The [command matrix](tools/development/COMMANDS.md) and `CMakePresets.json`
+are the current build entry points. The earlier static-linking guide is retained
+as [historical documentation](docs/history/build-system-pre-security-20261025.md),
+not current deployment instructions.
 
-## Static vs Dynamic Linking
+## Dependencies and profiles
 
-### Current Configuration (Default)
-- **ODBC Driver**: ✅ **SHARED** (`libodbcpp.dylib` - for ODBC Driver Manager)
-- **Core Library**: ✅ **STATIC** (`libodbcpp_core.a` - for examples/tests)
-- **OpenSSL request**: system-shared by default on Linux/macOS and bundled-shared
-  on Windows; resulting linkage is not yet artifact-verified
-- **System Libraries**: Dynamic (libc++, libSystem - required by OS)
+Use CMake 3.21+, CTest, Python 3.9+, Git and a C++20 compiler. Unix presets
+use Ninja. Windows presets use Visual Studio 2022 x64 tools. Install the selected
+driver manager's development headers/libraries and OpenSSL 3 development files.
+Use vendor-supported security updates; an OpenSSL major-version check alone
+is not a vulnerability or support assessment.
 
-### Build Outputs
+| Platform | Redshift preset | Crypto selection |
+| --- | --- | --- |
+| Windows x64 | `windows-redshift` | Pass `-DODBCPP_CRYPTO_ROOT=C:/absolute/OpenSSL3`; bundled shared profile |
+| Linux/WSL, unixODBC | `unixodbc-redshift` | System-shared OpenSSL 3 |
+| Linux/WSL, iODBC | `linux-iodbc-redshift` | System-shared; set `ODBCPP_IODBC_ROOT` to the UCS4 iODBC prefix |
+| macOS, iODBC | `macos-iodbc-redshift` | System-shared; set `ODBCPP_IODBC_ROOT`, and `CMAKE_PREFIX_PATH` as needed |
 
-#### Default Build
-```bash
-cmake -B build
-cmake --build build
+For PostgreSQL replace `redshift` with `pg` in these explicit profile names.
+MySQL and SQL Server product builds are not implemented. Match driver/application
+architecture and `SQLWCHAR` width; see [Unicode ABI](README.md#driver-manager-unicode-abi).
+
+```sh
+cmake --list-presets
+cmake --preset unixodbc-redshift
+cmake --build --preset unixodbc-redshift
+ctest --preset unixodbc-redshift-offline --output-junit offline.xml
 ```
 
-**Produces:**
-- `libodbcpp.dylib` (5.3MB) - **ODBC Driver** for system integration
-- `libodbcpp_core.a` (455KB) - Static library for development
+Windows example, in a developer shell:
 
-**Intended ODBC Driver Dependencies (inspect the built artifact):**
-- `libc++.1.dylib` (system C++ runtime)
-- `libSystem.B.dylib` (system library)
-- **OpenSSL**: selected by the requested profile; binary inspection remains a
-  separate qualification step
-
-#### Dynamic OpenSSL Build (Optional)
-```bash
-cmake -DODBCPP_CRYPTO_PROVIDER=OPENSSL \
-      -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED -B build-dynamic
-cmake --build build-dynamic
+```powershell
+cmake --preset windows-redshift -DODBCPP_CRYPTO_ROOT=C:/absolute/OpenSSL3
+cmake --build --preset windows-redshift
+ctest --preset windows-redshift-offline --output-junit offline.xml
 ```
 
-**Additional Dependencies:**
-- `libssl.3.dylib` (OpenSSL SSL)
-- `libcrypto.3.dylib` (OpenSSL Crypto)
+Each preset has its own `build-<preset>` directory. Do not share an existing graph
+across crypto providers, linkage modes, driver managers or incompatible compilers.
+Offline results do not replace integration/live qualification.
 
-## Build Options
+## Private runtime installation
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `ODBCPP_CRYPTO_PROVIDER` | `OPENSSL` | Provider selected for the artifact; AWS-LC is rejected until qualified |
-| `ODBCPP_CRYPTO_LINKAGE` | platform default | `SYSTEM_SHARED`, `BUNDLED_SHARED`, or `BUNDLED_STATIC` |
-| `ODBCPP_CRYPTO_ROOT` | empty | Existing absolute provider prefix required for bundled profiles |
-| `BUILD_EXAMPLES` | `ON` | Build example applications |
-| `BUILD_TESTING` | `ON` | Build unit and integration tests |
-| `TARGET_DATABASE` | `REDSHIFT` | Implemented product (`REDSHIFT` or `POSTGRESQL`); reserved future values fail configuration |
+After building, install the runtime component into a new application-owned prefix:
 
-**Note**: ODBC drivers are always built as shared libraries (.dylib/.so/.dll) as required by the ODBC specification.
-
-## Deployment Considerations
-
-### Legacy Static-Preference Build
-**Intended advantages after artifact verification:**
-- Self-contained executable
-- No OpenSSL version dependencies on target system
-- Easier deployment and distribution
-- Works on systems without OpenSSL development packages
-
-⚠️ **Considerations:**
-- Larger executable size (~5.3MB vs ~1.3MB)
-- OpenSSL version fixed at build time
-
-### Dynamic Build
-✅ **Advantages:**
-- Smaller executable size
-- Can use system OpenSSL updates
-- Shared OpenSSL libraries across applications
-
-⚠️ **Requirements:**
-- Target system must have compatible OpenSSL installed
-- Version compatibility management required
-
-## Library Structure
-
-```
-libodbcpp.dylib (5.3MB) - ODBC Driver
-├── ODBC API Layer
-│   ├── SQLConnect, SQLExecDirect, SQLFetch
-│   ├── Handle management (ENV/DBC/STMT)
-│   └── DSN and connection string parsing
-├── Database Layer
-│   ├── PostgreSQL wire protocol
-│   ├── Async connection management
-│   └── Connection pooling
-└── Transport Layer
-    ├── TCP sockets with TLS
-    └── Thread pool for async I/O
-
-libodbcpp_core.a (455KB) - Development Library
-└── Same components as shared library
-    (for linking examples and tests)
+```sh
+cmake --install build-unixodbc-redshift --prefix /absolute/private-prefix --component ODBCPPDriverRuntime
 ```
 
-## Cross-Platform Support
+For Windows use `build-windows-redshift` and add `--config Release`. The component
+installs the loadable driver and crypto manifest, using CMake's GNU installation
+directories. It does not register a driver/DSN, install a driver manager, deploy
+all external crypto libraries, or install CA roots. Retain the selected runtime
+dependencies and verify TLS using OS trust or an explicit custom CA source.
+See [trust-store options](docs/trust-store-design.md#3-options-defaults-and-precedence).
 
-### macOS (Current)
-- **Static OpenSSL**: `/opt/homebrew/opt/openssl@3/lib/libssl.a`
-- **ODBC Headers**: `/opt/homebrew/include`
-- **Architecture**: arm64 (Apple Silicon)
+For Windows installer packaging and registration, use the instructions in
+[packaging/windows](packaging/windows/README.md); a private CMake runtime install
+is a different deployment path. The default install without a component also
+exports SDK headers/libraries/CMake targets and is intended for C++ integration.
 
-### Linux (Planned)
-- **Static OpenSSL**: System package or custom build
-- **ODBC Headers**: `/usr/include` (unixodbc-dev)
-- **Architecture**: x86_64, arm64
+## Build identity and evidence
 
-### Windows (Planned)
-- **Static OpenSSL**: vcpkg or custom build
-- **ODBC Headers**: Windows SDK
-- **Additional Libraries**: `ws2_32`, `crypt32`
+Development snapshots are identified by their full Git commit, configuration,
+compiler/dependency versions and output hashes. The CMake project version alone
+is not a unique identifier for an unreleased binary. Record `git rev-parse HEAD`,
+local modifications, `CMakeCache.txt`, the crypto manifest and actual test logs
+with packages. Do not label a development package a released or certified build.
 
-## Recommended Build Commands
-
-### Production Build (Static)
-```bash
-cmake -DCMAKE_BUILD_TYPE=Release \
-      -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED -B build-release
-cmake --build build-release --config Release
-```
-
-### Development Build (Dynamic)
-```bash
-cmake -DCMAKE_BUILD_TYPE=Debug \
-      -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED -B build-debug
-cmake --build build-debug --config Debug
-```
-
-### Distribution Build (Minimal)
-```bash
-cmake -DCMAKE_BUILD_TYPE=Release \
-      -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC \
-      -DODBCPP_CRYPTO_ROOT=/absolute/provider/prefix \
-      -DBUILD_TESTING=OFF -B build-dist
-cmake --build build-dist --config Release
-```
-
-### ODBC Driver Installation
-```bash
-# Build the driver
-cmake -DCMAKE_BUILD_TYPE=Release -B build
-cmake --build build
-
-# Install system-wide (requires sudo)
-cd build
-sudo ../install/install-driver.sh
-
-# Test installation
-isql -v YourDSNName username password
-```
-
-The build system produces both a **shared ODBC driver** for system integration
-and a **static library** for development. The legacy default asks CMake to prefer
-static OpenSSL; only artifact inspection can establish the actual linkage.
+For complete local and live test collection, follow the
+[command matrix](tools/development/COMMANDS.md). Keep credentials out of source,
+public build logs, test reports and issue attachments.

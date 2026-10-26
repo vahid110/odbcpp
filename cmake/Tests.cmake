@@ -3,6 +3,7 @@ include(FetchContent)
 FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
@@ -193,6 +194,35 @@ set_tests_properties(test_odbc_trace_reload PROPERTIES LABELS "unit" TIMEOUT 60
 # The same native main with isolated synthetic assertions proves failure/skip
 # precedence through actual GoogleTest and CTest, without loading the driver.
 find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+add_test(NAME test_xml_evidence COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_xml_evidence.py")
+set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT 60)
+add_test(NAME test_aws_sdk_provenance COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/dependencies/test_aws_sdk_provenance.py")
+add_test(NAME test_pilot_startup_tls_policy COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/redshift/test_pilot_startup_tls_policy.py")
+set_tests_properties(test_aws_sdk_provenance test_pilot_startup_tls_policy
+  PROPERTIES LABELS "unit;security" TIMEOUT 60)
+# This lifecycle runs on the POSIX coordinator (including WSL), not native Windows.
+if(UNIX)
+  add_test(NAME test_redshift_ca_snapshot COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/test_redshift_ca_snapshot.py")
+  set_tests_properties(test_redshift_ca_snapshot PROPERTIES LABELS "unit;security" TIMEOUT 60)
+endif()
+# Compile the dependency regressions against the exact patched bundled headers.
+add_executable(test_bundled_fmt_security tools/ci/test_bundled_fmt_security.cpp)
+target_include_directories(test_bundled_fmt_security PRIVATE "${SPDLOG_INCLUDE_DIR}")
+target_compile_definitions(test_bundled_fmt_security PRIVATE FMT_HEADER_ONLY=1)
+target_link_libraries(test_bundled_fmt_security PRIVATE GTest::gtest_main)
+apply_compiler_settings(test_bundled_fmt_security)
+set_target_properties(test_bundled_fmt_security PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_bundled_fmt_security COMMAND test_bundled_fmt_security)
+set_tests_properties(test_bundled_fmt_security PROPERTIES LABELS "unit;security" TIMEOUT 30)
+add_test(NAME test_spdlog_fmt_patch COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_spdlog_fmt_patch.py"
+  --cmake "${CMAKE_COMMAND}" --spdlog-source "${spdlog_SOURCE_DIR}")
+set_tests_properties(test_spdlog_fmt_patch PROPERTIES LABELS "unit;security" TIMEOUT 120)
 add_executable(trace_reload_exit_policy_control tests/unit/test_odbc_trace_reload.cpp)
 target_include_directories(trace_reload_exit_policy_control PRIVATE ${ODBC_INCLUDE_DIR})
 target_compile_definitions(trace_reload_exit_policy_control PRIVATE ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL=1)

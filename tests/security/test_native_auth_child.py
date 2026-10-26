@@ -68,6 +68,19 @@ class SelectionAndCompletion(unittest.TestCase):
             with self.subTest(size=len(bad)), self.assertRaises((ValueError, ET.ParseError)):
                 completed_case(bad)
 
+    def test_encoding_aware_markup_and_resource_refusal_keep_public_codes(self):
+        source = report().decode()
+        for encoding in ('utf-8', 'utf-16-le', 'utf-16-be'):
+            self.assertEqual(completed_case(source.encode(encoding)), {'case': CASE, 'passed': 1})
+            for bad in ('<!DOCTYPE testsuites [<!ENTITY unused "x">]>' + source,
+                        '<!-- comment -->' + source, '<?other value?>' + source):
+                with self.subTest(encoding=encoding, prefix=bad[:20]):
+                    with self.assertRaisesRegex(ValueError, '^report_declaration$'):
+                        completed_case(bad.encode(encoding))
+            deep = '<r>' * 129 + '</r>' * 129
+            with self.assertRaisesRegex(ValueError, '^report_size$'):
+                completed_case(deep.encode(encoding))
+
 
 class Selector:
     def __init__(self): self.live = False

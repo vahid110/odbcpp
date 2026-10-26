@@ -10,6 +10,7 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -49,9 +50,41 @@ struct Spec {
   std::string extended_usage{"serverAuth"};
   long not_before_seconds{-3600};
   long not_after_seconds{86400};
+  // Zero keeps the normal P-256 fixture; weak RSA is used only in rejection
+  // controls, never by the production adapter.
+  int rsa_bits{0};
+  const EVP_MD* signature_digest{nullptr};
+  bool ed25519_key{false};
+  bool rsa_pss_signature{false};
+  const EVP_MD* pss_mgf1_digest{nullptr};
+  int pss_salt_length{-1};  // Digest-sized salt, not a byte/key strength.
 };
 
-inline Key generate_key() {
+inline Key generate_key(int rsa_bits = 0, bool ed25519 = false) {
+  if (ed25519) {
+    if (rsa_bits != 0) throw std::invalid_argument("conflicting fixture key types");
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&::EVP_PKEY_CTX_free)> context(
+        ::EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr), &::EVP_PKEY_CTX_free);
+    EVP_PKEY* result = nullptr;
+    if (!context || ::EVP_PKEY_keygen_init(context.get()) <= 0 ||
+        ::EVP_PKEY_keygen(context.get(), &result) <= 0) {
+      ::EVP_PKEY_free(result);
+      throw std::runtime_error("Ed25519 key generation failed");
+    }
+    return Key(result);
+  }
+  if (rsa_bits != 0) {
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&::EVP_PKEY_CTX_free)> context(
+        ::EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), &::EVP_PKEY_CTX_free);
+    EVP_PKEY* result = nullptr;
+    if (!context || ::EVP_PKEY_keygen_init(context.get()) <= 0 ||
+        ::EVP_PKEY_CTX_set_rsa_keygen_bits(context.get(), rsa_bits) <= 0 ||
+        ::EVP_PKEY_keygen(context.get(), &result) <= 0) {
+      ::EVP_PKEY_free(result);
+      throw std::runtime_error("RSA key generation failed");
+    }
+    return Key(result);
+  }
   Key key(::EVP_EC_gen("P-256"));
   if (!key) throw std::runtime_error("EC key generation failed");
   return key;
@@ -69,7 +102,7 @@ inline void add_extension(X509* cert, X509* issuer, int nid, const std::string& 
 
 inline Identity issue(const Spec& spec, const Identity* issuer) {
   static std::atomic<long> serial{1};
-  Identity result{generate_key(), Cert(::X509_new())};
+  Identity result{generate_key(spec.rsa_bits, spec.ed25519_key), Cert(::X509_new())};
   X509* cert = result.cert.get();
   ::X509_set_version(cert, 2);
   std::mt19937_64 random(std::random_device{}());
@@ -88,7 +121,8 @@ inline Identity issue(const Spec& spec, const Identity* issuer) {
   add_extension(cert, issuer_cert, NID_basic_constraints,
                 spec.ca ? "critical,CA:TRUE" : "critical,CA:FALSE");
   add_extension(cert, issuer_cert, NID_key_usage,
-                spec.ca ? "critical,keyCertSign,cRLSign" : "critical,digitalSignature");
+                spec.ca ? "critical,keyCertSign,cRLSign" : spec.rsa_bits != 0
+                    ? "critical,digitalSignature,keyEncipherment" : "critical,digitalSignature");
   add_extension(cert, issuer_cert, NID_subject_key_identifier, "hash");
   if (issuer) add_extension(cert, issuer_cert, NID_authority_key_identifier, "keyid:always");
   if (!spec.ca && !spec.extended_usage.empty()) {
@@ -99,7 +133,22 @@ inline Identity issue(const Spec& spec, const Identity* issuer) {
   for (const auto& ip : spec.ips) alternatives += (alternatives.empty() ? "" : ",") + ("IP:" + ip);
   if (!alternatives.empty()) add_extension(cert, issuer_cert, NID_subject_alt_name, alternatives);
   EVP_PKEY* signer = issuer ? issuer->key.get() : result.key.get();
-  if (::X509_sign(cert, signer, ::EVP_sha256()) <= 0) throw std::runtime_error("X509_sign failed");
+  if (spec.rsa_pss_signature) {
+    std::unique_ptr<EVP_MD_CTX, decltype(&::EVP_MD_CTX_free)> context(
+        ::EVP_MD_CTX_new(), &::EVP_MD_CTX_free);
+    EVP_PKEY_CTX* signing = nullptr;
+    const auto* digest = spec.signature_digest ? spec.signature_digest : ::EVP_sha256();
+    if (!context || ::EVP_DigestSignInit(context.get(), &signing, digest, nullptr, signer) != 1 ||
+        ::EVP_PKEY_CTX_set_rsa_padding(signing, RSA_PKCS1_PSS_PADDING) <= 0 ||
+        ::EVP_PKEY_CTX_set_rsa_mgf1_md(signing, spec.pss_mgf1_digest ? spec.pss_mgf1_digest : digest) <= 0 ||
+        ::EVP_PKEY_CTX_set_rsa_pss_saltlen(signing, spec.pss_salt_length) <= 0 ||
+        ::X509_sign_ctx(cert, context.get()) <= 0) {
+      throw std::runtime_error("RSA-PSS certificate signing failed");
+    }
+  } else if (::X509_sign(cert, signer, ::EVP_PKEY_base_id(signer) == EVP_PKEY_ED25519
+      ? nullptr : spec.signature_digest ? spec.signature_digest : ::EVP_sha256()) <= 0) {
+    throw std::runtime_error("X509_sign failed");
+  }
   return result;
 }
 
@@ -165,10 +214,27 @@ class TempDirectory {
 };
 
 // Server side of an in-memory TLS 1.2/1.3 exchange with a TlsClient.
+struct ServerOptions {
+  int protocol{0};
+  std::string ciphers;
+  bool weak_fixture{false};
+};
+
 class MemoryServer {
  public:
-  MemoryServer(const Identity& leaf, std::vector<const Identity*> chain) {
+  MemoryServer(const Identity& leaf, std::vector<const Identity*> chain,
+               const ServerOptions& options = {}) {
     context_ = ::SSL_CTX_new(::TLS_server_method());
+    std::unique_ptr<SSL_CTX, decltype(&::SSL_CTX_free)> cleanup(context_, &::SSL_CTX_free);
+#if !defined(OPENSSL_IS_AWSLC)
+    if (context_ && options.weak_fixture) ::SSL_CTX_set_security_level(context_, 0);
+#endif
+    if (!context_ || (options.protocol &&
+        (::SSL_CTX_set_min_proto_version(context_, options.protocol) != 1 ||
+         ::SSL_CTX_set_max_proto_version(context_, options.protocol) != 1)) ||
+        (!options.ciphers.empty() && ::SSL_CTX_set_cipher_list(context_, options.ciphers.c_str()) != 1)) {
+      throw std::runtime_error("server protocol/cipher fixture setup failed");
+    }
     if (!context_ || ::SSL_CTX_use_certificate(context_, leaf.cert.get()) != 1 ||
         ::SSL_CTX_use_PrivateKey(context_, leaf.key.get()) != 1) {
       throw std::runtime_error("server context setup failed");
@@ -178,6 +244,7 @@ class MemoryServer {
         throw std::runtime_error("server chain setup failed");
       }
     }
+    (void)cleanup.release();
   }
   ~MemoryServer() {
     if (session_) ::SSL_free(session_);
@@ -185,6 +252,50 @@ class MemoryServer {
   }
   MemoryServer(const MemoryServer&) = delete;
   MemoryServer& operator=(const MemoryServer&) = delete;
+
+  std::string selected_cipher() const {
+    const auto* cipher = session_ ? ::SSL_get_current_cipher(session_) : nullptr;
+    return cipher ? ::SSL_CIPHER_get_name(cipher) : "";
+  }
+
+  // Raw provider-only positive control for intentionally weak peers. Never
+  // changes the TlsClient policy being tested. Both endpoints must complete.
+  bool unverified_control(int protocol, const char* cipher) {
+    std::unique_ptr<SSL_CTX, decltype(&::SSL_CTX_free)> context(
+        ::SSL_CTX_new(::TLS_client_method()), &::SSL_CTX_free);
+    if (!context) return false;
+#if !defined(OPENSSL_IS_AWSLC)
+    ::SSL_CTX_set_security_level(context.get(), 0);
+#endif
+    ::SSL_CTX_set_verify(context.get(), SSL_VERIFY_NONE, nullptr);
+    if (::SSL_CTX_set_min_proto_version(context.get(), protocol) != 1 ||
+        ::SSL_CTX_set_max_proto_version(context.get(), protocol) != 1 ||
+        ::SSL_CTX_set_cipher_list(context.get(), cipher) != 1) return false;
+    std::unique_ptr<SSL, decltype(&::SSL_free)> client(::SSL_new(context.get()), &::SSL_free);
+    if (session_) ::SSL_free(session_);
+    session_ = ::SSL_new(context_);
+    if (!client || !session_) return false;
+    ::SSL_set_bio(client.get(), ::BIO_new(::BIO_s_mem()), ::BIO_new(::BIO_s_mem()));
+    ::SSL_set_bio(session_, ::BIO_new(::BIO_s_mem()), ::BIO_new(::BIO_s_mem()));
+    ::SSL_set_connect_state(client.get());
+    ::SSL_set_accept_state(session_);
+    std::array<unsigned char, 16384> buffer{};
+    const auto transfer = [&](SSL* from, SSL* to) {
+      int bytes = 0;
+      while ((bytes = ::BIO_read(::SSL_get_wbio(from), buffer.data(), static_cast<int>(buffer.size()))) > 0) {
+        if (::BIO_write(::SSL_get_rbio(to), buffer.data(), bytes) != bytes) return false;
+      }
+      return true;
+    };
+    for (int round = 0; round < 64; ++round) {
+      (void)::SSL_do_handshake(client.get());
+      if (!transfer(client.get(), session_)) return false;
+      (void)::SSL_do_handshake(session_);
+      if (!transfer(session_, client.get())) return false;
+      if (::SSL_is_init_finished(client.get()) && ::SSL_is_init_finished(session_)) return true;
+    }
+    return false;
+  }
 
   // Runs one complete client handshake; returns the client's final step.
   rs::core::security::TlsStep connect(rs::core::security::TlsClient& client,

@@ -1,0 +1,10 @@
+name: ODBCPP security analysis
+
+# Preserve the prior remote-and-local source model, including environment,
+# command-line, filesystem, standard-input and database sources.
+threat-models: local
+
+# Keep the default security queries and add the supported extended suite.
+# No source paths or security rules are excluded here.
+queries:
+  - uses: security-extended

@@ -2,6 +2,7 @@
 set -euo pipefail
 build_dir="${1:?build directory required}"
 results="${2:?test result path required}"
+xml_tools_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${ODBCPP_POSTGRES_TLS_DIR:?TLS fixture directory required}"
 base="DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=${PGPORT:-5432};DATABASE=postgres;UID=postgres;PWD=postgres;SSL=1;"
 wrong_host="${ODBCPP_CRYPTO_PROFILE_WRONG_HOST:-wrong-host.invalid}"
@@ -9,10 +10,15 @@ export ODBCPP_CRYPTO_PROFILE_TEST_CONNECTION="${base}SSLCAFILE=$ODBCPP_POSTGRES_
 export ODBCPP_CRYPTO_PROFILE_WRONG_CA_CONNECTION="${base}SSLCAFILE=$ODBCPP_POSTGRES_TLS_DIR/wrong.crt;"
 export ODBCPP_CRYPTO_PROFILE_WRONG_HOST_CONNECTION="${base/SERVER=127.0.0.1/SERVER=$wrong_host}SSLCAFILE=$ODBCPP_POSTGRES_TLS_DIR/server.crt;"
 "$build_dir/tests/it_crypto_profile_live" --gtest_output="xml:$results"
-python3 - "$results" <<'PY'
+python3 - "$results" "$xml_tools_dir" <<'PY'
 import sys
-import xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    'odbcpp_xml_evidence', Path(sys.argv[2]) / 'odbcpp_xml_evidence.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = module.parse_xml_file(sys.argv[1])
 expected = {'CryptoProfileLiveTest.' + name for name in (
     'CompletesVerifiedTlsScramQuery', 'RejectsUntrustedCertificate', 'RejectsHostnameMismatch')}
 actual = {f'{case.attrib["classname"]}.{case.attrib["name"]}' for case in root.iter('testcase')}
@@ -24,10 +30,15 @@ PY
 : "${PGPORT:?Explicit disposable fixture port required for ordinary Material TLS}"
 material_results="${results%.xml}-auth-material.xml"
 "$build_dir/tests/it_auth_pg_material_tls" --gtest_output="xml:$material_results"
-python3 - "$material_results" <<'PYRESULT'
+python3 - "$material_results" "$xml_tools_dir" <<'PYRESULT'
 import sys
-import xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    'odbcpp_xml_evidence', Path(sys.argv[2]) / 'odbcpp_xml_evidence.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = module.parse_xml_file(sys.argv[1])
 expected = {'OrdinaryPgMaterialTls.' + name for name in (
     'VerifiedScramMaterialConnectQueryOwnsAfterDisconnect',
     'NativeRefusalRetiresAndFreshMaterialRecovers',

@@ -35,8 +35,9 @@ runtime SHA-256 hashes. Both manifests are installed and hashed in the inventory
 This is a repeatable build recipe with recorded inputs, not a claim of byte-for-byte
 MSI reproducibility across compiler/SDK versions. The source revision, tool version
 and payload hashes accompany every artifact. Packages are currently unsigned.
-The repository has no declared project license; artifacts are for internal beta
-validation until release licensing/signing is resolved under G11.
+Project code is [MIT licensed](../../LICENSE); third-party components retain
+their own licenses. Installer signing and release qualification remain separate
+requirements under G11. A locally built MSI is not a certified release.
 
 Install the MSI with Windows Installer (elevation required). Configure a User or
 System DSN through the 64-bit ODBC Data Source Administrator. Connection testing

@@ -1,10 +1,22 @@
 """Bind bounded OpenSSL unit/live evidence; never qualify a matrix row."""
 import argparse
+import importlib.util
 import hashlib
 import json
 from pathlib import Path
 import re
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+    parse_xml_bytes = _xml_module.parse_xml_bytes
+    XmlLimits = _xml_module.XmlLimits
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 REQUIRED_TESTS = {
     'test_crypto_runtime_identity', 'test_crypto_identity_evidence_rules',
@@ -66,7 +78,7 @@ def validate_reload_report(case, report, platform, linkage):
         data = source.read(2 * 1024 * 1024 + 1)
     if len(data) > 2 * 1024 * 1024:
         raise RuntimeError('Oversized native reload report')
-    root = ET.fromstring(data)
+    root = parse_xml_bytes(data, limits=XmlLimits(max_bytes=2 * 1024 * 1024))
     suites = root.findall('testsuite')
     cases = list(root.iter('testcase'))
     names = [f'{item.get("classname")}.{item.get("name")}' for item in cases]
@@ -128,7 +140,7 @@ def validate_reload_report(case, report, platform, linkage):
 
 
 def validate_live_report(report):
-    root = ET.parse(report).getroot()
+    root = parse_xml_file(report)
     cases = list(root.iter('testcase'))
     names = [f'{case.get("classname")}.{case.get("name")}' for case in cases]
     if (root.tag not in ('testsuites', 'testsuite') or len(names) != len(LIVE_TESTS)
@@ -175,7 +187,7 @@ def collect(build, driver, probe, report, platform, live_report=None, reload_rep
     if (artifact['platform'] != platform or artifact['dependencyFormVerified'] is not True
             or artifact['observedDependencyForm'] != ('static' if linkage == 'BUNDLED_STATIC' else 'shared')):
         raise RuntimeError('Artifact platform/linkage evidence mismatch')
-    root = ET.parse(report).getroot()
+    root = parse_xml_file(report)
     cases = list(root.iter('testcase'))
     wrapper_skips = [case for case in cases if case.find('skipped') is not None]
     if (root.tag != 'testsuite' or any(report_count(root, field, '0') != 0
