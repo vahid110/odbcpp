@@ -176,7 +176,7 @@ jobs:
       PILOT_MODE: cold
     steps:
       - name: Check out exact selected workflow HEAD
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2; official commit pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; official commit pinned
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -236,7 +236,7 @@ jobs:
       PILOT_MODE: warm
     steps:
       - name: Check out exact selected workflow HEAD
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2; official commit pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; official commit pinned
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
