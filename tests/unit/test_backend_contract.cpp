@@ -9400,8 +9400,15 @@ TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKe
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE)); seen->date_result=snapshot();
   ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"refill snapshot",SQL_NTS)); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  // A fresh refill is before the start of its result set: 24000 until any
+  // row is fetched. The stale bookmark then fails HY111, which leaves the
+  // row unfetchable: HY109 with the output untouched. A successful fetch
+  // repositions the cursor and restores the reported row number.
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
-  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("HY109"));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_NO_FATAL_FAILURE(save_selected());
   ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
