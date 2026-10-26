@@ -3,7 +3,8 @@ name: ci
 on:
   # All PRs, including docs and drafts, build on Ubuntu and Windows here.
   # The existing primary workflow supplies the macOS build and regression.
-  # Complete cross-platform tests remain a coordinator-dispatched checkpoint.
+  # A bounded offline DM subset runs on PRs; complete cross-platform tests
+  # remain a coordinator-dispatched checkpoint.
   pull_request:
   workflow_dispatch:
     inputs:
@@ -104,7 +105,7 @@ concurrency:
 
 jobs:
   pr-ubuntu-build:
-    name: PR Ubuntu build (no tests)
+    name: PR Ubuntu build and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -116,7 +117,9 @@ jobs:
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
       - name: Check PR scheduling and build safety offline
-        run: python3 -B tools/ci/test_pr_three_platform_builds.py -v
+        run: |
+          python3 -B tools/ci/test_pr_three_platform_builds.py -v
+          python3 -B tools/development/test_check_dm_offline_evidence.py -v
       - name: Install existing build dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
@@ -141,9 +144,29 @@ jobs:
       # Building test executables does not execute their test bodies.
       - name: Build default ALL j2
         run: cmake --build build-pr-ubuntu --parallel 2
+      - name: Run offline Driver Manager subset
+        run: |
+          set +e
+          ctest --test-dir build-pr-ubuntu -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          result=$?
+          printf '%s\n' "$result" > build-pr-ubuntu/dm-offline/ctest-exit.txt
+          exit "$result"
+      - name: Verify actual offline execution
+        if: always()
+        run: python3 -B tools/development/check_dm_offline_evidence.py --build build-pr-ubuntu --ctest-exit-file build-pr-ubuntu/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-ubuntu
+          path: |
+            build-pr-ubuntu/dm-offline/
+            build-pr-ubuntu/Testing/Temporary/
+            build-pr-ubuntu/CMakeCache.txt
+          if-no-files-found: error
 
   pr-windows-build:
-    name: PR Windows build (no tests)
+    name: PR Windows build and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 30
@@ -174,6 +197,25 @@ jobs:
           -DODBCPP_CRYPTO_ROOT="C:/Program Files/OpenSSL"
       - name: Build default ALL Release j2
         run: cmake --build build-pr-windows --config Release --parallel 2
+      - name: Run offline Driver Manager subset
+        run: |
+          ctest --test-dir build-pr-windows -C Release -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          $result = $LASTEXITCODE
+          Set-Content -LiteralPath build-pr-windows/dm-offline/ctest-exit.txt -Value $result -Encoding utf8
+          exit $result
+      - name: Verify actual offline execution
+        if: always()
+        run: python -B tools/development/check_dm_offline_evidence.py --build build-pr-windows --config Release --ctest-exit-file build-pr-windows/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-windows
+          path: |
+            build-pr-windows/dm-offline/
+            build-pr-windows/Testing/Temporary/
+            build-pr-windows/CMakeCache.txt
+          if-no-files-found: error
 
   sanitizer-only:
     # Arbitrary product CMake/tests must receive no cache token authority.

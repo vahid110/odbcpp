@@ -311,7 +311,7 @@ endif()
 if(BUILD_TESTING)
   include(CTest)
   include(cmake/Tests.cmake)
-  foreach(_info_test IN ITEMS test_attribute_apis it_get_info it_driver_manager)
+  foreach(_info_test IN ITEMS test_attribute_apis it_get_info dm_it_get_info it_driver_manager)
     if(TARGET ${_info_test})
       target_compile_definitions(${_info_test} PRIVATE
         ODBCPP_EXPECT_DRIVER_FILENAME="$<TARGET_FILE_NAME:${PROJECT_NAME}_driver>")

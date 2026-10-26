@@ -23,6 +23,10 @@ jobs:
     runs-on: ubuntu-24.04
     # First actual run built successfully, then exhausted 30 minutes mid-analysis.
     timeout-minutes: 60
+    env:
+      # Coverage and the pinned partial-unit exception require one fresh database.
+      # Dependency caching does not control automatic overlay databases or TRAPs.
+      CODEQL_OVERLAY_DATABASE_MODE: none
     defaults:
       run:
         shell: bash
@@ -70,6 +74,15 @@ jobs:
         if: matrix.profile == 'cpp-source'
         run: echo 'CODEQL_EXTRACTOR_CPP_OPTION_FRONTEND_OPTIONS=--c++20' >> "$GITHUB_ENV"
 
+      - name: Compile the supplemental manager header context without linking or execution
+        if: matrix.profile == 'cpp-source'
+        run: |
+          mkdir -p codeql-evidence
+          g++ --version > codeql-evidence/dm-header-compiler.log
+          g++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only \
+            .github/codeql/dm_header_context.cpp \
+            2>&1 | tee codeql-evidence/dm-header-context.log
+
       - name: Configure the actual REDSHIFT C++20 profile
         if: matrix.profile == 'cpp-redshift'
         run: |
@@ -101,6 +114,7 @@ jobs:
           threads: 2
           ram: 4096
           dependency-caching: false
+          trap-caching: false
 
       - name: Compile product, SDK header units and existing test sources without running tests
         if: matrix.profile == 'cpp-redshift'

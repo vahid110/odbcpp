@@ -36,6 +36,29 @@ ordinary test and generated SDK header units remain traced and checked against
 `compile_commands.json`. The configure log is retained. This ordering does not
 turn an extractor error in an actual build unit into an accepted exception.
 
+The job explicitly sets `CODEQL_OVERLAY_DATABASE_MODE: none`, disables TRAP
+caching and keeps dependency caching disabled. These are separate controls in
+the pinned action: dependency caching alone did not prevent automatic database
+overlays and TRAP reuse in PR98 run `40313014470`. Its manual scan combined
+cumulative compilation metrics with a current extraction summary containing
+252 cache hits and no new partial unit, so the strict limitation check correctly
+rejected it. Retain that original failure; do not widen the exception to accept
+mixed extraction evidence. The
+[pinned overlay configuration](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/src/config-utils.ts)
+recognizes `none` as an explicit disable, and the pinned init action exposes
+`trap-caching` separately from `dependency-caching`.
+
+The supplemental profile also syntax-checks `dm_header_context.cpp` with actual
+unixODBC headers. Its two TU-local defines select manager declarations and the
+Linux SQLWCHAR2 ABI, then include the unchanged `tests/test_dm_odbc.h`. Without
+this context, inferred shared-test compilations take the direct-driver branch
+and never reach that guarded header. The unit adds no copied declarations,
+global defines, product target or executable behavior. The existing all-source
+inventory requires extraction of both this unit and the original header; neither
+is an omission exception. A successful compiler smoke is not extraction proof:
+the fresh hosted raw SARIF and extractor logs still require review. This follows
+[GitHub's no-build context guidance](https://docs.github.com/en/code-security/reference/code-scanning/codeql/build-options-for-compiled-languages#accuracy-of-no-build-analysis-for-cc).
+
 ### Pinned compile-time assertion limitation
 
 CodeQL 2.27.3 reports a failed private-member `requires` assertion at line 34 of
@@ -141,6 +164,8 @@ because its checks are green.
 | Security suite and exact inferred omissions | `.github/codeql/config.yml`, `coverage-exceptions.json` | Scanner policy, not SDK or product behavior | Pinned compatible suite resolution; explicit per-path boundary review |
 | Evidence verifier | `.github/codeql/coverage.py` | CodeQL/CMake/Git evidence only, Python standard library; no product/SDK API | Offline rejection tests and raw audit-SARIF smoke |
 | Control regression tests | `.github/codeql/test_coverage.py` | Synthetic scanner records, no feature assertions or live scheduling | `python3 -B -m unittest discover -s .github/codeql -p 'test_*.py' -v` |
+| Supplemental manager context | `.github/codeql/dm_header_context.cpp` | Scanner-owned TU; original manager header and installed unixODBC headers only; no runtime or SDK ownership | Actual syntax-only compilation, unchanged header guard/ABI rejection checks, full source-inventory extraction |
+| Workflow boundary controls | `.github/codeql/test_workflow.py` | Standard-library offline checks for fresh extraction, compiler context and trace ordering | Explicit cache/overlay rejection cases; no cloud or product execution |
 
 These helpers belong beside the scanner configuration because they interpret CI
 artifacts; they are not reusable provider-neutral runtime foundations. SDK,

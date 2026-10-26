@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 #include "tests/test_connection_config.h"
-#include "core/database/database_factory.h"
-#include "odbc/odbc_types.h"
-#include "odbc/unicode.h"
+#include "tests/test_dm_expectations.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 #include "tests/test_time_helpers.h"
 #include <algorithm>
 #include <array>
@@ -25,8 +25,7 @@ namespace {
 // Native fixture SQL follows the explicitly compiled backend; parameter bytes
 // and all adapter diagnostics remain the subject of the same assertions.
 bool fixture_redshift_product() {
-    return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-        rs::core::database::DatabaseType::Redshift;
+    return odbcpp::test::compiled_redshift_product();
 }
 
 // One original per-case window, including reconnects and sibling handles.
@@ -84,7 +83,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -190,6 +189,14 @@ protected:
           !fixture_connection_budget(fixture_end_, connection, false)) return SQL_ERROR;
       return ::SQLSetConnectAttr(connection, attribute, value, length);
     }
+    // Manager builds check NULL-buffer diagnostics against the expectation
+    // table and still return the record; direct builds call the driver.
+    SQLRETURN SQLGetDiagRec(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT record,
+        SQLCHAR* state, SQLINTEGER* native, SQLCHAR* message, SQLSMALLINT length,
+        SQLSMALLINT* text_length) {
+      return odbcpp::test::diag_rec(type, handle, record, state, native, message,
+          length, text_length);
+    }
 
     void SetUp() override {
         SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
@@ -197,7 +204,7 @@ protected:
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
         // Connect to real database
-        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0);
+        SQLRETURN ret = SQLConnect(hdbc, odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0);
         if (ret != SQL_SUCCESS) {
             GTEST_SKIP() << "Database connection failed - skipping integration tests";
         }
@@ -3233,7 +3240,7 @@ TEST_F(PreparedStatementIntegrationTest,
     const SQLLEN text_bytes = 3;
     const SQLLEN binary_bytes = 2;
     const SQLLEN null_value = SQL_NULL_DATA;
-    auto wide = rs::odbc::utf8_to_wide("Hi");
+    auto wide = odbcpp::test::text::utf8_to_wide("Hi");
     ASSERT_TRUE(wide.has_value());
     const SQLLEN wide_bytes = static_cast<SQLLEN>(
         wide->size() * sizeof(SQLWCHAR));
@@ -3368,7 +3375,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?::text", SQL_NTS));
     const std::string expected = "\xf0\x9f\x9a\x80 prepared";
-    auto wide = rs::odbc::utf8_to_wide(expected);
+    auto wide = odbcpp::test::text::utf8_to_wide(expected);
     ASSERT_TRUE(wide.has_value());
     wide->push_back(0);
     alignas(SQLWCHAR)
@@ -3554,7 +3561,11 @@ TEST_F(PreparedStatementIntegrationTest,
     SQLSMALLINT result_columns = 66;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &result_columns));
     expect_state("42000");
-    EXPECT_EQ(66, result_columns);
+    // iODBC 3.52.16 passes the driver its own column count and copies it to
+    // the application even when the driver fails.
+    EXPECT_EQ(odbcpp::test::dm::value(
+                  odbcpp::test::dm::Deviation::ColumnCountWrittenOnError, 66, 0),
+              result_columns);
     EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
         hstmt, 1, &data_type, &parameter_size, &decimal_digits,
         &nullable));
@@ -5147,6 +5158,15 @@ TEST_F(PreparedStatementIntegrationTest,
         hstmt, (SQLCHAR*)"SELECT 12", SQL_NTS), "24000");
     expect_state(SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 13", SQL_NTS), "24000");
+    // unixODBC 2.3.14 treats the statement as merely allocated after the
+    // failed re-prepare, although the driver's cursor is still open: it
+    // refuses SQLExecute and SQLCloseCursor itself, so the case ends here.
+    if (odbcpp::test::dm::stops_case(
+            odbcpp::test::dm::Deviation::FailedCallForgetsOpenCursor)) {
+        expect_state(SQLExecute(hstmt), "HY010");
+        EXPECT_EQ(SQL_ERROR, SQLCloseCursor(hstmt));
+        return;
+    }
     expect_state(SQLExecute(hstmt), "24000");
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
