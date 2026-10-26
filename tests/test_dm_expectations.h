@@ -74,6 +74,10 @@ enum class Deviation {
   GetFunctionsRefusesOdbc38Id,
   PutDataNullEmptyPieceRejected,
   BookmarkColumnDescribeRejected,
+  // unixODBC applies the SQLGetStmtAttr 24000 rule to every off-row
+  // SQL_ATTR_ROW_NUMBER query before calling the driver; the driver's HY109
+  // (row could not be fetched) surfaces as 24000 through that manager.
+  RowNumberUnfetchableIntercepted,
   CatalogRefetchAfterNoDataRefused,
   FetchOrientationState,
   ConnectReappliesPreloadLoginTimeout,
@@ -288,6 +292,9 @@ inline constexpr Entry kEntries[] = {
     {Deviation::GetFunctionsRefusesOdbc38Id, kUnixodbc2314, "HY095", "live bucket R8"},
     {Deviation::PutDataNullEmptyPieceRejected, kIodbc35216, nullptr, "live bucket R9"},
     {Deviation::BookmarkColumnDescribeRejected, kIodbc35216, nullptr, "live bucket R10"},
+    // Retained clause of retired bucket R11: the manager answers 24000 where
+    // the driver reports HY109 for an off-row row-number query.
+    {Deviation::RowNumberUnfetchableIntercepted, kUnixodbc2314, nullptr, "live bucket R11 (unfetchable-row clause)"},
     {Deviation::CatalogRefetchAfterNoDataRefused, kIodbc35216, nullptr, "live bucket R12"},
     // value: the SQLSTATE the manager raises for an unknown fetch orientation.
     {Deviation::FetchOrientationState, kIodbc35216, "HY092", "live bucket R13"},

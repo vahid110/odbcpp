@@ -5999,11 +5999,18 @@ protected:
   // Off-row row-number queries are refused uniformly by the driver; the
   // SQLSTATE depends on why the cursor is off-row: 24000 before the start or
   // after the end of the result set, HY109 when the row could not be fetched.
-  // The output buffer stays untouched.
+  // unixODBC intercepts the HY109 case itself and answers 24000 before the
+  // driver is called (retained clause of retired bucket R11). The output
+  // buffer stays untouched either way.
   void row_number_refused(SQLHSTMT statement,const char* sqlstate) {
     SQLULEN row=99;
+    const char* expected=sqlstate;
+    if(std::strcmp(sqlstate,"HY109")==0&&
+        odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::RowNumberUnfetchableIntercepted)) {
+      expected="24000";
+    }
     ASSERT_EQ(SQL_ERROR,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr));
-    EXPECT_EQ(sqlstate,get_error(SQL_HANDLE_STMT,statement)); EXPECT_EQ(99u,row);
+    EXPECT_EQ(expected,get_error(SQL_HANDLE_STMT,statement)); EXPECT_EQ(99u,row);
   }
   void saved_fetch(SQLLEN delta=0) {
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));
