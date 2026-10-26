@@ -54,6 +54,31 @@ This checked-in runner builds/tests its three GUI suites without registering a
 system driver or requiring a database. It does not replace privileged full-suite
 coverage. It owns bounded child cleanup and records native GUI evidence.
 
+## Windows repair loop
+
+Use the existing build directory for the current product, driver-manager, ABI and
+crypto profile. During a bounded repair, build the owning targets incrementally
+and run their relevant CTest cases. Once the candidate is stable, run its required
+platform/profile gates. An initiated full collection still completes before
+repairs; focused passes do not replace full acceptance. Preserve the old source,
+images and failure evidence before reusing a qualified build for a new candidate.
+
+Follow each active command or hosted check set through one finite completion
+path. Do not add a second watcher or repeatedly query the same run manually while
+that path owns completion. Use available time for independent diagnosis, then
+collect terminal exits, logs and artifacts together, including raw scanner
+findings. Review the actual input and privilege boundaries before repairing a
+scanner finding; retain source-backed false-positive dispositions explicitly.
+
+When configure time is unexpectedly high, measure an unchanged-source warm
+configure before changing parallelism or caching. Compare the same build/profile
+and toolchain before and after the proposed change. Keep trace-instrumented
+measurements separate from uninstrumented elapsed time, and do not sum overlapping
+runs. Preserve include-ownership, staging and compile-probe checks. The internal
+include checker reuses validated logical/physical pairs only within one invocation;
+subsequent invocations must revalidate changed maps, headers and symlinks. This
+avoids repeated resolution without creating a cross-call validation cache.
+
 ## Complete live collection
 
 The existing [live registrar](../../tests/development/live_suite/README.md) is the
