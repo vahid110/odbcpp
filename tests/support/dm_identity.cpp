@@ -100,46 +100,34 @@ std::string observed_manager_library_path() {
     if (_stricmp(reinterpret_cast<const char*>(base + item.Name), "odbc32.dll") != 0) {
       continue;
     }
-    if (!item.FirstThunk || item.FirstThunk >= size ||
-        !item.OriginalFirstThunk || item.OriginalFirstThunk >= size) {
+    if (!item.FirstThunk || item.FirstThunk >= size) {
       return {};
     }
     const auto* thunks = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + item.FirstThunk);
-    const auto* originals = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + item.OriginalFirstThunk);
-    const auto count = std::min((size - item.FirstThunk) / sizeof(*thunks),
-                               (size - item.OriginalFirstThunk) / sizeof(*originals));
+    const auto count = (size - item.FirstThunk) / sizeof(*thunks);
     bool terminated = false;
     for (std::size_t index = 0; index < count; ++index) {
       if (!thunks[index].u1.Function) {
-        terminated = originals[index].u1.AddressOfData == 0;
+        terminated = true;
         break;
-      }
-      const auto address = originals[index].u1.AddressOfData;
-      if (IMAGE_SNAP_BY_ORDINAL(address)) {
-        continue;
-      }
-      constexpr auto prefix = offsetof(IMAGE_IMPORT_BY_NAME, Name);
-      if (!address || address >= size || prefix >= size - address) {
-        return {};
-      }
-      const auto* name = reinterpret_cast<const char*>(base + address + prefix);
-      if (!std::memchr(name, 0, size - address - prefix)) {
-        return {};
-      }
-      const auto expected = std::find_if(names.begin(), names.end(),
-          [name](const char* value) { return std::strcmp(name, value) == 0; });
-      if (expected == names.end()) {
-        continue;
-      }
-      const auto name_index = static_cast<std::size_t>(expected - names.begin());
-      if (found[name_index]) {
-        return {};
       }
       HMODULE actual{};
       if (!GetModuleHandleExW(
               GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-              reinterpret_cast<LPCWSTR>(thunks[index].u1.Function), &actual) ||
-          (provider && provider != actual)) {
+              reinterpret_cast<LPCWSTR>(thunks[index].u1.Function), &actual)) {
+        return {};
+      }
+      // Windows SDK import libraries commonly bind ODBC APIs by ordinal.
+      // Identify the actual bound address through its provider's named export,
+      // without assuming a particular release's ordinal-to-name mapping.
+      const auto bound = reinterpret_cast<FARPROC>(thunks[index].u1.Function);
+      const auto expected = std::find_if(names.begin(), names.end(),
+          [actual, bound](const char* value) { return GetProcAddress(actual, value) == bound; });
+      if (expected == names.end()) {
+        continue;
+      }
+      const auto name_index = static_cast<std::size_t>(expected - names.begin());
+      if (found[name_index] || (provider && provider != actual)) {
         return {};
       }
       provider = actual;
