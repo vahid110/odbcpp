@@ -1,0 +1,38 @@
+# Every registered CTest entry must name an executable the ordinary build
+# produced. Otherwise a complete collection only learns at that entry that CTest
+# cannot find the image and reports it "Not Run" instead of executing it.
+cmake_minimum_required(VERSION 3.20)
+foreach(_required CTEST_COMMAND BUILD_DIR)
+  if(NOT DEFINED ${_required})
+    message(FATAL_ERROR "${_required} is required")
+  endif()
+endforeach()
+set(_config_args)
+if(CONFIG)
+  set(_config_args -C "${CONFIG}")
+endif()
+execute_process(
+  COMMAND "${CTEST_COMMAND}" --test-dir "${BUILD_DIR}" --show-only=json-v1 ${_config_args}
+  RESULT_VARIABLE _status OUTPUT_VARIABLE _json ERROR_VARIABLE _error)
+if(NOT _status EQUAL 0)
+  message(FATAL_ERROR "ctest --show-only failed (${_status}): ${_error}")
+endif()
+string(JSON _count LENGTH "${_json}" tests)
+if(_count EQUAL 0)
+  message(FATAL_ERROR "No registered tests found in ${BUILD_DIR}")
+endif()
+set(_missing)
+math(EXPR _last "${_count} - 1")
+foreach(_index RANGE ${_last})
+  string(JSON _name GET "${_json}" tests ${_index} name)
+  # CTest omits the command when it cannot resolve the registered executable.
+  string(JSON _command ERROR_VARIABLE _no_command GET "${_json}" tests ${_index} command 0)
+  if(_no_command OR NOT EXISTS "${_command}")
+    list(APPEND _missing "${_name}")
+  endif()
+endforeach()
+if(_missing)
+  list(JOIN _missing ", " _missing_text)
+  message(FATAL_ERROR "Registered tests without a built executable: ${_missing_text}")
+endif()
+message(STATUS "All ${_count} registered tests name a built executable")

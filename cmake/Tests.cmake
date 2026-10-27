@@ -61,6 +61,14 @@ option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification pee
 # The dm_it_* targets always build. Connected suites remain opt-in because they
 # need a configured database; the bounded dm-offline subset always registers.
 option(ODBCPP_DM_INTEGRATION_TESTS "Register the integration suites built against the Driver Manager" OFF)
+# Offline graph check: an opt-in registration must not name an image that the
+# ordinary build skips, or a full collection reports it "Not Run".
+add_test(NAME test_registered_test_images COMMAND ${CMAKE_COMMAND}
+  -DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+  -DBUILD_DIR=${CMAKE_BINARY_DIR}
+  -DCONFIG=$<CONFIG>
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckRegisteredTestImages.cmake)
+set_tests_properties(test_registered_test_images PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
 target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
 apply_compiler_settings(crypto_identity_probe)
@@ -457,6 +465,8 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
   set_target_properties(it_redshift_routine_schema_patterns PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   if(ODBCPP_REDSHIFT_ROUTINE_SCHEMA_LIVE_TESTS)
+    # A registered test must be built by the ordinary graph, not only on request.
+    set_target_properties(it_redshift_routine_schema_patterns PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME it_redshift_routine_schema_patterns COMMAND it_redshift_routine_schema_patterns)
     set_tests_properties(it_redshift_routine_schema_patterns PROPERTIES
       LABELS "integration;redshift;routine" TIMEOUT 120)
@@ -472,6 +482,7 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
   apply_compiler_settings(it_redshift_columns_omitted_table)
   set_target_properties(it_redshift_columns_omitted_table PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   if(ODBCPP_REDSHIFT_COLUMNS_OMITTED_TABLE_LIVE_TESTS)
+    set_target_properties(it_redshift_columns_omitted_table PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME it_redshift_columns_omitted_table COMMAND it_redshift_columns_omitted_table)
     set_tests_properties(it_redshift_columns_omitted_table PROPERTIES LABELS "integration;redshift;columns" TIMEOUT 120)
   endif()
@@ -929,6 +940,7 @@ if(WIN32)
   apply_compiler_settings(it_setup_registration)
   set_target_properties(it_setup_registration PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   if(ODBCPP_INSTALLED_SETUP_TESTS)
+    set_target_properties(it_setup_registration PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME it_setup_registration COMMAND it_setup_registration)
     set_tests_properties(it_setup_registration PROPERTIES LABELS "integration;windows;package" TIMEOUT 30)
   endif()
