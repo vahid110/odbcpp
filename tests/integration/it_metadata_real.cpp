@@ -2508,10 +2508,11 @@ TEST_F(MetadataIntegrationTest, BackendColumnCatalogsPreserveDomainDimensionsAnd
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
-    // stores the Latin-1 reading of the name; the wide lookups below use the
-    // real name and cannot match, so the case asserts the stored name and ends.
+    // stores one code point per byte of the name (ansi_widened); the wide
+    // lookups below use the real name and cannot match, so the case asserts
+    // the stored name and ends.
     if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
-        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::latin1_widened("id'é")),
+        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::ansi_widened("id'é")),
                   text_cell(hstmt, 4));
         return;
     }
@@ -2574,10 +2575,11 @@ TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAnd
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
-    // stores the Latin-1 reading of the name; the wide lookups below use the
-    // real name and cannot match, so the case asserts the stored name and ends.
+    // stores one code point per byte of the name (ansi_widened); the wide
+    // lookups below use the real name and cannot match, so the case asserts
+    // the stored name and ends.
     if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
-        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::latin1_widened("odbcpp'routine_%é")),
+        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::ansi_widened("odbcpp'routine_%é")),
                   text_cell(hstmt, 3));
         return;
     }
@@ -2618,10 +2620,11 @@ TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, types, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
-    // stores the Latin-1 reading of the name; the wide lookups below use the
-    // real name and cannot match, so the case asserts the stored name and ends.
+    // stores one code point per byte of the name (ansi_widened); the wide
+    // lookups below use the real name and cannot match, so the case asserts
+    // the stored name and ends.
     if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
-        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::latin1_widened("odbcpp'parent_%é")),
+        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::ansi_widened("odbcpp'parent_%é")),
                   text_cell(hstmt, 3));
         return;
     }

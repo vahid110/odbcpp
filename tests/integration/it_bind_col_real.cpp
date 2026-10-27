@@ -2657,7 +2657,7 @@ TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
         SQLLEN stored_length = -1;
         ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
             stored, sizeof(stored), &stored_length));
-        const auto expected_stored = odbcpp::test::dm::latin1_widened("AéZ");
+        const auto expected_stored = odbcpp::test::dm::ansi_widened("AéZ");
         ASSERT_EQ(static_cast<SQLLEN>(expected_stored.size()), stored_length);
         ASSERT_LE(stored_length, static_cast<SQLLEN>(sizeof(stored)));
         EXPECT_EQ(expected_stored,
@@ -3180,11 +3180,11 @@ TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
 
 TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
     // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
-    // stores the Latin-1 reading of the UTF-8 literal.
+    // stores one code point per byte of the UTF-8 literal (ansi_widened).
     const std::string expected = odbcpp::test::dm::value(
         odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte,
         std::string("A\xf0\x9f\x99\x82" "BC"),
-        odbcpp::test::dm::latin1_widened("A\xf0\x9f\x99\x82" "BC"));
+        odbcpp::test::dm::ansi_widened("A\xf0\x9f\x99\x82" "BC"));
 #if defined(_WIN32) && defined(ODBCPP_TEST_VIA_DRIVER_MANAGER)
     // Supplementary characters cannot be represented by every Windows ANSI
     // code page. They are fixture data for this wide-output chunking test.

@@ -1616,7 +1616,16 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
   ASSERT_LT(static_cast<std::size_t>(narrow_bytes), narrow.size());
   const std::string narrow_text(reinterpret_cast<const char*>(narrow.data()),
                                 static_cast<std::size_t>(narrow_bytes));
-  EXPECT_NE(std::string::npos, narrow_text.find(unicode_identifier));
+  // A manager that widens the ANSI statement byte by byte sends the server one
+  // code point per identifier byte, and its ANSI diagnostic gives back what its
+  // wide-to-ANSI conversion makes of those (AnsiTextWidenedPerByte).
+  const bool widened = odbcpp::test::dm::deviates(
+      odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte);
+  const std::string echoed = widened
+      ? odbcpp::test::dm::ansi_widened_round_trip(unicode_identifier)
+      : std::string(unicode_identifier);
+  const auto echoed_at = narrow_text.find(echoed);
+  EXPECT_NE(std::string::npos, echoed_at);
   const auto expected_units = odbcpp::test::text::utf8_to_wide(narrow_text);
   ASSERT_TRUE(expected_units) << "Server diagnostic text must be valid UTF-8";
 
@@ -1642,7 +1651,15 @@ TEST_F(RedshiftRealTest, WideDiagnosticsCarryServerUnicodeErrorText) {
         complete.data(), static_cast<SQLSMALLINT>(reported + 1), &units));
     EXPECT_EQ(reported, units);
     for (std::size_t i = 0; i < narrow_text.size(); ++i) {
-      EXPECT_EQ(static_cast<SQLWCHAR>(static_cast<unsigned char>(narrow_text[i])), complete[i]);
+      // Inside the echoed identifier the wide unit is the code point the
+      // statement byte was widened to, which its ANSI form cannot carry.
+      auto expected_unit = static_cast<SQLWCHAR>(static_cast<unsigned char>(narrow_text[i]));
+      if (widened && echoed_at != std::string::npos && i >= echoed_at &&
+          i < echoed_at + echoed.size()) {
+        expected_unit = static_cast<SQLWCHAR>(odbcpp::test::dm::ansi_widened_code_point(
+            static_cast<unsigned char>(std::string_view(unicode_identifier)[i - echoed_at])));
+      }
+      EXPECT_EQ(expected_unit, complete[i]);
     }
     EXPECT_EQ(SQLWCHAR{0}, complete[narrow_text.size()]);
     return;
@@ -3843,8 +3860,8 @@ TEST_F(RedshiftUnicodeAliasMetadataRealTest, DirectAndPreparedUnicodeAliasNamesA
   }
   if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
     // The manager widens the ANSI statement byte by byte, so the server names
-    // the column with the Latin-1 reading of these 9 bytes (bucket L). The
-    // case asserts that name and ends.
+    // the column with one code point per byte of these 9 bytes (bucket L,
+    // ansi_widened_code_point). The case asserts that name and ends.
     std::string query = "SELECT CAST(7 AS INTEGER) AS \"" + expected + "\"";
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_),
         reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
@@ -3854,7 +3871,9 @@ TEST_F(RedshiftUnicodeAliasMetadataRealTest, DirectAndPreparedUnicodeAliasNamesA
         static_cast<SQLSMALLINT>(wide.size()), &units, nullptr, nullptr, nullptr, nullptr));
     ASSERT_EQ(static_cast<SQLSMALLINT>(expected.size()), units);
     for (std::size_t i = 0; i < expected.size(); ++i) {
-      EXPECT_EQ(static_cast<SQLWCHAR>(static_cast<unsigned char>(expected[i])), wide[i]);
+      EXPECT_EQ(static_cast<SQLWCHAR>(odbcpp::test::dm::ansi_widened_code_point(
+                    static_cast<unsigned char>(expected[i]))),
+                wide[i]);
     }
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
     return;
@@ -4119,7 +4138,7 @@ protected:
     return result;
   }
   // A manager that widens ANSI text byte by byte (AnsiTextWidenedPerByte,
-  // bucket L) sends the server the Latin-1 reading of these UTF-8 names, so
+  // bucket L) sends the server one code point per byte of these UTF-8 names, so
   // an ANSI lookup finds no object. Asserts that on the ANSI table lookup and
   // reports whether the case must end.
   bool ansi_names_find_nothing() {
@@ -12049,10 +12068,10 @@ TEST_F(RedshiftSpecialTypesRealTest, SuperResultsPreserveServerJsonText) {
   const auto unicode = text_cell(6, length);
   RecordProperty("super_unicode_serialization", unicode);
   // A manager that widens ANSI text byte by byte sends the server the
-  // Latin-1 reading of the literal (AnsiTextWidenedPerByte, bucket L).
+  // per-byte widening of the literal (AnsiTextWidenedPerByte, bucket L).
   const std::string euro = odbcpp::test::dm::value(
       odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte, std::string("\xe2\x82\xac"),
-      odbcpp::test::dm::latin1_widened("\xe2\x82\xac"));
+      odbcpp::test::dm::ansi_widened("\xe2\x82\xac"));
   EXPECT_TRUE(unicode == "\"" + euro + "\"" || unicode == "\"\\u20ac\"") << unicode;
   EXPECT_EQ("null", text_cell(7, length));
   EXPECT_EQ(4, length);
