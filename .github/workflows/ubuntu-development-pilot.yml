@@ -75,13 +75,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: test "$ACTIONS_CACHE_MODE" = read
       - name: Check out reviewed immutable workflow/helper
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: pilot-workflow
           persist-credentials: false
       - name: Check out exact reviewed product and batch history
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.product_head }}
           path: product
@@ -176,7 +176,7 @@ jobs:
       PILOT_MODE: cold
     steps:
       - name: Check out exact selected workflow HEAD
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2; official commit pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; official commit pinned
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -236,7 +236,7 @@ jobs:
       PILOT_MODE: warm
     steps:
       - name: Check out exact selected workflow HEAD
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2; official commit pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; official commit pinned
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -335,13 +335,13 @@ jobs:
       PILOT_COLD_INVENTORY_DIGEST: ""
     steps: &real_steps
       - name: Check out reviewed immutable workflow/helper separately
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: pilot-workflow
           persist-credentials: false
       - name: Check out immutable product at identical source path
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.PILOT_EXPECTED_HEAD }}
           path: product

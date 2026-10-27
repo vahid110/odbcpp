@@ -20,21 +20,22 @@ FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
 # Reviewed job bodies, excluding only their top-level event condition. Preserve
 # 526b with reviewed packaging/checkpoint repairs (2026-10-22), then action pins
-# and literal cache-token grants (2026-10-25); build/test commands are unchanged.
+# and literal cache-token grants (2026-10-25), then the reviewed exact PR109
+# checkout v7.0.1 pins; build/test commands are unchanged.
 BODY_SHA256 = {
-    'sanitizer-only': 'c5f8920828e11b4356e9c2536c4a5b263bb1bbcd3b28e8e759b87afd6b0ff27c',
+    'sanitizer-only': 'b09a63618df8499a9ccb181cc85f46065038f65faa72b86ee084e7ea9995cd12',
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
     'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
     'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
-    'build-and-test': '120c7398a37e6948412a148f75fb8e46918c4279ed3e5a42a0db73b8c206f43e',
-    'redshift-build': '0ba6d9fa6afb30d14b63859e433d7adf193213c86aead5fa022f9963fc401873',
-    'windows-live': '8fe7c5494f85d087ba55417bc5385d92a8715c8ebbf705be34589cefe1f8663c',
-    'windows-package': '8df1d4a83f758b3784a83918338f9c17fd4c5fbedcaf84f1bc45cd9e6d955c97',
-    'windows-linked-server': 'dc898d0acd712fc9de23110b50e64dfa9669d37aa4ae6cbf7353219b4ac458d6',
-    'linux-sanitizers': '4c56808487402d87e94b067b4a761a0170eb705b5590a935c752cdaafebce5fe',
-    'linux-openssl-static': '85c7236f48df08e2b65315759d47e42105d2ea2f995e53106c1620954b6e2fe9',
-    'awslc-adapter-proof': 'e35d492a94a007c87df9208cbee56b779f4021e89eda12aed2c322cb7fd40922',
-    'iodbc-unicode': 'c1d6b9e0e42def7fc46f3ac2c4bad4ca055ff1be49639ee70db63a27923fd0d3',
+    'build-and-test': 'b02b5d0d4c3c417c230756fadfde79f7b745c3538c3ba5cc7cd05bafac509c69',
+    'redshift-build': '1ebe8532cedef3cbc57003e5e603ae70bc5c6642ae38e1ddd35c6ce1bfad1f56',
+    'windows-live': '0030e81243013771fdb37fef1a57e25f3a14fe88509ab375118154028c6909d0',
+    'windows-package': 'b08bb294b5fa5a22b0b5af8ed1f1a4f0a071b158883560d421956e7c77497e18',
+    'windows-linked-server': '78a55ae6ddd98acba64baf3d5e1b401cc3e5480bb58d8906667ad7e4c2df8a9d',
+    'linux-sanitizers': 'd9eb380226d38c7e70f2730b22b550cb12c41c7627f10b5427b725a03bb75a3a',
+    'linux-openssl-static': 'c629a493344201b61152fcbda4d4abea427e4f6064333d753143b38a95bf396e',
+    'awslc-adapter-proof': 'cd7dad823fd9582ab5990ff6286ea6932311babcbc07840198b3eeb044c63d3a',
+    'iodbc-unicode': '4bd25959794f57d60880ae151748406b555451b29e14d03da40e2c90b7dab527',
 }
 
 

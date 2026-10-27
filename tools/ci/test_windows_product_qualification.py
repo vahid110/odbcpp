@@ -1119,10 +1119,11 @@ class WorkflowSafety(unittest.TestCase):
         reference = '3c267078b8e80198cc72cde1464c307406e63ea7'
         old = subprocess.check_output(['git', '-C', str(ROOT), 'show', reference + ':.github/workflows/ci.yml'], text=True)
         # The 2026-10-25 security batch pins the exact official commits currently
-        # selected by these mutable refs. Adapt only the expected historical
+        # selected by these mutable refs; the reviewed PR109 successor updates
+        # checkout to the exact official v7.0.1 commit. Adapt only the historical
         # references; keep every other body byte and all negative mutations.
         for before, after in [
-            ('actions/checkout@v5', 'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5'),
+            ('actions/checkout@v5', 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'),
             ('actions/upload-artifact@v4', 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2'),
             ('actions/download-artifact@v4', 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0'),
         ]:
