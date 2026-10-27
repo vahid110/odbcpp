@@ -43,7 +43,7 @@ def prepare_plan(recipe_path, output):
         return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     plan = dict(recipe, schema_version=1, source_directory=str(ROOT),
                 source_head=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip())
-    for key in ('index','expected','profiles','specs','ci_receipt',
+    for key in ('index','expected','profiles','specs','ci_receipt','local_validation',
                 'checkpoint_expected','checkpoint_partitions'):
         if recipe.get(key):plan[key] = bind(recipe[key])
     plan['tools'] = {key:bind(path) for key,path in recipe['tools'].items()}
@@ -95,6 +95,116 @@ def prepare_plan(recipe_path, output):
     return plan
 
 
+LOCAL_VALIDATION_CONTROL_FILES = {
+    'tools/development/live_checkpoint.py',
+    'tools/development/test_live_checkpoint.py',
+    'tools/development/CHECKPOINT_INPUTS.md',
+    'tools/development/redshift_powerbi_app_checkpoint.py',
+    'tools/development/test_redshift_powerbi_app_checkpoint.py',
+    'tools/development/redshift_powerbi_sessions.py',
+    'tools/development/test_redshift_powerbi_sessions.py',
+    'tools/development/redshift_powerbi_session_ops.py',
+    'tools/development/test_redshift_powerbi_session_ops.py',
+    'tools/development/windows_powerbi_owner.py',
+    'tools/development/test_windows_powerbi_publication.py',
+}
+
+
+def same_validation_product(producer, consumer, *, windows_sequence=False):
+    """Keep compiled-producer reuse distinct from prior Windows sequencing proof."""
+    lifecycle.need(all(isinstance(head, str) and re.fullmatch('[0-9a-f]{40}', head)
+                       for head in (producer, consumer)), 'local_validation_source_heads')
+    changed = subprocess.check_output(
+        ['git', '-C', str(ROOT), 'diff', '--name-only', producer, consumer], text=True).splitlines()
+    allowed = LOCAL_VALIDATION_CONTROL_FILES
+    if windows_sequence:
+        # WindowsOperations overrides open_inputs/stage_profiles and never uses
+        # this POSIX DSN stager. Its correction still needs fresh WSL validation;
+        # it does not invalidate the earlier completed Windows sequencing step.
+        allowed = allowed | {'tools/development/redshift_profile_inputs.py',
+                             'tools/development/test_redshift_profile_inputs.py'}
+    lifecycle.need(set(changed) <= allowed,
+                   'local_validation_same_product_source')
+
+
+def validation_file(ref):
+    # Public Windows artifacts may be read by the local WSL resource owner.
+    from pathlib import PureWindowsPath
+    path = ref['path']
+    value = PureWindowsPath(path)
+    if value.drive:
+        lifecycle.need(value.is_absolute() and value.drive.upper() == 'C:' and
+                       '..' not in value.parts, 'local_validation_absolute_C_drive')
+        if os.name != 'nt':
+            path = str(Path('/mnt/c').joinpath(*value.parts[1:]))
+    elif os.name == 'nt' and path.startswith('/mnt/c/'):
+        path = 'C:/' + path[len('/mnt/c/'):]
+    return pinned(dict(ref, path=path))
+
+
+def validate_local_validation(plan):
+    """Trust the coordinator's reviewed result, at the existing CI-receipt boundary.
+
+    The coordinator checks actual full XML/inventory/config/image association;
+    this entry checks the pinned assessment, scope and unchanged product source.
+    It never manufactures CI success or relaxes operational admission.
+    """
+    def load(ref):
+        return json.loads(validation_file(ref).read_text(encoding='utf-8-sig'))
+    lifecycle.need(bool(plan.get('local_validation')), 'local_validation_receipt_required')
+    receipt = load(plan['local_validation'])
+    profile = plan.get('validation_profile')
+    lifecycle.need(receipt.get('schema_version') == 1 and
+                   receipt.get('kind') == 'human-directed-local-validation-v1' and
+                   receipt.get('reviewed') is True and receipt.get('status') == 'completed' and
+                   receipt.get('human_direction') == 'windows-first-then-wsl' and
+                   receipt.get('complete_applicable_offline') is True and
+                   receipt.get('ci_acceptance') is False and
+                   receipt.get('ci_status') == 'pending_not_accepted' and
+                   receipt.get('source_head') == plan['source_head'] and
+                   receipt.get('profile') == profile and
+                   profile in (('windows-redshift',) if 'native_windows' in plan else
+                               ('unixodbc-redshift', 'linux-iodbc-redshift')) and
+                   all(type(receipt.get(key)) is int and receipt[key] == 0
+                       for key in ('build_exit', 'ctest_exit')),
+                   'reviewed_completed_human_local_validation')
+    lifecycle.need(all(receipt.get(key) for key in ('producer_head', 'human_direction_ref', 'evidence')),
+                   'local_validation_receipt_fields')
+    same_validation_product(receipt['producer_head'], plan['source_head'])
+    direction = load(receipt['human_direction_ref'])
+    lifecycle.need(isinstance(direction.get('human_direction'), str) and
+                   bool(direction['human_direction'].strip()), 'retained_human_direction_required')
+    # These are public evidence/assessment bindings, not an alternative XML or
+    # configuration engine. The coordinator preserves actual failures and skips.
+    validation_file(receipt['evidence'])
+    lifecycle.need(receipt.get('runtime_index_sha256') == plan['index']['sha256'] and
+                   receipt.get('profiles_sha256') == plan['profiles']['sha256'],
+                   'reviewed_local_runtime_inventory_and_profiles')
+    if 'native_windows' not in plan:
+        lifecycle.need(bool(receipt.get('windows_success')), 'windows_qualification_required_before_WSL')
+        windows = load(receipt['windows_success'])
+        same_validation_product(windows['source_head'], plan['source_head'], windows_sequence=True)
+        lifecycle.need(windows.get('reviewed') is True and windows.get('status') == 'completed' and
+                       windows.get('profile') == 'windows-redshift' and
+                       windows.get('complete_applicable_windows_live') is True and
+                       windows.get('cleanup_complete') is True and
+                       type(windows.get('actual_exit')) is int and windows['actual_exit'] == 0,
+                       'complete_successful_windows_qualification_before_WSL')
+        validation_file(windows['evidence'])
+
+
+def checkpoint_validation_mode(plan, ci, required):
+    mode = plan.get('validation_mode', 'ci')
+    lifecycle.need(mode in ('ci', 'human_directed_local'), 'checkpoint_validation_mode')
+    if required and mode == 'ci':
+        lifecycle.need(ci.get('source_head') == plan['source_head'] and
+                       ci.get('applicable_ci_green') is True, 'exact_source_green_applicable_CI')
+    if required:
+        lifecycle.need(type(plan.get('security_groups')) is list and bool(plan['security_groups']),
+                       'approved_existing_security_group_snapshot')
+    return mode
+
+
 def read_plan(path, *, require_ci=False):
     plan = json.loads(path.read_text(encoding='utf-8-sig'))
     lifecycle.need(plan['schema_version'] == 1, 'plan_schema')
@@ -109,23 +219,22 @@ def read_plan(path, *, require_ci=False):
         pinned(ref)
     lifecycle.need(set(plan['tools']) == {'cmake','ctest','aws','psql','python'}, 'fixed_tool_inventory')
     ci = json.loads(pinned(plan['ci_receipt']).read_text(encoding='utf-8-sig')) if plan.get('ci_receipt') else {}
-    if require_ci:
-        lifecycle.need(ci.get('source_head') == plan['source_head']
-                       and ci.get('applicable_ci_green') is True,
-                       'exact_source_green_applicable_CI')
-        lifecycle.need(type(plan.get('security_groups')) is list and bool(plan['security_groups']),
-                       'approved_existing_security_group_snapshot')
+    validation_mode = checkpoint_validation_mode(plan, ci, require_ci)
     lifecycle.need(set(plan['authority_receipts']) == {'authority','applicability','cleanup_delegation'},
                    'existing_fixture_authority_receipts')
     for ref in plan['authority_receipts'].values():
         pinned(ref)
     resource = plan['resource']
-    lifecycle.need(set(resource) == {'account','arn','cluster','created','region','profile','node_type'}
-                   and resource['account'] == '385207570137'
-                   and resource['arn'] == 'arn:aws:iam::385207570137:user/odbcpp-redshift-pilot'
-                   and resource['cluster'] == 'odbcpp-redshift-provisioned-pilot'
-                   and resource['profile'] == 'odbcpp-redshift-pilot', 'unchanged_existing_resource_identity')
-    lifecycle.need(resource['region'] == 'eu-north-1', 'approved_region_eu_north_1')
+    from tools.development.redshift_resource import validate_resource
+    resource_kind = validate_resource(resource)
+    if resource_kind == 'serverless':
+        timeout = plan.get('timeout_fixture')
+        lifecycle.need(type(timeout) is dict and set(timeout) == {
+            'table', 'expected_principal', 'allow_current_identity', 'resource_kind'}
+            and timeout['expected_principal'] is None
+            and timeout['allow_current_identity'] is True
+            and timeout['resource_kind'] == 'serverless',
+            'serverless_current_principal_discovery_required')
     lifecycle.need(re.fullmatch('[0-9a-f]{64}', plan['ca_sha256']) is not None, 'CA_pin')
     # Completeness compares ordered tuples through the existing registrar. No
     # profile environment or protected database/credential file is opened here.
@@ -145,6 +254,8 @@ def read_plan(path, *, require_ci=False):
             plan['source_head'], plan['partition'], expected)
     if 'native_windows' in plan:
         validate_native_plan(plan, index, expected)
+    if require_ci and validation_mode == 'human_directed_local':
+        validate_local_validation(plan)
     return plan
 
 
@@ -189,6 +300,34 @@ def validate_native_plan(plan, index, expected):
                        'same_actual_native_owning_images')
 
 
+def profile_driver_pins(profiles, public_pins):
+    """Validate and bind every declared profile image before private acquisition."""
+    from tools.development import redshift_fixture_factory as factory
+    lifecycle.need(type(profiles) is dict, 'profile_inventory')
+    result = dict(public_pins)
+    drivers = {}
+    for profile in profiles.values():
+        factory.validate_profile(profile)
+        driver = profile['private_input']['driver']
+        if driver is not None:
+            path, digest = driver['path'], driver['sha256']
+            lifecycle.need(result.get(path, digest) == digest,
+                           'profile_driver_pin_collision')
+            result[path] = digest
+            drivers[path] = digest
+    for path, digest in drivers.items():
+        pinned(dict(path=path, sha256=digest))
+    return result
+
+
+def validate_execution_bounds(plan, bounds):
+    # This is the native delegate's existing necessary envelope, checked before
+    # opening resource inputs. It does not extend any original deadline or
+    # guarantee that fixture preparation leaves the required time at dispatch.
+    if 'native_windows' in plan:
+        lifecycle.need(bounds.execution >= 1560, 'native_complete_suite_execution_envelope')
+
+
 def execute(plan, plan_path, admission_path):
     # On Windows, --wsl-source invokes this same fixed entry locally in WSL.
     # WSL owns resource credentials/SQL; the native backend owns its held test
@@ -203,6 +342,26 @@ def execute(plan, plan_path, admission_path):
     actual_head = subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'], text=True).strip()
     dirty = subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain'], text=True).strip()
     lifecycle.need(actual_head == plan['source_head'] and not dirty, 'clean_exact_admitted_source')
+    # Finish public validation, including profile image hashes and collisions,
+    # before even reading the private admission; no driver is loaded here.
+    plan = read_plan(plan_path, require_ci=True)
+    state = Path(plan['state_directory'])
+    lifecycle.need(state.is_absolute() and state.is_dir() and not state.is_symlink(), 'owned_private_state')
+    tools = {k: str(pinned(v).resolve(strict=True)) for k, v in plan['tools'].items()}
+    public_pins = {v['path']: v['sha256'] for v in plan['tools'].values()}
+    for key in ('index','expected','profiles','specs','ci_receipt','local_validation'):
+        if not plan.get(key):
+            continue
+        path = str(validation_file(plan[key])) if key == 'local_validation' else plan[key]['path']
+        public_pins[path] = plan[key]['sha256']
+    if 'partition' in plan:
+        for key in ('checkpoint_expected', 'checkpoint_partitions'):
+            public_pins[plan[key]['path']] = plan[key]['sha256']
+    for path in list((ROOT/'tools/development').glob('redshift_*.py')) + [Path(__file__), Path(factory.__file__)]:
+        path = path.resolve()
+        public_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    profiles = json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig'))
+    public_pins = profile_driver_pins(profiles, public_pins)
     admission = private_json(admission_path)
     lifecycle.need(admission.get('reviewed') is True
                    and admission['plan_sha256'] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
@@ -219,22 +378,9 @@ def execute(plan, plan_path, admission_path):
                        plan['checkpoint_expected']['sha256'],
                        'fresh_complete_checkpoint_partition_admission')
     bounds = lifecycle.Bounds(**admission['bounds']);bounds.validate()
+    validate_execution_bounds(plan, bounds)
     lifecycle.need(utc(admission['expires_utc']) > dt.datetime.now(dt.timezone.utc)
                    + dt.timedelta(seconds=bounds.owner), 'finite_authority_horizon')
-    # Source/pins cannot drift between preflight and real composition.
-    plan = read_plan(plan_path, require_ci=True)
-    state = Path(plan['state_directory'])
-    lifecycle.need(state.is_absolute() and state.is_dir() and not state.is_symlink(), 'owned_private_state')
-    tools = {k: str(pinned(v).resolve(strict=True)) for k, v in plan['tools'].items()}
-    public_pins = {v['path']: v['sha256'] for v in plan['tools'].values()}
-    for key in ('index','expected','profiles','specs','ci_receipt'):
-        public_pins[plan[key]['path']] = plan[key]['sha256']
-    if 'partition' in plan:
-        for key in ('checkpoint_expected', 'checkpoint_partitions'):
-            public_pins[plan[key]['path']] = plan[key]['sha256']
-    for path in list((ROOT/'tools/development').glob('redshift_*.py')) + [Path(__file__)] + [factory.__file__]:
-        path = Path(path).resolve()
-        public_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
     # Existing exclusive pilot_lock and exclusive run directory consume the
     # one-use run. A nonce is never automatically renewed or a run reset.
     approval = dict(admission, resource=plan['resource'],
@@ -245,7 +391,6 @@ def execute(plan, plan_path, admission_path):
                     security_groups=plan['security_groups'])
     timeout_factory = TimeoutFactory(**plan['timeout_fixture'])
     timeout_factory.NativeOps = NativeOps
-    profiles = json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig'))
     specs = json.loads(pinned(plan['specs']).read_text(encoding='utf-8-sig'))
     blueprint = json.loads(pinned(plan['index']).read_text(encoding='utf-8-sig'))
     ops_type = Operations
@@ -272,7 +417,8 @@ def execute(plan, plan_path, admission_path):
         cleanup = staticmethod(fixtures.cleanup)
     if plan.get('partition') == 'powerbi_relationship':
         from tools.development import redshift_powerbi_partition as partition
-        CompleteFixtures.plan = staticmethod(partition.plan)
+        CompleteFixtures.plan = staticmethod(lambda: partition.plan(
+            plan['resource'].get('kind', 'provisioned')))
         CompleteFixtures.prepare = staticmethod(partition.prepare)
         CompleteFixtures.cleanup = staticmethod(partition.cleanup)
     # Ignore a second interrupt only while mandatory cleanup is running.
@@ -336,10 +482,14 @@ def main():
         result['resource_run_supported'] = os.name == 'posix'
         result['native_windows_backend'] = 'native_windows' in plan
         result['CI_and_network_snapshot_present'] = bool(plan.get('ci_receipt') and plan.get('security_groups'))
+        result['validation_mode'] = plan.get('validation_mode', 'ci')
+        result['local_validation_present'] = bool(plan.get('local_validation'))
         print(json.dumps(result));return result['configure_exit']
     if not args.admission:
         parser.error('run requires the existing protected --admission')
     result = execute(plan, args.plan, args.admission)
+    result['validation_mode'] = plan.get('validation_mode', 'ci')
+    result['local_validation_is_CI_acceptance'] = False
     # CTest failure does not interrupt cleanup or become a successful checkpoint.
     print(json.dumps(result))
     return 0 if result['lifecycle_cleanup_complete'] and result['ctest'] is not None and result['ctest']['returncode'] == 0 else 1

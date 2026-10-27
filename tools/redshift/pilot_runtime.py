@@ -7,12 +7,24 @@ does not prove cancellation of remote SQL.
 """
 from dataclasses import dataclass
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import signal
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+
+# Resolve only this source tree's parser, not a cwd or installed substitute.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+    XmlLimits = _xml_module.XmlLimits
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 from tools.redshift.pilot_preflight import Blocked, validate_private_file
 
@@ -119,7 +131,7 @@ def test_summary(xml_path: Path, expected_cases: tuple[str, ...]):
         validate_private_file(str(xml_path))
         if xml_path.stat().st_size > 1024 * 1024:
             raise Blocked('invalid_test_report')
-        root = ET.fromstring(xml_path.read_bytes())
+        root = parse_xml_file(xml_path, limits=XmlLimits(max_bytes=1024 * 1024))
         if (root.tag != 'testsuites' or not expected_cases
                 or len(expected_cases) != len(set(expected_cases))
                 or any(c.tag != 'testsuite' for c in root)

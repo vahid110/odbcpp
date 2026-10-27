@@ -49,4 +49,21 @@ std::optional<std::size_t> utf8_code_point_count(std::string_view input) {
   return count;
 }
 
+std::string replace_invalid_utf8(std::string_view input) {
+  std::string output;
+  output.reserve(input.size());
+  std::size_t offset = 0;
+  while (offset < input.size()) {
+    const auto start = offset;
+    if (next_utf8_code_point(input, offset)) {
+      output.append(input.substr(start, offset - start));
+    } else {
+      // The decoder offset is unspecified after failure; resume after one byte.
+      output.append("\xEF\xBF\xBD");
+      offset = start + 1;
+    }
+  }
+  return output;
+}
+
 } // namespace rs::util

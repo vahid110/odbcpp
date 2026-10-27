@@ -2,10 +2,13 @@
 #include <algorithm>
 #include <chrono>
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
-#include "odbc/unicode.h"
+#endif
 #include "tests/test_connection_config.h"
-#include "core/database/database_factory.h"
+#include "tests/test_dm_expectations.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 
 #include <array>
 #include <cstddef>
@@ -71,7 +74,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -96,8 +99,8 @@ namespace {
 std::string diagnostic_state(SQLSMALLINT type, SQLHANDLE handle) {
   SQLCHAR state[6]{};
   EXPECT_EQ(SQL_SUCCESS,
-            SQLGetDiagRec(type, handle, 1, state, nullptr, nullptr, 0,
-                          nullptr));
+            odbcpp::test::diag_rec(type, handle, 1, state, nullptr, nullptr, 0,
+                                   nullptr));
   return reinterpret_cast<const char*>(state);
 }
 
@@ -149,7 +152,7 @@ class NativeSqlIntegrationTest : public ::testing::Test {
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
     if (SQLConnect(connection_,
-                   odbcpp::test::configured_connection_string_data(), SQL_NTS,
+                   odbcpp::test::configured_server_name_data(), SQL_NTS,
                    nullptr, 0, nullptr, 0) != SQL_SUCCESS) {
       GTEST_SKIP() << "Database connection failed";
     }
@@ -180,6 +183,13 @@ TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
   const auto length = static_cast<SQLINTEGER>(sql.size());
   const auto wide_length = static_cast<SQLINTEGER>(wide.size());
 
+  // The manager passes the driver SQL_NTS instead of the explicit length, so
+  // the text before the NUL runs and the rest of the case cannot be reached.
+  if (odbcpp::test::dm::stops_case(
+          odbcpp::test::dm::Deviation::ExplicitTextLengthReplacedByNts)) {
+    EXPECT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, narrow, length));
+    return;
+  }
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, narrow, length));
   EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLExecDirectW(statement_, wide.data(), wide_length));
@@ -260,6 +270,18 @@ TEST_F(NativeSqlIntegrationTest, NativeSqlRejectsEmbeddedNulWithoutChangingOutpu
   SQLWCHAR wide_output[] = {'k', 'e', 'e', 'p', 0};
   SQLINTEGER length = 91;
 
+  // The manager passes the driver SQL_NTS instead of the explicit length, so
+  // the driver translates "SELECT 1" and truncates it into the 5-byte output.
+  if (odbcpp::test::dm::stops_case(
+          odbcpp::test::dm::Deviation::ExplicitTextLengthReplacedByNts)) {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLNativeSql(connection_, reinterpret_cast<SQLCHAR*>(sql.data()),
+                           static_cast<SQLINTEGER>(sql.size()), output,
+                           static_cast<SQLINTEGER>(sizeof(output)), &length));
+    EXPECT_STREQ("SELE", reinterpret_cast<const char*>(output));
+    EXPECT_EQ(8, length);
+    return;
+  }
   EXPECT_EQ(SQL_ERROR,
             SQLNativeSql(connection_, reinterpret_cast<SQLCHAR*>(sql.data()),
                          static_cast<SQLINTEGER>(sql.size()), output,
@@ -286,9 +308,21 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
   SQLCHAR input[] = "SELECT {fn UCASE('mixed')}, {d '2024-02-29'}";
   constexpr char expected[] = "SELECT UPPER('mixed'), DATE '2024-02-29'";
   SQLINTEGER length = -1;
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLNativeSql(connection_, input, SQL_NTS, nullptr, -7, &length));
-  EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(expected) - 1), length);
+  // The ODBC reference raises HY090 for a negative BufferLength only with a
+  // non-null output; the manager also rejects it for a NULL output.
+  const SQLRETURN negative_result =
+      SQLNativeSql(connection_, input, SQL_NTS, nullptr, -7, &length);
+  if (odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::NegativeBufferLengthRejectedWithNullOutput)) {
+    EXPECT_EQ(SQL_ERROR, negative_result);
+    EXPECT_EQ(odbcpp::test::dm::text(
+                  odbcpp::test::dm::Deviation::NegativeBufferLengthRejectedWithNullOutput,
+                  "HY090"),
+              diagnostic_state(SQL_HANDLE_DBC, connection_));
+  } else {
+    ASSERT_EQ(SQL_SUCCESS, negative_result);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(expected) - 1), length);
+  }
 
   std::array<SQLCHAR, sizeof(expected)> output{};
   ASSERT_EQ(SQL_SUCCESS,
@@ -296,7 +330,7 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
                          static_cast<SQLINTEGER>(output.size()), &length));
   EXPECT_STREQ(expected, reinterpret_cast<const char*>(output.data()));
 
-  auto wide_input = rs::odbc::utf8_to_wide("SELECT {t '12:34:56'} trailing");
+  auto wide_input = odbcpp::test::text::utf8_to_wide("SELECT {t '12:34:56'} trailing");
   ASSERT_TRUE(wide_input.has_value());
   std::array<SQLWCHAR, 32> wide_output{};
   length = -1;
@@ -307,7 +341,7 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
                           &length));
   EXPECT_EQ(22, length);
   EXPECT_EQ("SELECT TIME '12:34:56'",
-            *rs::odbc::wide_to_utf8(
+            *odbcpp::test::text::wide_to_utf8(
                 std::span<const SQLWCHAR>(wide_output.data(), length)));
 
   length = -1;
@@ -328,7 +362,7 @@ TEST_F(NativeSqlIntegrationTest, ReportsAnsiAndWideTruncation) {
   EXPECT_EQ(21, length);
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
-  auto wide_input = rs::odbc::utf8_to_wide(
+  auto wide_input = odbcpp::test::text::utf8_to_wide(
       "SELECT {fn LCASE('MIXED')}");
   ASSERT_TRUE(wide_input.has_value());
   std::array<SQLWCHAR, 8> wide_output{};
@@ -340,7 +374,7 @@ TEST_F(NativeSqlIntegrationTest, ReportsAnsiAndWideTruncation) {
                           static_cast<SQLINTEGER>(wide_output.size()),
                           &length));
   EXPECT_EQ(21, length);
-  EXPECT_EQ("SELECT ", *rs::odbc::wide_to_utf8(
+  EXPECT_EQ("SELECT ", *odbcpp::test::text::wide_to_utf8(
                            std::span<const SQLWCHAR>(wide_output.data(), 7)));
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
@@ -368,13 +402,18 @@ TEST_F(NativeSqlIntegrationTest, LengthOutputsHandleUnalignedBuffers) {
   };
 
   SQLINTEGER expected = -1;
-  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(
+  // The manager gives the driver a 0-length scratch buffer for the NULL
+  // output, so the driver correctly reports truncation.
+  const auto null_output_result = odbcpp::test::dm::value(
+      odbcpp::test::dm::Deviation::NullOutputBufferSubstituted,
+      SQLRETURN{SQL_SUCCESS}, SQLRETURN{SQL_SUCCESS_WITH_INFO});
+  ASSERT_EQ(null_output_result, SQLNativeSql(
       connection_, input, SQL_NTS, nullptr, 0, &expected));
-  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(
+  ASSERT_EQ(null_output_result, SQLNativeSql(
       connection_, input, SQL_NTS, nullptr, 0, length));
   EXPECT_EQ(expected, read_length());
 
-  auto wide_input = rs::odbc::utf8_to_wide("SELECT {fn UCASE('x')}");
+  auto wide_input = odbcpp::test::text::utf8_to_wide("SELECT {fn UCASE('x')}");
   ASSERT_TRUE(wide_input.has_value());
   SQLWCHAR wide_output = static_cast<SQLWCHAR>('k');
   expected = -1;
@@ -467,13 +506,30 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
       "SELECT 'a%b' LIKE 'a\xC3\xA9%b' {escape '\xC3\xA9'}";
   constexpr char expected[] =
       "SELECT 'a%b' LIKE 'a\xC3\xA9%b' ESCAPE '\xC3\xA9'";
+  auto ansi_input = odbcpp::test::text::utf8_to_ansi_input(
+      reinterpret_cast<const char*>(unicode));
+  auto ansi_expected = odbcpp::test::text::utf8_to_ansi_input(expected);
+  ASSERT_TRUE(ansi_input.has_value());
+  ASSERT_TRUE(ansi_expected.has_value());
+  auto* const ansi_text = reinterpret_cast<SQLCHAR*>(ansi_input->data());
   SQLCHAR output[sizeof(expected)]{};
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLNativeSql(connection_, unicode, SQL_NTS, output,
-                         sizeof(output), nullptr));
-  EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
+  // Byte-wise widening makes this ANSI escape two characters. Only its
+  // execution depends on that translation; wide and ASCII checks still apply.
+  const bool ansi_widened = odbcpp::test::dm::deviates(
+      odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte);
+  if (ansi_widened) {
+    RecordProperty("dm_ansi_execution_blocked_by", "AnsiTextWidenedPerByte");
+    EXPECT_EQ(SQL_ERROR, SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
+                                      sizeof(output), nullptr));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  } else {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLNativeSql(connection_, ansi_text, SQL_NTS, output,
+                           sizeof(output), nullptr));
+    EXPECT_STREQ(ansi_expected->c_str(), reinterpret_cast<const char*>(output));
+  }
 
-  auto wide_input = rs::odbc::utf8_to_wide(
+  auto wide_input = odbcpp::test::text::utf8_to_wide(
       reinterpret_cast<const char*>(unicode));
   ASSERT_TRUE(wide_input.has_value());
   std::array<SQLWCHAR, sizeof(expected)> wide_output{};
@@ -485,19 +541,22 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
                           static_cast<SQLINTEGER>(wide_output.size()),
                           &wide_length));
   ASSERT_GE(wide_length, 0);
-  const auto native_wide = rs::odbc::wide_to_utf8(
+  ASSERT_LT(static_cast<std::size_t>(wide_length), wide_output.size());
+  const auto native_wide = odbcpp::test::text::wide_to_utf8(
       std::span<const SQLWCHAR>(wide_output.data(), wide_length));
   ASSERT_TRUE(native_wide.has_value());
   EXPECT_EQ(expected, *native_wide);
 
-  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, unicode, SQL_NTS));
-  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
   SQLCHAR matched[4]{};
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
-                       nullptr));
-  EXPECT_STREQ("1", reinterpret_cast<const char*>(matched));
-  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+  if (!ansi_widened) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, ansi_text, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
+                         nullptr));
+    EXPECT_STREQ("1", reinterpret_cast<const char*>(matched));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+  }
 
   SQLCHAR quoted[] = "SELECT 'a%b' LIKE 'a''%b' {escape ''''}";
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, quoted, SQL_NTS));
@@ -550,8 +609,7 @@ TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideBackslashQuotedStrings) {
   // its ordinary quoted spelling with the identical value and escape payload.
   SQLCHAR redshift_input[] =
       "SELECT 'it''s {fn UCASE(ignored)}', {fn UCASE('ok')}";
-  const bool redshift = rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-      rs::core::database::DatabaseType::Redshift;
+  const bool redshift = odbcpp::test::compiled_redshift_product();
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_,
       redshift ? redshift_input : input, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
@@ -619,7 +677,7 @@ TEST_F(NativeSqlIntegrationTest, BackendTranslationErrorsPreservePreparedSqlAndR
       SCOPED_TRACE(input);
       SCOPED_TRACE(wide);
       std::string narrow(input);
-      auto unicode = rs::odbc::utf8_to_wide(input);
+      auto unicode = odbcpp::test::text::utf8_to_wide(input);
       ASSERT_TRUE(unicode);
       // Translation fails before replacing prepared text or executing SQL.
       EXPECT_EQ(SQL_ERROR, wide
@@ -632,6 +690,14 @@ TEST_F(NativeSqlIntegrationTest, BackendTranslationErrorsPreservePreparedSqlAndR
                            static_cast<SQLINTEGER>(unicode->size()))
           : SQLExecDirect(statement_, reinterpret_cast<SQLCHAR*>(narrow.data()), SQL_NTS));
       EXPECT_EQ(state, diagnostic_state(SQL_HANDLE_STMT, statement_));
+      // The manager's state table returns the statement to "allocated" after
+      // the failed prepare, so it refuses SQLExecute without calling the driver.
+      if (odbcpp::test::dm::stops_case(
+              odbcpp::test::dm::Deviation::StateTableAfterFailedCall)) {
+        EXPECT_EQ(SQL_ERROR, SQLExecute(statement_));
+        EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+        return;
+      }
       ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
       ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
       SQLINTEGER value = -1;

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Record public bindings and summarize standard XML; no execution or admission."""
 import argparse
+import importlib.util
 import datetime as dt
 import hashlib
 import json
@@ -8,15 +9,39 @@ from pathlib import Path
 import subprocess
 import xml.etree.ElementTree as ET
 
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+    XmlSafetyError = _xml_module.XmlSafetyError
+    DEFAULT_LIMITS = _xml_module.DEFAULT_LIMITS
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
-def binding(path):
+
+def binding(path, *, max_bytes=None):
     path = Path(path).resolve()
+    digest = hashlib.sha256()
+    count = 0
+    with path.open('rb') as stream:
+        while True:
+            size = 64 * 1024 if max_bytes is None else min(64 * 1024, max_bytes - count + 1)
+            block = stream.read(size)
+            if not block:
+                break
+            count += len(block)
+            if max_bytes is not None and count > max_bytes:
+                raise XmlSafetyError('XML evidence exceeds byte limit')
+            digest.update(block)
     return {'path': str(path), 'bytes': path.stat().st_size,
-            'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+            'sha256': digest.hexdigest()}
 
 
 def xml_summary(path):
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path)
     rows = list(root.iter('testcase'))
     counts = {'cases': len(rows), 'fail': 0, 'skip': 0, 'disabled': 0}
     for row in rows:
@@ -59,13 +84,15 @@ def collect(args):
         report['inventory'] = dict(binding(args.inventory), count=len(rows))
     if args.ctest_junit:
         try:
-            report['ctest'] = dict(binding(args.ctest_junit), **xml_summary(args.ctest_junit))
+            report['ctest'] = dict(binding(args.ctest_junit, max_bytes=DEFAULT_LIMITS.max_bytes),
+                                   **xml_summary(args.ctest_junit))
         except (OSError, ET.ParseError) as error:
             report['xml_errors'].append({'file': str(args.ctest_junit), 'error': type(error).__name__})
     if args.gtest_dir:
         for path in sorted(args.gtest_dir.glob('*.xml')):
             try:
-                report['gtest'].append(dict(binding(path), **xml_summary(path)))
+                report['gtest'].append(dict(binding(path, max_bytes=DEFAULT_LIMITS.max_bytes),
+                                           **xml_summary(path)))
             except (OSError, ET.ParseError) as error:
                 report['xml_errors'].append({'file': str(path), 'error': type(error).__name__})
     if args.cleanup_receipt:

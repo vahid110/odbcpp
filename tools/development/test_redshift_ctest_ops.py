@@ -25,6 +25,8 @@ class Native:
         self.calls = []
         self.raw = b'RSD1|odbcpp_pilot|odbcpp_pilot_test|123\n1\n'
         self.returncode, self.timed_out = 0, False
+        self.ca_held = mock.Mock()
+        self.close_ca_snapshot = mock.Mock()
 
     def ordinary_held(self):
         pass
@@ -58,6 +60,61 @@ def adapter(directory):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_serverless_zero_requires_no_session_rows_then_exact_query_false(self):
+        for payload in ('f\n', 'f\nf\n', 'f|f\n', '', 't\n', '1073791076\nf\n',
+                        '1073791076\nt\n', '1073791076\n', '100|102|1\nf\n', 'f', ' f\n'):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                ops = adapter(directory)
+                ops.resource_kind = 'serverless'
+                ops.timeout_factory = SimpleNamespace(EXPECTED_PRINCIPAL={
+                    'schema_owner_oid': '700', 'owner_oid': '701'})
+                ops._sql = mock.Mock(return_value=(payload, 123))
+                if payload == 'f\n':
+                    self.assertEqual(ops.final_zero(300), {'complete': True})
+                else:
+                    with self.assertRaisesRegex(Refused, 'exact_principal_session_query_zero'):
+                        ops.final_zero(300)
+                stage = ops._sql.call_args.args[0]
+                self.assertEqual(stage['statements'], 3)
+                self.assertEqual(stage['query'].count(';') + stage['query'].count('\\gset'), 3)
+                self.assertIn('SELECT session_id FROM sys_session_history', stage['query'])
+                self.assertNotIn('SELECT EXISTS(SELECT 1 FROM sys_session_history', stage['query'])
+
+    def test_serverless_cleanup_rebinds_oid_and_captured_birth_before_termination(self):
+        targets = ((42, ops_module.ORDINARY, ops_module.DATABASE, '2026-10-24 12:00:00.123'),)
+        stage = ops_module.termination_stage(targets, resource_kind='serverless',
+            principal_oids={'admin_oid': 700, 'test_oid': 701})
+        self.assertEqual(stage['statements'], 3)
+        query = stage['query']
+        for expected in ('pg_user_info', 'sys_session_history', 'session_id=42',
+                         'session_id<>pg_backend_pid()', '=:rs_test_oid',
+                         "start_time=TIMESTAMP '2026-10-24 12:00:00.123'"):
+            self.assertIn(expected, query)
+        self.assertNotIn('stv_', query)
+        self.assertIn("usename='odbcpp_pilot_test' THEN usesysid END)=701", query)
+        self.assertLess(query.index('AS still_owned'), query.index('pg_terminate_backend(42)'))
+        for changed in ((42, 'foreign', ops_module.DATABASE, targets[0][3]),
+                        (42, ops_module.ORDINARY, 'foreign', targets[0][3]),
+                        (42, ops_module.ORDINARY, ops_module.DATABASE, "2026-10-24 12:00:00';DROP")):
+            with self.subTest(changed=changed), self.assertRaises(Refused):
+                ops_module.termination_stage((changed,), resource_kind='serverless',
+                    principal_oids={'admin_oid': 700, 'test_oid': 701})
+
+    def test_serverless_idle_requires_zero_and_known_readers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops = adapter(directory)
+            ops.resource_kind = 'serverless'
+            ops.principals_quiescent = True
+            calls = []
+            ops.final_zero = lambda end: calls.append('zero')
+            ops.native.verify_idle = lambda end: calls.append('metadata') or True
+            self.assertTrue(ops.verify_idle(300))
+            self.assertEqual(calls, ['zero', 'metadata'])
+            ops.readers_known = False
+            with self.assertRaises(Refused):
+                ops.verify_idle(300)
+            self.assertEqual(calls, ['zero', 'metadata'])
+
     def available_adapter(self, directory):
         ops = adapter(directory)
         terminal = Path(directory) / 'terminal.json'

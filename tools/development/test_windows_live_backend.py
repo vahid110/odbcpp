@@ -1,5 +1,6 @@
 """Native offline custody/ACL/registry/job proof using invented inputs and owned probe paths."""
 import csv
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,16 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tools.development import windows_live_backend as backend
 from tools.development import windows_native_job as job
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 
 class NativeBackendTests(unittest.TestCase):
@@ -216,8 +227,7 @@ class NativeBackendTests(unittest.TestCase):
             self.assertTrue(receipt['lease_released'])
             self.assertFalse((work/'windows-live-active-lease.json').exists())
             self.assertFalse(Probe().exists(namespace))
-            import xml.etree.ElementTree as ET
-            rows=list(ET.parse(work/'windows-live-offline/ctest-results.xml').getroot().iter('testcase'))
+            rows=list(parse_xml_file(work/'windows-live-offline/ctest-results.xml').iter('testcase'))
             self.assertEqual(len(rows),3)
             self.assertIsNone(rows[0].find('failure'))
             self.assertIsNotNone(rows[1].find('failure'))

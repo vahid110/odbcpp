@@ -34,6 +34,10 @@ on:
         type: boolean
         default: false
 
+# Candidate code may restore caches but cannot write, even through direct API calls.
+# Only the workflow-source cold job and literal reviewed seed below can produce.
+cache-mode: read
+
 permissions:
   contents: read
 
@@ -49,6 +53,7 @@ env:
 
 jobs:
   product:
+    cache-mode: read
     if: inputs.mode == 'product_qualification'
     name: Owning Linux product qualification - NOT full acceptance
     runs-on: ubuntu-24.04
@@ -66,14 +71,17 @@ jobs:
       PILOT_PRODUCT_CACHE: ${{ inputs.product_cache }}
       PILOT_EXPERIMENT_REQUESTED: ${{ inputs.conflicting_experiment }}
     steps:
+      - name: Require the read-only cache grant before candidate execution
+        working-directory: ${{ github.workspace }}
+        run: test "$ACTIONS_CACHE_MODE" = read
       - name: Check out reviewed immutable workflow/helper
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: pilot-workflow
           persist-credentials: false
       - name: Check out exact reviewed product and batch history
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.product_head }}
           path: product
@@ -104,7 +112,7 @@ jobs:
       - name: Restore ONLY selected compatible compiler objects
         id: restore
         if: steps.cache.outputs.restore == 'true'
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.cache.outputs.restore_key }}
@@ -139,12 +147,6 @@ jobs:
           PILOT_CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
           PILOT_RESTORED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
         run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" finish
-      - name: Save bounded compiler objects with exact qualified owning provenance
-        if: success() && steps.finish.outputs.save_cache == 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ steps.configure.outputs.cache_key }}
       - name: Bound text evidence even after an original failure
         id: package
         if: always()
@@ -160,6 +162,8 @@ jobs:
           if-no-files-found: error
 
   cold:
+    # This producer executes the dispatch workflow source itself (github.sha).
+    cache-mode: write
     if: inputs.mode == 'same_head'
     name: Experimental Linux cold - NOT full acceptance
     runs-on: ubuntu-24.04
@@ -172,7 +176,7 @@ jobs:
       PILOT_MODE: cold
     steps:
       - name: Check out exact selected workflow HEAD
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2; official commit pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; official commit pinned
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -204,7 +208,7 @@ jobs:
           PILOT_CACHE_HIT: "not-restored-cold"
         run: python3 tools/ci/ubuntu_development_pilot.py finish
       - name: Save ONLY bounded compiler objects for this run/attempt/source/profile
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.configure.outputs.cache_key }}
@@ -232,7 +236,7 @@ jobs:
       PILOT_MODE: warm
     steps:
       - name: Check out exact selected workflow HEAD
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2; official commit pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; official commit pinned
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -256,7 +260,7 @@ jobs:
         run: date -u +%Y-%m-%dT%H:%M:%S.%NZ > ubuntu-pilot-evidence/restore-start.txt
       - name: Restore ONLY exact paired cold compiler objects
         id: restore
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ needs.cold.outputs.cache_key }}
@@ -302,6 +306,8 @@ jobs:
           if-no-files-found: error
 
   seed-a:
+    # Immutable reviewed seed is selected literally before any product execution.
+    cache-mode: write
     name: Experimental real-change seed A - NOT full acceptance
     if: inputs.mode == 'real_change'
     runs-on: ubuntu-24.04
@@ -317,7 +323,7 @@ jobs:
       inventory_digest: ${{ steps.inventory.outputs.inventory_digest }}
     env:
       PILOT_MODE: seed-a
-      PILOT_EXPECTED_HEAD: ${{ inputs.seed_head }}
+      PILOT_EXPECTED_HEAD: cac4e780dcc9ce84fcc8a3d104ab1afbf4ba0547
       PILOT_WORKFLOW_HEAD: ${{ inputs.expected_head }}
       PILOT_WORKFLOW_ROOT: ${{ github.workspace }}/pilot-workflow
       PILOT_SEED_HEAD: ${{ inputs.seed_head }}
@@ -329,13 +335,13 @@ jobs:
       PILOT_COLD_INVENTORY_DIGEST: ""
     steps: &real_steps
       - name: Check out reviewed immutable workflow/helper separately
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: pilot-workflow
           persist-credentials: false
       - name: Check out immutable product at identical source path
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.PILOT_EXPECTED_HEAD }}
           path: product
@@ -362,7 +368,7 @@ jobs:
       - name: Restore only selected A compiler objects (no fallback)
         id: restore
         if: env.PILOT_MODE == 'cached-b'
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ env.PILOT_SEED_CACHE_KEY }}
@@ -391,7 +397,7 @@ jobs:
         run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" finish
       - name: Save only exact source A objects for this workflow/run/attempt
         if: env.PILOT_MODE == 'seed-a'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.configure.outputs.cache_key }}

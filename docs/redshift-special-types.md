@@ -64,7 +64,10 @@ fails closed on an inconsistent payload rather than guessing (see below).
   This deliberately differs from A3's fixed 4194304.
 * Cells are server-produced JSON text, validated as UTF-8 and preserved byte for
   byte. No driver-side JSON parsing or reserialization. SQL NULL is a NULL cell
-  (`SQL_NULL_DATA`); the JSON literal `null` is the 4-byte text `null`.
+  (`SQL_NULL_DATA`). A top-level JSON null is SQL NULL on the server too:
+  `JSON_PARSE('null') IS NULL` is true, so its cell is `SQL_NULL_DATA` (live
+  check 2026-10-25, [driver-manager-live-macos.md](plans/driver-manager-live-macos.md)).
+  A nested JSON null stays in the text, as in `[1,"abc",null]`.
 * TYPE_NAME / LOCAL_TYPE_NAME `super` for the IRD (`SQLColAttribute`,
   `SQLGetDescField`) and the IPD after a parameter description (`SQLDescribeParam`
   itself returns no name), matching SQLColumns' lower-case catalog label. The

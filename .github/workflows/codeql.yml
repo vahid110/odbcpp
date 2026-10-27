@@ -1,0 +1,182 @@
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    # First actual run built successfully, then exhausted 30 minutes mid-analysis.
+    timeout-minutes: 60
+    env:
+      # Coverage and the pinned partial-unit exception require one fresh database.
+      # Dependency caching does not control automatic overlay databases or TRAPs.
+      CODEQL_OVERLAY_DATABASE_MODE: none
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: cpp-redshift
+            language: c-cpp
+            build-mode: manual
+          # Preserve visibility of dormant backend/platform/optional sources.
+          # This supplemental result is not actual-build or platform proof.
+          - profile: cpp-source
+            language: c-cpp
+            build-mode: none
+          - profile: python
+            language: python
+            build-mode: none
+          - profile: csharp
+            language: csharp
+            build-mode: manual
+          - profile: actions
+            language: actions
+            build-mode: none
+    steps:
+      - name: Check out the event's source without reusable credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check extraction controls offline
+        if: matrix.profile == 'cpp-redshift'
+        run: python3 -B -m unittest discover -s .github/codeql -p 'test_*.py' -v
+
+      - name: Install C++ headers and the actual build toolchain
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev unixodbc-dev libgtest-dev libspdlog-dev
+
+      - name: Select C++20 for supplemental inferred source extraction
+        if: matrix.profile == 'cpp-source'
+        run: echo 'CODEQL_EXTRACTOR_CPP_OPTION_FRONTEND_OPTIONS=--c++20' >> "$GITHUB_ENV"
+
+      - name: Compile the supplemental manager header context without linking or execution
+        if: matrix.profile == 'cpp-source'
+        run: |
+          mkdir -p codeql-evidence
+          g++ --version > codeql-evidence/dm-header-compiler.log
+          g++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only \
+            .github/codeql/dm_header_context.cpp \
+            2>&1 | tee codeql-evidence/dm-header-context.log
+
+      - name: Configure the actual REDSHIFT C++20 profile
+        if: matrix.profile == 'cpp-redshift'
+        run: |
+          mkdir -p codeql-evidence
+          cmake -S . -B build-codeql -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DBUILD_TESTING=ON \
+            -DBUILD_EXAMPLES=OFF \
+            -DTARGET_DATABASE=REDSHIFT \
+            -DODBCPP_CRYPTO_PROVIDER=OPENSSL \
+            -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED \
+            -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC \
+            -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2 \
+            -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2 \
+            -DODBCPP_CRYPTO_TLS_PROOF=OFF \
+            -DODBCPP_NATIVE_PROVISIONED_AUTH_TESTS=OFF \
+            2>&1 | tee codeql-evidence/configure.log
+
+      - name: Initialize CodeQL
+        id: init
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          tools: linked
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/config.yml
+          threads: 2
+          ram: 4096
+          dependency-caching: false
+          trap-caching: false
+
+      - name: Compile product, SDK header units and existing test sources without running tests
+        if: matrix.profile == 'cpp-redshift'
+        run: |
+          cmake --build build-codeql --parallel 2 --verbose --target all \
+            it_redshift_routine_schema_patterns it_redshift_columns_omitted_table \
+            2>&1 | tee codeql-evidence/build.log
+
+      - name: Compile the original standalone C# helper as a library without executing it
+        if: matrix.profile == 'csharp'
+        run: |
+          mkdir -p codeql-evidence/csharp-build
+          dotnet --info > codeql-evidence/csharp-build/dotnet-info.log
+          dotnet build .github/codeql/standalone-csharp.csproj \
+            --configuration Release --no-incremental --disable-build-servers \
+            --verbosity normal --output codeql-evidence/csharp-build/output \
+            -p:BaseIntermediateOutputPath="$RUNNER_TEMP/odbcpp-codeql-csharp/obj/" \
+            -p:UseSharedCompilation=false -maxcpucount:1 \
+            2>&1 | tee codeql-evidence/csharp-build/build.log
+
+      - name: Analyze and retain full diagnostics before publication
+        id: analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          output: codeql-results
+          category: /language:${{ matrix.language }}/profile:${{ matrix.profile }}
+          upload: never
+          upload-database: false
+
+      - name: Retain compiled-language extractor logs and diagnostics even after failure
+        if: always() && (matrix.language == 'c-cpp' || matrix.language == 'csharp')
+        env:
+          ODBCPP_CODEQL_DATABASE: ${{ matrix.language == 'csharp' && 'csharp' || 'cpp' }}
+        run: |
+          mkdir -p codeql-evidence
+          for kind in log diagnostic; do
+            source="$RUNNER_TEMP/codeql_databases/$ODBCPP_CODEQL_DATABASE/$kind"
+            if [[ -d "$source" ]]; then
+              cp -R "$source" "codeql-evidence/codeql-$kind"
+            fi
+          done
+
+      - name: Independently verify actual extraction and retain its boundaries
+        run: >-
+          python3 -B .github/codeql/coverage.py
+          --profile '${{ matrix.profile }}'
+
+      - name: Publish only the verified SARIF
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          sarif_file: codeql-results
+          category: /language:${{ matrix.language }}/profile:${{ matrix.profile }}
+
+      - name: Preserve raw SARIF and extraction evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codeql-${{ matrix.profile }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            codeql-results/
+            codeql-evidence/
+            build-codeql/compile_commands.json
+            build-codeql/CMakeCache.txt
+          retention-days: 7
+          if-no-files-found: warn

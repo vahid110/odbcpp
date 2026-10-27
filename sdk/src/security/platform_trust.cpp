@@ -168,7 +168,29 @@ ChainEvaluation evaluate_server_chain(const std::vector<DerCertificate>& chain,
   if (!::SecTrustEvaluateWithError(trust.get(), error.out())) {
     return {false, bounded(cf_error_text(error.get()))};
   }
-  return {true, {}};
+  ChainEvaluation result{true, {}};
+  // Keep the existing macOS 10.14 deployment boundary. The replacement copy
+  // API requires macOS 12; these deprecated accessors remain necessary here.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  const CFIndex count = ::SecTrustGetCertificateCount(trust.get());
+  if (count <= 0 || static_cast<std::size_t>(count) > max_peer_chain_certificates) {
+    return {false, "macOS verified certificate chain has an invalid size"};
+  }
+  for (CFIndex i = 0; i < count; ++i) {
+    SecCertificateRef certificate = ::SecTrustGetCertificateAtIndex(trust.get(), i);
+    if (!certificate) return {false, "macOS verified certificate missing"};
+    CfOwner<CFDataRef> data(::SecCertificateCopyData(certificate));
+    if (!data.get() || ::CFDataGetLength(data.get()) <= 0 ||
+        static_cast<std::size_t>(::CFDataGetLength(data.get())) > max_peer_certificate_bytes) {
+      return {false, "macOS verified certificate has an invalid size"};
+    }
+    const auto* begin = ::CFDataGetBytePtr(data.get());
+    result.verified_chain.push_back({
+        DerCertificate(begin, begin + ::CFDataGetLength(data.get())), i == count - 1});
+  }
+#pragma clang diagnostic pop
+  return result;
 #elif defined(_WIN32)
   if (!options.test_anchors.empty()) {
     return {false, "test anchors are not supported by the Windows verifier"};
@@ -240,7 +262,28 @@ ChainEvaluation evaluate_server_chain(const std::vector<DerCertificate>& chain,
   if (status.dwError != 0) {
     return {false, windows_error("Windows TLS chain policy", status.dwError)};
   }
-  return {true, {}};
+  ChainEvaluation result{true, {}};
+  // Include every simple chain in the accepted context (including a CTL
+  // signer's chain) rather than assuming all issuers arrived from the peer.
+  for (DWORD i = 0; i < chain_context->cChain; ++i) {
+    const auto* simple = chain_context->rgpChain[i];
+    if (!simple) return {false, "Windows verified certificate chain missing"};
+    for (DWORD j = 0; j < simple->cElement; ++j) {
+      const auto* element = simple->rgpElement[j];
+      const auto* certificate = element ? element->pCertContext : nullptr;
+      if (!certificate || !certificate->cbCertEncoded ||
+          certificate->cbCertEncoded > max_peer_certificate_bytes ||
+          result.verified_chain.size() >= max_peer_chain_certificates) {
+        return {false, "Windows verified certificate has an invalid size"};
+      }
+      result.verified_chain.push_back({
+          DerCertificate(certificate->pbCertEncoded,
+              certificate->pbCertEncoded + certificate->cbCertEncoded),
+          j == simple->cElement - 1});
+    }
+  }
+  if (result.verified_chain.empty()) return {false, "Windows verified certificate chain is empty"};
+  return result;
 #else
   (void)options;
   return {false, "no native operating-system verifier on this platform"};

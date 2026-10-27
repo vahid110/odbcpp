@@ -47,7 +47,7 @@ def validate_targets(targets):
     need(all((type(v) is dict and v == {'schema': FIXTURE_SCHEMA, 'table': FIXTURE_TABLE} for v in targets.values())), 'fixture_exact_identifier')
     return targets
 
-def dsn_documents(config, limits=None, driver=None):
+def dsn_documents(config, limits=None, driver=None, driver_manager=None):
     limits = limits_for(1) if limits is None else limits
     build_connection(config, limits)
     fields = {'DRIVER': 'ODBCPP Current44', 'SERVER': config['host'], 'PORT': '5439', 'DATABASE': config['database'], 'UID': config['test_user'], 'PWD': config['test_password'], 'SSL': '1', 'SSLCAFILE': config['ca'], 'TRANSPORTMODE': 'Sync', 'LoginTimeout': '5', 'QueryTimeout': '5'}
@@ -58,7 +58,11 @@ def dsn_documents(config, limits=None, driver=None):
     need(len(text.encode('utf-8')) <= 32768, 'dsn_bytes')
     driver = '/private/tmp/odbcpp-current44-checkpoint-native001/build/libodbcpp.1.0.0.dylib' if driver is None else driver
     need(type(driver) is str and Path(driver).is_absolute() and ('..' not in driver.split('/')) and (not any((x in driver for x in '\r\n\x00'))), 'dsn_driver')
-    return (text, '[ODBCPP Current44]\nDriver=' + driver + '\n')
+    registration = '[ODBCPP Current44]\nDriver=' + driver + '\n'
+    if driver_manager == 'iODBC':
+        # iODBC converts SQLWCHAR text by the driver's declared width.
+        registration += 'DriverUnicodeType=UCS4\n'
+    return (text, registration)
 
 def _pin(value):
     need(type(value) is dict and set(value) in ({'path', 'sha256'}, {'path', 'sha256', 'bytes'}) and (type(value['path']) is str) and Path(value['path']).is_absolute() and ('..' not in value['path'].split('/')) and (type(value['sha256']) is str) and (re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None), 'evidence_pin')
@@ -66,7 +70,8 @@ def _pin(value):
         need(type(value['bytes']) is int and 0 <= value['bytes'] <= 16 * 1024 * 1024, 'evidence_size')
 
 def validate_profile(profile):
-    need(type(profile) is dict and set(profile) in ({'profile_name', 'limits', 'connection_environment', 'uses_private_dsn', 'variables', 'review', 'private_input'}, {'profile_name', 'limits', 'connection_environment', 'uses_private_dsn', 'variables', 'review', 'private_input', 'emitted_resource_omissions'}), 'profile_schema')
+    base = {'profile_name', 'limits', 'connection_environment', 'uses_private_dsn', 'variables', 'review', 'private_input'}
+    need(type(profile) is dict and set(profile) - {'driver_manager'} in (base, base | {'emitted_resource_omissions'}), 'profile_schema')
     _pin(profile['review'])
     need(type(profile['profile_name']) is str and 0 < len(profile['profile_name']) <= 256, 'profile_name')
     limits = profile['limits']
@@ -87,7 +92,17 @@ def validate_profile(profile):
         need(kind == 'CORE_ENV' and type(omissions) is list and (omissions == ['MAXROWS', 'MAXCELLS', 'MAXRESPONSEBYTES', 'MAXRESPONSEMESSAGES']), 'emitted_resource_omissions')
         need(all((limits[k] == v for k, v in {'MAXROWS': 1000000, 'MAXCELLS': 4000000, 'MAXRESPONSEBYTES': 67108864, 'MAXRESPONSEMESSAGES': 100000}.items())), 'materialized_resolved_SDK_defaults')
     driver = private['driver']
-    if kind == 'CORE_ENV':
+    manager = profile.get('driver_manager')
+    if manager is not None:
+        # The owned driver loaded through an installed Driver Manager: by
+        # DRIVER= path for CORE_ENV, by the private DSN for OWN_DSN.
+        need(kind in ('CORE_ENV', 'OWN_DSN') and manager in ('iODBC', 'unixODBC'), 'driver_manager_profile')
+        need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'} and driver['kind'] == 'OWN' and (driver['wchar_bytes'] == (4 if manager == 'iODBC' else 2)), 'driver_manager_driver')
+        _pin({'path': driver['path'], 'sha256': driver['sha256']})
+        # iODBC 3.52.16 passes a braced DRIVER value to dlopen unchanged, so
+        # the path is emitted bare and must not need quoting.
+        need(not any((ch in driver['path'] for ch in ';{}=')) and driver['path'] == driver['path'].strip(), 'driver_manager_bare_path')
+    elif kind == 'CORE_ENV':
         need(driver is None, 'CORE_has_no_DM_driver')
     else:
         need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'}, 'profile_driver_schema')
@@ -135,7 +150,10 @@ def build_profile_connection(config, profile, *, password_rejection=False):
     if profile['private_input']['kind'] in ('CORE_ENV', 'OWN_DSN'):
         adapted = dict(config)
         adapted['test_password'] = values['PWD']
-        return build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
+        connection = build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
+        if profile.get('driver_manager') is not None:
+            connection = 'DRIVER=' + profile['private_input']['driver']['path'] + ';' + connection
+        return connection
     text = ''.join((k + '=' + field(v) + ';' for k, v in values.items()))
     maximum = 4096 if profile['private_input']['kind'] in ('OWN_DM_FILE', 'VENDOR_DM_FILE') else 16384
     need(0 < len(text.encode('utf-8')) <= maximum and (not any((c in text for c in '\x00\r\n'))), 'private_connection_size')
@@ -711,7 +729,9 @@ def timeout_native_sessions(record, spec, result):
         need(type(ms) is str and re.fullmatch('[0-9]{1,20}', ms) is not None and (int(ms) <= 18446744073709551615) and (int(ms) == 0 or int(ms) >= 3000), 'timeout_native_server_timeout')
     return sessions
 
-def timeout_stage(record, kind, sessions=()):
+def timeout_stage(record, kind, sessions=(), *, resource_kind='provisioned'):
+    from tools.development import redshift_session_sql as session_sql
+    need(resource_kind in ('provisioned', 'serverless'), 'timeout_resource_kind')
     r = validate_timeout_preowned(record)
     need(kind in ('timeout_before', 'timeout_after', 'timeout_cleanup'), 'timeout_stage_kind')
     need(type(sessions) in (tuple, list) and (not sessions if kind != 'timeout_after' else 2 <= len(sessions) <= 3), 'timeout_session_scope')
@@ -763,9 +783,25 @@ def timeout_stage(record, kind, sessions=()):
         q('SESSIONS', "SELECT EXISTS(SELECT 1 FROM stv_sessions WHERE user_name IN ('odbcpp_pilot_admin','odbcpp_pilot_test') AND db_name='odbcpp_pilot' AND process <> pg_backend_pid())")
         q('QUERIES', "SELECT EXISTS(SELECT 1 FROM stv_recents WHERE user_name IN ('odbcpp_pilot_admin','odbcpp_pilot_test') AND db_name='odbcpp_pilot' AND status <> 'Done' AND pid <> pg_backend_pid())")
         chunks.append('\\else\n\\echo RSFIX2|TIMEOUT_GATE|REFUSED\n\\endif\n\\else\n\\echo RSFIX2|TIMEOUT_GATE|REFUSED\n\\endif\n\\else\n\\echo RSFIX2|TIMEOUT_GATE|REFUSED\n\\endif\n\\else\n\\echo RSFIX2|TIMEOUT_GATE|REFUSED\n\\endif')
+    if resource_kind == 'serverless' and kind != 'timeout_before':
+        replacements = {
+            "SELECT EXISTS(SELECT 1 FROM stv_sessions WHERE user_name IN ('odbcpp_pilot_admin','odbcpp_pilot_test') AND db_name='odbcpp_pilot' AND process <> pg_backend_pid())": session_sql.session_zero_sql(),
+            "SELECT EXISTS(SELECT 1 FROM stv_recents WHERE user_name IN ('odbcpp_pilot_admin','odbcpp_pilot_test') AND db_name='odbcpp_pilot' AND status <> 'Done' AND pid <> pg_backend_pid())": session_sql.exists_sql(queries=True),
+        }
+        chunks = [replacements.get(chunk.rstrip(';'), chunk).rstrip(';') + ';'
+                  if chunk.rstrip(';') in replacements else chunk for chunk in chunks]
+        if kind == 'timeout_after':
+            old = 'SELECT process,starttime,user_name,db_name FROM stv_sessions WHERE process IN (' + ','.join(ids) + ') LIMIT 4;'
+            new = ('SELECT session_id,start_time,' + session_sql.name() +
+                   ",TRIM(database_name) FROM sys_session_history WHERE status='active'" +
+                   ' AND session_id IN (' + ','.join(ids) + ') LIMIT 4;')
+            chunks = [new if chunk == old else chunk for chunk in chunks]
+        chunks.insert(0, session_sql.binding(admin_oid=r['schema_owner_oid'], test_oid=r['owner_oid']))
+        count += 1
     return {'query': '\n'.join(chunks) + '\n', 'statements': count, 'role': 'test' if kind == 'timeout_before' else 'admin', 'keys': ('TIMEOUT_GATE',), 'stage': kind}
 
-def validate_timeout_frames(record, kind, frames):
+def validate_timeout_frames(record, kind, frames, *, resource_kind='provisioned'):
+    need(resource_kind in ('provisioned', 'serverless'), 'timeout_resource_kind')
     r = validate_timeout_preowned(record)
     prefix = 'TIMEOUT_GATE'
     expected = {'timeout_before': {'IDENTITY', 'SHAPE', 'ROWS_0', 'LOCKS'}, 'timeout_after': {'IDENTITY', 'SESSIONS', 'QUERIES', 'LOCKS', 'BIRTHS'}, 'timeout_cleanup': {'DROP', 'DROP_LOCKS', 'DROP_SHAPE', 'DROP_ROWS', 'DROP_ACK', 'IDENTITY', 'OID_ABSENT', 'SCHEMA_PRESENT', 'SESSIONS', 'QUERIES'}}
@@ -778,7 +814,8 @@ def validate_timeout_frames(record, kind, frames):
     if kind == 'timeout_before':
         need(frames.get((prefix, 'SHAPE')) == ['value|integer|NO|NULL'] and frames.get((prefix, 'ROWS_0')) == ['1|1|1'] and (frames.get((prefix, 'LOCKS')) == ['0']), 'timeout_current_shape_row_locks')
     else:
-        need(frames.get((prefix, 'SESSIONS')) == ['f'] and frames.get((prefix, 'QUERIES')) == ['f'], 'timeout_scoped_zero')
+        session_zero = [] if resource_kind == 'serverless' else ['f']
+        need(frames.get((prefix, 'SESSIONS')) == session_zero and frames.get((prefix, 'QUERIES')) == ['f'], 'timeout_scoped_zero')
         if kind == 'timeout_after':
             need(frames.get((prefix, 'LOCKS')) == ['0'] and frames.get((prefix, 'BIRTHS')) == [], 'timeout_active_or_reused_pid')
     return True

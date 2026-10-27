@@ -24,6 +24,7 @@ MODULES = ('windows_powerbi_contract.py', 'windows_powerbi_scope.py',
            'windows_powerbi_provider.py', 'windows_powerbi_owner.py')
 CANONICAL = ('windows_live_backend.py', 'windows_native_job.py', 'redshift_fixture_factory.py')
 SAMPLES = ('sample-connected', 'sample-navigator', 'sample-refresh')
+SERVERLESS_HOST = 'odbcpp-redshift-pilot.385207570137.eu-north-1.redshift-serverless.amazonaws.com'
 
 
 def need(value, code):
@@ -133,7 +134,8 @@ def validate_message(message, plan, plan_sha, now, check_clock=True):
              and 240 <= (end-now).total_seconds() <= plan['max_execution_seconds'], 'original_execution_horizon')
     closed(c, ('SERVER', 'PORT', 'DATABASE', 'UID', 'SSLCAFILE'), 'test_connection_no_password_or_admin')
     need(all(type(v) is str and 0 < len(v) <= 2048 and not any(x in v for x in '\r\n\0') for v in c.values()), 'bounded_connection')
-    need(re.fullmatch(r'[a-z0-9-]+\.[a-z0-9.-]+\.redshift\.amazonaws\.com', c['SERVER'])
+    need((re.fullmatch(r'[a-z0-9-]+\.[a-z0-9.-]+\.redshift\.amazonaws\.com', c['SERVER'])
+          or c['SERVER'] == SERVERLESS_HOST)
          and c['PORT'] == '5439' and c['DATABASE'] == 'odbcpp_pilot'
          and c['UID'] == 'odbcpp_pilot_test' and Path(c['SSLCAFILE']) == CA, 'exact_test_identity_tls')
     return a, c

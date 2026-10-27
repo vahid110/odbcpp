@@ -112,6 +112,45 @@ def config(directory):
 
 
 class Lifecycle(unittest.TestCase):
+    def test_serverless_closes_owned_activity_without_claiming_physical_pause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ops=Ops(directory, outcome=0)
+            ops.resource_kind='serverless'
+            def idle(end):
+                ops.calls.append('verify_idle')
+                return True
+            ops.verify_idle=idle
+            result=self.run_mock(directory,ops)
+            self.assertTrue(result['lifecycle_cleanup_complete'])
+            self.assertTrue(result['owned_activity_quiescent'])
+            self.assertFalse(result['paused_verified'])
+            self.assertFalse(result['physical_compute_idle_verified'])
+            self.assertNotIn('pause',ops.calls)
+            self.assertEqual(ops.calls.count('verify_idle'),1)
+
+    def test_serverless_unknown_readers_principals_zero_or_fixture_cannot_be_idle(self):
+        for boundary in ('reap','cleanup_principals','final_zero','fixture','verify_idle'):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                ops=Ops(directory, outcome=0);ops.resource_kind='serverless'
+                ops.verify_idle=mock.Mock(return_value=boundary!='verify_idle')
+                fixtures=Fixtures()
+                if boundary=='reap':
+                    ops.reap=lambda end:False
+                elif boundary=='cleanup_principals':
+                    ops.cleanup_principals=lambda end:{'complete':False}
+                elif boundary=='final_zero':
+                    ops.final_zero=lambda end:{'complete':False}
+                elif boundary=='fixture':
+                    fixtures.cleanup=lambda *args:{'complete':False}
+                result=self.run_mock(directory,ops,fixtures)
+                self.assertFalse(result['lifecycle_cleanup_complete'])
+                self.assertFalse(result['owned_activity_quiescent'])
+                self.assertFalse(result['paused_verified'])
+                self.assertNotIn('pause',ops.calls)
+                if boundary!='verify_idle':
+                    ops.verify_idle.assert_not_called()
+                self.assertEqual('close_inputs' in ops.calls,boundary!='reap')
+
     def test_native_collection_uses_one_backend_and_same_finally_cleanup(self):
         for code in (0, 8):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:

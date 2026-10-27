@@ -11,7 +11,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 sys.dont_write_bytecode = True
 REPO = Path(__file__).resolve().parents[2]
@@ -194,7 +203,7 @@ def main():
     report = output / 'extracted-driver-live.xml'
     subprocess.run([str(build / 'tests/it_crypto_profile_live'), '--gtest_output=xml:' + str(report)],
                    check=True, env=env, timeout=60)
-    root = ET.parse(report).getroot()
+    root = parse_xml_file(report)
     cases = list(root.iter('testcase'))
     if (len(cases) != 3 or {case.get('name') for case in cases} != {
             'CompletesVerifiedTlsScramQuery', 'RejectsUntrustedCertificate', 'RejectsHostnameMismatch'}

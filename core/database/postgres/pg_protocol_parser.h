@@ -58,6 +58,7 @@ public:
   Message parse_message(const std::vector<std::byte>& data) override;
   bool is_ready_for_query(const Message& msg) override;
   bool is_error_response(const Message& msg) override;
+  bool is_terminal_error_response(const Message& msg) override;
   std::string extract_error_message(const Message& msg) override;
   std::string extract_error_sqlstate(const Message& msg) override;
   ResultRows extract_query_results(

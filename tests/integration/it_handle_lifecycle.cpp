@@ -2,10 +2,13 @@
 #include <algorithm>
 #include <chrono>
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
-#include "tests/test_connection_config.h"
 #include "tests/test_handle_helpers.h"
+#endif
+#include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
 
 #include <array>
 #include <cstdint>
@@ -71,7 +74,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -97,13 +100,56 @@ std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle,
                              SQLSMALLINT record_number = 1) {
   SQLCHAR state[6]{};
   EXPECT_EQ(SQL_SUCCESS,
-            SQLGetDiagRec(handle_type, handle, record_number, state, nullptr,
-                          nullptr, 0, nullptr));
+            odbcpp::test::diag_rec(handle_type, handle, record_number, state,
+                                   nullptr, nullptr, 0, nullptr));
   return reinterpret_cast<const char*>(state);
 }
 
 SQLCHAR* test_dsn() {
   return odbcpp::test::configured_connection_string_data();
+}
+
+// The driver-connect output length the application sees for a truncated
+// output of `capacity` characters. iODBC 3.52.16 reports the characters it
+// copied instead of the total (DriverConnectOutputs, bucket I).
+std::string connect_output_text(std::string_view input) {
+  std::string expected(input);
+  if (odbcpp::test::dm::deviates(
+          odbcpp::test::dm::Deviation::DriverConnectAppendsSemicolon) &&
+      !expected.ends_with(';')) {
+    expected.push_back(';');
+  }
+  return expected;
+}
+
+std::size_t connect_output_length(std::string_view input, std::size_t capacity) {
+  const auto total = connect_output_text(input).size();
+  return odbcpp::test::dm::value(odbcpp::test::dm::Deviation::DriverConnectOutputs,
+                                 total, std::min(total, capacity - 1));
+}
+
+// The driver's driver-connect warnings, in the order the application reads
+// them. iODBC 3.52.16 drops them (bucket I); unixODBC 2.3.14 returns the
+// records it copied during the connect in reverse order (bucket Q).
+void expect_connect_warnings(SQLHDBC connection, std::vector<std::string> states) {
+  using odbcpp::test::dm::Deviation;
+  if (odbcpp::test::dm::deviates(Deviation::DriverConnectOutputs)) {
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_NO_DATA, odbcpp::test::diag_rec(SQL_HANDLE_DBC, connection, 1, state,
+                                                  nullptr, nullptr, 0, nullptr));
+    return;
+  }
+  if (odbcpp::test::dm::deviates(Deviation::ConnectRecordsReversed)) {
+    std::reverse(states.begin(), states.end());
+  }
+  for (std::size_t index = 0; index < states.size(); ++index) {
+    EXPECT_EQ(states[index], diagnostic_state(SQL_HANDLE_DBC, connection,
+                                              static_cast<SQLSMALLINT>(index + 1)));
+  }
+}
+
+SQLCHAR* test_server_name() {
+  return odbcpp::test::configured_server_name_data();
 }
 
 std::vector<SQLWCHAR> wide_ascii(const std::string& value) {
@@ -126,31 +172,31 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLConnectW(SQLHDBC connection, SQLWCHAR* server_name, SQLSMALLINT name_length1,
         SQLWCHAR* user_name, SQLSMALLINT name_length2, SQLWCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnectW(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnect(SQLHDBC connection, SQLHWND window_handle,
         SQLCHAR* connection_string_in, SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
         SQLSMALLINT buffer_length, SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnect(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnectW(SQLHDBC connection, SQLHWND window_handle,
         SQLWCHAR* connection_string_in, SQLSMALLINT string_length1,
         SQLWCHAR* connection_string_out, SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
         SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnectW(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLEndTran(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT completion) {
       if (type == SQL_HANDLE_DBC && !fixture_connection_budget(fixture_end_, handle, false)) return SQL_ERROR;
@@ -187,7 +233,7 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
                             reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    const auto result = SQLConnect(connection_, test_dsn(), SQL_NTS,
+    const auto result = SQLConnect(connection_, test_server_name(), SQL_NTS,
                                    nullptr, 0, nullptr, 0);
     if (result != SQL_SUCCESS) {
       GTEST_SKIP() << "Database connection failed";
@@ -211,10 +257,18 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
 TEST_F(HandleLifecycleIntegrationTest,
        ConnectedConnectionCannotBeFreedOrConnectedAgain) {
   EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+  // iODBC 3.52.16 frees the connection although it reports SQL_ERROR (ASan:
+  // double free on the next free). Any further call would read freed memory,
+  // so the case ends here and TearDown must not free the handle again.
+  if (odbcpp::test::dm::stops_case(
+          odbcpp::test::dm::Deviation::FreeConnectedConnectionInvalidatesHandle)) {
+    connection_ = SQL_NULL_HDBC;
+    return;
+  }
   EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
   EXPECT_EQ(SQL_ERROR,
-            SQLConnect(connection_, test_dsn(), SQL_NTS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
@@ -228,17 +282,17 @@ TEST_F(HandleLifecycleIntegrationTest,
   auto wrong_password =
       reinterpret_cast<SQLCHAR*>(const_cast<char*>("wrong-password"));
   EXPECT_EQ(SQL_ERROR,
-            SQLConnect(connection_, test_dsn(), SQL_NTS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS,
                        missing_user, SQL_NTS, wrong_password, SQL_NTS));
   EXPECT_EQ("28000", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(connection_, test_dsn(), SQL_NTS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
 
   auto wide_dsn =
-      wide_ascii(odbcpp::test::configured_connection_string());
+      wide_ascii(odbcpp::test::configured_server_name());
   auto wide_user = wide_ascii("odbcpp_missing_wide_login_role");
   auto wide_password = wide_ascii("wrong-password");
   EXPECT_EQ(SQL_ERROR,
@@ -295,11 +349,23 @@ TEST_F(HandleLifecycleIntegrationTest,
             SQLAllocHandle(SQL_HANDLE_DESC, connection_, &descriptor));
 
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+  // A manager owns these application handles and may release their storage
+  // at disconnect. Driver tombstones cannot make a manager's freed pointer safe.
+  RecordProperty("dm_unreachable_probe", "driver-only child handle tombstone validation");
+#else
   EXPECT_EQ(SQL_INVALID_HANDLE,
             SQLFreeHandle(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_INVALID_HANDLE,
             SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+#endif
   statement_ = SQL_NULL_HSTMT;
+  // The connection remains reusable even though its old children are gone.
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnect(connection_, test_server_name(), SQL_NTS, nullptr, 0, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DESC, connection_, &descriptor));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
 }
 
 TEST_F(HandleLifecycleIntegrationTest,
@@ -337,9 +403,9 @@ class ConnectionAttributeIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLSetConnectAttr(SQLHDBC connection, SQLINTEGER attribute, SQLPOINTER value, SQLINTEGER length) {
       if ((attribute == SQL_ATTR_AUTOCOMMIT || attribute == SQL_ATTR_TXN_ISOLATION) &&
@@ -366,7 +432,7 @@ TEST_F(ConnectionAttributeIntegrationTest,
             SQLSetConnectAttr(connection, SQL_ATTR_CURRENT_CATALOG,
                               catalog, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(connection, test_dsn(), SQL_NTS,
+            SQLConnect(connection, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
 
   SQLUINTEGER dead = SQL_CD_TRUE;
@@ -484,7 +550,49 @@ TEST_F(HandleLifecycleIntegrationTest,
             SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
                               sizeof(dead), nullptr));
   EXPECT_EQ(SQL_CD_TRUE, dead);
-  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+  const auto disconnected = SQLDisconnect(connection_);
+  EXPECT_EQ(SQL_SUCCESS, disconnected);
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+  if (disconnected == SQL_SUCCESS) {
+    statement_ = SQL_NULL_HSTMT;
+  }
+#endif
+}
+
+// SQL_ATTR_LOGIN_TIMEOUT is a 32-bit SQLUINTEGER and the driver writes 4
+// bytes. iODBC 3.52.16 answers it itself before connect and writes 8
+// (LoginTimeoutWritesEightBytes), which overwrote the neighbouring stack slot
+// in the fixture budget helpers until they read it through wider storage.
+TEST_F(ConnectionAttributeIntegrationTest, LoginTimeoutOutputWidth) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  alignas(SQLULEN) unsigned char storage[2 * sizeof(SQLULEN)];
+  std::memset(storage, 0xab, sizeof(storage));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, storage,
+                              static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)),
+                              nullptr));
+  std::size_t written = 0;
+  for (std::size_t index = 0; index < sizeof(storage); ++index) {
+    if (storage[index] != 0xab) {
+      written = index + 1;
+    }
+  }
+  EXPECT_EQ(odbcpp::test::dm::value(
+                odbcpp::test::dm::Deviation::LoginTimeoutWritesEightBytes,
+                sizeof(SQLUINTEGER), sizeof(SQLULEN)),
+            written);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
 class DriverConnectIntegrationTest : public ::testing::Test {
@@ -497,31 +605,31 @@ class DriverConnectIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLConnectW(SQLHDBC connection, SQLWCHAR* server_name, SQLSMALLINT name_length1,
         SQLWCHAR* user_name, SQLSMALLINT name_length2, SQLWCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnectW(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnect(SQLHDBC connection, SQLHWND window_handle,
         SQLCHAR* connection_string_in, SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
         SQLSMALLINT buffer_length, SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnect(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLDriverConnectW(SQLHDBC connection, SQLHWND window_handle,
         SQLWCHAR* connection_string_in, SQLSMALLINT string_length1,
         SQLWCHAR* connection_string_out, SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
         SQLUSMALLINT driver_completion) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLDriverConnectW(connection, window_handle, connection_string_in, string_length1,
-              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR;
+              connection_string_out, buffer_length, string_length2, driver_completion) : SQL_ERROR);
     }
     SQLRETURN SQLEndTran(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT completion) {
       if (type == SQL_HANDLE_DBC && !fixture_connection_budget(fixture_end_, handle, false)) return SQL_ERROR;
@@ -576,8 +684,9 @@ TEST_F(DriverConnectIntegrationTest,
                   connection, nullptr, test_dsn(), SQL_NTS, output,
                   static_cast<SQLSMALLINT>(sizeof(output)), &output_length,
                   completion));
-    EXPECT_STREQ(input, reinterpret_cast<const char*>(output));
-    EXPECT_EQ(std::strlen(input), static_cast<std::size_t>(output_length));
+    const auto expected = connect_output_text(input);
+    EXPECT_EQ(expected, reinterpret_cast<const char*>(output));
+    EXPECT_EQ(expected.size(), static_cast<std::size_t>(output_length));
     EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   }
@@ -605,9 +714,10 @@ TEST_F(DriverConnectIntegrationTest,
                              &output_length,
                              SQL_DRIVER_NOPROMPT));
   EXPECT_STREQ("DSN", reinterpret_cast<const char*>(output));
-  EXPECT_EQ(std::strlen(reinterpret_cast<const char*>(test_dsn())),
+  EXPECT_EQ(connect_output_length(reinterpret_cast<const char*>(test_dsn()),
+                                  sizeof(output)),
             static_cast<std::size_t>(output_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  expect_connect_warnings(connection, {"01004"});
 
   SQLCHAR untouched[]{'k', 'e', 'e', 'p', 0};
   output_length = 77;
@@ -659,7 +769,7 @@ TEST_F(DriverConnectIntegrationTest,
             SQLDriverConnect(
                 connection, nullptr, test_dsn(), input_length, nullptr, 0,
                 &output_length, SQL_DRIVER_NOPROMPT));
-  EXPECT_EQ(input_length, output_length);
+  EXPECT_EQ(connect_output_text(input).size(), static_cast<std::size_t>(output_length));
   release_connection(connection);
 
   output_length = -1;
@@ -671,8 +781,10 @@ TEST_F(DriverConnectIntegrationTest,
                 connection, nullptr, test_dsn(), input_length,
                 ansi_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, ansi_terminator[0]);
-  EXPECT_EQ(input_length, output_length);
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(connect_output_length(input,
+                                  sizeof(ansi_terminator)),
+            static_cast<std::size_t>(output_length));
+  expect_connect_warnings(connection, {"01004"});
   release_connection(connection);
 
   output_length = -1;
@@ -683,7 +795,7 @@ TEST_F(DriverConnectIntegrationTest,
                 connection, nullptr,
                 const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
                 nullptr, 0, &output_length, SQL_DRIVER_NOPROMPT));
-  EXPECT_EQ(wide_input_length, output_length);
+  EXPECT_EQ(connect_output_text(input).size(), static_cast<std::size_t>(output_length));
   release_connection(connection);
 
   output_length = -1;
@@ -696,8 +808,10 @@ TEST_F(DriverConnectIntegrationTest,
                 const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
                 wide_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, wide_terminator[0]);
-  EXPECT_EQ(wide_input_length, output_length);
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(connect_output_length(input,
+                                  std::size(wide_terminator)),
+            static_cast<std::size_t>(output_length));
+  expect_connect_warnings(connection, {"01004"});
   release_connection(connection);
 
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
@@ -726,9 +840,9 @@ TEST_F(DriverConnectIntegrationTest,
                 SQL_NTS, ansi_output, 1, &ansi_output_length,
                 SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, ansi_output[0]);
-  EXPECT_EQ(input.size(), static_cast<std::size_t>(ansi_output_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
-  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection, 2));
+  EXPECT_EQ(connect_output_length(input, sizeof(ansi_output)),
+            static_cast<std::size_t>(ansi_output_length));
+  expect_connect_warnings(connection, {"01004", "01S00"});
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
 
@@ -742,10 +856,9 @@ TEST_F(DriverConnectIntegrationTest,
                               wide_output, 1, &wide_output_length,
                               SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(0, wide_output[0]);
-  EXPECT_EQ(wide_input.size() - 1,
+  EXPECT_EQ(connect_output_length(input, std::size(wide_output)),
             static_cast<std::size_t>(wide_output_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
-  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection, 2));
+  expect_connect_warnings(connection, {"01004", "01S00"});
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
@@ -761,9 +874,9 @@ class EnvironmentTransactionIntegrationTest : public ::testing::Test {
     SQLRETURN SQLConnect(SQLHDBC connection, SQLCHAR* server_name, SQLSMALLINT name_length1,
         SQLCHAR* user_name, SQLSMALLINT name_length2, SQLCHAR* authentication,
         SQLSMALLINT name_length3) {
-      return fixture_connection_budget(fixture_end_, connection, true)
+      return odbcpp::test::note_connect(connection, fixture_connection_budget(fixture_end_, connection, true)
           ? ::SQLConnect(connection, server_name, name_length1, user_name, name_length2,
-              authentication, name_length3) : SQL_ERROR;
+              authentication, name_length3) : SQL_ERROR);
     }
     SQLRETURN SQLEndTran(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT completion) {
       if (type == SQL_HANDLE_DBC && !fixture_connection_budget(fixture_end_, handle, false)) return SQL_ERROR;
@@ -803,10 +916,10 @@ TEST_F(EnvironmentTransactionIntegrationTest,
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &second_connection));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(first_connection, test_dsn(), SQL_NTS,
+            SQLConnect(first_connection, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(second_connection, test_dsn(), SQL_NTS,
+            SQLConnect(second_connection, test_server_name(), SQL_NTS,
                        nullptr, 0, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_STMT, first_connection,
@@ -909,6 +1022,8 @@ TEST_F(EnvironmentTransactionIntegrationTest,
 
 }  // namespace
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
+// Backend session health is observable only through the test access view.
 TEST_F(HandleLifecycleIntegrationTest, ActiveHealthProbePreservesTransactionState) {
   using namespace rs::core::database;
   auto handle = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(connection_);
@@ -954,3 +1069,4 @@ TEST_F(HandleLifecycleIntegrationTest, ExpiredHealthDeadlineRetiresWithoutReconn
   EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
   EXPECT_EQ(BackendOperation::CheckHealth, closed.backend_error().operation);
 }
+#endif

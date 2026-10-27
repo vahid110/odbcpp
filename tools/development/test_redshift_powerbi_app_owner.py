@@ -138,6 +138,63 @@ class Bridge:
 
 
 class Controls(unittest.TestCase):
+    def test_serverless_complete_collection_closes_owned_activity_without_pause(self):
+        self.setUp()
+        self.ops.resource_kind='serverless'
+        def idle(end):
+            self.ops.events.append('verify_owned_idle')
+            self.ops.final_zero(end)
+            return True
+        self.ops.verify_idle=idle
+        result=self.run_owner()
+        self.assertTrue(result['execution_complete'])
+        self.assertTrue(result['cleanup_complete'])
+        self.assertTrue(result['owned_activity_quiescent'])
+        self.assertFalse(result['paused_verified'])
+        self.assertFalse(result['physical_compute_idle_verified'])
+        self.assertNotIn('pause_verified',self.ops.events)
+        self.assertEqual(self.ops.events.count('verify_owned_idle'),1)
+        self.assertLess(self.ops.events.index('fixture_retire'),
+                        self.ops.events.index('verify_owned_idle'))
+
+    def test_serverless_unknown_reader_principal_cap_or_idle_blocks_cleanup_acceptance(self):
+        for failure in ('reader','principal','cap','idle'):
+            with self.subTest(failure=failure):
+                self.setUp();self.ops.resource_kind='serverless'
+                idle=unittest.mock.Mock(return_value=failure!='idle')
+                self.ops.verify_idle=idle
+                if failure=='reader':
+                    self.bridge.events=[{'kind':'foreign'}]
+                    self.bridge.stopped_readers_known=False
+                elif failure in ('principal','cap'):
+                    self.ops.cleanup_principals=lambda end:{'complete':failure!='principal',
+                        'cap_cleanup':{'complete':failure!='cap'}}
+                result=self.run_owner()
+                self.assertFalse(result['cleanup_complete'])
+                self.assertFalse(result['owned_activity_quiescent'])
+                self.assertFalse(result['paused_verified'])
+                self.assertNotIn('pause_verified',self.ops.events)
+                if failure!='idle':
+                    idle.assert_not_called()
+
+    def test_serverless_working_inputs_retire_only_after_verified_mode_closure(self):
+        for idle_known in (True,False):
+            with self.subTest(idle_known=idle_known):
+                self.setUp();self.ops.resource_kind='serverless'
+                self.ops.verify_idle=lambda end:idle_known
+                inputs=unittest.mock.Mock()
+                inputs.retire.return_value=True
+                with patch.object(owner.fixtures,'prepare',return_value={'prepared':True}), \
+                     patch.object(owner.fixtures,'cleanup',return_value={'complete':True}):
+                    result=owner.collect(self.ops,self.bridge,self.deadlines,working_inputs=inputs)
+                self.assertEqual(result['cleanup_complete'],idle_known)
+                self.assertFalse(result['paused_verified'])
+                inputs.close.assert_called_once()
+                if idle_known:
+                    inputs.retire.assert_called_once_with(True)
+                else:
+                    inputs.retire.assert_not_called()
+
     def setUp(self):
         self.ops = Ops()
         self.bridge = Bridge(self.ops)

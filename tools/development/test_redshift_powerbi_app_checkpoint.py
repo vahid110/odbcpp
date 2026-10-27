@@ -86,6 +86,24 @@ class Controls(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'complete_fixed_app'):
             entry.read_plan(self.path)
 
+    def test_manifest_retains_the_canonical_validation_route_and_detects_tampering(self):
+        checkpoint = dict(self.checkpoint, tools={}, authority_receipts={},
+                          ca_sha256='c'*64, security_groups=[])
+        for name in ('index', 'expected', 'profiles', 'specs',
+                     'checkpoint_expected', 'checkpoint_partitions'):
+            checkpoint[name] = self.write(name+'.json', {})
+        for route in ('ci_receipt', 'local_validation'):
+            with self.subTest(route=route):
+                ref = self.write(route+'.json', {'route': route})
+                selected = dict(checkpoint, **{route: ref})
+                _, manifest = entry._manifest(self.plan, selected, self.path)
+                self.assertEqual(ref['sha256'], manifest['pins'][ref['path']])
+                self.assertEqual(self.plan['native_plan']['sha256'],
+                                 manifest['pins'][self.plan['native_plan']['path']])
+                Path(ref['path']).write_text('changed evidence')
+                with self.assertRaisesRegex(RuntimeError, 'public_binding_changed'):
+                    entry._manifest(self.plan, selected, self.path)
+
     def test_wrong_source_or_partition_does_not_inherit_inventory(self):
         self.checkpoint['partition'] = 'native'
         with self.assertRaisesRegex(RuntimeError, 'same_source_complete_checkpoint'):

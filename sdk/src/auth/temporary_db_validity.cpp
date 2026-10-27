@@ -44,18 +44,14 @@ std::string_view TimeConversion::safe_message(TimeFailure failure) noexcept {
   }
   return "Temporary credential time input malformed";
 }
-TimeConversion convert_temporary_db_validity(const Request& request, UtcInstant expiry,
-    const TemporaryClockSample& sample, const TemporaryTimePolicy& policy,
+TimeConversion convert_temporary_validity(rs::util::Deadline deadline, rs::util::Clock::duration headroom,
+    UtcInstant expiry, const TemporaryClockSample& sample, const TemporaryTimePolicy& policy,
     const Cancellation* cancel) noexcept {
-  if (cancel && cancel->stop_requested()) return TimeFailure::Cancelled;
-  if (request.binding().invariant_error()) return TimeFailure::InvalidInput;
-  if (request.binding().method() != Method::TemporaryDatabasePassword ||
-      request.binding().target().service != Service::Redshift) return TimeFailure::UnsupportedMethod;
   if (!policy_limit(policy.max_age) || !policy_limit(policy.max_bracket) ||
       !policy_limit(policy.max_total_error) || !policy_limit(policy.max_horizon) ||
       policy.max_horizon == std::chrono::microseconds::zero() ||
-      !finite(request.deadline()) || request.headroom() < rs::util::Clock::duration::zero() ||
-      request.headroom() > std::chrono::hours{24}) return TimeFailure::InvalidInput;
+      !finite(deadline) || headroom < rs::util::Clock::duration::zero() ||
+      headroom > std::chrono::hours{24}) return TimeFailure::InvalidInput;
   if (!finite(sample.before) || !finite(sample.after) || !finite(sample.acquisition_completed) ||
       !finite(sample.now) || (sample.previous_monotonic_sample && !finite(*sample.previous_monotonic_sample)))
     return TimeFailure::InvalidInput;
@@ -85,13 +81,22 @@ TimeConversion convert_temporary_db_validity(const Request& request, UtcInstant 
   if (remaining > policy.max_horizon.count()) return TimeFailure::InvalidInput;
   Rep duration = 0, converted = 0, required = 0;
   if (!to_ticks(remaining, duration) || !add(ticks(sample.before), duration, converted) ||
-      !add(ticks(request.deadline()), request.headroom().count(), required)) return TimeFailure::Overflow;
+      !add(ticks(deadline), headroom.count(), required)) return TimeFailure::Overflow;
   const auto until = rs::util::Deadline{rs::util::Clock::duration{converted}};
   const auto required_until = rs::util::Deadline{rs::util::Clock::duration{required}};
   if (!finite(until) || !finite(required_until)) return TimeFailure::Overflow;
   if (duration == 0 || until <= sample.now || until <= sample.acquisition_completed ||
-      sample.now >= request.deadline() || required_until >= until) return TimeFailure::Expired;
+      sample.now >= deadline || required_until >= until) return TimeFailure::Expired;
   if (cancel && cancel->stop_requested()) return TimeFailure::Cancelled;
   return Validity::monotonic(sample.acquisition_completed, until);
+}
+TimeConversion convert_temporary_db_validity(const Request& request, UtcInstant expiry,
+    const TemporaryClockSample& sample, const TemporaryTimePolicy& policy,
+    const Cancellation* cancel) noexcept {
+  if (cancel && cancel->stop_requested()) return TimeFailure::Cancelled;
+  if (request.binding().invariant_error()) return TimeFailure::InvalidInput;
+  if (request.binding().method() != Method::TemporaryDatabasePassword ||
+      request.binding().target().service != Service::Redshift) return TimeFailure::UnsupportedMethod;
+  return convert_temporary_validity(request.deadline(), request.headroom(), expiry, sample, policy, cancel);
 }
 } // namespace rs::core::auth

@@ -36,6 +36,11 @@
 namespace rs::odbc {
 namespace detail { struct MetadataEpochIdentity {}; struct PendingInputSessionIdentity {}; }
 using rs::core::database::SqlTranslationError;
+
+std::string ODBCHandle::valid_diagnostic_text(const std::string& message) {
+  return rs::util::replace_invalid_utf8(message);
+}
+
 namespace {
 
 std::atomic<std::uint64_t> next_connection_id{1};
@@ -3161,7 +3166,7 @@ SQLRETURN ODBCDescriptor::get_record(
     SQLSMALLINT record_number, SQLCHAR* name, SQLSMALLINT buffer_length,
     SQLSMALLINT* string_length, SQLSMALLINT* type, SQLSMALLINT* subtype,
     SQLLEN* length, SQLSMALLINT* precision, SQLSMALLINT* scale,
-    SQLSMALLINT* nullable) {
+    SQLSMALLINT* nullable, std::string* name_out) {
   if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetDescRec",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -3178,6 +3183,8 @@ SQLRETURN ODBCDescriptor::get_record(
   }
 
   const auto& record = *numbered_record(record_number);
+  // Wide adapters convert the full name; the SQLSMALLINT length is clamped.
+  if (name_out) *name_out = record.name;
   if (string_length) {
     store_application_value(
         string_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
@@ -4304,17 +4311,32 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_METADATA_ID:
       write_ulen(metadata_id_ ? SQL_TRUE : SQL_FALSE); break;
     case SQL_ATTR_ROW_NUMBER:
-      if (cursor_type_ == SQL_CURSOR_STATIC && !row_positioned_) {
+      if (!executed_ || column_info_.empty()) {
+        set_error(SQLSTATE_INVALID_CURSOR_STATE,
+                  "Cursor is not open on a result set");
+        return SQL_ERROR;
+      }
+      if (row_positioned_) {
+        write_ulen(static_cast<SQLULEN>(current_row_ + selected_row_slot_));
+        break;
+      }
+      if (bulk_unpositioned_) {
+        if (fetch_failed_) {
+          set_error("HY109", "The requested row could not be fetched");
+          return SQL_ERROR;
+        }
+        // A sparse bulk bookmark rowset has no contiguous current row; the
+        // attribute description's cannot-be-determined case governs.
         write_ulen(0);
         break;
       }
-      if (!executed_ || column_info_.empty() || !row_positioned_) {
-        set_error(SQLSTATE_INVALID_CURSOR_STATE,
-                  "Cursor is not positioned on a row");
+      if (fetch_failed_) {
+        set_error("HY109", "The requested row could not be fetched");
         return SQL_ERROR;
       }
-      write_ulen(static_cast<SQLULEN>(current_row_ + selected_row_slot_));
-      break;
+      set_error(SQLSTATE_INVALID_CURSOR_STATE,
+                "Cursor is not positioned on a row");
+      return SQL_ERROR;
     case SQL_ATTR_ROW_OPERATION_PTR:
       write_pointer(descriptor(app_row_descriptor_)->array_status_ptr()); break;
     case SQL_ATTR_ROW_STATUS_PTR:
@@ -4509,6 +4531,7 @@ SQLRETURN ODBCStatement::bulk_operations(SQLSMALLINT operation) {
   // Commit only after allocation, capture and complete address preflight.
   // Bulk slots are not a contiguous rowset and cannot authorize GetData/SetPos.
   bulk_unpositioned_ = true;
+  fetch_failed_ = false;
   row_positioned_ = false; current_row_ = 0;
   actual_fetched_rows_ = 0; selected_row_slot_ = 0;
   get_data_column_ = 0; get_data_offset_ = 0; get_data_target_type_ = 0;
@@ -4540,6 +4563,7 @@ SQLRETURN ODBCStatement::bulk_operations(SQLSMALLINT operation) {
     if (rc == SQL_ERROR) ++errors;
     else if (rc == SQL_SUCCESS_WITH_INFO) warning = true;
   }
+  fetch_failed_ = errors == count;
   return errors == count ? SQL_ERROR : errors || warning ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
 }
 
@@ -4588,7 +4612,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
   }
   std::size_t bookmark_row = 0;
   if (orientation == SQL_FETCH_BOOKMARK) {
-    if (!fetch_bookmark_ptr_) { set_error("HY111", "Bookmark input is absent"); return SQL_ERROR; }
+    if (!fetch_bookmark_ptr_) { fetch_failed_ = true; set_error("HY111", "Bookmark input is absent"); return SQL_ERROR; }
     const auto address = reinterpret_cast<std::uintptr_t>(fetch_bookmark_ptr_);
     if (bookmark_bytes > (std::numeric_limits<std::uintptr_t>::max)() - address) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark input address span is out of range"); return SQL_ERROR;
@@ -4599,6 +4623,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
     if (!active_bookmark_generation_ || bookmark_integer(token.data()) != bookmark_statement_id_ ||
         bookmark_integer(token.data() + 8) != active_bookmark_generation_ || ordinal == 0 ||
         ordinal > result_rows_.size()) {
+      fetch_failed_ = true;
       set_error("HY111", "Bookmark does not identify this owning result"); return SQL_ERROR;
     }
     bookmark_row = static_cast<std::size_t>(ordinal - 1);
@@ -4806,6 +4831,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
     rowset_exhausted_ = true;
     if (cursor_type_ == SQL_CURSOR_STATIC) current_row_ = 0;
     row_positioned_ = false;
+    fetch_failed_ = false;
     if (fetched) store_application_value(fetched, static_cast<SQLULEN>(0));
     return SQL_NO_DATA;
   }
@@ -4815,6 +4841,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
   current_row_ = start + 1; // Current row is the FIRST row of the rowset.
   fetched_rowset_size_ = size;
   row_positioned_ = true;
+  fetch_failed_ = false;
   get_data_column_ = 0;
   get_data_offset_ = 0;
   get_data_target_type_ = 0;
@@ -5154,6 +5181,7 @@ SQLRETURN ODBCStatement::more_results() {
       // count or later array results visible when c_api_guard reports an error.
       pending_results_.clear(); executed_ = false; affected_rows_ = 0;
       row_positioned_ = false; current_row_ = 0;
+      fetch_failed_ = false;
       try { clear_current_result(); } catch (...) {}
       try { conn_->close_connection(); } catch (...) {}
     }
@@ -7860,6 +7888,7 @@ void ODBCStatement::apply_query_result(
   selected_row_slot_ = 0;
   rowset_exhausted_ = false;
   row_positioned_ = false;
+  fetch_failed_ = false;
   get_data_column_ = 0;
   get_data_offset_ = 0;
   get_data_target_type_ = 0;
@@ -8034,6 +8063,7 @@ void ODBCStatement::clear_current_result() {
   selected_row_slot_ = 0;
   rowset_exhausted_ = false;
   row_positioned_ = false;
+  fetch_failed_ = false;
   affected_rows_ = 0;
   executed_ = false;
   prepared_metadata_available_ = false;
@@ -8633,6 +8663,22 @@ SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
 SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
                                      SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
                                      SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  return describe_col_impl(column_number, column_name, name_buffer_length, name_length,
+                           data_type, column_size, decimal_digits, nullable, nullptr);
+}
+
+SQLRETURN ODBCStatement::describe_col_name(SQLUSMALLINT column_number, std::string& name,
+                                          SQLSMALLINT* data_type, SQLULEN* column_size,
+                                          SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  return describe_col_impl(column_number, nullptr, 0, nullptr, data_type, column_size,
+                           decimal_digits, nullable, &name);
+}
+
+SQLRETURN ODBCStatement::describe_col_impl(SQLUSMALLINT column_number, SQLCHAR* column_name,
+                                          SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+                                          SQLSMALLINT* data_type, SQLULEN* column_size,
+                                          SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable,
+                                          std::string* name_out) {
   if (name_buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
               "Invalid column-name buffer length");
@@ -8660,9 +8706,10 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
     column_name[copy_len] = '\0';
   }
   
+  if (name_out) *name_out = col.name;
   if (name_length) {
-    store_application_value(name_length,
-                            static_cast<SQLSMALLINT>(col.name.length()));
+    store_application_value(name_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
+        col.name.length(), std::numeric_limits<SQLSMALLINT>::max())));
   }
   if (data_type) {
     store_application_value(data_type, static_cast<SQLSMALLINT>(col.sql_type));
@@ -8691,6 +8738,20 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
 SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                                       SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                                       SQLSMALLINT* string_length, SQLLEN* numeric_attribute) {
+  return col_attribute_impl(column_number, field_identifier, character_attribute,
+                            buffer_length, string_length, numeric_attribute, nullptr);
+}
+
+SQLRETURN ODBCStatement::col_attribute_text(SQLUSMALLINT column_number,
+                                            SQLUSMALLINT field_identifier, std::string& text) {
+  return col_attribute_impl(column_number, field_identifier, nullptr, 0, nullptr,
+                            nullptr, &text);
+}
+
+SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                                           SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
+                                           SQLSMALLINT* string_length, SQLLEN* numeric_attribute,
+                                           std::string* text_out) {
   if (!is_known_column_attribute(field_identifier)) {
     set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
               "Invalid column attribute identifier");
@@ -8758,9 +8819,10 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
       std::memcpy(character_attribute, text->c_str(), copy_len);
       static_cast<char*>(character_attribute)[copy_len] = '\0';
     }
+    if (text_out) *text_out = *text;
     if (string_length) {
-      store_application_value(
-          string_length, static_cast<SQLSMALLINT>(text->length()));
+      store_application_value(string_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          text->length(), std::numeric_limits<SQLSMALLINT>::max())));
     }
     if (character_attribute && !text->empty() &&
         static_cast<std::size_t>(buffer_length) <= text->length()) {

@@ -3,8 +3,8 @@
 This is the canonical workflow, approved 2026-10-20. It replaces the historical
 policies linked from [the archive](docs/history/workflow-2026-10-19/README.md).
 [AGENTS.md](AGENTS.md) carries durable architecture, evidence and authority rules.
-**Product development and unfinished migration integration remain PAUSED until
-the human explicitly resumes them**, even after this workflow is ready.
+Current human task authorizations and holds govern execution, as described in
+AGENTS.md. Workflow readiness alone never resumes a held task.
 
 ## One bounded task
 
@@ -115,11 +115,14 @@ Preserve unresolved cleanup as concrete debt. Inventory retained build artifacts
 and exact obsolete retirement candidates; do not delete evidence to simplify state.
 Integrate reviewed exact bytes only when authorized and the intended gates pass.
 Report the source, changed behavior, actual checks, remaining limits and next step.
-Workflow replacement readiness leaves product and migration integration PAUSED.
+At closure, preserve any holds outside the authorized task.
 
-Current preserved migration debt: main `0b330e4` remains separate from candidate
+Historical migration snapshot recorded for the 2026-10-20 workflow replacement
+(not current qualification status): main `0b330e4` remained separate from candidate
 `a243001`; six builds and five complete local suites passed, while the final native
 PostgreSQL suite was interrupted after 121/127 and its replacement never started.
 Its exact registry fixtures remain installed pending separately authorized cleanup.
 The original 1,548 live passes and accepted GUI-only reuse proof are retained;
-this workflow refactor does not claim its new controls actually executed live.
+that workflow refactor did not claim its new controls actually executed live.
+Use the compact current private handoff for current source, results and unresolved
+debt; it grants no resource authority.

@@ -7,10 +7,12 @@ bounded implementation or qualification. Earlier policies are
 
 ## Current authority
 
-Product, feature, Auth, roadmap work and the unfinished migration integration
-are **PAUSED**. Only the human-authorized workflow replacement is active.
-Workflow readiness does not resume product work. No pushes, PRs, cloud/Auth/live
-execution, new timers, watchers or billing probes in this batch.
+Current human instructions determine the active task and its holds. The
+workflow-replacement-only hold dated 2026-10-20 was scoped to that batch; it does
+not revoke later human authorization. Resuming one task does not resume unrelated
+held work. Pushes, PRs and cloud/Auth/live execution remain subject to the current
+task authorization and applicable resource constraints. Workflow readiness grants
+no additional authority. No new timers, persistent watchers or billing probes.
 Keep the existing migration candidate, DSN GUI changes, builds, failures and
 protected inputs intact. The compact private handoff records current source and
 qualification debt; a goal or handoff grants no resource authority.

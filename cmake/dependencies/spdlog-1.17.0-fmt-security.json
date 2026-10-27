@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "description": "spdlog 1.17.0 bundled fmt 12.1.0 + four upstream security fixes (not fmt 12.2.0)",
+  "archive_sha256": "b11912a82d149792fef33fabd0503b13d54aeac25c1464755461d4108ea71fc2",
+  "files": [
+    {
+      "path": "include/spdlog/fmt/bundled/base.h",
+      "base_sha256": "892fcc48f31a80382f0e304e427d68d2fd62a2d78aef142020199120db5269fb",
+      "result_sha256": "a64ff86b82a7e8d9e9df836b9f2fe7a17c7313dd2b52f9d58ce48730b6b8e9a6",
+      "hunks": [
+        {
+          "upstream_commit": "128ba144ab85ddd0ad9ea39f2febdfb51802cb1b",
+          "before": "      if (id < max_size()) arg = args_[id];",
+          "after": "      if (unsigned(id) < unsigned(max_size())) arg = args_[id];"
+        }
+      ]
+    },
+    {
+      "path": "include/spdlog/fmt/bundled/printf.h",
+      "base_sha256": "afddb422a86125e04a7260bb0f0ae3423ea8d591181ed5d4ef60b7a5d068993a",
+      "result_sha256": "7088f9840ba6e1d5b5dc465830217cd2bd15231258c70cb7113e963ef03fb626",
+      "hunks": [
+        {
+          "upstream_commit": "dc05bee30755bb993add7ed90845d87c2315f9c6",
+          "before": "  int arg_index = -1;\n  Char c = *it;",
+          "after": "  int arg_index = -1;\n  if (it == end) return arg_index;\n  Char c = *it;"
+        },
+        {
+          "upstream_commit": "4ccf1d4faf977a77f157fcad2b96b663109f59cb",
+          "before": "    auto specs = format_specs();\n    specs.set_align(align::right);",
+          "after": "    if (it == end) report_error(\"invalid format string\");\n\n    auto specs = format_specs();\n    specs.set_align(align::right);"
+        }
+      ]
+    },
+    {
+      "path": "include/spdlog/fmt/bundled/os.h",
+      "base_sha256": "45d4e84be4e84a128442f04eda06e1305c8e02c61166854a3b8b348194d35da5",
+      "result_sha256": "0c51b8fc61226be0713feb3a64316912701a979e2cf4cc1ec302e73ea4174f37",
+      "hunks": [
+        {
+          "upstream_commit": "fc17e825d9b53cb7920d36abfa568d59cde2dd7b",
+          "before": "// std::system is not available on some platforms such as iOS (#2248).\n#ifdef __OSX__\ntemplate <typename S, typename... Args, typename Char = char_t<S>>\nvoid say(const S& fmt, Args&&... args) {\n  std::system(format(\"say \\\"{}\\\"\", format(fmt, args...)).c_str());\n}\n#endif\n\n",
+          "after": ""
+        }
+      ]
+    }
+  ]
+}

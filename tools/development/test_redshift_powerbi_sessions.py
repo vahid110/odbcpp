@@ -28,6 +28,16 @@ def measurement(demand=8, headroom=2, mode='default_parallel'):
             'review': {'path': '/invented/review.json', 'sha256': 'd' * 64}}
 
 
+def retention(cap=2):
+    return dict(schema_version=1, decision_kind='retain_original_cap',
+        workload_id='qualification007-default-parallel', input_profile_sha256='a' * 64,
+        observed_at_ms=BASE_MS, requested_cap=cap,
+        baseline_closed=dict(path='/invented/baseline.json', sha256='b' * 64),
+        exact_zero=dict(path='/invented/zero.json', sha256='c' * 64),
+        review=dict(path='/invented/review.json', sha256='d' * 64),
+        demand_measured=False, adequacy_claimed=False)
+
+
 def census(cap='2', db_cap='32', rows=(), *, test_oid='11', admin_oid='10', db_oid='20',
            admin_cap='UNLIMITED', count=None):
     return {'USERS': [admin_oid + '|odbcpp_pilot_admin|t|' + admin_cap,
@@ -80,6 +90,104 @@ def sample_rows(count, *, start=100, birth='2026-10-22 12:00:01'):
 
 
 class PowerBiSessionSafetyTests(unittest.TestCase):
+    def test_retained_cap_path_is_distinct_finite_unchanged_and_fully_costed(self):
+        for resource in ('provisioned', 'serverless'):
+            for cap in (1, 16):
+                with self.subTest(resource=resource, cap=cap):
+                    state = new_state()
+                    if resource == 'serverless':
+                        state['resource_kind'] = resource
+                    total = sessions.stage_for(state, 'snapshot')['statements'] + 3
+                    state = advance(state, 'snapshot', cap=str(cap))
+                    total += sessions.stage_for(state, 'baseline_revalidate')['statements'] + 3
+                    state = advance(state, 'baseline_revalidate')
+                    state = sessions.retain_original_cap(state, retention(cap), now_ms=BASE_MS + 24)
+                    self.assertIsNone(state['measurement'])
+                    self.assertIsNone(state['temporary_cap'])
+                    self.assertFalse(state['retention']['demand_measured'])
+                    self.assertFalse(state['retention']['adequacy_claimed'])
+                    for kind in ('set_cap', 'restore', 'baseline_revalidate'):
+                        with self.assertRaises(sessions.Refused):
+                            sessions.stage_for(state, kind)
+                    for kind in ('sample_connected', 'sample_navigator', 'sample_refresh', 'quiesce'):
+                        stage = sessions.stage_for(state, kind)
+                        self.assertNotIn('ALTER USER', stage['query'])
+                        total += stage['statements'] + 3
+                        state = advance(state, kind, rows=() if kind == 'quiesce' else sample_rows(cap))
+                    self.assertEqual(state['phase'], 'CAP_VERIFIED_UNCHANGED')
+                    self.assertEqual(state['original']['test_cap'], str(cap))
+                    cost = sessions.public_plan(resource)['maximum_retained_path']
+                    self.assertEqual((len(state['attempts']), total), (6, 54 if resource == 'serverless' else 48))
+                    self.assertEqual((cost['helpers'], cost['SQL'], cost['inclusive']), (6, total, total + 6))
+                    maximum = sessions.public_plan(resource)['maximum_changed_path']
+                    self.assertLessEqual(cost['helpers'], maximum['helpers'])
+                    self.assertLessEqual(cost['inclusive'], maximum['inclusive'])
+
+    def test_retention_requires_revalidation_and_exact_current_finite_original(self):
+        state = advance(new_state(), 'snapshot')
+        with self.assertRaisesRegex(sessions.Refused, 'actual_revalidation'):
+            sessions.retain_original_cap(state, retention(), now_ms=BASE_MS + 22)
+        for cap in ('0', '17', 'UNLIMITED'):
+            with self.subTest(cap=cap):
+                fresh = advance(advance(new_state(), 'snapshot', cap=cap), 'baseline_revalidate')
+                with self.assertRaisesRegex(sessions.Refused, 'finite_cap'):
+                    sessions.retain_original_cap(fresh, retention(), now_ms=BASE_MS + 24)
+        fresh = advance(state, 'baseline_revalidate')
+        with self.assertRaises(sessions.Refused):
+            sessions.retain_original_cap(fresh, retention(3), now_ms=BASE_MS + 24)
+        with self.assertRaisesRegex(sessions.Refused, 'not_measured'):
+            sessions.decide(fresh, measurement(), now_ms=BASE_MS + 24)
+
+    def test_retention_descriptor_refuses_claims_wrong_input_stale_or_unbound_evidence(self):
+        state = advance(advance(new_state(), 'snapshot'), 'baseline_revalidate')
+        changes = [dict(demand_measured=True), dict(adequacy_claimed=True), dict(requested_cap=True),
+                   dict(workload_id='foreign'), dict(input_profile_sha256='f' * 64),
+                   dict(observed_at_ms=BASE_MS + 25), dict(observed_at_ms=BASE_MS - 1),
+                   dict(measured_demand=2), dict(review=dict(path='../bad', sha256='e' * 64))]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(sessions.Refused):
+                sessions.retain_original_cap(state, {**retention(), **change}, now_ms=BASE_MS + 24)
+        value = retention()
+        value['review'] = value['exact_zero']
+        with self.assertRaises(sessions.Refused):
+            sessions.retain_original_cap(state, value, now_ms=BASE_MS + 24)
+
+    def test_retention_revalidation_rechecks_identity_caps_zero_and_refreshes_stale_snapshot(self):
+        state = advance(new_state(), 'snapshot')
+        stage = sessions.stage_for(state, 'baseline_revalidate')
+        intent = sessions.begin(state, stage, now_ms=BASE_MS + 400000)
+        good = payload(state, 'baseline_revalidate')
+        for bad in (good.replace('|f|2', '|f|3'), good.replace('11|odbcpp_pilot_test', '12|odbcpp_pilot_test'),
+                    payload(state, 'baseline_revalidate', rows=sample_rows(1))):
+            with self.subTest(bad=bad), self.assertRaises(sessions.Refused):
+                sessions.complete(intent, bad, native_exit=0, now_ms=BASE_MS + 400001)
+        refreshed = sessions.complete(intent, good, native_exit=0, now_ms=BASE_MS + 400001)
+        value = retention()
+        value['observed_at_ms'] = BASE_MS + 400000
+        decided_state = sessions.retain_original_cap(refreshed, value, now_ms=BASE_MS + 400002)
+        self.assertEqual(decided_state['snapshot']['completed_ms'], BASE_MS + 400001)
+        with self.assertRaisesRegex(sessions.Refused, 'revalidation_not_fresh'):
+            value['observed_at_ms'] = BASE_MS + 700002
+            sessions.retain_original_cap(refreshed, value, now_ms=BASE_MS + 700002)
+
+    def test_serverless_cap_roundtrip_preserves_measurement_intents_and_original_cap(self):
+        state = new_state()
+        state['resource_kind'] = 'serverless'
+        state = advance(state, 'snapshot')
+        state = sessions.decide(state, measurement(), now_ms=BASE_MS + 22)
+        stage = sessions.stage_for(state, 'set_cap')
+        self.assertEqual(stage['statements'], 13)
+        self.assertIn(':rs_admin_oid=10 AND :rs_test_oid=11', stage['query'])
+        self.assertNotIn('stv_', stage['query'])
+        state = advance(state, 'set_cap', now_ms=BASE_MS + 23)
+        state = advance(state, 'sample_connected', rows=sample_rows(8))
+        state = advance(state, 'quiesce', now_ms=EXEC_END + 1)
+        self.assertIn('CONNECTION LIMIT 2;', sessions.stage_for(state, 'restore')['query'])
+        state = advance(state, 'restore', now_ms=EXEC_END + 5)
+        self.assertEqual(state['phase'], 'CAP_RESTORED')
+        self.assertEqual(state['resource_kind'], 'serverless')
+        self.assertEqual(state['original']['test_cap'], '2')
+
     def test_cap_two_default_parallel_exact_change_and_restore(self):
         state = decided()
         self.assertEqual('2', state['original']['test_cap'])

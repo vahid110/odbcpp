@@ -121,6 +121,30 @@ class Contracts(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'admission_binding'):
             self.valid()
 
+    def test_exact_existing_serverless_endpoint_preserves_all_other_identity_guards(self):
+        self.message['connection']['SERVER']=contract.SERVERLESS_HOST
+        self.assertEqual(self.valid()[1]['SERVER'],contract.SERVERLESS_HOST)
+        for name,value in (('PORT','5438'),('DATABASE','dev'),('UID','odbcpp_pilot_admin'),
+                           ('SSLCAFILE','C:/other.pem')):
+            with self.subTest(name=name):
+                previous=self.message['connection'][name]
+                self.message['connection'][name]=value
+                with self.assertRaisesRegex(RuntimeError,'exact_test_identity_tls'):
+                    self.valid()
+                self.message['connection'][name]=previous
+
+    def test_serverless_neighbor_account_region_suffix_and_alias_are_refused(self):
+        for host in (contract.SERVERLESS_HOST.replace('pilot.','other.'),
+                     contract.SERVERLESS_HOST.replace('385207570137','385207570138'),
+                     contract.SERVERLESS_HOST.replace('eu-north-1','eu-west-1'),
+                     contract.SERVERLESS_HOST+'.evil.invalid',
+                     contract.SERVERLESS_HOST+'.',contract.SERVERLESS_HOST.upper(),
+                     'other.385207570137.eu-north-1.redshift-serverless.amazonaws.com'):
+            with self.subTest(host=host):
+                self.message['connection']['SERVER']=host
+                with self.assertRaisesRegex(RuntimeError,'exact_test_identity_tls'):
+                    self.valid()
+
     def test_duplicate_json_keys_refused(self):
         with self.assertRaisesRegex(RuntimeError,'duplicate_json_key'):
             owner.decode(b'{"nonce":"first","nonce":"second"}')

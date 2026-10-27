@@ -5,8 +5,10 @@ resource effects start solely when the reviewed lifecycle calls open_inputs.
 The accepted fixture092 NativeOps implementation remains immutable.
 """
 import copy
+import csv
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -22,6 +24,7 @@ from types import SimpleNamespace
 from tools.development import redshift_ctest_inputs as inputs
 from tools.development import redshift_ctest_fixtures as fixtures
 from tools.development import redshift_ctest_native_custody as native_custody
+from tools.development import redshift_session_sql as session_sql
 from tools.development import redshift_powerbi_relationship as powerbi_relationship
 from tools.development import redshift_powerbi_partition as powerbi_partition
 from tools.development.redshift_ctest_lifecycle import BASE_ENV, Refused, need, record, verify_public_pin
@@ -61,8 +64,14 @@ def pin(path):
             'bytes': path.stat().st_size}
 
 
-def combined_fixture_plan():
+def combined_fixture_plan(resource_kind='provisioned'):
     """Pure complete reserve, callable before Operations or private inputs."""
+    need(resource_kind in ('provisioned', 'serverless'), 'fixture_plan_resource_kind')
+    if resource_kind == 'serverless':
+        # Recompose the emitted path instead of adding to the historical
+        # five-helper startup cushion. Every helper includes three wrapper
+        # statements and one login; network remains separately charged.
+        return serverless_fixture_reserve('native')
     plan = fixtures.plan()
     census = native_custody.plan()
     for key, extra in (('total_helpers', 'helpers'), ('total_SQL', 'SQL'),
@@ -76,7 +85,49 @@ def combined_fixture_plan():
     return plan
 
 
-def termination_stage(targets, *, maximum=8):
+def serverless_fixture_reserve(scope):
+    """Conservative complete mode bounds, with each emitted binding visible."""
+    need(scope in ('native', 'powerbi_relationship', 'app'), 'serverless_reserve_scope')
+    branches = {
+        'current_identity_before_mutation': {'helpers': 1, 'SQL': 4},
+        'startup_zero': {'helpers': 1, 'SQL': 6},
+        'principal_cleanup': {'helpers': 3, 'SQL': 31 if scope != 'app' else 47},
+        'lifecycle_zero': {'helpers': 1, 'SQL': 6},
+        'final_idle_zero': {'helpers': 1, 'SQL': 6},
+    }
+    if scope == 'native':
+        branches['complete_fixtures'] = {'helpers': 28, 'SQL': 311}
+        branches['native_census'] = {'helpers': 2, 'SQL': 8}
+    else:
+        relationship_fixture = powerbi_relationship.public_plan()
+        branches['relationship_fixture'] = {
+            'helpers': relationship_fixture['helpers'],
+            'SQL': relationship_fixture['statement_upper_bound_including_operations_wrappers']}
+        if scope == 'powerbi_relationship':
+            branches['native_census'] = {'helpers': 2, 'SQL': 8}
+        else:
+            branches['changed_session_cap_maximum'] = {'helpers': 7, 'SQL': 77}
+    helpers = sum(row['helpers'] for row in branches.values())
+    statements = sum(row['SQL'] for row in branches.values())
+    sites = ['startup_zero', 'PID_capture', 'max_target_termination',
+             'cleanup_principals_zero', 'lifecycle_zero', 'final_idle_zero']
+    if scope == 'native':
+        sites.append('timeout_cleanup')
+    if scope == 'app':
+        sites.extend(['session_snapshot', 'session_set_cap', 'session_sample_connected',
+                      'session_sample_navigator', 'session_sample_refresh',
+                      'session_quiesce', 'session_restore'])
+    return {'total_helpers': helpers, 'total_SQL': statements, 'total_logins': helpers,
+            'total_inclusive': statements + helpers, 'network_helpers_separate': 1,
+            'resource_kind': 'serverless', 'branches': branches,
+            'serverless_principal_binding_sites': sites,
+            'serverless_principal_binding_SQL': len(sites),
+            'maximum_cleanup_targets': 16 if scope == 'app' else 8,
+            'wrapper_SQL_per_helper': 3, 'login_per_helper': 1,
+            'scope': scope, 'ordinary_case_execution': 'CTest only' if scope != 'app' else 'native app owner'}
+
+
+def termination_stage(targets, *, maximum=8, resource_kind='provisioned', principal_oids=None):
     """Guard each captured session tuple and exclude SELF before termination.
 
     STV_SESSIONS.starttime is the actual connection birth timestamp. Every
@@ -85,7 +136,11 @@ def termination_stage(targets, *, maximum=8):
     """
     need(type(maximum) is int and maximum in (8, 16), 'termination_scope_bound')
     need(type(targets) is tuple and 1 <= len(targets) <= maximum, 'termination_targets')
-    queries = []
+    need(resource_kind in ('provisioned', 'serverless'), 'termination_resource_kind')
+    serverless = resource_kind == 'serverless'
+    need(not serverless or (type(principal_oids) is dict and
+         set(principal_oids) == {'admin_oid', 'test_oid'}), 'termination_bound_principal_oids')
+    queries = [session_sql.binding(**principal_oids)] if serverless else []
     for pid, principal, database, birth in targets:
         need(type(pid) is int and 1 <= pid <= 2147483647 and
              principal in (ADMIN, ORDINARY) and database == DATABASE and
@@ -94,12 +149,19 @@ def termination_stage(targets, *, maximum=8):
         predicate = ("process=" + str(pid) + " AND user_name='" + principal +
                      "' AND db_name='odbcpp_pilot' AND starttime=TIMESTAMP '" + birth +
                      "' AND process<>pg_backend_pid()")
-        queries.extend(['SELECT EXISTS(SELECT 1 FROM stv_sessions WHERE ' + predicate +
+        view = 'stv_sessions'
+        if serverless:
+            view = 'sys_session_history'
+            principal_oid = ':rs_admin_oid' if principal == ADMIN else ':rs_test_oid'
+            predicate = (session_sql.scope() + ' AND session_id=' + str(pid) +
+                         ' AND ' + session_sql.user_id() + '=' + principal_oid +
+                         " AND start_time=TIMESTAMP '" + birth + "'")
+        queries.extend(['SELECT EXISTS(SELECT 1 FROM ' + view + ' WHERE ' + predicate +
                         ') AS still_owned\n\\gset\n\\if :still_owned',
                         'SELECT ' + str(pid) + ',pg_terminate_backend(' + str(pid) + ');',
                         '\\else', "SELECT " + str(pid) + ",'SKIPPED';", '\\endif'])
     need(len({row[0] for row in targets}) == len(targets), 'duplicate_captured_PID')
-    return {'query': '\n'.join(queries), 'statements': 2 * len(targets),
+    return {'query': '\n'.join(queries), 'statements': 2 * len(targets) + int(serverless),
             'role': 'admin', 'stage': 'principal_terminate'}
 
 
@@ -118,6 +180,8 @@ class Operations:
         else:
             self.timeout_factory, self.factory, self.launcher = components
         self.approval = copy.deepcopy(approval)
+        self.resource_kind = approval.get('resource', {}).get('kind', 'provisioned')
+        need(self.resource_kind in ('provisioned', 'serverless'), 'operations_resource_kind')
         self.preparation_manifest = copy.deepcopy(preparation_manifest)
         self.profile_manifest = copy.deepcopy(profile_manifest)
         self.profiles = copy.deepcopy(profiles)
@@ -156,7 +220,7 @@ class Operations:
                              for tool in ('cmake', 'ctest')})
 
     def combined_fixture_plan(self):
-        return combined_fixture_plan()
+        return combined_fixture_plan(getattr(self, 'resource_kind', 'provisioned'))
 
     def now(self):
         return time.clock_gettime(time.CLOCK_MONOTONIC)
@@ -188,6 +252,12 @@ class Operations:
 
     def security_paused(self, end):
         need(self.now() < end, 'security_deadline')
+        if getattr(self, 'resource_kind', 'provisioned') == 'serverless':
+            need(self.approval.get('continue_available_cluster_from') is None,
+                 'serverless_no_provisioned_continuation')
+            self.native.security_available(end)
+            self.security_status = 'available'
+            return
         continuation = self.approval.get('continue_available_cluster_from')
         if continuation is None:
             self.native.security_paused()
@@ -238,7 +308,10 @@ class Operations:
         return cluster
 
     def resume_available(self, end):
-        if self.approval.get('continue_available_cluster_from') is not None:
+        if getattr(self, 'resource_kind', 'provisioned') == 'serverless':
+            self.native.resume_available(end)
+            self.bind_current_identity(end)
+        elif self.approval.get('continue_available_cluster_from') is not None:
             need(self.available_cluster_verified, 'available_security_not_verified')
             cluster = self._available_cluster(end)
             need(all(cluster[key] == value for key, value in
@@ -246,6 +319,22 @@ class Operations:
         else:
             self.native.resume_available(end)
         self.final_zero(end)
+
+    def bind_current_identity(self, end):
+        """One common read-only binding before any partition's fixture work."""
+        need(self.resource_kind == 'serverless' and self.now() < end,
+             'current_identity_resource_deadline')
+        stage = self.timeout_factory.current_identity_stage()
+        raw = self.sql(stage, end)
+        need(type(raw) is str and len(raw.encode('utf-8')) <= 65536 and '\x00' not in raw,
+             'current_identity_payload')
+        rows = list(csv.reader(io.StringIO(raw), strict=True))
+        need(len(rows) == 2 and tuple(rows[0]) == stage['headers'] and
+             len(rows[1]) == len(stage['headers']) and self.now() < end,
+             'current_identity_exact_one_CSV_row')
+        self.timeout_factory.bind_current_principal(dict(zip(stage['headers'], rows[1])))
+        self.record({'kind': 'current_existing_principal_schema',
+                     'identity': self.timeout_factory.EXPECTED_PRINCIPAL})
 
     def record(self, event):
         self.events += 1
@@ -255,6 +344,13 @@ class Operations:
         need(type(stage) is dict and type(stage.get('stage')) is str,
              'fixture_stage_schema')
         name = stage['stage']
+        if name == 'current_identity':
+            need(self.resource_kind == 'serverless' and
+                 stage == self.timeout_factory.current_identity_stage(),
+                 'closed_current_identity_SQL_changed')
+            return
+        if getattr(self, 'resource_kind', 'provisioned') == 'serverless':
+            self._session_principal_oids()
         if name.startswith('powerbi_relationship_'):
             need(self.relationship_partition is True and
                  self.powerbi_relationship_armed is True,
@@ -282,7 +378,8 @@ class Operations:
                     records[key]['state'] = 'OWNED'
             expected = self.factory.whole_batch_stage(state['plan'], stage['keys'], name, records)
         elif name == 'timeout_cleanup':
-            expected = self.factory.timeout_stage(state['timeout']['record'], name)
+            expected = self.factory.timeout_stage(state['timeout']['record'], name,
+                **({'resource_kind': 'serverless'} if self.resource_kind == 'serverless' else {}))
         elif name.startswith('timeout_'):
             key = name[len('timeout_'):]
             query, headers, maximum, inclusive = self.timeout_factory.query_set(
@@ -398,6 +495,7 @@ class Operations:
         if role == ORDINARY:
             self.native.ordinary_held()
         config = self.native.config
+        self.native.ca_held()
         env = {**BASE_ENV, 'PGHOST': config['host'], 'PGPORT': '5439',
                'PGDATABASE': DATABASE, 'PGUSER': role, 'PGSSLMODE': 'verify-full',
                'PGSSLROOTCERT': config['ca'], 'PGCONNECT_TIMEOUT': '10',
@@ -563,7 +661,10 @@ class Operations:
         need(maximum == 8 or getattr(self, 'powerbi_session_partition', False) is True,
              'extended_cleanup_requires_app_partition')
         query = PIDS if maximum == 8 else PIDS.replace('LIMIT 9;', 'LIMIT 17;')
-        stage = {'query': query, 'statements': 1, 'role': 'admin', 'stage': 'principal_pids'}
+        serverless = getattr(self, 'resource_kind', 'provisioned') == 'serverless'
+        if serverless:
+            query = session_sql.binding(**self._session_principal_oids()) + session_sql.rows(limit=maximum + 1) + ';'
+        stage = {'query': query, 'statements': 1 + int(serverless), 'role': 'admin', 'stage': 'principal_pids'}
         raw, own = self._sql(stage, deadline)
         values = raw.strip().splitlines()
         need(len(values) <= maximum, 'exact_principal_PID_bound')
@@ -578,7 +679,9 @@ class Operations:
         need(len(set(pids)) == len(pids) and all(p <= 2147483647 and p != own for p in pids),
              'exact_principal_PID_identity')
         if pids:
-            raw, own = self._sql(termination_stage(targets, maximum=maximum), deadline)
+            raw, own = self._sql(termination_stage(targets, maximum=maximum,
+                resource_kind=getattr(self, 'resource_kind', 'provisioned'),
+                principal_oids=self._session_principal_oids() if serverless else None), deadline)
             try:
                 acks = raw.strip().splitlines()
                 self.record({'kind': 'exact_session_cleanup', 'captured': targets, 'guarded_ACK': acks})
@@ -598,16 +701,39 @@ class Operations:
                     'principal_zero': True, 'native_custody': self.native_custody_result}
         return result
 
+    def _session_principal_oids(self):
+        expected = self.timeout_factory.EXPECTED_PRINCIPAL
+        need(type(expected) is dict, 'serverless_cleanup_principals_not_bound')
+        return {'admin_oid': int(expected['schema_owner_oid']), 'test_oid': int(expected['owner_oid'])}
+
     def final_zero(self, deadline):
-        raw, _ = self._sql({'query': ZERO, 'statements': 1, 'role': 'admin',
+        serverless = getattr(self, 'resource_kind', 'provisioned') == 'serverless'
+        bound = getattr(getattr(self, 'timeout_factory', None), 'EXPECTED_PRINCIPAL', None)
+        query = (session_sql.binding(**(self._session_principal_oids() if bound is not None else {})) +
+                 session_sql.zero()) if serverless else ZERO
+        raw, _ = self._sql({'query': query, 'statements': 3 if serverless else 1, 'role': 'admin',
                             'stage': 'principal_zero'}, deadline)
-        need(raw.strip() == 'f|f', 'exact_principal_session_query_zero')
+        # The first Serverless statement returns integer session IDs (or no
+        # rows); the second returns one boolean. ON_ERROR_STOP/exit0 is required
+        # by _sql, so one exact false row proves both completed with no session.
+        need(raw == 'f\n' if serverless else raw.strip() == 'f|f',
+             'exact_principal_session_query_zero')
         return {'complete': True}
 
     def verify_running(self, deadline):
         self.native.identity(deadline)
-        self._available_cluster(deadline)
+        if self.resource_kind == 'serverless':
+            self.native.serverless(deadline)
+        else:
+            self._available_cluster(deadline)
         return True
+
+    def verify_idle(self, deadline):
+        need(self.resource_kind == 'serverless' and self.readers_known and
+             self.principals_quiescent and self.native is not None and
+             self.native.readers_known, 'serverless_idle_requires_quiescence')
+        self.final_zero(deadline)
+        return self.native.verify_idle(deadline)
 
     def pause_until(self, deadline):
         return self.native is not None and self.native.pause_until(deadline)
@@ -642,6 +768,7 @@ class Operations:
             attempt(close_ordinary)
             if self.native.snapshot is not None:
                 attempt(lambda: need(self.native.snapshot.close(), 'snapshot_retained'))
+            attempt(self.native.close_ca_snapshot)
         need(not errors and self.input_residue is None,
              'private_input_cleanup_incomplete_retained')
         return True

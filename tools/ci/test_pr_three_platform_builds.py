@@ -19,21 +19,23 @@ FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-packag
 FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
 # Reviewed job bodies, excluding only their top-level event condition. Preserve
-# 526b with reviewed packaging and complete-checkpoint repairs (2026-10-22).
+# 526b with reviewed packaging/checkpoint repairs (2026-10-22), then action pins
+# and literal cache-token grants (2026-10-25), then the reviewed exact PR109
+# checkout v7.0.1 pins; build/test commands are unchanged.
 BODY_SHA256 = {
-    'sanitizer-only': 'fbc8b8a9ef873d8d1b13f429b3110338f360adf941936543f1a0df31e71909b7',
+    'sanitizer-only': 'b09a63618df8499a9ccb181cc85f46065038f65faa72b86ee084e7ea9995cd12',
     'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
     'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
-    'windows-product-qualification': '6bffeb8c5f8356015036a032d0f37128180fbf8c011084bbfd208ce1a40e80e6',
-    'build-and-test': 'b32c7d9de760bb69e3d2bcfe0c67f069b9a8d365f0ba24767bd89ff0641969c4',
-    'redshift-build': '83dd943e7dad86a66e4c44124163bbd612194b914c19abba7fd702d218787048',
-    'windows-live': '5a29e36575588fc11bb84eb04dde40bfdab303a57951770d427b1ae01cde100f',
-    'windows-package': 'd3191013a82d6c6a45fe352f17c7d8888f12996877775fcd53991a99620842d8',
-    'windows-linked-server': 'f7f15d6261db38ead9993bb28ea275523b1af5835780e1c28ed075844f536c0d',
-    'linux-sanitizers': 'e302e94886a90342a0abf1b386d46afb5b36d13ea49c6802034ffbc12188d2ab',
-    'linux-openssl-static': 'd378c269986bf275a2dbe9402a4feccc143c8b38ad6e337f206252af6c202028',
-    'awslc-adapter-proof': '19230fd79ff37164624bd764631ad194679a7ef63c3aaf3594d5d4826970969d',
-    'iodbc-unicode': '6e631a1796a3658177c740bec25ba93fdf484ca82fc9c899d735bbe46cf1f726',
+    'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
+    'build-and-test': 'b02b5d0d4c3c417c230756fadfde79f7b745c3538c3ba5cc7cd05bafac509c69',
+    'redshift-build': '1ebe8532cedef3cbc57003e5e603ae70bc5c6642ae38e1ddd35c6ce1bfad1f56',
+    'windows-live': '0030e81243013771fdb37fef1a57e25f3a14fe88509ab375118154028c6909d0',
+    'windows-package': 'b08bb294b5fa5a22b0b5af8ed1f1a4f0a071b158883560d421956e7c77497e18',
+    'windows-linked-server': '78a55ae6ddd98acba64baf3d5e1b401cc3e5480bb58d8906667ad7e4c2df8a9d',
+    'linux-sanitizers': 'd9eb380226d38c7e70f2730b22b550cb12c41c7627f10b5427b725a03bb75a3a',
+    'linux-openssl-static': 'c629a493344201b61152fcbda4d4abea427e4f6064333d753143b38a95bf396e',
+    'awslc-adapter-proof': 'cd7dad823fd9582ab5990ff6286ea6932311babcbc07840198b3eeb044c63d3a',
+    'iodbc-unicode': '4bd25959794f57d60880ae151748406b555451b29e14d03da40e2c90b7dab527',
 }
 
 
@@ -91,19 +93,117 @@ def build_contract(block, platform):
                      'cmake --build build-pr-windows --config Release --parallel 2']
     if any(value not in block for value in required):
         raise ValueError('missing exact PR build profile/source/bound')
-    if len(re.findall(r'^    if:', block, re.M)) != 1 or re.search(r'^      - .*\n\s+if:', block):
+    if len(re.findall(r'^    if:', block, re.M)) != 1:
         raise ValueError('build must not be conditional on draft/path/status')
+    for step in re.split(r'(?m)^      - ', block)[1:]:
+        if re.search(r'(?m)^        if:', step):
+            if (not step.startswith(('name: Verify actual offline execution\n',
+                                     'name: Retain offline Driver Manager evidence\n')) or
+                    re.findall(r'(?m)^        if: (.*)$', step) != ['always()']):
+                raise ValueError('only evidence collection may have an always condition')
+    build = 'build-pr-ubuntu' if platform == 'Ubuntu' else 'build-pr-windows'
+    config = '' if platform == 'Ubuntu' else ' -C Release'
+    expected_ctest = (f"ctest --test-dir {build}{config} -L '^dm-offline$' "
+                      '--no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml')
+    ctest_lines = [line.strip() for line in block.splitlines() if 'ctest --' in line]
+    if ctest_lines != [expected_ctest]:
+        raise ValueError('exact offline CTest subset required; no connected runtime')
+    validator_config = '' if platform == 'Ubuntu' else ' --config Release'
+    required_evidence = [f'check_dm_offline_evidence.py --build {build}{validator_config} '
+                         f'--ctest-exit-file {build}/dm-offline/ctest-exit.txt',
+                         'if-no-files-found: error', f'{build}/dm-offline/',
+                         f'{build}/CMakeCache.txt', f'{build}/Testing/Temporary/']
+    required_evidence += (['result=$?', 'exit "$result"',
+                          f'> {build}/dm-offline/ctest-exit.txt'] if platform == 'Ubuntu' else
+                         ['$result = $LASTEXITCODE', 'exit $result',
+                          f'Set-Content -LiteralPath {build}/dm-offline/ctest-exit.txt -Value $result'])
+    if any(value not in block for value in required_evidence):
+        raise ValueError('actual exit, strict offline verification and evidence retention required')
     for forbidden in ['services:', 'container:', 'secrets.', 'secrets:', 'self-hosted',
-                      'actions/cache', 'restore-keys:', 'ctest', '--gtest_', '--target',
+                      'actions/cache', 'restore-keys:', '--gtest_', '--target',
                       'windows-postgres', 'windows-package', 'reg.exe', 'msiexec',
                       'continue-on-error:', 'needs:', 'inputs.', 'github.event.pull_request.draft']:
         if forbidden in block:
-            raise ValueError('PR build cannot restore binaries, skip work, or run tests/live/installers')
+            raise ValueError('PR build cannot restore binaries, skip work, or run live/installers')
     if re.search(r'\b(?:docker|aws|psql)\s', block):
         raise ValueError('no services, paid or SQL operation')
     build_lines = [line.strip() for line in block.splitlines() if 'cmake --build ' in line]
     if len(build_lines) != 1 or not build_lines[0].endswith('--parallel 2'):
         raise ValueError('one default ALL build j2 required')
+
+
+def cache_mode(text, job=False):
+    """Read the literal token grant; no hosted token behavior is simulated."""
+    pattern = r'^    cache-mode: ([a-z-]+)$' if job else r'^cache-mode: ([a-z-]+)$'
+    values = re.findall(pattern, text, re.M)
+    if len(values) > 1:
+        raise ValueError('duplicate cache authority')
+    return values[0] if values else None
+
+
+def candidate_cache_contract(ci, ubuntu, windows):
+    """Fail closed on candidate write grants or mutable producer identity."""
+    blocks = jobs(ubuntu)
+    inherited = cache_mode(ubuntu)
+    if inherited != 'read' or cache_mode(blocks['product'], job=True) != 'read':
+        raise ValueError('arbitrary product candidates require a read-only cache token')
+    writers = {name for name, block in blocks.items()
+               if (cache_mode(block, job=True) or inherited) in ('write', 'write-only')}
+    if writers != {'cold', 'seed-a'}:
+        raise ValueError('only reviewed source producers may write caches')
+    if ('ref: ${{ github.sha }}' not in blocks['cold'] or
+            blocks['cold'].count('uses: actions/checkout@') != 1):
+        raise ValueError('same-head producer must execute only the dispatch source')
+    if 'PILOT_EXPECTED_HEAD: cac4e780dcc9ce84fcc8a3d104ab1afbf4ba0547' not in blocks['seed-a']:
+        raise ValueError('seed producer checkout must use the literal reviewed source')
+    if 'ref: ${{ env.PILOT_EXPECTED_HEAD }}' not in blocks['seed-a']:
+        raise ValueError('seed checkout must use its fixed source identity')
+    if 'uses: actions/cache/save@' in blocks['product']:
+        raise ValueError('candidate job must not advertise a cache producer')
+    ci_blocks = jobs(ci)
+    if (cache_mode(ci_blocks['sanitizer-only'], job=True) != 'none' or
+            cache_mode(ci_blocks['windows-product-qualification'], job=True) != 'none' or
+            cache_mode(windows) != 'none'):
+        raise ValueError('cold sanitizer/Windows candidates require no cache access')
+    for block, check in [(blocks['product'], 'run: test "$ACTIONS_CACHE_MODE" = read'),
+                         (ci_blocks['sanitizer-only'], 'run: test "$ACTIONS_CACHE_MODE" = none'),
+                         (jobs(windows)['product'], "if ($env:ACTIONS_CACHE_MODE -ne 'none')")]:
+        if check not in block or block.index(check) > block.index('uses: actions/checkout@'):
+            raise ValueError('require the runner-reported cache grant before candidate checkout')
+
+
+class CITrustBoundaries(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ci = (ROOT / '.github/workflows/ci.yml').read_text()
+        cls.ubuntu = (ROOT / '.github/workflows/ubuntu-development-pilot.yml').read_text()
+        cls.windows = (ROOT / '.github/workflows/windows-product-qualification.yml').read_text()
+
+    def test_candidate_token_caps_and_safe_producers(self):
+        candidate_cache_contract(self.ci, self.ubuntu, self.windows)
+        for filename in ['primary.yml', 'scorecard.yml']:
+            self.assertEqual(cache_mode((ROOT / '.github/workflows' / filename).read_text()), 'none')
+
+    def test_candidate_write_or_mutable_seed_is_rejected(self):
+        mutations = [self.ubuntu.replace('cache-mode: read', 'cache-mode: write', 1),
+                     self.ubuntu.replace('  product:\n    cache-mode: read', '  product:\n    cache-mode: write'),
+                     self.ubuntu.replace('PILOT_EXPECTED_HEAD: cac4e780dcc9ce84fcc8a3d104ab1afbf4ba0547',
+                                         'PILOT_EXPECTED_HEAD: ${{ inputs.seed_head }}'),
+                     self.ubuntu.replace('  warm:\n', '  warm:\n    cache-mode: write\n')]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                candidate_cache_contract(self.ci, mutation, self.windows)
+        with self.assertRaises(ValueError):
+            candidate_cache_contract(self.ci.replace('cache-mode: none', 'cache-mode: write', 1),
+                                     self.ubuntu, self.windows)
+
+    def test_all_external_actions_use_full_commit_pins(self):
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            for action in re.findall(r'^\s+(?:- )?uses: ([^\s#]+)', path.read_text(), re.M):
+                if action.startswith('./'):
+                    continue
+                with self.subTest(path=path.name, action=action):
+                    self.assertRegex(action, r'^[\w.-]+/[\w./-]+@[0-9a-f]{40}$')
 
 
 class ThreePlatformScheduling(unittest.TestCase):
@@ -178,8 +278,12 @@ class ThreePlatformScheduling(unittest.TestCase):
         self.assertIn('cmake --build build-iodbc --parallel 2', block)
         self.assertIn('-DTARGET_DATABASE=POSTGRESQL', block)
         self.assertIn('-DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=4', block)
+        self.assertIn("ctest --test-dir build-iodbc -L '^dm-offline$' --no-tests=error", block)
+        self.assertIn('check_dm_offline_evidence.py --build build-iodbc', block)
+        self.assertIn('build-iodbc/dm-offline/ctest-exit.txt', block)
+        self.assertIn('name: dm-offline-macos-iodbc-ucs4', block)
 
-    def test_two_build_profiles_are_cold_default_ALL_without_runtime(self):
+    def test_two_build_profiles_are_cold_default_ALL_with_offline_runtime(self):
         for name, platform in zip(PR_JOBS, ['Ubuntu','Windows']):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
@@ -219,6 +323,11 @@ class ThreePlatformScheduling(unittest.TestCase):
                          base.replace('ref: ${{ github.sha }}','ref: main'),
                          base.replace('-DODBCPP_CRYPTO_TLS_PROOF=OFF','-DODBCPP_CRYPTO_TLS_PROOF=ON'),
                          base.replace("if: github.event_name == 'pull_request'", "if: github.event_name == 'pull_request' && !github.event.pull_request.draft")]
+            mutations += [base.replace("-L '^dm-offline$'", '-L integration'),
+                          base.replace('--no-tests=error', '--no-tests=ignore'),
+                          base.replace('check_dm_offline_evidence.py', 'unverified.py'),
+                          base.replace('if-no-files-found: error', 'if-no-files-found: ignore'),
+                          base.replace('if: always()', 'if: success()', 1)]
             mutations += [base+'\n    '+x+'\n' for x in ['services: {}','needs: other-job','continue-on-error: true','secrets: inherit','container: paid-image','restore-keys: binary','run: ctest --test-dir build','run: docker run postgres','run: aws sts get-caller-identity']]
             for mutant in mutations:
                 with self.subTest(job=name,mutation=mutations.index(mutant)), self.assertRaises(ValueError):

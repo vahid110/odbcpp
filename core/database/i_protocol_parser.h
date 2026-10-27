@@ -89,6 +89,9 @@ public:
   virtual Message parse_message(const std::vector<std::byte>& data) = 0;
   virtual bool is_ready_for_query(const Message& msg) = 0;
   virtual bool is_error_response(const Message& msg) = 0;
+  // Native parsers decide whether an error ends the physical session without a
+  // following ready frame. Parsers without that distinction keep normal drain.
+  virtual bool is_terminal_error_response(const Message&) { return false; }
   virtual std::string extract_error_message(const Message& msg) = 0;
   virtual std::string extract_error_sqlstate(const Message&) { return {}; }
   virtual ResultRows extract_query_results(

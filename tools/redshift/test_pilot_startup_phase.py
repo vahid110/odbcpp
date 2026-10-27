@@ -114,6 +114,7 @@ class _StartupServer:
                 plain.sendall(b"S")
 
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.load_cert_chain(self._certificate, self._key)
                 with context.wrap_socket(plain, server_side=True) as secure:
                     secure.settimeout(15)

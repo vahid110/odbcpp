@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cold sanitizer-only orchestration/evidence. Owning assertions remain GoogleTests."""
 import argparse
+import importlib.util
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -16,7 +17,18 @@ import subprocess
 import sys
 import threading
 import time
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+    XmlLimits = _xml_module.XmlLimits
+    XmlSafetyError = _xml_module.XmlSafetyError
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 FROZEN_PRODUCT = 'c82e4fe790c66cb9439d2f56c3b366163ffa3af7'
 BUILD = Path('build-sanitize')
@@ -273,10 +285,10 @@ def gtest_xml_path(name):
 
 
 def xml_root(path):
-    raw = Path(path).read_bytes()
-    if len(raw) > MAX_BYTES or b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
-        raise ValueError('unsafe XML')
-    return ET.fromstring(raw)
+    try:
+        return parse_xml_file(path, limits=XmlLimits(max_bytes=MAX_BYTES))
+    except XmlSafetyError:
+        raise ValueError('unsafe XML') from None
 
 
 def xml_result(path, expected):
@@ -382,8 +394,8 @@ def inventory():
     names = [entry['name'] for entry in entries]
     if not names or len(names) != len(set(names)):
         raise ValueError('exact nonempty all-unit CTest inventory required')
-    # Four explicitly optional SDK consumers are excluded by the frozen CMake unit loop.
-    optional = {'test_named_profile_acquisition', 'test_provisioned_native_owner', 'test_provisioned_pg_connector', 'test_provisioned_sdk_runtime'}
+    # Six explicitly optional SDK consumers are excluded by the frozen CMake unit loop.
+    optional = {'test_named_profile_acquisition', 'test_provisioned_native_owner', 'test_provisioned_pg_connector', 'test_provisioned_sdk_runtime', 'test_sts_serverless_owner', 'test_jwt_iam_auth'}
     require_unit_sources(names, [p.stem for p in Path('tests/unit').glob('*.cpp') if p.stem not in optional])
     write('ctest-inventory.json', listing)
     objects = {p.relative_to(BUILD).as_posix(): {'bytes': p.stat().st_size, 'sha256': sha(p)} for p in sorted(BUILD.rglob('*.o'))}

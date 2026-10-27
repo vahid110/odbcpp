@@ -6,6 +6,7 @@ The job deadline and fixed phase timeouts bound coordinator-selected qualificati
 or a historical manually selected comparison.
 """
 import argparse
+import importlib.util
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -18,7 +19,16 @@ import signal
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 SUITES = (
     'test_redshift_catalog_execution', 'test_backend_contract',
@@ -348,7 +358,7 @@ def gtest_names(text):
 
 
 def xml_result(path, expected):
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path)
     cases = list(root.iter('testcase'))
     names = [c.attrib['classname'] + '.' + c.attrib['name'] for c in cases]
     failures = len(list(root.iter('failure')))
@@ -526,7 +536,7 @@ def test():
             raise ValueError('executable changed during tests')
         results[suite] = xml_result(EVIDENCE / 'gtest' / (suite + '.xml'), cases[suite]['names'])
     # CTest JUnit uses test name only, so inspect independently of GTest case names.
-    root = ET.parse(EVIDENCE / 'ctest.xml').getroot()
+    root = parse_xml_file(EVIDENCE / 'ctest.xml')
     ctests = [c.attrib['name'] for c in root.iter('testcase')]
     if sorted(ctests) != sorted(selected_tests()) or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
         raise ValueError('exact selected successful CTest results required')

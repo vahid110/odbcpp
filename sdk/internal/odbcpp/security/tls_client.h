@@ -16,6 +16,8 @@ namespace rs::core::security {
 // macOS Security framework, Linux/Unix distribution CA bundles). Custom
 // sources never fall back to system trust; both set is rejected.
 struct TlsClientConfig {
+  // May raise the TLS 1.2 floor, never lower it. Contexts share the SDK's
+  // authenticated AEAD/ephemeral key-exchange and 112-bit strength policy.
   long minimum_version{0x0303};
   bool verify_peer{true};
   bool verify_hostname{true};
@@ -62,6 +64,7 @@ public:
   // purpose checks still apply). Never called by production code.
   void replace_platform_anchors_for_testing(std::vector<std::vector<unsigned char>> anchors);
   TlsStep handshake();
+  // Application I/O requires a successful handshake, including policy checks.
   TlsStep write(std::span<const std::byte> plaintext);
   TlsStep read(std::span<std::byte> plaintext);
   TlsStep drain_ciphertext(std::span<std::byte> output);

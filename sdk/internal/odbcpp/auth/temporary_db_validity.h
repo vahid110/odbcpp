@@ -41,4 +41,12 @@ class TimeConversion final {
 TimeConversion convert_temporary_db_validity(const Request&, UtcInstant expiry,
     const TemporaryClockSample&, const TemporaryTimePolicy&,
     const Cancellation* cancelled = nullptr) noexcept;
+// Provider-neutral core: converts a UTC expiry into a monotonic Validity under
+// the given admission deadline/headroom and time policy. The caller owns any
+// method/service/binding-specific precondition checks and the cancellation order
+// it requires. Reused by non-database temporary credentials (e.g. STS AssumeRole).
+TimeConversion convert_temporary_validity(rs::util::Deadline deadline,
+    rs::util::Clock::duration headroom, UtcInstant expiry,
+    const TemporaryClockSample&, const TemporaryTimePolicy&,
+    const Cancellation* cancelled = nullptr) noexcept;
 } // namespace rs::core::auth

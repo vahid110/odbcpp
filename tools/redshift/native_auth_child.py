@@ -5,13 +5,26 @@ must durably consume its finite scope before this function, and independently
 verify exact-principal remote cleanup afterward even if this function fails.
 """
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import selectors
 import subprocess
 import time
-import xml.etree.ElementTree as ET
+
+# Resolve only this source tree's parser, not a cwd or installed substitute.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_bytes = _xml_module.parse_xml_bytes
+    XmlLimits = _xml_module.XmlLimits
+    XmlDeclarationError = _xml_module.XmlDeclarationError
+    XmlSafetyError = _xml_module.XmlSafetyError
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 CASE = 'ProvisionedNativeAuth.GetClusterCredentialsThenVerifiedTlsLogin'
 MARKER = 'provisioned-native-acquisition-login001'
@@ -45,7 +58,12 @@ def completed_case(data):
         raise ValueError('report_size')
     if b'<!' in data or b'<?' in data.replace(b'<?xml version="1.0" encoding="UTF-8"?>', b'', 1):
         raise ValueError('report_declaration')
-    root = ET.fromstring(data)
+    try:
+        root = parse_xml_bytes(data, limits=XmlLimits(max_bytes=OUTPUT_CAP), forbid_misc=True)
+    except XmlDeclarationError:
+        raise ValueError('report_declaration') from None
+    except XmlSafetyError:
+        raise ValueError('report_size') from None
     suites = list(root)
     if root.tag != 'testsuites' or len(suites) != 1 or suites[0].tag != 'testsuite':
         raise ValueError('report_inventory')

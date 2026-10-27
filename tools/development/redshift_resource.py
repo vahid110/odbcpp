@@ -17,6 +17,46 @@ from tools.development.redshift_ctest_lifecycle import need, record, BASE_ENV, R
 from tools.redshift import native_auth_inputs
 from tools.redshift.pilot_runtime import bounded_process
 
+MAX_CA_BYTES = 16 * 1024 * 1024  # Same finite CA-file cap as the shared TLS adapter.
+
+
+def validate_resource(resource):
+    """The two existing pilot resources, never a general provisioning surface."""
+    need(type(resource) is dict, 'resource_record')
+    kind = resource.get('kind', 'provisioned')
+    common = {'account', 'arn', 'region', 'profile'}
+    if kind == 'provisioned':
+        need(set(resource) in (common | {'cluster', 'created', 'node_type'},
+                               common | {'kind', 'cluster', 'created', 'node_type'})
+             and resource['cluster'] == 'odbcpp-redshift-provisioned-pilot',
+             'unchanged_existing_resource_identity')
+    elif kind == 'serverless':
+        need(set(resource) == common | {'kind', 'workgroup', 'workgroup_id',
+             'namespace', 'namespace_id', 'namespace_created', 'base_capacity',
+             'max_capacity', 'endpoint', 'port', 'security_group_ids',
+             'max_query_execution_time'}, 'serverless_resource_fields')
+        need(resource['workgroup'] == resource['namespace'] == 'odbcpp-redshift-pilot'
+             and resource['workgroup_id'] == 'd41cff82-7eb8-410d-be60-1d467c335756'
+             and resource['namespace_id'] == 'd94a619c-bff3-42bb-8958-2405c99862db'
+             and utc(resource['namespace_created']) == utc('2026-10-02T12:15:16.873Z')
+             and resource['endpoint'] == 'odbcpp-redshift-pilot.385207570137.eu-north-1.redshift-serverless.amazonaws.com'
+             and type(resource['port']) is int and resource['port'] == 5439
+             and resource['security_group_ids'] == ['sg-06227a706295e3f05'],
+             'existing_serverless_resource_identity')
+        need(all(type(resource[key]) is int for key in
+                 ('base_capacity', 'max_capacity', 'max_query_execution_time'))
+             and resource['base_capacity'] == resource['max_capacity'] == 4
+             and resource['max_query_execution_time'] == 30,
+             'unchanged_serverless_caps')
+    else:
+        raise Refused('resource_kind')
+    need(resource['account'] == '385207570137'
+         and resource['arn'] == 'arn:aws:iam::385207570137:user/odbcpp-redshift-pilot'
+         and resource['profile'] == 'odbcpp-redshift-pilot',
+         'unchanged_existing_resource_identity')
+    need(resource['region'] == 'eu-north-1', 'approved_region_eu_north_1')
+    return kind
+
 
 def utc(value):
     parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
@@ -51,7 +91,12 @@ class NativeOps:
         self.a, self.m = approval, manifest
         self.directory, self.child_deadline = Path(directory), child_deadline
         self.resource = approval['resource']
+        self.resource_kind = self.resource.get('kind', 'provisioned')
+        need(self.resource_kind in ('provisioned', 'serverless'), 'resource_kind')
+        if self.resource_kind == 'serverless':
+            validate_resource(self.resource)
         self.snapshot = self.config = self.test_passfile = self.test_stamp = None
+        self.ca_snapshot = None
         self.sql_unknown = self.sql_fenced = False
         self.readers_known = True
         self.helpers = self.statements = self.aws_calls = 0
@@ -82,6 +127,82 @@ class NativeOps:
             self.test_passfile, follow_symlinks=False)) == self.test_stamp,
             'ordinary_private_input_changed')
 
+    def prepare_ca_snapshot(self, source):
+        """Copy admitted public CA bytes into this existing private run only."""
+        need(self.ca_snapshot is None and type(source) is str and Path(source).is_absolute(),
+             'CA_source_path')
+        # Public CA bundles may intentionally be symlinks or root-owned files.
+        # Resolve deliberately, then acquire a nonblocking, no-follow regular FD.
+        canonical = Path(source).resolve(strict=True)
+        fd = os.open(canonical, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            before = os.fstat(fd)
+            need(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= MAX_CA_BYTES,
+                 'CA_regular_bounded')
+            chunks = []
+            remaining = before.st_size
+            while remaining:
+                need(self.now() < self.child_deadline, 'CA_deadline')
+                block = os.read(fd, min(1024 * 1024, remaining))
+                need(bool(block), 'CA_short_read')
+                chunks.append(block)
+                remaining -= len(block)
+            need(not os.read(fd, 1) and self.stamp(os.fstat(fd)) == self.stamp(before),
+                 'CA_source_changed')
+            body = b''.join(chunks)
+        finally:
+            os.close(fd)
+        need(self.now() < self.child_deadline and
+             hashlib.sha256(body).hexdigest() == self.m['ca_sha256'], 'CA_changed')
+        parent = self.directory.lstat()
+        need(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.geteuid() and
+             stat.S_IMODE(parent.st_mode) == 0o700, 'CA_private_run')
+        path = self.directory / 'ca.pem'
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        row = {'path': path, 'fd': fd, 'stamp': None,
+               'body': body, 'complete': False}
+        self.ca_snapshot = row  # Track this exact acquisition before any write.
+        try:
+            row['stamp'] = self.stamp(os.fstat(fd))
+            view = memoryview(body)
+            while view:
+                need(self.now() < self.child_deadline, 'CA_deadline')
+                count = os.write(fd, view)
+                need(count > 0, 'CA_snapshot_short_write')
+                view = view[count:]
+            os.fsync(fd)
+            row['stamp'] = self.stamp(os.fstat(fd))
+            row['complete'] = True
+            self.ca_held()
+        except BaseException:
+            row['stamp'] = self.stamp(os.fstat(fd))
+            self.close_ca_snapshot()
+            raise
+        return str(path)
+
+    def ca_held(self, *, allow_partial=False):
+        row = self.ca_snapshot
+        need(row is not None and (row['complete'] or allow_partial), 'CA_snapshot_pending')
+        held = os.fstat(row['fd'])
+        current = row['path'].lstat()
+        need(self.stamp(held) == self.stamp(current) == row['stamp'] and
+             stat.S_ISREG(held.st_mode) and held.st_uid == os.geteuid() and
+             stat.S_IMODE(held.st_mode) == 0o600 and held.st_nlink == 1,
+             'CA_snapshot_identity_changed')
+        size = held.st_size
+        need((size == len(row['body']) if row['complete'] else 0 <= size <= len(row['body']))
+             and os.pread(row['fd'], size + 1, 0) == row['body'][:size],
+             'CA_snapshot_bytes_changed')
+
+    def close_ca_snapshot(self):
+        if self.ca_snapshot is None:
+            return
+        self.ca_held(allow_partial=True)
+        row = self.ca_snapshot
+        row['path'].unlink()
+        os.close(row['fd'])
+        self.ca_snapshot = None
+
     def prepare(self):
         self.config = private_json(self.a['database_config'])
         c = self.config
@@ -90,9 +211,9 @@ class NativeOps:
              and c['admin_user'] == 'odbcpp_pilot_admin'
              and c['test_user'] == 'odbcpp_pilot_test' and c['port'] == 5439,
              'config_identity')
-        import hashlib
-        need(hashlib.sha256(Path(c['ca']).read_bytes()).hexdigest() == self.m['ca_sha256'],
-             'CA_changed')
+        if self.resource_kind == 'serverless':
+            need(c['host'] == self.resource['endpoint'], 'serverless_config_endpoint')
+        c['ca'] = self.prepare_ca_snapshot(c['ca'])
         self.snapshot = native_auth_inputs.prepare_snapshot(
             credentials_path=self.a['credential_source'], profile=self.resource['profile'],
             directory=str(self.directory/'inputs'),
@@ -116,7 +237,18 @@ class NativeOps:
 
     def aws(self, args, end):
         allowed = {('sts', 'get-caller-identity'), ('redshift', 'describe-clusters'), ('redshift', 'describe-cluster-parameters'), ('ec2', 'describe-security-groups'), ('redshift', 'resume-cluster'), ('redshift', 'pause-cluster')}
+        if self.resource_kind == 'serverless':
+            allowed = {('sts', 'get-caller-identity'), ('ec2', 'describe-security-groups'),
+                       ('redshift-serverless', 'get-workgroup'),
+                       ('redshift-serverless', 'get-namespace')}
         need(tuple(args[:2]) in allowed, 'operational_only')
+        if self.resource_kind == 'serverless':
+            commands = [
+                ['sts', 'get-caller-identity'],
+                ['redshift-serverless', 'get-workgroup', '--workgroup-name', self.resource['workgroup']],
+                ['redshift-serverless', 'get-namespace', '--namespace-name', self.resource['namespace']],
+                ['ec2', 'describe-security-groups', '--group-ids', *self.resource['security_group_ids']]]
+            need(args in commands, 'exact_serverless_resource_read_only')
         self.aws_calls += 1
         need(self.aws_calls <= 64, 'AWS_count')
         env = {'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C', 'AWS_PAGER': '', 'AWS_EC2_METADATA_DISABLED': 'true', **self.aws_env}
@@ -129,11 +261,82 @@ class NativeOps:
         return json.loads(raw)
 
     def cluster(self, end):
+        need(self.resource_kind == 'provisioned', 'provisioned_only')
         rows = self.aws(['redshift', 'describe-clusters', '--cluster-identifier', self.resource['cluster']], end)['Clusters']
         need(len(rows) == 1, 'cluster_count')
         c = rows[0]
         need(c['ClusterIdentifier'] == self.resource['cluster'] and c['NodeType'] == self.resource['node_type'] and (c['NumberOfNodes'] == 1) and (c['Encrypted'] is True) and (c['Endpoint']['Address'] == self.config['host']) and (c['Endpoint']['Port'] == 5439) and (utc(c['ClusterCreateTime']) == utc(self.resource['created'])), 'cluster_identity')
         return c
+
+    def serverless(self, end):
+        """Read exact existing identities; AVAILABLE is not SQL/compute-idle proof."""
+        need(self.resource_kind == 'serverless', 'serverless_only')
+        r = self.resource
+        w = self.aws(['redshift-serverless', 'get-workgroup',
+                      '--workgroup-name', r['workgroup']], end)['workgroup']
+        n = self.aws(['redshift-serverless', 'get-namespace',
+                      '--namespace-name', r['namespace']], end)['namespace']
+        prefix = 'arn:aws:redshift-serverless:' + r['region'] + ':' + r['account'] + ':'
+        need(w['workgroupName'] == r['workgroup'] and w['workgroupId'] == r['workgroup_id']
+             and w['workgroupArn'] == prefix + 'workgroup/' + r['workgroup_id']
+             and w['namespaceName'] == r['namespace']
+             and n['namespaceName'] == r['namespace'] and n['namespaceId'] == r['namespace_id']
+             and n['namespaceArn'] == prefix + 'namespace/' + r['namespace_id']
+             and utc(n['creationDate']) == utc(r['namespace_created'])
+             and n['dbName'] == self.config['database'] == 'odbcpp_pilot'
+             and n['adminUsername'] == self.config['admin_user'] == 'odbcpp_pilot_admin',
+             'serverless_identity')
+        need(w['status'] == n['status'] == 'AVAILABLE', 'serverless_not_available')
+        need(type(w['baseCapacity']) is int and type(w['maxCapacity']) is int
+             and w['baseCapacity'] == r['base_capacity']
+             and w['maxCapacity'] == r['max_capacity'], 'serverless_caps_changed')
+        need(w['endpoint']['address'] == r['endpoint'] == self.config['host']
+             and type(w['endpoint']['port']) is int
+             and w['endpoint']['port'] == r['port'] == self.config['port']
+             and w['publiclyAccessible'] is True
+             and sorted(w['securityGroupIds']) == r['security_group_ids'],
+             'serverless_endpoint_network_identity')
+        rows = w['configParameters']
+        need(type(rows) is list and len({row['parameterKey'] for row in rows}) == len(rows),
+             'serverless_configuration_unique')
+        parameters = {row['parameterKey']: row['parameterValue'] for row in rows}
+        need(parameters.get('require_ssl') == 'true', 'TLS_required')
+        need(parameters.get('max_query_execution_time') == str(r['max_query_execution_time']),
+             'serverless_query_cap_changed')
+        self.left(end, 5)
+        return w
+
+    def security_available(self, end):
+        self.identity(end)
+        w = self.serverless(end)
+        actual = self.aws(['ec2', 'describe-security-groups', '--group-ids',
+                           *self.resource['security_group_ids']], end)['SecurityGroups']
+        need(actual == self.m['security_groups'], 'SG_changed')
+        need(sorted(row['GroupId'] for row in actual) == sorted(w['securityGroupIds']),
+             'serverless_security_group_identity')
+        self.network_guard(actual, end)
+        self.left(end, 5)
+        record(self.directory / 'serverless-security.json', {
+            'workgroup': self.resource['workgroup'], 'namespace': self.resource['namespace'],
+            'identity_TLS_network_verified': True, 'resource_status': 'AVAILABLE',
+            'resource_mutations': 0, 'SQL_readiness_not_inferred': True,
+            'physical_compute_idle_not_inferred': True})
+
+    def verify_idle(self, end):
+        """Resource-only readback; caller must separately prove owned SQL zero."""
+        need(self.resource_kind == 'serverless', 'serverless_only')
+        self.identity(end)
+        self.serverless(end)
+        actual = self.aws(['ec2', 'describe-security-groups', '--group-ids',
+                           *self.resource['security_group_ids']], end)['SecurityGroups']
+        need(actual == self.m['security_groups'], 'SG_changed')
+        self.left(end, 5)
+        record(self.directory / 'serverless-final-resource.json', {
+            'resource_identity_caps_TLS_verified': True, 'resource_status': 'AVAILABLE',
+            'paused_verified': False, 'physical_compute_idle_verified': False,
+            'SQL_quiescence_verified_by_resource_metadata': False,
+            'resource_mutations': 0})
+        return True
 
     def identity(self, end):
         x = self.aws(['sts', 'get-caller-identity'], end)
@@ -177,6 +380,7 @@ class NativeOps:
         need(self.now() < cutoff, 'network_whole_helper_deadline')
 
     def security_paused(self):
+        need(self.resource_kind == 'provisioned', 'serverless_has_no_paused_state')
         end = self.child_deadline - 900
         self.identity(end)
         c = self.cluster(end)
@@ -192,6 +396,12 @@ class NativeOps:
         need(not p.get('Marker') and any((r.get('ParameterName') == 'require_ssl' and r.get('ParameterValue') == 'true' for r in p['Parameters'])), 'TLS_required')
 
     def resume_available(self, end):
+        if self.resource_kind == 'serverless':
+            self.serverless(end)
+            record(self.directory / 'serverless-availability.json', {
+                'resource_status': 'AVAILABLE', 'resource_mutations': 0,
+                'SQL_readiness_not_inferred': True})
+            return
         record(self.directory / 'resume-intent.json', {'cluster': self.resource['cluster']})
         self.aws(['redshift', 'resume-cluster', '--cluster-identifier', self.resource['cluster']], end)
         first_available = None
@@ -209,6 +419,7 @@ class NativeOps:
             time.sleep(self.left(end, 10))
 
     def pause_until(self, end):
+        need(self.resource_kind == 'provisioned', 'serverless_has_no_paused_state')
         self.identity(end)
         paused = False
         while True:

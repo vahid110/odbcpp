@@ -3,6 +3,7 @@ include(FetchContent)
 FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
@@ -19,7 +20,7 @@ function(add_test_executable test_name test_file)
     target_link_libraries(${test_name} PRIVATE odbcpp_auth_pg_consumer GTest::gtest_main)
     target_include_directories(${test_name} PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}"
       "${ODBCPP_INTERNAL_INCLUDE_auth}" "${ODBCPP_INTERNAL_INCLUDE_backend}")
-  elseif(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
+  elseif(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_sts_assume_role_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
     target_link_libraries(${test_name} PRIVATE odbcpp_auth_core GTest::gtest_main)
     target_include_directories(${test_name} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
   else()
@@ -57,6 +58,17 @@ option(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS "Build separately admitted inst
 option(ODBCPP_REDSHIFT_OFFICIAL_IMPORT_LIVE_TESTS "Build separately admitted official Redshift import comparison tests" OFF)
 option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification peer" OFF)
+# The dm_it_* targets always build. Connected suites remain opt-in because they
+# need a configured database; the bounded dm-offline subset always registers.
+option(ODBCPP_DM_INTEGRATION_TESTS "Register the integration suites built against the Driver Manager" OFF)
+# Offline graph check: an opt-in registration must not name an image that the
+# ordinary build skips, or a full collection reports it "Not Run".
+add_test(NAME test_registered_test_images COMMAND ${CMAKE_COMMAND}
+  -DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+  -DBUILD_DIR=${CMAKE_BINARY_DIR}
+  -DCONFIG=$<CONFIG>
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckRegisteredTestImages.cmake)
+set_tests_properties(test_registered_test_images PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
 target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
 apply_compiler_settings(crypto_identity_probe)
@@ -167,7 +179,7 @@ endif()
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_odbc_trace_reload)$")
+  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_sts_serverless_owner|test_jwt_iam_auth|test_odbc_trace_reload)$")
     continue() # Optional SDK consumers and dynamic-load tests are explicitly registered below.
   endif()
   add_test_executable(${test_name} ${test_file})
@@ -190,6 +202,35 @@ set_tests_properties(test_odbc_trace_reload PROPERTIES LABELS "unit" TIMEOUT 60
 # The same native main with isolated synthetic assertions proves failure/skip
 # precedence through actual GoogleTest and CTest, without loading the driver.
 find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+add_test(NAME test_xml_evidence COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_xml_evidence.py")
+set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT 60)
+add_test(NAME test_aws_sdk_provenance COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/dependencies/test_aws_sdk_provenance.py")
+add_test(NAME test_pilot_startup_tls_policy COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/redshift/test_pilot_startup_tls_policy.py")
+set_tests_properties(test_aws_sdk_provenance test_pilot_startup_tls_policy
+  PROPERTIES LABELS "unit;security" TIMEOUT 60)
+# This lifecycle runs on the POSIX coordinator (including WSL), not native Windows.
+if(UNIX)
+  add_test(NAME test_redshift_ca_snapshot COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/test_redshift_ca_snapshot.py")
+  set_tests_properties(test_redshift_ca_snapshot PROPERTIES LABELS "unit;security" TIMEOUT 60)
+endif()
+# Compile the dependency regressions against the exact patched bundled headers.
+add_executable(test_bundled_fmt_security tools/ci/test_bundled_fmt_security.cpp)
+target_include_directories(test_bundled_fmt_security PRIVATE "${SPDLOG_INCLUDE_DIR}")
+target_compile_definitions(test_bundled_fmt_security PRIVATE FMT_HEADER_ONLY=1)
+target_link_libraries(test_bundled_fmt_security PRIVATE GTest::gtest_main)
+apply_compiler_settings(test_bundled_fmt_security)
+set_target_properties(test_bundled_fmt_security PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_bundled_fmt_security COMMAND test_bundled_fmt_security)
+set_tests_properties(test_bundled_fmt_security PROPERTIES LABELS "unit;security" TIMEOUT 30)
+add_test(NAME test_spdlog_fmt_patch COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/test_spdlog_fmt_patch.py"
+  --cmake "${CMAKE_COMMAND}" --spdlog-source "${spdlog_SOURCE_DIR}")
+set_tests_properties(test_spdlog_fmt_patch PROPERTIES LABELS "unit;security" TIMEOUT 120)
 add_executable(trace_reload_exit_policy_control tests/unit/test_odbc_trace_reload.cpp)
 target_include_directories(trace_reload_exit_policy_control PRIVATE ${ODBC_INCLUDE_DIR})
 target_compile_definitions(trace_reload_exit_policy_control PRIVATE ODBCPP_TRACE_RELOAD_EXIT_POLICY_CONTROL=1)
@@ -305,6 +346,15 @@ set_tests_properties(test_crypto_profile_validation
   PROPERTIES LABELS "unit;architecture")
 
 add_test(
+  NAME test_native_aws_sdk_import
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestNativeAwsSdkImport.cmake)
+set_tests_properties(test_native_aws_sdk_import
+  PROPERTIES LABELS "unit;architecture" TIMEOUT 120)
+
+add_test(
   NAME test_crypto_manifest
   COMMAND ${CMAKE_COMMAND}
           -DMANIFEST=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json
@@ -415,6 +465,8 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
   set_target_properties(it_redshift_routine_schema_patterns PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   if(ODBCPP_REDSHIFT_ROUTINE_SCHEMA_LIVE_TESTS)
+    # A registered test must be built by the ordinary graph, not only on request.
+    set_target_properties(it_redshift_routine_schema_patterns PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME it_redshift_routine_schema_patterns COMMAND it_redshift_routine_schema_patterns)
     set_tests_properties(it_redshift_routine_schema_patterns PROPERTIES
       LABELS "integration;redshift;routine" TIMEOUT 120)
@@ -430,6 +482,7 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
   apply_compiler_settings(it_redshift_columns_omitted_table)
   set_target_properties(it_redshift_columns_omitted_table PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   if(ODBCPP_REDSHIFT_COLUMNS_OMITTED_TABLE_LIVE_TESTS)
+    set_target_properties(it_redshift_columns_omitted_table PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME it_redshift_columns_omitted_table COMMAND it_redshift_columns_omitted_table)
     set_tests_properties(it_redshift_columns_omitted_table PROPERTIES LABELS "integration;redshift;columns" TIMEOUT 120)
   endif()
@@ -440,7 +493,10 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table" OR test_name STREQUAL "it_redshift_powerbi_relationship")
     continue() # Explicit opt-in native registration above.
   endif()
-  if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
+  if(test_name STREQUAL "it_driver_manager_unicode")
+    continue() # Registered below against the Driver Manager, never odbcpp_core.
+  endif()
+  if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_redshift_serverless_sts_auth" OR test_name STREQUAL "it_redshift_serverless_jwt_iam_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running
@@ -507,6 +563,39 @@ if(UNIX OR WIN32)
     find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
   endif()
   if(ODBC_DRIVER_MANAGER_LIBRARY)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DmQualifiedIdentity.cmake")
+    add_library(odbcpp_test_dm_identity STATIC tests/support/dm_identity.cpp)
+    target_include_directories(odbcpp_test_dm_identity PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/dm-identity")
+    target_link_libraries(odbcpp_test_dm_identity PRIVATE ${CMAKE_DL_LIBS})
+    apply_compiler_settings(odbcpp_test_dm_identity)
+    add_executable(test_dm_identity tests/driver_manager/test_dm_identity.cpp)
+    target_include_directories(test_dm_identity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      target_include_directories(test_dm_identity BEFORE PRIVATE ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    endif()
+    target_compile_definitions(test_dm_identity PRIVATE ODBCPP_TEST_VIA_DRIVER_MANAGER=1)
+    if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+      target_compile_definitions(test_dm_identity PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+    endif()
+    if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+      target_compile_definitions(test_dm_identity PRIVATE
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
+    target_link_libraries(test_dm_identity PRIVATE
+      GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} odbcpp_test_dm_identity)
+    apply_compiler_settings(test_dm_identity)
+    set_target_properties(test_dm_identity PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    add_test(NAME test_dm_identity COMMAND test_dm_identity)
+    set_tests_properties(test_dm_identity PROPERTIES LABELS "unit;dm-identity" TIMEOUT 30)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dm-offline")
+    add_test(NAME dm_offline_identity COMMAND test_dm_identity
+      "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/identity.xml")
+    set_tests_properties(dm_offline_identity PROPERTIES
+      LABELS "dm-offline" TIMEOUT 30
+      FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
     # Optional relationship partition; no core link and no PostgreSQL registration.
     if(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS)
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
@@ -698,6 +787,108 @@ if(UNIX OR WIN32)
     set_tests_properties(it_driver_manager PROPERTIES LABELS "integration")
     set_target_properties(it_driver_manager PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+    # Unicode metadata/truncation/diagnostic contracts as the application sees
+    # them through the real manager, against the same registered driver.
+    add_executable(it_driver_manager_unicode tests/integration/it_driver_manager_unicode.cpp)
+    if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      target_include_directories(it_driver_manager_unicode PRIVATE
+        ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    endif()
+    target_link_libraries(it_driver_manager_unicode PRIVATE
+      GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY})
+    if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+      target_compile_definitions(it_driver_manager_unicode PRIVATE ODBCPP_TEST_IODBC=1)
+    endif()
+    if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+      target_compile_definitions(it_driver_manager_unicode PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+    endif()
+    if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+      target_compile_definitions(it_driver_manager_unicode PRIVATE
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
+    apply_compiler_settings(it_driver_manager_unicode)
+    add_test(NAME it_driver_manager_unicode COMMAND it_driver_manager_unicode)
+    set_tests_properties(it_driver_manager_unicode PROPERTIES LABELS "integration" TIMEOUT 90)
+    set_target_properties(it_driver_manager_unicode PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+    # The same integration sources built against the manager and the
+    # registered driver instead of odbcpp_core. The direct targets above stay
+    # the diagnostic baseline; cases that need driver internals are compiled
+    # out by ODBCPP_TEST_VIA_DRIVER_MANAGER. See docs/plans/driver-manager-test-layer.md.
+    if(TARGET_DATABASE STREQUAL "REDSHIFT")
+      set(_dm_redshift_product 1)
+    else()
+      set(_dm_redshift_product 0)
+    endif()
+    set(_dm_suites it_prepared_statements_real it_bind_col_real
+        it_native_sql it_handle_lifecycle it_diagnostics it_get_info
+        it_metadata_real)
+    # Like its direct target, the real Redshift suite exists only in Redshift builds.
+    if(TARGET_DATABASE STREQUAL "REDSHIFT")
+      list(APPEND _dm_suites it_redshift_real)
+    endif()
+    foreach(_dm_suite IN LISTS _dm_suites)
+      set(_dm_target dm_${_dm_suite})
+      add_executable(${_dm_target} tests/integration/${_dm_suite}.cpp)
+      if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+        target_include_directories(${_dm_target} BEFORE PRIVATE
+          ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      endif()
+      target_include_directories(${_dm_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+      target_link_libraries(${_dm_target} PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} odbcpp_test_dm_identity)
+      target_compile_definitions(${_dm_target} PRIVATE
+        ODBCPP_TEST_VIA_DRIVER_MANAGER=1
+        ODBCPP_TEST_REDSHIFT_PRODUCT=${_dm_redshift_product})
+      if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+        target_compile_definitions(${_dm_target} PRIVATE
+          ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+      endif()
+      if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+        target_compile_definitions(${_dm_target} PRIVATE
+          ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+      endif()
+      if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+        target_compile_definitions(${_dm_target} PRIVATE ODBCPP_TEST_IODBC=1)
+      endif()
+      add_dependencies(${_dm_target} ${PROJECT_NAME}_driver)
+      apply_compiler_settings(${_dm_target})
+      set_target_properties(${_dm_target} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      if(ODBCPP_DM_INTEGRATION_TESTS)
+        add_test(NAME ${_dm_target} COMMAND ${_dm_target})
+        set_tests_properties(${_dm_target} PROPERTIES
+          LABELS "integration;dm-integration")
+      endif()
+    endforeach()
+
+    # Reuse public pre-connect API assertions on both routes. These fixtures
+    # allocate/free ENV/DBC handles but never call SQLConnect/SQLDriverConnect.
+    foreach(_route direct manager)
+      if(_route STREQUAL "direct")
+        set(_offline_target it_handle_lifecycle)
+      else()
+        set(_offline_target dm_it_handle_lifecycle)
+      endif()
+      add_test(NAME dm_offline_${_route}_login_timeout COMMAND ${_offline_target}
+        --gtest_filter=ConnectionAttributeIntegrationTest.LoginTimeoutOutputWidth
+        "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/${_route}-login-timeout.xml")
+      set_tests_properties(dm_offline_${_route}_login_timeout PROPERTIES
+        LABELS "dm-offline" TIMEOUT 30
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
+    endforeach()
+    # This checks the Unicode fixture conversion, not a manager API call.
+    add_test(NAME dm_offline_unicode_conversion COMMAND it_driver_manager_unicode
+      --gtest_filter=DriverManagerUnicodeHarnessTest.OverrideTextDecodesCompleteScalarsIntoManagerUnits
+      "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/unicode-conversion.xml")
+    set_tests_properties(dm_offline_unicode_conversion PROPERTIES
+      LABELS "dm-offline" TIMEOUT 30
+      FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];Running 0 tests")
+    unset(_dm_redshift_product)
+    unset(_dm_suites)
   elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
     message(FATAL_ERROR
       "ODBC driver-manager library was not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")
@@ -749,6 +940,7 @@ if(WIN32)
   apply_compiler_settings(it_setup_registration)
   set_target_properties(it_setup_registration PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   if(ODBCPP_INSTALLED_SETUP_TESTS)
+    set_target_properties(it_setup_registration PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME it_setup_registration COMMAND it_setup_registration)
     set_tests_properties(it_setup_registration PROPERTIES LABELS "integration;windows;package" TIMEOUT 30)
   endif()

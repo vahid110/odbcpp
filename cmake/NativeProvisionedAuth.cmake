@@ -14,18 +14,8 @@ if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
   message(FATAL_ERROR "Native provisioned auth requires the reviewed Redshift Darwin arm64 static OpenSSL profile")
 endif()
 # Optional provider sources are versioned with this project. The SDK remains an
-# explicitly pinned external build dependency; no ambient credential/package search.
-set(ODBCPP_NATIVE_AUTH_SDK_IMPORT "" CACHE FILEPATH "Reviewed pinned SDK import recipe")
-if(NOT IS_ABSOLUTE "${ODBCPP_NATIVE_AUTH_SDK_IMPORT}" OR
-   NOT EXISTS "${ODBCPP_NATIVE_AUTH_SDK_IMPORT}")
-  message(FATAL_ERROR "Native provisioned auth requires explicit existing absolute ODBCPP_NATIVE_AUTH_SDK_IMPORT")
-endif()
-# Include executes CMake code. Accept only the reviewed recipe bytes, not a
-# caller-supplied fingerprint or ambient installed-package discovery.
-file(SHA256 "${ODBCPP_NATIVE_AUTH_SDK_IMPORT}" _recipe_hash)
-if(NOT _recipe_hash STREQUAL "dd810b77e90777e9f9ff6cfddadaa699a02c6880f520c91cdb94fb387c7a3c00")
-  message(FATAL_ERROR "Native provisioned auth SDK recipe fingerprint mismatch")
-endif()
+# explicitly pinned external build dependency (no ambient package search); the
+# import recipe is git-pinned and consumes the reviewed ODBCPP_AWS_SDK_INSTALL.
 if(NOT EXISTS "${OPENSSL_SSL_LIBRARY}")
   message(FATAL_ERROR "Native provisioned auth missing selected OPENSSL_SSL_LIBRARY")
 endif()
@@ -45,11 +35,11 @@ foreach(_target odbcpp::core odbcpp_auth_core Threads::Threads GTest::gtest_main
     message(FATAL_ERROR "Native provisioned auth missing prerequisite target: ${_target}")
   endif()
 endforeach()
-if(TARGET aws-cpp-sdk-redshift)
+if(TARGET aws-cpp-sdk-redshift OR TARGET aws-cpp-sdk-redshift-serverless OR TARGET aws-cpp-sdk-sts)
   message(FATAL_ERROR "Native provisioned auth refuses an already imported SDK target")
 endif()
-include("${ODBCPP_NATIVE_AUTH_SDK_IMPORT}")
-if(NOT TARGET aws-cpp-sdk-redshift OR NOT SDK_FIXTURE_INCLUDES)
+include("${PROJECT_SOURCE_DIR}/cmake/NativeAwsSdkImport.cmake")
+if(NOT TARGET aws-cpp-sdk-redshift OR NOT TARGET aws-cpp-sdk-redshift-serverless OR NOT TARGET aws-cpp-sdk-sts OR NOT SDK_FIXTURE_INCLUDES)
   message(FATAL_ERROR "Native provisioned auth incomplete SDK import closure")
 endif()
 foreach(_include IN LISTS SDK_FIXTURE_INCLUDES)
@@ -67,6 +57,11 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_n
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile_acquisition.h" "${_native_stage}/odbcpp/auth/aws/named_profile_acquisition.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_assume_role_owner.h" "${_native_stage}/odbcpp/auth/aws/sts_assume_role_owner.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/serverless_credentials_owner.h" "${_native_stage}/odbcpp/auth/aws/serverless_credentials_owner.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_serverless_fake_http.h" "${_native_stage}/odbcpp/auth/aws/sts_serverless_fake_http.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/profile_role_assumption.h" "${_native_stage}/odbcpp/auth/aws/profile_role_assumption.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/jwt_iam_auth.h" "${_native_stage}/odbcpp/auth/aws/jwt_iam_auth.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_pg_connector.h" "${_native_stage}/odbcpp/auth/aws/provisioned_pg_connector.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
@@ -77,6 +72,11 @@ add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/named_profile_acquisition.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/native_body_capture.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/explicit_profile_source.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_assume_role_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/serverless_credentials_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_serverless_fake_http.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/profile_role_assumption.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/jwt_iam_auth.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/provisioned_query_transport.cpp")
 target_compile_features(odbcpp_auth_aws_provisioned PRIVATE cxx_std_20)
 target_include_directories(odbcpp_auth_aws_provisioned PRIVATE
@@ -86,7 +86,7 @@ target_compile_definitions(odbcpp_auth_aws_provisioned PRIVATE
   AWS_SDK_USE_CRT_HTTP HAVE_H2_CLIENT PLATFORM_APPLE AWS_ENABLE_DISPATCH_QUEUE
   AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
 target_link_libraries(odbcpp_auth_aws_provisioned PRIVATE
-  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift)
+  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless aws-cpp-sdk-sts)
 apply_compiler_settings(odbcpp_auth_aws_provisioned)
 
 # Optional provider-to-session composition keeps driver dependencies out of
@@ -108,6 +108,8 @@ apply_compiler_settings(odbcpp_auth_aws_provisioned_pg)
 # Explicit build-only consumers. Neither native nor SDK fake tests run through
 # ordinary CTest; fake runtime uses the separately selected network-denied path.
 add_executable(it_redshift_native_auth EXCLUDE_FROM_ALL "${_native_test}")
+add_executable(it_redshift_serverless_sts_auth EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/integration/it_redshift_serverless_sts_auth.cpp")
 add_executable(test_named_profile_acquisition EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_named_profile_acquisition.cpp")
 add_executable(test_provisioned_native_owner EXCLUDE_FROM_ALL
@@ -116,7 +118,13 @@ add_executable(test_provisioned_pg_connector EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_pg_connector.cpp")
 add_executable(test_provisioned_sdk_runtime EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_sdk_runtime.cpp")
-foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime)
+add_executable(test_sts_serverless_owner EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/unit/test_sts_serverless_owner.cpp")
+add_executable(it_redshift_serverless_jwt_iam_auth EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/integration/it_redshift_serverless_jwt_iam_auth.cpp")
+add_executable(test_jwt_iam_auth EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/unit/test_jwt_iam_auth.cpp")
+foreach(_consumer it_redshift_native_auth it_redshift_serverless_sts_auth it_redshift_serverless_jwt_iam_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime test_sts_serverless_owner test_jwt_iam_auth)
   target_include_directories(${_consumer} PRIVATE
     "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
   target_include_directories(${_consumer} SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
@@ -132,6 +140,8 @@ target_include_directories(it_redshift_native_auth PRIVATE "${ODBCPP_PG_AUTH_CON
 target_include_directories(test_provisioned_pg_connector PRIVATE "${ODBCPP_INTERNAL_INCLUDE_backend}")
 target_link_libraries(test_provisioned_pg_connector PRIVATE odbcpp_auth_aws_provisioned_pg)
 target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core odbcpp_auth_pg_consumer odbcpp_auth_aws_provisioned_pg)
+target_link_libraries(it_redshift_serverless_sts_auth PRIVATE odbcpp::core)
+target_link_libraries(it_redshift_serverless_jwt_iam_auth PRIVATE odbcpp::core)
 target_link_options(it_redshift_native_auth PRIVATE
   "LINKER:-map,${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-link.map")
 # No add_test/discovery/postbuild execution. A manually selected build is not

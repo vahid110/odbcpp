@@ -4396,6 +4396,275 @@ TEST_F(BackendContractTest, OwningTypeMetadataKeepsWideNameUnitsAndAttributeByte
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
 }
 
+// A non-NULL zero-capacity buffer cannot hold the terminator, so a non-empty
+// wide value is truncated exactly as the ANSI metadata functions report it.
+TEST_F(BackendContractTest, WideMetadataZeroCapacityNonNullBuffersReportTruncation) {
+  connect();
+  const std::string utf8 = "A\xe2\x82\xac\xf0\x9f\x98\x80";
+  QueryResult result;
+  result.columns = {{utf8, NativeTypeInfo{ScalarType::VarChar, 4, 0, true}}};
+  result.rows = {{"ok"}};
+  seen->date_result = result;
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  const SQLSMALLINT units = sizeof(SQLWCHAR) == 2 ? 4 : 3;
+  const auto bytes_expected = static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR));
+
+  SQLWCHAR name[8];
+  std::fill(std::begin(name), std::end(name), SQLWCHAR('x'));
+  SQLSMALLINT length = -1;
+  SQLSMALLINT type = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDescribeColW(stmt, 1, name, 0, &length, &type, nullptr, nullptr, nullptr));
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(units, length);
+  EXPECT_EQ(SQL_VARCHAR, type);
+  EXPECT_EQ(SQLWCHAR('x'), name[0]);
+
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeColW(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(units, length);
+
+  // Owner decision: SQLColAttributeW follows the truncation rule, like ANSI.
+  SQLSMALLINT bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, name, 0, &bytes, nullptr));
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(bytes_expected, bytes);
+  EXPECT_EQ(SQLWCHAR('x'), name[0]);
+
+  bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
+  EXPECT_EQ(bytes_expected, bytes);
+
+  // ANSI control: the existing narrow path already reports 01004.
+  SQLCHAR narrow[4];
+  std::fill(std::begin(narrow), std::end(narrow), SQLCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDescribeCol(stmt, 1, narrow, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(static_cast<SQLSMALLINT>(utf8.size()), length);
+  EXPECT_EQ(SQLCHAR('x'), narrow[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, WideMetadataZeroCapacityEmptyNameRemainsSuccessful) {
+  connect();
+  seen->invalid_result_structure = 8;
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+
+  SQLWCHAR name[4];
+  std::fill(std::begin(name), std::end(name), SQLWCHAR('x'));
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeColW(stmt, 1, name, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(0, length);
+  EXPECT_EQ(SQLWCHAR('x'), name[0]);
+
+  SQLSMALLINT bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, name, 0, &bytes, nullptr));
+  EXPECT_EQ(0, bytes);
+  EXPECT_EQ(SQLWCHAR('x'), name[0]);
+
+  SQLCHAR narrow[4];
+  std::fill(std::begin(narrow), std::end(narrow), SQLCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeCol(stmt, 1, narrow, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(0, length);
+  EXPECT_EQ(SQLCHAR('x'), narrow[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, DriverConnectZeroCapacityNonNullOutputReportsTruncation) {
+  const std::string ascii = "SSL=0;DESCRIPTION=";
+  std::vector<SQLWCHAR> input(ascii.begin(), ascii.end());
+  input.push_back('A');
+  input.push_back(0x20ac);
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    input.push_back(0xd83d);
+    input.push_back(0xde00);
+  } else {
+    input.push_back(static_cast<SQLWCHAR>(0x1f600));
+  }
+  input.push_back(0);
+  const auto input_units = static_cast<SQLSMALLINT>(input.size() - 1);
+
+  std::vector<SQLWCHAR> output(4, SQLWCHAR('x'));
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS, output.data(), 0,
+                              &length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(input_units, length);
+  EXPECT_EQ(SQLWCHAR('x'), output[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+
+  // NULL remains the distinct length-only query.
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS, nullptr, 0,
+                              &length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(input_units, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+
+  std::string narrow_input = "SSL=0;DESCRIPTION=plain";
+  SQLCHAR narrow_output[4];
+  std::fill(std::begin(narrow_output), std::end(narrow_output), SQLCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnect(dbc, nullptr, reinterpret_cast<SQLCHAR*>(narrow_input.data()),
+                             SQL_NTS, narrow_output, 0, &length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(narrow_input.size()), length);
+  EXPECT_EQ(SQLCHAR('x'), narrow_output[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+
+  // Truncation is record 1; the unsupported keyword warning follows it.
+  const std::string bogus = "SSL=0;BOGUS=1";
+  std::vector<SQLWCHAR> bogus_input(bogus.begin(), bogus.end());
+  bogus_input.push_back(0);
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnectW(dbc, nullptr, bogus_input.data(), SQL_NTS, output.data(), 0,
+                              &length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(bogus.size()), length);
+  SQLCHAR second_state[6]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 2, second_state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("01S00", reinterpret_cast<char*>(second_state));
+  EXPECT_EQ(SQLWCHAR('x'), output[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+}
+
+// Names beyond SQLSMALLINT keep full wide content/units; only lengths clamp.
+TEST_F(BackendContractTest, OversizedColumnNamesKeepWideContentAndClampReportedLengths) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxColumnNameBytes=70000");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  const auto use_name = [&](std::string name) {
+    QueryResult result;
+    result.columns = {{std::move(name), NativeTypeInfo{ScalarType::VarChar, 4, 0, true}}};
+    result.rows = {{"ok"}};
+    seen->date_result = result;
+  };
+  constexpr SQLSMALLINT max_length = std::numeric_limits<SQLSMALLINT>::max();
+
+  // Case A: 32768 ASCII bytes overflow SQLSMALLINT by one.
+  use_name(std::string(32768, 'a'));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")) << diagnostic();
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeCol(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(max_length, length);
+  SQLWCHAR prefix[64];
+  std::fill(std::begin(prefix), std::end(prefix), SQLWCHAR('x'));
+  length = -1;
+  SQLSMALLINT type = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDescribeColW(stmt, 1, prefix, 64, &length, &type, nullptr, nullptr, nullptr))
+      << diagnostic();
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(max_length, length);
+  EXPECT_EQ(SQL_VARCHAR, type);
+  EXPECT_EQ(SQLWCHAR('a'), prefix[0]);
+  EXPECT_EQ(SQLWCHAR('a'), prefix[62]);
+  EXPECT_EQ(0, prefix[63]);
+  SQLSMALLINT bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
+  EXPECT_EQ(max_length, bytes);
+  bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColAttribute(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
+  EXPECT_EQ(max_length, bytes);
+  SQLHDESC ird = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  ASSERT_NE(nullptr, ird);
+  std::fill(std::begin(prefix), std::end(prefix), SQLWCHAR('x'));
+  length = -1;
+  type = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetDescRecW(ird, 1, prefix, 64, &length, &type, nullptr, nullptr, nullptr,
+                           nullptr, nullptr));
+  EXPECT_EQ("01004", state(SQL_HANDLE_DESC, ird));
+  EXPECT_EQ(max_length, length);
+  EXPECT_EQ(SQL_VARCHAR, type);
+  EXPECT_EQ(SQLWCHAR('a'), prefix[62]);
+  EXPECT_EQ(0, prefix[63]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+
+  // Case B: 12000 euro signs are 36000 UTF-8 bytes but representable units.
+  std::string euros;
+  for (int index = 0; index < 12000; ++index) {
+    euros += "\xe2\x82\xac";
+  }
+  use_name(euros);
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")) << diagnostic();
+  std::vector<SQLWCHAR> wide(12001, SQLWCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeColW(stmt, 1, wide.data(), static_cast<SQLSMALLINT>(wide.size()),
+                            &length, nullptr, nullptr, nullptr, nullptr))
+      << diagnostic();
+  EXPECT_EQ(12000, length);
+  EXPECT_TRUE(std::all_of(wide.begin(), wide.end() - 1,
+                          [](SQLWCHAR unit) { return unit == 0x20ac; }));
+  EXPECT_EQ(0, wide.back());
+  bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, nullptr, 0, &bytes, nullptr));
+  const SQLSMALLINT wide_bytes = sizeof(SQLWCHAR) == 2 ? 24000 : max_length;
+  EXPECT_EQ(wide_bytes, bytes);
+  SQLWCHAR attribute[4];
+  std::fill(std::begin(attribute), std::end(attribute), SQLWCHAR('x'));
+  bytes = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLColAttributeW(stmt, 1, SQL_DESC_NAME, attribute, sizeof(attribute), &bytes,
+                             nullptr));
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(wide_bytes, bytes);
+  EXPECT_EQ(SQLWCHAR(0x20ac), attribute[0]);
+  EXPECT_EQ(SQLWCHAR(0x20ac), attribute[2]);
+  EXPECT_EQ(0, attribute[3]);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  std::fill(wide.begin(), wide.end(), SQLWCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDescRecW(ird, 1, wide.data(), static_cast<SQLSMALLINT>(wide.size()), &length,
+                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(12000, length);
+  EXPECT_TRUE(std::all_of(wide.begin(), wide.end() - 1,
+                          [](SQLWCHAR unit) { return unit == 0x20ac; }));
+  EXPECT_EQ(0, wide.back());
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeCol(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(max_length, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+
+  // Case C: a multiple of 65536 bytes previously wrapped to length zero.
+  use_name(std::string(65536, 'a'));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")) << diagnostic();
+  std::fill(std::begin(prefix), std::end(prefix), SQLWCHAR('x'));
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDescribeColW(stmt, 1, prefix, 64, &length, nullptr, nullptr, nullptr, nullptr))
+      << diagnostic();
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ(max_length, length);
+  EXPECT_EQ(SQLWCHAR('a'), prefix[0]);
+  EXPECT_EQ(0, prefix[63]);
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLDescribeCol(stmt, 1, nullptr, 0, &length, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(max_length, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
 TEST_F(BackendContractTest, WideNativeSqlAndDiagnosticsPreserveScalarBoundariesAndRequiredUnits) {
   connect();const auto queries=seen->queries;
   std::vector<SQLWCHAR> smile;
@@ -4472,6 +4741,131 @@ TEST_F(BackendContractTest, WideDriverConnectScalarTruncationPreservesConnection
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLDriverConnectW(dbc,nullptr,input.data(),SQL_NTS,output.data(),static_cast<SQLSMALLINT>(input.size()),&length,SQL_DRIVER_NOPROMPT));
   EXPECT_EQ("01S00",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(2,seen->created);EXPECT_EQ(static_cast<SQLSMALLINT>(input.size()-1),length);
   EXPECT_EQ(0,std::memcmp(output.data(),input.data(),input.size()*sizeof(SQLWCHAR)));EXPECT_EQ('x',output[input.size()]);
+}
+
+TEST_F(BackendContractTest, WideUserNameInfoCountsBytesAndKeepsSupplementaryScalarsWhole) {
+  const std::string ascii = "SERVER=fake;PORT=9999;DATABASE=contract;SSL=0;UID=";
+  std::vector<SQLWCHAR> input(ascii.begin(), ascii.end());
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    input.push_back(0xd83d);
+    input.push_back(0xde00);
+  } else {
+    input.push_back(static_cast<SQLWCHAR>(0x1f600));
+  }
+  input.push_back('x');
+  input.push_back(0);
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS,
+                                           nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+
+  // SQLGetInfoW text lengths are bytes: 2-byte builds need a surrogate pair.
+  constexpr SQLSMALLINT units = sizeof(SQLWCHAR) == 2 ? 3 : 2;
+  SQLWCHAR out[4]{'z', 'z', 'z', 'z'};
+  SQLSMALLINT bytes = -1;
+  const auto result = SQLGetInfoW(dbc, SQL_USER_NAME, out, 3 * sizeof(SQLWCHAR), &bytes);
+  EXPECT_EQ(static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR)), bytes);
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, result);
+    EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+    const SQLWCHAR expected[]{0xd83d, 0xde00, 0, 'z'};
+    EXPECT_EQ(0, std::memcmp(out, expected, sizeof(expected)));
+
+    // A two-unit buffer cannot hold the pair, so it is never split.
+    std::fill(std::begin(out), std::end(out), SQLWCHAR('z'));
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetInfoW(dbc, SQL_USER_NAME, out, 2 * sizeof(SQLWCHAR), &bytes));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(units * sizeof(SQLWCHAR)), bytes);
+    EXPECT_EQ(0, out[0]);
+    EXPECT_EQ('z', out[1]);
+  } else {
+    ASSERT_EQ(SQL_SUCCESS, result);
+    const SQLWCHAR expected[]{static_cast<SQLWCHAR>(0x1f600), 'x', 0, 'z'};
+    EXPECT_EQ(0, std::memcmp(out, expected, sizeof(expected)));
+  }
+
+  SQLCHAR narrow[16]{};
+  SQLSMALLINT narrow_length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_USER_NAME, narrow, sizeof(narrow), &narrow_length));
+  EXPECT_EQ(5, narrow_length);
+  EXPECT_STREQ("\xf0\x9f\x98\x80x", reinterpret_cast<char*>(narrow));
+}
+
+TEST_F(BackendContractTest, WideGetDataChunksSplitCombiningSequencesAtScalarBoundaries) {
+  QueryResult result;
+  result.columns = {{"text", NativeTypeInfo{ScalarType::VarChar, 8, 0, true}}};
+  result.rows = {{std::string("e\xcc\x81")}};
+  seen->date_result = result;
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+
+  // ODBC chunks by character units, not grapheme clusters: e, then U+0301.
+  SQLWCHAR out[3]{'z', 'z', 'z'};
+  SQLLEN length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2 * sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(2 * sizeof(SQLWCHAR)), length);
+  EXPECT_EQ("01004", state());
+  EXPECT_EQ('e', out[0]);
+  EXPECT_EQ(0, out[1]);
+  EXPECT_EQ('z', out[2]);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2 * sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+  EXPECT_EQ(0x0301, out[0]);
+  EXPECT_EQ(0, out[1]);
+  EXPECT_EQ(SQL_NO_DATA,
+            SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2 * sizeof(SQLWCHAR), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, AnsiDsnEchoReplacesInvalidBytesSoWideDiagnosticsSucceed) {
+  // An ANSI application in a legacy code page passes Latin-1 bytes (é = 0xE9).
+  // Unix echoes the DSN into its message; posting replaces the byte with U+FFFD.
+  SQLCHAR dsn[] = "caf\xe9";
+  ASSERT_EQ(SQL_ERROR, SQLConnect(dbc, dsn, SQL_NTS, nullptr, 0, nullptr, 0));
+  EXPECT_EQ(0, seen->created);
+
+  SQLCHAR narrow_state[6]{};
+  SQLCHAR narrow_message[64]{};
+  SQLSMALLINT narrow_length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, narrow_state, nullptr,
+                                       narrow_message, sizeof(narrow_message),
+                                       &narrow_length));
+#ifdef _WIN32
+  // Windows resolves DSNs through the registry, which rejects a non-UTF-8
+  // entry name before any echo, so the record stays valid UTF-8 for W readers.
+  EXPECT_STREQ("HY000", reinterpret_cast<char*>(narrow_state));
+  EXPECT_STREQ("Invalid UTF-8 ODBC registry entry name", reinterpret_cast<char*>(narrow_message));
+  SQLWCHAR wide_state[6]{};
+  SQLWCHAR message[64]{};
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_DBC, dbc, 1, wide_state, nullptr, message,
+                                        64, &length));
+  const SQLWCHAR expected_state[]{'H', 'Y', '0', '0', '0', 0};
+  EXPECT_EQ(0, std::memcmp(wide_state, expected_state, sizeof(expected_state)));
+  EXPECT_EQ(narrow_length, length);
+#else
+  EXPECT_STREQ("08001", reinterpret_cast<char*>(narrow_state));
+  EXPECT_STREQ("DSN 'caf\xef\xbf\xbd' not found", reinterpret_cast<char*>(narrow_message));
+  EXPECT_EQ(22, narrow_length);
+
+  // Owner decision: the record is valid UTF-8, so the wide reader succeeds.
+  SQLWCHAR wide_state[6]{};
+  SQLINTEGER native = -1;
+  SQLWCHAR message[64];
+  std::fill(std::begin(message), std::end(message), SQLWCHAR(0x5a5a));
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(SQL_HANDLE_DBC, dbc, 1, wide_state, &native,
+                                        message, 64, &length));
+  const SQLWCHAR expected_state[]{'0', '8', '0', '0', '1', 0};
+  EXPECT_EQ(0, std::memcmp(wide_state, expected_state, sizeof(expected_state)));
+  EXPECT_EQ(0, native);
+  EXPECT_EQ(20, length);
+  EXPECT_EQ(SQLWCHAR('f'), message[7]);
+  EXPECT_EQ(SQLWCHAR(0xfffd), message[8]);
+  EXPECT_EQ(SQLWCHAR('\''), message[9]);
+  EXPECT_EQ(SQLWCHAR(0), message[20]);
+#endif
 }
 
 TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelectedDdlPolicy) {
@@ -8496,6 +8890,15 @@ class StaticBufferedScrollTest : public BackendContractTest {
     ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_ROW_NUMBER,&actual,0,nullptr));
     EXPECT_EQ(expected,actual);
   }
+  // An off-row row-number query is refused; the SQLSTATE depends on why the
+  // cursor is off-row: 24000 before the start or after the end of the result
+  // set, HY109 when the row could not be fetched. The output stays untouched.
+  void row_number_refused(const char* sqlstate) {
+    SQLULEN actual = 99;
+    ASSERT_EQ(SQL_ERROR,SQLGetStmtAttr(stmt,SQL_ATTR_ROW_NUMBER,&actual,0,nullptr));
+    EXPECT_EQ(sqlstate,state());
+    EXPECT_EQ(99u,actual);
+  }
   void guards() {
     EXPECT_EQ(991,output.before); EXPECT_EQ(992,output.after);
     EXPECT_EQ(881,lengths.before); EXPECT_EQ(882,lengths.after);
@@ -8510,7 +8913,7 @@ class StaticBufferedScrollTest : public BackendContractTest {
 
 TEST_F(StaticBufferedScrollTest, ScalarOwningNavigationNullAndUnicodeRefetchResetContinuation) {
   ASSERT_NO_FATAL_FAILURE(ready());
-  ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,999));
   EXPECT_EQ(1,output.values[0]); ASSERT_NO_FATAL_FAILURE(row_number(1));
   seen->date_result->rows[0][1] = "mutated backend source";
@@ -8542,7 +8945,7 @@ TEST_F(StaticBufferedScrollTest, ScalarOwningNavigationNullAndUnicodeRefetchRese
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(7,output.values[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_PRIOR,0)); EXPECT_EQ(6,output.values[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,-1)); EXPECT_EQ(7,output.values[0]);
-  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   EXPECT_EQ(7,output.values[0]); EXPECT_EQ(0u,fetched); EXPECT_EQ(SQL_ROW_NOROW,statuses[0]);
   ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk),&chunk_length)); EXPECT_EQ("24000",state());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0)); EXPECT_EQ(1,output.values[0]);
@@ -8566,7 +8969,7 @@ TEST_F(StaticBufferedScrollTest, RowsetLiteralPositionsOldSizeOverlapAndExtremeO
   EXPECT_EQ(static_cast<SQLLEN>(4*sizeof(SQLWCHAR)),chunk_length);
   EXPECT_EQ(static_cast<SQLWCHAR>('l'),chunk[0]); EXPECT_EQ(static_cast<SQLWCHAR>('a'),chunk[1]); EXPECT_EQ(0,chunk[2]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,-2)); EXPECT_EQ(5,output.values[0]);
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,0)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,0)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,2)); EXPECT_EQ(2,output.values[0]);
   ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,8));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,-2)); EXPECT_EQ(6,output.values[0]); EXPECT_EQ(2u,fetched);
@@ -8620,7 +9023,7 @@ TEST_F(StaticBufferedScrollTest, MoreResultsPreparedRefillMaxRowsErrorsAndSiblin
   first.additional_results.push_back(second); seen->date_result=first;
   ASSERT_EQ(SQL_SUCCESS,execute("ordered snapshots"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(7,output.values[0]);
-  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,3));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,small_values,0,lengths.values));
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
@@ -8640,7 +9043,7 @@ TEST_F(StaticBufferedScrollTest, MoreResultsPreparedRefillMaxRowsErrorsAndSiblin
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&input,0,&input_length));
   EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(stmt,SQL_ATTR_CONCURRENCY,reinterpret_cast<SQLPOINTER>(SQL_CONCUR_READ_ONLY),0));
   EXPECT_EQ("HY011",state());
-  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(2,output.values[0]);
   ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,3)); EXPECT_EQ(2,output.values[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt)); input=43;
@@ -8651,7 +9054,7 @@ TEST_F(StaticBufferedScrollTest, MoreResultsPreparedRefillMaxRowsErrorsAndSiblin
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   auto empty=snapshot(); empty.rows.clear(); seen->date_result=empty;
   ASSERT_EQ(SQL_SUCCESS,execute("empty owning snapshot"));
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(0u,fetched);
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   seen->date_result=snapshot();
@@ -8895,7 +9298,7 @@ TEST_F(StaticBookmarkTest, MetadataRowsetIdentityAndLiteralOffsetsRemainOwning) 
   ASSERT_NO_FATAL_FAILURE(row_number(1));
   ASSERT_NO_FATAL_FAILURE(fetch_saved(1));
   ASSERT_NO_FATAL_FAILURE(row_number(3));
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,-2)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,-2)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   EXPECT_EQ(0u,fetched); EXPECT_EQ(SQL_ROW_NOROW,statuses[0]);
   ASSERT_NO_FATAL_FAILURE(fetch_saved());
   ASSERT_NO_FATAL_FAILURE(row_number(2));
@@ -8997,8 +9400,15 @@ TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKe
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE)); seen->date_result=snapshot();
   ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"refill snapshot",SQL_NTS)); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  // A fresh refill is before the start of its result set: 24000 until any
+  // row is fetched. The stale bookmark then fails HY111, which leaves the
+  // row unfetchable: HY109 with the output untouched. A successful fetch
+  // repositions the cursor and restores the reported row number.
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
-  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("HY109"));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_NO_FATAL_FAILURE(save_selected());
   ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
@@ -9678,7 +10088,7 @@ TEST_F(BulkBookmarkTest, ForeignStaleAndConversionErrorsKeepSlotsMasksAndNeighbo
   ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
   ASSERT_NO_FATAL_FAILURE(diagnose_slot(1,"HY111",1,0));
   EXPECT_EQ(1u,fetched); EXPECT_EQ(SQL_ROW_ERROR,statuses[0]);
-  ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("HY109"));
 }
 
 TEST_F(BulkBookmarkTest, PaddedOffsetBoundedPreflightRefusalAndRepairPreserveBases) {
@@ -15708,9 +16118,11 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNu
       EXPECT_EQ("HY090", state());
       EXPECT_EQ(before, output);
     }
-    EXPECT_EQ(wide ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO,
+    // Owner decision: a real zero-capacity buffer truncates for ANSI and wide.
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
         attribute(1, SQL_DESC_NAME, output.data(), 0, &length, &unused_numeric));
-    EXPECT_EQ(before, output); // Preserve the existing real zero-capacity policies.
+    EXPECT_EQ("01004", state());
+    EXPECT_EQ(before, output);
     const auto unit = wide ? sizeof(SQLWCHAR) : std::size_t{1};
     EXPECT_EQ(6 * unit, static_cast<std::size_t>(length));
     EXPECT_EQ(SQL_SUCCESS_WITH_INFO, attribute(1, SQL_DESC_NAME, output.data(),

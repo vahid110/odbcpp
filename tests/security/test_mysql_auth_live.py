@@ -11,7 +11,16 @@ import subprocess
 import tempfile
 import time
 import uuid
-import xml.etree.ElementTree as ET
+
+# Load only the parser in this source tree; never fall back to cwd/sys.path.
+try:
+    _xml_spec = importlib.util.spec_from_file_location(
+        'odbcpp_xml_evidence', Path(__file__).resolve().parents[2] / 'tools/odbcpp_xml_evidence.py')
+    _xml_module = importlib.util.module_from_spec(_xml_spec)
+    _xml_spec.loader.exec_module(_xml_module)
+    parse_xml_file = _xml_module.parse_xml_file
+except Exception:
+    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 IMAGE = 'mysql:8.4.11@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242'
 PASSWORD = 'odbcpp-public-mysql-fixture-password'
@@ -84,7 +93,7 @@ DATE_PARAMETERS_SUITE = 'MySqlDateParametersIntegrationTest'
 DATE_PARAMETERS_CASE = 'PhysicalDateComparisonBoundsNullAndOwningReceipts'
 
 def validate_datetime_xml(path):
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path)
     if (root.tag != 'testsuites' or root.get('tests') != '1'
             or any(root.get(k) != '0' for k in ('failures', 'errors', 'disabled'))
             or root.get('skipped', '0') != '0' or len(root) != 1):
@@ -117,7 +126,7 @@ def run_datetime(binary, junit, port, ca):
         raise RuntimeError('MySQL DATETIME result proof failed') from None
 
 def validate_date_parameters_xml(path):
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path)
     if (root.tag != 'testsuites' or root.get('tests') != '1'
             or any(root.get(k) != '0' for k in ('failures', 'errors', 'disabled'))
             or root.get('skipped', '0') != '0' or len(root) != 1):
@@ -153,7 +162,7 @@ def same_artifact(left, right):
     return left == right or (left.exists() and right.exists() and os.path.samefile(left, right))
 
 def validate_decimal_xml(path):
-    root = ET.parse(path).getroot()
+    root = parse_xml_file(path)
     suites = list(root) if root.tag == 'testsuites' else [root]
     if len(suites) != 1 or suites[0].tag != 'testsuite':
         raise RuntimeError('Unexpected MySQL decimal inventory')
@@ -234,13 +243,13 @@ def main():
                               (date_parameters_binary, 'DATE parameter'), (receipt_binary, 'DATETIME receipt'), (decimal_receipt_binary, 'DECIMAL receipt')):
             if binary is not None and (not binary.is_file() or not os.access(binary, os.X_OK)):
                 parser.error(label + ' binary must be executable')
-        inputs = [Path(args.probe).resolve()] + [binary for binary in
-            (decimal_binary, datetime_binary, date_parameters_binary, receipt_binary, decimal_receipt_binary) if binary is not None]
-        outputs = [output] + [junit for junit in
-            (decimal_junit, datetime_junit, date_parameters_junit, receipt_junit, decimal_receipt_junit) if junit is not None]
-        if (any(same_artifact(out, source) for out in outputs for source in inputs)
-                or any(same_artifact(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])):
-            parser.error('result paths must be distinct from inputs and other results')
+    inputs = [Path(args.probe).resolve()] + [binary for binary in
+        (decimal_binary, datetime_binary, date_parameters_binary, receipt_binary, decimal_receipt_binary) if binary is not None]
+    outputs = [output] + [junit for junit in
+        (decimal_junit, datetime_junit, date_parameters_junit, receipt_junit, decimal_receipt_junit) if junit is not None]
+    if (any(same_artifact(out, source) for out in outputs for source in inputs)
+            or any(same_artifact(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])):
+        parser.error('result paths must be distinct from inputs and other results')
     if decimal_binary is not None:
         if not decimal_binary.is_file() or not os.access(decimal_binary, os.X_OK):
             parser.error('decimal binary must be executable')

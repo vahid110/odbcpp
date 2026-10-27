@@ -1,5 +1,6 @@
 """Offline fail-closed inventory and child admission checks; no database."""
 import importlib.util
+import io
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -13,6 +14,67 @@ live = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(live)
 
 VALID = '<testsuites><testsuite name="MySqlDecimalResultsIntegrationTest" tests="1" failures="0" errors="0" disabled="0" skipped="0"><testcase name="DeclaredSignedBoundsNullAndOwnershipAgreeAcrossProtocols" classname="MySqlDecimalResultsIntegrationTest" status="run" result="completed"/></testsuite></testsuites>'
+
+class ResultPathAdmissionTest(unittest.TestCase):
+    def test_probe_only_and_decimal_only_refuse_all_input_and_result_aliases(self):
+        for decimal in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary).resolve()
+                inputs = {'probe': directory / 'probe'}
+                if decimal:
+                    inputs['decimal'] = directory / 'decimal'
+                outputs = {'output': directory / 'success.json'}
+                if decimal:
+                    outputs['decimal-junit'] = directory / 'decimal.xml'
+                originals = {**inputs, **outputs}
+                for name, path in originals.items():
+                    path.write_bytes(('original ' + name).encode())
+                    if name in inputs:
+                        path.chmod(0o700)
+                before = {name: path.read_bytes() for name, path in originals.items()}
+                base = ['mysql-live', '--probe', str(inputs['probe']),
+                        '--output', str(outputs['output'])]
+                if decimal:
+                    base += ['--decimal-test-binary', str(inputs['decimal']),
+                             '--decimal-junit', str(outputs['decimal-junit'])]
+                serial = 0
+                # Each result must be distinct from every input and other result.
+                pairs = [(option, source) for option in outputs for source in inputs.values()]
+                pairs += [(option, source) for option, path in outputs.items()
+                          for source in outputs.values() if source != path]
+                for option, source in pairs:
+                    for kind in ('direct', 'normalized', 'symlink', 'hardlink'):
+                        serial += 1
+                        alias = directory / ('alias-' + str(serial))
+                        if kind == 'direct':
+                            alias = source
+                        elif kind == 'normalized':
+                            alias = directory / '..' / directory.name / source.name
+                        elif kind == 'symlink':
+                            alias.symlink_to(source)
+                        else:
+                            live.os.link(source, alias)
+                        argv = list(base)
+                        argv[argv.index('--' + option) + 1] = str(alias)
+                        with self.subTest(decimal=decimal, option=option, source=source.name, kind=kind), \
+                                patch.object(live.sys, 'argv', argv), \
+                                patch.object(live.sys, 'stderr', io.StringIO()) as stderr, \
+                                patch.object(Path, 'mkdir', side_effect=AssertionError('mkdir before refusal')) as mkdir, \
+                                patch.object(Path, 'unlink', side_effect=AssertionError('unlink before refusal')) as unlink, \
+                                patch.object(live, 'run', side_effect=AssertionError('dispatch before refusal')) as dispatch, \
+                                patch.object(live.subprocess, 'run', side_effect=AssertionError('subprocess before refusal')) as subprocess_run, \
+                                patch.object(live, 'cleanup_fixture') as cleanup:
+                            with self.assertRaises(SystemExit) as failure:
+                                live.main()
+                            self.assertEqual(2, failure.exception.code)
+                            self.assertIn('result paths must be distinct from inputs and other results', stderr.getvalue())
+                            mkdir.assert_not_called()
+                            unlink.assert_not_called()
+                            dispatch.assert_not_called()
+                            subprocess_run.assert_not_called()
+                            cleanup.assert_not_called()
+                            self.assertEqual(before, {name: path.read_bytes() for name, path in originals.items()})
+
 
 class DecimalAdmissionTest(unittest.TestCase):
     def test_inventory_rejects_missing_malformed_empty_duplicate_skipped_and_failure(self):
@@ -1168,7 +1230,11 @@ except Exception as error:
 """
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary).resolve()
-            owned=base/'owned'; owned.mkdir()
+            source=base/'source'
+            owned=source/'tests/security'; owned.mkdir(parents=True)
+            tools=source/'tools'; tools.mkdir()
+            parser=tools/'odbcpp_xml_evidence.py'
+            shutil.copy2(Path(live.__file__).resolve().parents[2]/'tools/odbcpp_xml_evidence.py', parser)
             other=base/'unrelated'; other.mkdir()
             runner=owned/'test_mysql_auth_live.py'
             shutil.copy2(Path(live.__file__).resolve(),runner)
@@ -1189,6 +1255,19 @@ except Exception as error:
                     self.assertEqual(result.stderr,'')
                     self.assertEqual(result.stdout.strip(),'PASS' if state=='valid' else
                                      'MySQL DATETIME receipt validator unavailable')
+            # A cwd impostor must never replace a missing/corrupt source parser.
+            (other/'odbcpp_xml_evidence.py').write_text("raise AssertionError('cwd parser imported')")
+            for state in ('missing-parser', 'malformed-parser'):
+                with self.subTest(state=state):
+                    if state=='missing-parser':
+                        parser.unlink()
+                    else:
+                        parser.write_text('invalid syntax @')
+                    result=subprocess.run([sys.executable,'-B','-c',code,str(runner)],
+                                          cwd=other,capture_output=True,text=True,timeout=10)
+                    self.assertEqual(result.returncode,0)
+                    self.assertEqual(result.stderr,'')
+                    self.assertEqual(result.stdout.strip(),'Bounded XML evidence parser unavailable')
 
 
 # Synthetic properties only: actual strict DECIMAL validator consumes this input,
@@ -1557,8 +1636,12 @@ class DecimalReceiptAdmissionTest(unittest.TestCase):
         import shutil
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
-            owned, other = base / 'owned', base / 'other'
-            owned.mkdir(); other.mkdir()
+            source = base / 'source'
+            owned, other = source / 'tests/security', base / 'other'
+            owned.mkdir(parents=True); other.mkdir()
+            tools = source / 'tools'; tools.mkdir()
+            shutil.copy2(Path(live.__file__).resolve().parents[2] / 'tools/odbcpp_xml_evidence.py',
+                         tools / 'odbcpp_xml_evidence.py')
             runner = owned / 'test_mysql_auth_live.py'
             shutil.copy2(Path(live.__file__), runner)
             shutil.copy2(Path(live.__file__).with_name('mysql_datetime_receipt_xml.py'),

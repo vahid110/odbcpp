@@ -3,7 +3,8 @@ name: ci
 on:
   # All PRs, including docs and drafts, build on Ubuntu and Windows here.
   # The existing primary workflow supplies the macOS build and regression.
-  # Complete cross-platform tests remain a coordinator-dispatched checkpoint.
+  # A bounded offline DM subset runs on PRs; complete cross-platform tests
+  # remain a coordinator-dispatched checkpoint.
   pull_request:
   workflow_dispatch:
     inputs:
@@ -104,19 +105,21 @@ concurrency:
 
 jobs:
   pr-ubuntu-build:
-    name: PR Ubuntu build (no tests)
+    name: PR Ubuntu build and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
       - name: Check PR scheduling and build safety offline
-        run: python3 -B tools/ci/test_pr_three_platform_builds.py -v
+        run: |
+          python3 -B tools/ci/test_pr_three_platform_builds.py -v
+          python3 -B tools/development/test_check_dm_offline_evidence.py -v
       - name: Install existing build dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
@@ -141,9 +144,29 @@ jobs:
       # Building test executables does not execute their test bodies.
       - name: Build default ALL j2
         run: cmake --build build-pr-ubuntu --parallel 2
+      - name: Run offline Driver Manager subset
+        run: |
+          set +e
+          ctest --test-dir build-pr-ubuntu -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          result=$?
+          printf '%s\n' "$result" > build-pr-ubuntu/dm-offline/ctest-exit.txt
+          exit "$result"
+      - name: Verify actual offline execution
+        if: always()
+        run: python3 -B tools/development/check_dm_offline_evidence.py --build build-pr-ubuntu --ctest-exit-file build-pr-ubuntu/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-ubuntu
+          path: |
+            build-pr-ubuntu/dm-offline/
+            build-pr-ubuntu/Testing/Temporary/
+            build-pr-ubuntu/CMakeCache.txt
+          if-no-files-found: error
 
   pr-windows-build:
-    name: PR Windows build (no tests)
+    name: PR Windows build and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 30
@@ -151,7 +174,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -174,8 +197,29 @@ jobs:
           -DODBCPP_CRYPTO_ROOT="C:/Program Files/OpenSSL"
       - name: Build default ALL Release j2
         run: cmake --build build-pr-windows --config Release --parallel 2
+      - name: Run offline Driver Manager subset
+        run: |
+          ctest --test-dir build-pr-windows -C Release -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          $result = $LASTEXITCODE
+          Set-Content -LiteralPath build-pr-windows/dm-offline/ctest-exit.txt -Value $result -Encoding utf8
+          exit $result
+      - name: Verify actual offline execution
+        if: always()
+        run: python -B tools/development/check_dm_offline_evidence.py --build build-pr-windows --config Release --ctest-exit-file build-pr-windows/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-windows
+          path: |
+            build-pr-windows/dm-offline/
+            build-pr-windows/Testing/Temporary/
+            build-pr-windows/CMakeCache.txt
+          if-no-files-found: error
 
   sanitizer-only:
+    # Arbitrary product CMake/tests must receive no cache token authority.
+    cache-mode: none
     name: Cold sanitizer-only qualification - NOT full acceptance
     if: github.event_name == 'workflow_dispatch' && inputs.run_sanitizer_only
     runs-on: ubuntu-latest
@@ -198,8 +242,11 @@ jobs:
       GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.private == false && 'public' || 'private' }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
+      - name: Require no cache grant before candidate execution
+        working-directory: ${{ github.workspace }}
+        run: test "$ACTIONS_CACHE_MODE" = none
       - name: Check out exact workflow and evidence helper
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: sanitizer-workflow
@@ -209,7 +256,7 @@ jobs:
         working-directory: sanitizer-workflow
         run: python3 -B tools/ci/sanitizer_evidence.py request
       - name: Check out frozen immutable product
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.product_head }}
           path: sanitizer-product
@@ -282,6 +329,7 @@ jobs:
   windows-product-qualification:
     name: Owning Windows product qualification - NOT full acceptance
     if: github.event_name == 'workflow_dispatch' && inputs.run_windows_product_qualification && !inputs.run_sanitizer_only
+    cache-mode: none
     uses: ./.github/workflows/windows-product-qualification.yml
     with:
       workflow_head: ${{ inputs.product_workflow_head }}
@@ -322,7 +370,7 @@ jobs:
       ODBCINI: ${{ github.workspace }}/.ci-odbc/odbc.ini
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: |
@@ -413,7 +461,7 @@ jobs:
 
       - name: Preserve MySQL authentication evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mysql-auth-live
           path: |
@@ -481,7 +529,7 @@ jobs:
 
       - name: Retain system-shared TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openssl-system-shared-tls-proof
           path: |
@@ -502,7 +550,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify offline Redshift pilot admission safeguards
         run: python3 -m unittest discover -s tools/redshift -p 'test_pilot_*.py'
       - name: Install deps
@@ -553,7 +601,7 @@ jobs:
       ODBCSYSINI: ${{ github.workspace }}/.ci-odbc
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Verify runner OpenSSL
         shell: pwsh
@@ -645,7 +693,7 @@ jobs:
           Copy-Item build-windows/tests/Release/it_driver_manager.exe,build-windows/tests/Release/it_setup.exe,build-windows/tests/Release/it_package_load.exe build-windows/package-acceptance
 
       - name: Preserve beta installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: odbcpp-postgresql-beta-x64
           path: |
@@ -665,7 +713,7 @@ jobs:
           if-no-files-found: error
 
       - name: Pass packages to fresh-runner acceptance
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-package-acceptance-inputs
           path: build-windows/package-acceptance
@@ -678,7 +726,7 @@ jobs:
 
       - name: Preserve Windows test evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-live-test-evidence
           path: |
@@ -710,8 +758,8 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-package-acceptance-inputs
           path: package-artifacts
@@ -726,7 +774,7 @@ jobs:
           ./tools/ci/windows-package.ps1
       - name: Preserve package acceptance evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-package-evidence
           path: |
@@ -751,8 +799,8 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: odbcpp-postgresql-beta-x64
           path: beta-artifact
@@ -761,7 +809,7 @@ jobs:
         run: ./tools/ci/windows-linked-server.ps1
       - name: Preserve linked-server evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-linked-server-evidence
           path: |
@@ -778,7 +826,7 @@ jobs:
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: |
@@ -841,7 +889,7 @@ jobs:
       ODBCINI: ${{ github.workspace }}/.ci-openssl-static/odbc.ini
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: |
@@ -1053,7 +1101,7 @@ jobs:
 
       - name: Preserve static-profile evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-openssl-static-evidence
           path: |
@@ -1108,7 +1156,7 @@ jobs:
       matrix:
         shared: ["OFF", "ON"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install ODBC development dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
@@ -1135,7 +1183,7 @@ jobs:
           ctest --test-dir build-awslc-proof --output-on-failure
           --timeout 90 --no-tests=error --output-junit adapter-results.xml
       - name: Preserve bounded proof evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: awslc-adapter-shared-${{ matrix.shared }}
           path: |
@@ -1179,7 +1227,7 @@ jobs:
       ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: brew install libiodbc unixodbc postgresql@17 python@3.12
@@ -1271,7 +1319,7 @@ jobs:
 
       - name: Retain macOS TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-openssl-${{ matrix.driver_unicode_type }}-tls-proof
           path: |
