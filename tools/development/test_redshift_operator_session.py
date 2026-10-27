@@ -12,6 +12,10 @@ if os.name == 'posix':
     from tools.development import redshift_operator_session as session
     from tools.redshift.pilot_runtime import ProcessResult
 
+# Exact fd-table inspection exists only on Linux; other POSIX hosts run the
+# remaining custody controls and report these three as unavailable instead.
+LINUX_FD_TABLE = os.path.isdir('/proc/self/fd')
+
 
 @unittest.skipUnless(os.name == 'posix', 'POSIX custody contract')
 class OperatorTests(unittest.TestCase):
@@ -271,6 +275,7 @@ class OperatorTests(unittest.TestCase):
         self.aws.write_bytes(b'changed')
         self.failed_clean('tool_changed', 0)
 
+    @unittest.skipUnless(LINUX_FD_TABLE, 'fd-table evidence requires Linux /proc/self/fd')
     def test_failed_tool_acquisition_closes_already_held_bootstrap(self):
         self.aws.unlink()
         before = set(os.listdir('/proc/self/fd'))
@@ -364,6 +369,7 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual({path.name for path in self.output.iterdir()}, {'failure.json'})
         self.assertEqual([fact['returncode'] for fact in result['calls']], [0, 0, 0])
 
+    @unittest.skipUnless(LINUX_FD_TABLE, 'fd-table evidence requires Linux /proc/self/fd')
     def test_metadata_fsync_failure_retires_partial_metadata_and_credentials(self):
         original = session.os.fsync
         def fail(fd):
@@ -452,6 +458,7 @@ class OperatorTests(unittest.TestCase):
         finally:
             owned.close()
 
+    @unittest.skipUnless(LINUX_FD_TABLE, 'fd-table evidence requires Linux /proc/self/fd')
     def test_input_close_fault_attempts_both_owners_and_retires_all_issued_inputs(self):
         original_close = session.os.close
         original_held_close = session.HeldFile.close
