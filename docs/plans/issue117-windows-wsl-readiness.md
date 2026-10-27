@@ -20,21 +20,32 @@ live targets; installed-package live only where its guard allows 2/2):
 | `linux-iodbc-pg`, `linux-iodbc-redshift` | iODBC 3.52.16 | 4/4 | system OpenSSL 3.5.5 |
 
 MSVC 19.44 Release; GCC 15.2 Release; CMake 4.4.4 (Windows) / 4.2.3 (WSL).
+The Windows presets are not self-sufficient for crypto: the first configure
+failed with `ODBCPP_CRYPTO_ROOT is required for BUNDLED_SHARED` (retained), and
+the builds used an explicit `-DODBCPP_CRYPTO_ROOT` for the local OpenSSL 3 prefix.
 
 **Installed Windows package.** The installed `ODBCPP Redshift Beta (x64)` 1.0.0
 records source and packaging revision `54ebedf`. All 14 installed payload files
-match its own inventory. Between `54ebedf` and `main`, nothing outside tests, docs
-and tooling changed except `cmake/Tests.cmake` and the new
-`DmQualifiedIdentity` files, and those touch only test targets. So the driver,
-setup and package sources are identical.
+match its own inventory. Between `54ebedf` and `main`, the only changes outside
+tests, docs, tooling and CI workflows/CodeQL configuration are `cmake/Tests.cmake`
+and the new `DmQualifiedIdentity` files, which are included only from the
+driver-manager test block. So the driver, setup and package sources are identical.
 
-The installed driver differs from a rebuild of that source in the **same build
-tree** only in its 4-byte link timestamp (header plus debug directory). A build in
-another tree also differs in layout: MSVC embeds an absolute source path through
-OpenSSL's allocation macros (`__FILE__`, in `sdk/src/security/openssl_tls_client.cpp`),
-and there is no `/Brepro`. So Windows driver bytes are not reproducible across
-build trees. Bind a package to its build tree and inventory, not to a hash
-recomputed elsewhere.
+The installed driver differs from a rebuild in the **same build tree**
+(`dm-windows-verify` at `bef63c3`) in exactly 4 bytes: the PE header link
+timestamp (offset 280) and its debug-directory copy. That rebuild's tree differs
+from `54ebedf` outside tests only in the include-resolver CMake files.
+
+A build in another tree differs in about 220 KB of layout. The likely cause is
+the absolute source path that `__FILE__` embeds (through `ERR_raise` at
+`sdk/src/security/openssl_tls_client.cpp:505`), which has a different length in
+each tree. There is also no `/Brepro`. So Windows driver bytes are not
+reproducible across build trees. Bind a package to its build tree and inventory,
+not to a hash recomputed elsewhere.
+
+These comparisons are recorded in the private `package/PACKAGE_BINDING.json`:
+installed inventory fields and hash, per-file payload hashes, byte-diff offsets,
+PE timestamps and the embedded paths.
 
 **Fresh packages from `main`.** `packaging/windows/build.ps1` built both MSIs from
 the clean tracked source:
@@ -56,7 +67,16 @@ were checked individually.
 
 CTest `--show-only=json-v1` plus `--gtest_list_tests` for every GoogleTest image.
 Three plain-main programs (`it_driver_manager`, `it_setup`, `it_package_load`) are
-not GoogleTest and must not be listed by execution (see section 5).
+not GoogleTest and must not be listed by execution.
+
+**Incident:** the first version of the discovery tool passed `--gtest_list_tests`
+to them on `windows-pg`, and two ran their bodies:
+- `it_driver_manager` stopped at its first `SQLDriverConnect` (IM002) after only handle allocation;
+- `it_setup` refused at its first "clean fixture" check, before any registry write;
+- `it_package_load` printed its usage.
+
+The per-user ODBC registry was verified unchanged afterwards. The tool now skips
+any image that lacks the GoogleTest list flag.
 
 | Profile | CTest entries | Unit cases | Direct `it_*` cases | Manager `dm_*` cases |
 |---|---:|---:|---:|---:|
@@ -129,12 +149,16 @@ of the ordinary graph as before.
 
 | Graph | Check at `df9de2b` (before) | Check at `2f7dfff` | `-offline` at `2f7dfff` | `dm-offline` + validator |
 |---|---|---|---|---|
-| windows-redshift (live opt-ins) | exit 8: routine, omitted-table | pass | 136/136 | (unchanged graph; see section 3) |
-| windows-pg (installed-setup on) | exit 8: `it_setup_registration` | pass | 136/136 | (unchanged graph; see section 3) |
+| windows-redshift (live opt-ins) | exit 8: routine, omitted-table | pass | 136/136 | not re-run on Windows after the fix |
+| windows-pg (installed-setup on) | exit 8: `it_setup_registration` | pass | 136/136 | not re-run on Windows after the fix |
 | unixodbc-redshift (live opt-ins) | exit 8: routine, omitted-table | pass | 135/135 | pass, 0 errors |
 | linux-iodbc-redshift (live opt-ins) | exit 8: routine, omitted-table | pass | 135/135 | pass, 0 errors |
 | unixodbc-pg | not run | pass | 135/135 | pass, 0 errors |
 | linux-iodbc-pg | not run | pass | 135/135 | pass, 0 errors |
+
+The Windows "before" checks ran on the uncommitted working tree that was then
+committed unchanged as `df9de2b`; its diff-stat matches. No content hash was
+taken, so only the WSL before-run is bound to the commit itself.
 
 After the fix, Windows Redshift discovery lists 575 direct cases, which includes
 all 541 retained tuples. Nothing is missing and no registration lacks a built
@@ -170,3 +194,17 @@ executable.
    deviation.
 7. **Admission.** Existing human resume, finite admission, verified TLS, network
    and caps apply. This work created none.
+
+## 6. Change record and debt of this branch
+
+- **Changed helper:**
+  - Component: build/test infrastructure.
+  - Owner file: `cmake/CheckRegisteredTestImages.cmake`, registered as `test_registered_test_images` in `cmake/Tests.cmake`.
+  - Permitted dependencies: CMake 3.20+ `string(JSON)` and the same build's `ctest`; no product, SDK or driver dependency.
+  - Purpose: graph completeness for test selection only.
+  - Proof: section 4.
+- **No product code changed.** The C++ GoogleTest brace and first-include checks do not apply.
+- **macOS not run.** No local macOS configure, build or check of this graph change was run. The PR's macOS CI job is the macOS build, and it runs the new unit-labelled check.
+- **Config coverage.** The multi-config `-C <config>` path ran only on Windows; the single-config path with no `-C` ran only on WSL.
+- **Not run after the fix:** Windows `dm-offline` and the Windows package build.
+- **Evidence hygiene.** The private evidence tree keeps the package input-rejection fixtures. Their `openssl-junction` entries are directory junctions to the OpenSSL install, so a recursive cleanup must not follow them.
