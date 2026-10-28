@@ -29,7 +29,7 @@ BODY_SHA256 = {
     'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
     'build-and-test': 'b02b5d0d4c3c417c230756fadfde79f7b745c3538c3ba5cc7cd05bafac509c69',
     'redshift-build': '1ebe8532cedef3cbc57003e5e603ae70bc5c6642ae38e1ddd35c6ce1bfad1f56',
-    'windows-live': '0030e81243013771fdb37fef1a57e25f3a14fe88509ab375118154028c6909d0',
+    'windows-live': '90f8171083a71573e634ea129300a551261550227c4f43c95162ae7f6b120d16',
     'windows-package': 'b08bb294b5fa5a22b0b5af8ed1f1a4f0a071b158883560d421956e7c77497e18',
     'windows-linked-server': '78a55ae6ddd98acba64baf3d5e1b401cc3e5480bb58d8906667ad7e4c2df8a9d',
     'linux-sanitizers': 'd9eb380226d38c7e70f2730b22b550cb12c41c7627f10b5427b725a03bb75a3a',
