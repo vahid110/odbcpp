@@ -388,20 +388,49 @@ inline const char* text(Deviation deviation, const char* direct) {
   return direct;
 }
 
-// What the server stores for ANSI statement text when the manager widens it
-// byte by byte (AnsiTextWidenedPerByte, bucket L): each byte becomes the code
-// point of the same value, sent on as UTF-8.
-inline std::string latin1_widened(std::string_view text) {
+// The code point one ANSI byte becomes when the manager widens text byte by
+// byte (AnsiTextWidenedPerByte, bucket L). iODBC 3.52.16 converts with mbrtowc
+// in the process locale (iodbcinst/unicode.c), and the tests never call
+// setlocale, so they run in the "C" locale. Darwin's C locale maps every byte
+// to the code point of the same value; glibc's rejects bytes above 0x7f, and
+// iODBC substitutes U+FFFD for each one.
+inline char32_t ansi_widened_code_point(unsigned char byte) {
+#if defined(__GLIBC__)
+  return byte < 0x80 ? char32_t{byte} : char32_t{0xfffd};
+#else
+  return char32_t{byte};
+#endif
+}
+
+// What the server stores for ANSI statement text that the manager widened
+// byte by byte: each byte's code point, sent on as UTF-8.
+inline std::string ansi_widened(std::string_view text) {
   std::string widened;
   for (const unsigned char byte : text) {
-    if (byte < 0x80) {
-      widened.push_back(static_cast<char>(byte));
+    const char32_t point = ansi_widened_code_point(byte);
+    if (point < 0x80) {
+      widened.push_back(static_cast<char>(point));
+    } else if (point < 0x800) {
+      widened.push_back(static_cast<char>(0xc0 | (point >> 6)));
+      widened.push_back(static_cast<char>(0x80 | (point & 0x3f)));
     } else {
-      widened.push_back(static_cast<char>(0xc0 | (byte >> 6)));
-      widened.push_back(static_cast<char>(0x80 | (byte & 0x3f)));
+      widened.push_back(static_cast<char>(0xe0 | (point >> 12)));
+      widened.push_back(static_cast<char>(0x80 | ((point >> 6) & 0x3f)));
+      widened.push_back(static_cast<char>(0x80 | (point & 0x3f)));
     }
   }
   return widened;
+}
+
+// The ANSI text the same manager returns for text it widened that way. In the
+// C locale its wide-to-ANSI conversion gives back code points up to 0xff as
+// the original byte and writes '?' for any other (U+FFFD on glibc).
+inline std::string ansi_widened_round_trip(std::string_view text) {
+  std::string narrowed;
+  for (const unsigned char byte : text) {
+    narrowed.push_back(ansi_widened_code_point(byte) <= 0xff ? static_cast<char>(byte) : '?');
+  }
+  return narrowed;
 }
 
 // SQLGetFunctions IDs the manager reports although the driver does not export

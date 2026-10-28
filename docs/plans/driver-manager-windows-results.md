@@ -157,8 +157,9 @@ identified by the independent Mac review, with fresh local qualification pending
 `tests/test_dm_identity.h` owns the test qualification predicate and data types;
 `tests/support/dm_identity.cpp` owns loaded-provider discovery and bounded byte
 comparison. `cmake/DmQualifiedIdentity.cmake` validates the reviewed receipt and
-creates the build-local manager snapshot through `DmQualifiedIdentity.h.in`.
-`cmake/Tests.cmake` connects that helper to manager test targets. These are test
+creates the build-local manager snapshot through `DmQualifiedIdentity.h.in`;
+[driver-manager-unixodbc-receipt.md](driver-manager-unixodbc-receipt.md) shows
+how to produce the receipt. `cmake/Tests.cmake` connects that helper to manager test targets. These are test
 infrastructure, not reusable product/SDK services: their purpose is selecting
 measured test expectations. Permitted dependencies are standard C++, POSIX
 loader APIs, the selected ODBC manager and GoogleTest; no driver core or crypto
