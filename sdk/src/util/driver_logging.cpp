@@ -14,6 +14,9 @@
 #endif
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <atomic>
 #include <cctype>
 #include <limits>
@@ -111,13 +114,13 @@ std::vector<LogSink> parse_sinks(const std::string& value) {
   return result;
 }
 
-// Keys that choose where log files are written, how they rotate, or whether
-// query text is recorded belong to whoever configures the driver or DSN. An
-// application connection string must not choose them: a file path there could
-// create, append to or rotate (rename) arbitrary files in the host process.
-bool administrator_key(const std::string& key) {
-  return key == "LOGFILE" || key == "LOGSINK" || key == "LOGQUERIES" ||
-         key == "LOGMAXSIZE" || key == "LOGMAXFILES";
+// Choosing a log file, its rotation, or recording query text belongs to
+// whoever configures the driver or DSN. An application connection string may
+// not do it: a file path there could create, append to or rotate (rename)
+// arbitrary files in the host process. Stderr/syslog sinks and turning query
+// logging off stay available to applications.
+[[noreturn]] void administrator_only(const std::string& key) {
+  throw std::invalid_argument(key + " can only be set in the DSN or driver configuration");
 }
 
 void apply(LoggingOptions& options,
@@ -125,9 +128,9 @@ void apply(LoggingOptions& options,
            bool administrator_layer) {
   for (const auto& [raw_key, value] : parameters) {
     const auto key = uppercase(raw_key);
-    if (!administrator_layer && administrator_key(key)) {
-      throw std::invalid_argument(
-          raw_key + " can only be set in the DSN or driver configuration");
+    if (!administrator_layer &&
+        (key == "LOGFILE" || key == "LOGMAXSIZE" || key == "LOGMAXFILES")) {
+      administrator_only(raw_key);
     }
     if (key == "LOGLEVEL") {
       options.level = parse_level(value);
@@ -135,6 +138,10 @@ void apply(LoggingOptions& options,
       options.format = parse_format(value);
     } else if (key == "LOGSINK") {
       options.sinks = parse_sinks(value);
+      if (!administrator_layer &&
+          std::find(options.sinks.begin(), options.sinks.end(), LogSink::File) != options.sinks.end()) {
+        administrator_only(raw_key + "=File");
+      }
     } else if (key == "LOGFILE") {
       options.file = value;
     } else if (key == "LOGMAXSIZE") {
@@ -145,24 +152,43 @@ void apply(LoggingOptions& options,
       options.asynchronous = parse_flag("LogAsync", value);
     } else if (key == "LOGQUERIES") {
       options.log_queries = parse_flag("LogQueries", value);
+      if (!administrator_layer && options.log_queries) administrator_only(raw_key + "=true");
     }
   }
 }
 
-// Creates a new log file owner-only and refuses a symbolic link or any
-// non-regular file at the configured path before the rotating sink opens it.
-void prepare_log_file(const std::string& path) {
 #ifndef _WIN32
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0600);
-  if (fd < 0) throw std::invalid_argument("LogFile cannot be opened as a regular file");
+// Run by the rotating sink around every open, including re-creation after
+// rotation. Before opening, a new file is created owner-only and a symbolic
+// link or non-regular file is refused. After opening, the stream must be a
+// regular, singly linked file owned by this process user and is made
+// owner-only; otherwise it is redirected to /dev/null and the open fails, so a
+// path swapped between the two steps never receives log text.
+void prepare_log_file(const spdlog::filename_t& path) {
+  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC,
+                        0600);
+  if (fd < 0) throw std::runtime_error("LogFile cannot be opened: " + std::string(std::strerror(errno)));
   struct stat info {};
   const bool regular = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
   ::close(fd);
-  if (!regular) throw std::invalid_argument("LogFile must be a regular file");
-#else
-  (void)path;
-#endif
+  if (!regular) throw std::runtime_error("LogFile must be a regular file");
 }
+
+void secure_opened_log_file(const spdlog::filename_t&, std::FILE* stream) {
+  const int fd = ::fileno(stream);
+  struct stat info {};
+  if (::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_nlink == 1 &&
+      info.st_uid == ::geteuid() && ::fchmod(fd, 0600) == 0) {
+    return;
+  }
+  const int null = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+  if (null >= 0) {
+    ::dup2(null, fd);
+    ::close(null);
+  }
+  throw std::runtime_error("LogFile must be a regular file owned by the driver's user");
+}
+#endif
 
 spdlog::level::level_enum spdlog_level(LogLevel level) noexcept {
   switch (level) {
@@ -345,12 +371,17 @@ std::shared_ptr<DriverLogger> DriverLogger::create(
   sinks.reserve(options.sinks.size());
   for (const auto sink : options.sinks) {
     switch (sink) {
-      case LogSink::File:
-        prepare_log_file(options.file);
+      case LogSink::File: {
+        spdlog::file_event_handlers handlers;
+#ifndef _WIN32
+        handlers.before_open = prepare_log_file;
+        handlers.after_open = secure_opened_log_file;
+#endif
         sinks.push_back(
             std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-                options.file, options.max_file_size, options.max_files));
+                options.file, options.max_file_size, options.max_files, false, handlers));
         break;
+      }
       case LogSink::Stderr:
         sinks.push_back(std::make_shared<spdlog::sinks::stderr_sink_mt>());
         break;

@@ -88,12 +88,20 @@ TEST(DriverLoggingOptionsTest, AppliesDriverDsnAndConnectionPrecedence) {
 // paths, sinks, rotation or query logging. The DSN and driver section can.
 TEST(DriverLoggingOptionsTest, ConnectionStringCannotSetAdministratorKeys) {
   for (const auto& [key, value] : std::map<std::string, std::string>{
-           {"LogFile", "/tmp/odbcpp-hostile.log"}, {"logsink", "File"},
+           {"LogFile", "/tmp/odbcpp-hostile.log"}, {"logsink", "Stderr,File"},
            {"LogQueries", "true"}, {"LogMaxSize", "1"}, {"LogMaxFiles", "9"}}) {
     EXPECT_THROW(LoggingOptions::resolve({}, {}, {{key, value}}), std::invalid_argument) << key;
     EXPECT_NO_THROW(LoggingOptions::resolve({{key, value}}, {}, {})) << key;
     EXPECT_NO_THROW(LoggingOptions::resolve({}, {{key, value}}, {})) << key;
   }
+  // Values that cannot reach the file system or expose query text stay
+  // available to applications.
+  const auto harmless = LoggingOptions::resolve({}, {}, {
+      {"LogLevel", "Warn"}, {"LogSink", "Stderr"}, {"LogQueries", "false"}});
+  EXPECT_EQ(LogLevel::Warn, harmless.level);
+  EXPECT_FALSE(harmless.log_queries);
+  ASSERT_EQ(1u, harmless.sinks.size());
+  EXPECT_EQ(LogSink::Stderr, harmless.sinks[0]);
 }
 
 TEST(DriverLoggingOptionsTest, RejectsInvalidConfiguration) {
@@ -192,14 +200,39 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
   std::filesystem::create_symlink(target, link);
   const auto linked = LoggingOptions::resolve(
       {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", link.string()}}, {}, {});
-  EXPECT_THROW(DriverLogger::create(linked, 1), std::invalid_argument);
+  EXPECT_ANY_THROW(DriverLogger::create(linked, 1));
   EXPECT_EQ("keep", read_file(target));
+  // A new file is owner-only, and an existing broader file is tightened.
   const auto fresh = directory / "fresh.log";
   const auto created = LoggingOptions::resolve(
       {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", fresh.string()}}, {}, {});
   { const auto logger = DriverLogger::create(created, 1); }
   struct stat info {};
   ASSERT_EQ(0, ::stat(fresh.c_str(), &info));
+  EXPECT_EQ(0600, info.st_mode & 0777);
+  const auto existing = directory / "existing.log";
+  {
+    std::ofstream file(existing);
+  }
+  ASSERT_EQ(0, ::chmod(existing.c_str(), 0644));
+  const auto reused = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", existing.string()}}, {}, {});
+  { const auto logger = DriverLogger::create(reused, 1); }
+  ASSERT_EQ(0, ::stat(existing.c_str(), &info));
+  EXPECT_EQ(0600, info.st_mode & 0777);
+  // Files re-created by rotation get the same treatment.
+  const auto rotating = directory / "rotating.log";
+  const auto small = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", rotating.string()},
+       {"LogMaxSize", "64"}, {"LogMaxFiles", "2"}, {"LogAsync", "false"}}, {}, {});
+  {
+    const auto logger = DriverLogger::create(small, 1);
+    for (int i = 0; i < 20; ++i) {
+      logger->log(LogLevel::Info, "rotation_probe", "A message long enough to force rotation");
+    }
+  }
+  ASSERT_TRUE(std::filesystem::exists(directory / "rotating.1.log"));
+  ASSERT_EQ(0, ::stat(rotating.c_str(), &info));
   EXPECT_EQ(0600, info.st_mode & 0777);
   std::filesystem::remove_all(directory);
 }
