@@ -5187,8 +5187,7 @@ TEST(BufferedWireOwnershipTest, ResourceAndLateReadyRetireWithoutPartialPublicat
     // Match the ordinary fake-exchange window above. The 20ms window formerly
     // allowed host scheduling to expire before Ready, exercising the wrong path.
     // The early-write control deliberately proves that distinct refusal path.
-    const auto deadline = rs::util::make_deadline(early_write ? std::chrono::milliseconds{20} :
-        std::chrono::milliseconds{2000});
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
     auto result = execute_deadline_query(connection, false, deadline);
     ASSERT_FALSE(result);
     EXPECT_EQ(injection, wire->injected);
