@@ -17,7 +17,7 @@ TEST(CatalogQueryTest, GenericBackendHasNoCatalogFacetWithoutUnsupportedStubs) {
 }
 
 TEST(CatalogQueryTest, TablePatternsPreserveOmittedEmptyAndQuotedValues) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   TablesCatalogRequest request;
   auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
@@ -27,14 +27,14 @@ TEST(CatalogQueryTest, TablePatternsPreserveOmittedEmptyAndQuotedValues) {
   request.table = "x\\_%";
   query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find(" AND table_cat LIKE ''"));
-  EXPECT_NE(std::string::npos, query->find(" AND table_schem LIKE 's''chema'"));
-  EXPECT_NE(std::string::npos, query->find(" AND table_name LIKE 'x\\_%'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_cat LIKE E''"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_schem LIKE E's''chema'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_name LIKE E'x\\\\_%'"));
   EXPECT_FALSE(backend->is_connected());
 }
 
 TEST(CatalogQueryTest, TableTypesDistinguishAllNoneAndExplicitList) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   TablesCatalogRequest request;
   auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
@@ -47,11 +47,11 @@ TEST(CatalogQueryTest, TableTypesDistinguishAllNoneAndExplicitList) {
   request.types = std::vector<std::string>{"TABLE", "VIEW"};
   query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find(" AND table_type IN ('TABLE','VIEW')"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_type IN (E'TABLE',E'VIEW')"));
 }
 
 TEST(CatalogQueryTest, EnumerationModesDoNotApplyOrdinaryFilters) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   TablesCatalogRequest request;
   request.catalog = "ignored";
   request.schema = "ignored";
@@ -70,24 +70,24 @@ TEST(CatalogQueryTest, EnumerationModesDoNotApplyOrdinaryFilters) {
 }
 
 TEST(CatalogQueryTest, PrimaryKeyFiltersUseLiteralNames) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   const auto query = backend->catalog_queries()->catalog_query(PrimaryKeysCatalogRequest{
       "", "s'%", "t'_%"});
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("keys.table_catalog = ''"));
-  EXPECT_NE(std::string::npos, query->find("keys.table_schema = 's''%'"));
-  EXPECT_NE(std::string::npos, query->find("keys.table_name = 't''_%'"));
+  EXPECT_NE(std::string::npos, query->find("keys.table_catalog = E''"));
+  EXPECT_NE(std::string::npos, query->find("keys.table_schema = E's''%'"));
+  EXPECT_NE(std::string::npos, query->find("keys.table_name = E't''_%'"));
   EXPECT_EQ(std::string::npos, query->find(" LIKE "));
   EXPECT_TRUE(query->ends_with("ORDER BY table_cat, table_schem, table_name, key_seq"));
 }
 
 TEST(CatalogQueryTest, ForeignKeyFiltersAndOrderingFollowRequestedSide) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   ForeignKeysCatalogRequest request;
   request.foreign_table = "f'_%";
   auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("fk_tables.relname = 'f''_%'"));
+  EXPECT_NE(std::string::npos, query->find("fk_tables.relname = E'f''_%'"));
   EXPECT_EQ(std::string::npos, query->find("pk_tables.relname ="));
   EXPECT_TRUE(query->ends_with("ORDER BY pktable_cat, pktable_schem, pktable_name, key_seq"));
   request.primary_table = "p'_%";
@@ -97,11 +97,11 @@ TEST(CatalogQueryTest, ForeignKeyFiltersAndOrderingFollowRequestedSide) {
   request.foreign_schema = "fs'";
   query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("pk_tables.relname = 'p''_%'"));
-  EXPECT_NE(std::string::npos, query->find("current_database() = ''"));
-  EXPECT_NE(std::string::npos, query->find("pk_namespaces.nspname = ''"));
-  EXPECT_NE(std::string::npos, query->find("current_database() = 'db'''"));
-  EXPECT_NE(std::string::npos, query->find("fk_namespaces.nspname = 'fs'''"));
+  EXPECT_NE(std::string::npos, query->find("pk_tables.relname = E'p''_%'"));
+  EXPECT_NE(std::string::npos, query->find("current_database() = E''"));
+  EXPECT_NE(std::string::npos, query->find("pk_namespaces.nspname = E''"));
+  EXPECT_NE(std::string::npos, query->find("current_database() = E'db'''"));
+  EXPECT_NE(std::string::npos, query->find("fk_namespaces.nspname = E'fs'''"));
   EXPECT_EQ(std::string::npos, query->find(" LIKE "));
   EXPECT_TRUE(query->ends_with("ORDER BY fktable_cat, fktable_schem, fktable_name, key_seq"));
 }
@@ -114,10 +114,10 @@ TEST(CatalogQueryTest, PostgreSQLColumnsKeepLiteralCatalogAndPatternFilters) {
   const auto query = backend->catalog_queries()->catalog_query(ColumnsCatalogRequest{
       "db'%", "", "t\\_%", "c'%"});
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find(" AND table_cat = 'db''%'"));
-  EXPECT_NE(std::string::npos, query->find(" AND table_schem LIKE ''"));
-  EXPECT_NE(std::string::npos, query->find(" AND table_name LIKE 't\\_%'"));
-  EXPECT_NE(std::string::npos, query->find(" AND column_name LIKE 'c''%'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_cat = E'db''%'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_schem LIKE E''"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_name LIKE E't\\\\_%'"));
+  EXPECT_NE(std::string::npos, query->find(" AND column_name LIKE E'c''%'"));
   EXPECT_TRUE(query->ends_with("ORDER BY table_cat, table_schem, table_name, ordinal_position"));
 }
 
@@ -126,9 +126,9 @@ TEST(CatalogQueryTest, StatisticsKeepLiteralNamesAndUniqueFilter) {
   StatisticsCatalogRequest request{"", "s'%", "t'_%", false};
   auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("current_database() = ''"));
-  EXPECT_NE(std::string::npos, query->find("namespaces.nspname = 's''%'"));
-  EXPECT_NE(std::string::npos, query->find("tables.relname = 't''_%'"));
+  EXPECT_NE(std::string::npos, query->find("current_database() = E''"));
+  EXPECT_NE(std::string::npos, query->find("namespaces.nspname = E's''%'"));
+  EXPECT_NE(std::string::npos, query->find("tables.relname = E't''_%'"));
   EXPECT_EQ(std::string::npos, query->find(" LIKE "));
   EXPECT_EQ(std::string::npos, query->find(" AND indexes.indisunique"));
   request.unique_only = true;
@@ -147,9 +147,9 @@ TEST(CatalogQueryTest, ProceduresKeepOmittedEmptyAndEscapedPatterns) {
   const auto query = backend->catalog_queries()->catalog_query(ProceduresCatalogRequest{
       "db'%", "", "p'\\_%"});
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("current_database() = 'db''%'"));
-  EXPECT_NE(std::string::npos, query->find("namespaces.nspname LIKE ''"));
-  EXPECT_NE(std::string::npos, query->find("procedures.proname LIKE 'p''\\_%'"));
+  EXPECT_NE(std::string::npos, query->find("current_database() = E'db''%'"));
+  EXPECT_NE(std::string::npos, query->find("namespaces.nspname LIKE E''"));
+  EXPECT_NE(std::string::npos, query->find("procedures.proname LIKE E'p''\\\\_%'"));
   EXPECT_TRUE(query->ends_with("ORDER BY procedure_cat, procedure_schem, procedure_name"));
 }
 
@@ -162,10 +162,10 @@ TEST(CatalogQueryTest, ProcedureColumnsKeepLiteralCatalogAndColumnPatterns) {
   const auto query = backend->catalog_queries()->catalog_query(ProcedureColumnsCatalogRequest{
       "db'%", "s\\_%", "p'%", ""});
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("columns.procedure_cat = 'db''%'"));
-  EXPECT_NE(std::string::npos, query->find("columns.procedure_schem LIKE 's\\_%'"));
-  EXPECT_NE(std::string::npos, query->find("columns.procedure_name LIKE 'p''%'"));
-  EXPECT_NE(std::string::npos, query->find("columns.column_name LIKE ''"));
+  EXPECT_NE(std::string::npos, query->find("columns.procedure_cat = E'db''%'"));
+  EXPECT_NE(std::string::npos, query->find("columns.procedure_schem LIKE E's\\\\_%'"));
+  EXPECT_NE(std::string::npos, query->find("columns.procedure_name LIKE E'p''%'"));
+  EXPECT_NE(std::string::npos, query->find("columns.column_name LIKE E''"));
   EXPECT_TRUE(query->ends_with("ORDER BY procedure_cat, procedure_schem, procedure_name, column_type, ordinal_position"));
 }
 
@@ -178,9 +178,9 @@ TEST(CatalogQueryTest, SpecialColumnsKeepScopeNullabilityAndLiteralNames) {
   request.table = "t'_%";
   auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("current_database() = ''"));
-  EXPECT_NE(std::string::npos, query->find("schemas.nspname = 's''%'"));
-  EXPECT_NE(std::string::npos, query->find("tables.relname = 't''_%'"));
+  EXPECT_NE(std::string::npos, query->find("current_database() = E''"));
+  EXPECT_NE(std::string::npos, query->find("schemas.nspname = E's''%'"));
+  EXPECT_NE(std::string::npos, query->find("tables.relname = E't''_%'"));
   EXPECT_EQ(std::string::npos, query->find("AND NOT key_attributes.attnotnull"));
   request.require_non_nullable = true;
   query = backend->catalog_queries()->catalog_query(request);
@@ -455,11 +455,13 @@ TEST(CatalogQueryTest, SchemaEnumerationPreservesPostgresSqlAndProfileSpecificTa
       EXPECT_NE(std::string::npos, rs->find("'EXTERNAL TABLE'"));
       EXPECT_NE(std::string::npos, rs->find("'SYSTEM VIEW'"));
       if (mode == TablesCatalogRequest::Mode::Tables) {
-        for (const auto* query : {&*pg, &*rs}) {
-          for (const auto* filter : {"table_cat LIKE 'db'''", "table_schem LIKE 's'''",
-               "table_name LIKE 't'''", "table_type IN ('TABLE')"}) {
-            EXPECT_NE(std::string::npos, query->find(filter));
-          }
+        for (const auto* filter : {"table_cat LIKE E'db'''", "table_schem LIKE E's'''",
+             "table_name LIKE E't'''", "table_type IN (E'TABLE')"}) {
+          EXPECT_NE(std::string::npos, pg->find(filter)) << filter;
+        }
+        for (const auto* filter : {"table_cat LIKE 'db'''", "table_schem LIKE 's'''",
+             "table_name LIKE 't'''", "table_type IN ('TABLE')"}) {
+          EXPECT_NE(std::string::npos, rs->find(filter)) << filter;
         }
       } else {
         EXPECT_TRUE(pg->ends_with("ORDER BY table_type"));
@@ -587,15 +589,15 @@ TEST(CatalogQueryTest, IdentifierNativeFoldExactWildcardsAndQuotedUtf8StayDistin
   names.name_matches.catalog = names.name_matches.schema = CatalogNameMatch::IdentifierUnquoted;
   names.name_matches.object = CatalogNameMatch::IdentifierQuoted;
   auto query = pg.catalog_query(names); ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find(" AND table_cat = 'db'"));
-  EXPECT_NE(std::string::npos, query->find(" AND table_schem = 's'"));
-  EXPECT_NE(std::string::npos, query->find(" AND table_name = 'É表%_\\''X'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_cat = E'db'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_schem = E's'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_name = E'É表%_\\\\''X'"));
   EXPECT_EQ(std::string::npos, query->find(" LIKE "));
-  EXPECT_NE(std::string::npos, query->find("table_type IN ('TABLE')"));
+  EXPECT_NE(std::string::npos, query->find("table_type IN (E'TABLE')"));
   EXPECT_EQ(std::optional<std::string>{"DB"}, names.catalog);
   auto ordinary = names; ordinary.name_matches = {};
   query = pg.catalog_query(ordinary); ASSERT_FALSE(query.has_error());
-  EXPECT_NE(std::string::npos, query->find("table_name LIKE 'É表%_\\''X'"));
+  EXPECT_NE(std::string::npos, query->find("table_name LIKE E'É表%_\\\\''X'"));
 }
 
 TEST(CatalogQueryTest, IdentifierAllEightCarriersUseNativeNamesAndRejectIrrelevantSlots) {
@@ -798,7 +800,7 @@ TEST(CatalogQueryTest, RedshiftRowIdentityCannotEmitPostgresIndexesAndOtherProfi
   auto pg = postgres.catalog_query(request);
   ASSERT_TRUE(pg);
   EXPECT_NE(std::string::npos, pg->find("indexes.indnkeyatts"));
-  EXPECT_NE(std::string::npos, pg->find("schemas.nspname = 's''_%'"));
+  EXPECT_NE(std::string::npos, pg->find("schemas.nspname = E's''_%'"));
   EXPECT_FALSE(postgres.selects_catalog_request(request));
   EXPECT_TRUE(redshift.selects_catalog_request(request));
   auto rs = redshift.catalog_query(request);
@@ -818,4 +820,83 @@ TEST(CatalogQueryTest, RedshiftRowIdentityCannotEmitPostgresIndexesAndOtherProfi
   ASSERT_TRUE(rowversion);
   EXPECT_EQ(std::string::npos, rowversion->find("pg_index"));
   EXPECT_FALSE(redshift.selects_catalog_request(request));
+}
+
+namespace {
+// Catalog sessions that report a chosen client encoding, as the server does in
+// ParameterStatus; other parameters are absent.
+class EncodingSession final : public postgres::PgDatabaseConnection {
+ public:
+  EncodingSession(postgres::PgCatalogProfile profile, std::optional<std::string> encoding)
+      : postgres::PgDatabaseConnection(nullptr, std::nullopt, profile), encoding_(std::move(encoding)) {}
+  std::optional<std::string> get_parameter_status(std::string_view key) const override {
+    if (key == "client_encoding") return encoding_;
+    return std::nullopt;
+  }
+
+ private:
+  std::optional<std::string> encoding_;
+};
+}  // namespace
+
+// An application-supplied name ending a literal with a backslash-escaped quote
+// must stay data: PostgreSQL escape strings and Redshift literals both double
+// the backslash and the quote, so the injected tail never reaches the parser.
+TEST(CatalogQueryTest, BackslashQuoteNamesStayInsideTheLiteralOnBothDialects) {
+  const std::string hostile = "x\\' OR 1=1 --";
+  postgres::PgDatabaseConnection pg;
+  postgres::PgDatabaseConnection rs(nullptr, std::nullopt, postgres::PgCatalogProfile::Redshift);
+  TablesCatalogRequest tables;
+  tables.schema = hostile;
+  auto pg_tables = pg.catalog_query(tables);
+  ASSERT_TRUE(pg_tables) << pg_tables.error_message();
+  EXPECT_NE(std::string::npos, pg_tables->find("table_schem LIKE E'x\\\\'' OR 1=1 --'")) << *pg_tables;
+  auto rs_tables = rs.catalog_query(tables);
+  ASSERT_TRUE(rs_tables) << rs_tables.error_message();
+  EXPECT_NE(std::string::npos, rs_tables->find("table_schem LIKE 'x\\\\'' OR 1=1 --'")) << *rs_tables;
+  EXPECT_EQ(std::string::npos, rs_tables->find("LIKE E'"));
+  // Redshift primary and foreign keys use the shared builder; both must use
+  // Redshift literal rules.
+  auto rs_keys = rs.catalog_query(PrimaryKeysCatalogRequest{std::nullopt, hostile, hostile});
+  ASSERT_TRUE(rs_keys) << rs_keys.error_message();
+  EXPECT_NE(std::string::npos, rs_keys->find("keys.table_name = 'x\\\\'' OR 1=1 --'")) << *rs_keys;
+  EXPECT_NE(std::string::npos, rs_keys->find("keys.table_schema = 'x\\\\'' OR 1=1 --'")) << *rs_keys;
+  ForeignKeysCatalogRequest foreign;
+  foreign.primary_table = hostile;
+  foreign.foreign_schema = hostile;
+  auto rs_foreign = rs.catalog_query(foreign);
+  ASSERT_TRUE(rs_foreign) << rs_foreign.error_message();
+  EXPECT_NE(std::string::npos, rs_foreign->find("pk_tables.relname = 'x\\\\'' OR 1=1 --'")) << *rs_foreign;
+  EXPECT_NE(std::string::npos, rs_foreign->find("fk_namespaces.nspname = 'x\\\\'' OR 1=1 --'")) << *rs_foreign;
+  auto pg_foreign = pg.catalog_query(foreign);
+  ASSERT_TRUE(pg_foreign) << pg_foreign.error_message();
+  EXPECT_NE(std::string::npos, pg_foreign->find("pk_tables.relname = E'x\\\\'' OR 1=1 --'")) << *pg_foreign;
+}
+
+// An ODBC-escaped wildcard (\_) must reach LIKE with its backslash on Redshift,
+// where a single backslash in a literal would be consumed as an escape.
+TEST(CatalogQueryTest, RedshiftEscapedWildcardsReachLikeIntact) {
+  postgres::PgDatabaseConnection rs(nullptr, std::nullopt, postgres::PgCatalogProfile::Redshift);
+  TablesCatalogRequest tables;
+  tables.table = "t\\_%";
+  auto query = rs.catalog_query(tables);
+  ASSERT_TRUE(query) << query.error_message();
+  EXPECT_NE(std::string::npos, query->find("table_name LIKE 't\\\\_%'")) << *query;
+}
+
+TEST(CatalogQueryTest, CatalogFunctionsRequireTheUtf8ClientEncoding) {
+  for (const auto profile : {postgres::PgCatalogProfile::PostgreSQL, postgres::PgCatalogProfile::Redshift}) {
+    for (const char* safe : {"UTF8", "utf8", "UNICODE"}) {
+      EncodingSession session(profile, std::string(safe));
+      EXPECT_TRUE(session.catalog_query(PrimaryKeysCatalogRequest{std::nullopt, "s", "t"})) << safe;
+    }
+    EncodingSession unknown(profile, std::nullopt);
+    EXPECT_TRUE(unknown.catalog_query(PrimaryKeysCatalogRequest{std::nullopt, "s", "t"}));
+    for (const char* unsafe : {"SJIS", "BIG5", "GBK", "LATIN1"}) {
+      EncodingSession session(profile, std::string(unsafe));
+      auto refused = session.catalog_query(PrimaryKeysCatalogRequest{std::nullopt, "s", "t"});
+      ASSERT_FALSE(refused) << unsafe;
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), refused.error()) << unsafe;
+    }
+  }
 }

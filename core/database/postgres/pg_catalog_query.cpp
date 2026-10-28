@@ -4,11 +4,18 @@
 namespace rs::core::database::postgres {
 namespace {
 
-std::string quote_catalog_literal(const std::string& value) {
-  std::string quoted{"'"};
-  quoted.reserve(value.size() + 2);
+// Catalog literals carry application-supplied names and search patterns, so the
+// encoding must not depend on server settings. PostgreSQL gets an escape string
+// (E'...'), which processes backslashes whatever standard_conforming_strings is;
+// Redshift always treats backslash as an escape in ordinary literals. Both
+// double quotes and backslashes, so the server sees the exact original text and
+// an escaped LIKE wildcard (\_ or \%) stays escaped.
+enum class CatalogLiteral { PostgreSql, Redshift };
+std::string quote_catalog_literal(const std::string& value, CatalogLiteral style) {
+  std::string quoted{style == CatalogLiteral::PostgreSql ? "E'" : "'"};
+  quoted.reserve(value.size() + 3);
   for (const char ch : value) {
-    if (ch == '\'') quoted.push_back('\'');
+    if (ch == '\'' || ch == '\\') quoted.push_back(ch);
     quoted.push_back(ch);
   }
   quoted.push_back('\'');
@@ -81,7 +88,7 @@ std::string catalog_numeric_scale_sql(const std::string& fallback) {
       signed_scale(fallback) + " END";
 }
 
-std::string build_query(const TablesCatalogRequest& request, bool detailed_types = true,
+std::string build_query(const TablesCatalogRequest& request, CatalogLiteral literal, bool detailed_types = true,
     bool redshift = false, bool visible_databases = false) {
   if (request.mode == TablesCatalogRequest::Mode::Catalogs) {
     if (redshift && visible_databases)
@@ -105,7 +112,7 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
       for (const auto type : catalog_table_types(detailed_types)) {
         if (!query.empty()) query += " UNION ALL ";
         query += "SELECT CAST(NULL AS VARCHAR(128)) AS table_cat, CAST(NULL AS VARCHAR(128)) AS table_schem, "
-            "CAST(NULL AS VARCHAR(128)) AS table_name, CAST(" + quote_catalog_literal(std::string(type)) +
+            "CAST(NULL AS VARCHAR(128)) AS table_name, CAST(" + quote_catalog_literal(std::string(type), literal) +
             " AS VARCHAR(15)) AS table_type, CAST(NULL AS VARCHAR(65535)) AS remarks";
       }
       return query + " ORDER BY table_type";
@@ -159,13 +166,13 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
         " FROM (" + native + ") AS odbcpp_native_tables) AS odbcpp_tables WHERE 1=1";
   }
   if (request.catalog) {
-    query += " AND table_cat" + std::string(request.name_matches.catalog == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.catalog);
+    query += " AND table_cat" + std::string(request.name_matches.catalog == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
-    query += " AND table_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema);
+    query += " AND table_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema, literal);
   }
   if (request.table) {
-    query += " AND table_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.table);
+    query += " AND table_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.table, literal);
   }
   if (request.types) {
     const auto& types = *request.types;
@@ -176,7 +183,7 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
       query += redshift && visible_databases ? "table_type IN (" : " AND table_type IN (";
       for (std::size_t i = 0; i < types.size(); ++i) {
         if (i != 0) query += ',';
-        query += quote_catalog_literal(types[i]);
+        query += quote_catalog_literal(types[i], literal);
       }
       query += ')';
     }
@@ -191,7 +198,7 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
   return query;
 }
 
-std::string build_query(const PrimaryKeysCatalogRequest& request) {
+std::string build_query(const PrimaryKeysCatalogRequest& request, CatalogLiteral literal) {
   std::string query =
       "SELECT current_database()::text AS table_cat, "
       "keys.table_schema::text AS table_schem, "
@@ -208,21 +215,21 @@ std::string build_query(const PrimaryKeysCatalogRequest& request) {
       "AND constraints.table_schema = keys.table_schema "
       "AND constraints.table_name = keys.table_name "
       "WHERE constraints.constraint_type = 'PRIMARY KEY' "
-      "AND keys.table_name = " + quote_catalog_literal(request.table);
+      "AND keys.table_name = " + quote_catalog_literal(request.table, literal);
   if (request.catalog) {
     query += " AND keys.table_catalog = " +
-        quote_catalog_literal(*request.catalog);
+        quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
     query += " AND keys.table_schema = " +
-        quote_catalog_literal(*request.schema);
+        quote_catalog_literal(*request.schema, literal);
   }
   query +=
       " ORDER BY table_cat, table_schem, table_name, key_seq";
   return query;
 }
 
-std::string build_query(const ForeignKeysCatalogRequest& request) {
+std::string build_query(const ForeignKeysCatalogRequest& request, CatalogLiteral literal) {
   std::string query =
       "SELECT current_database()::text AS pktable_cat, "
       "pk_namespaces.nspname::text AS pktable_schem, "
@@ -272,27 +279,27 @@ std::string build_query(const ForeignKeysCatalogRequest& request) {
       "WHERE fk_constraints.contype = 'f'";
   if (request.primary_catalog) {
     query += " AND current_database() = " +
-        quote_catalog_literal(*request.primary_catalog);
+        quote_catalog_literal(*request.primary_catalog, literal);
   }
   if (request.primary_schema) {
     query += " AND pk_namespaces.nspname = " +
-        quote_catalog_literal(*request.primary_schema);
+        quote_catalog_literal(*request.primary_schema, literal);
   }
   if (request.primary_table) {
     query += " AND pk_tables.relname = " +
-        quote_catalog_literal(*request.primary_table);
+        quote_catalog_literal(*request.primary_table, literal);
   }
   if (request.foreign_catalog) {
     query += " AND current_database() = " +
-        quote_catalog_literal(*request.foreign_catalog);
+        quote_catalog_literal(*request.foreign_catalog, literal);
   }
   if (request.foreign_schema) {
     query += " AND fk_namespaces.nspname = " +
-        quote_catalog_literal(*request.foreign_schema);
+        quote_catalog_literal(*request.foreign_schema, literal);
   }
   if (request.foreign_table) {
     query += " AND fk_tables.relname = " +
-        quote_catalog_literal(*request.foreign_table);
+        quote_catalog_literal(*request.foreign_table, literal);
   }
   if (request.primary_table) {
     query +=
@@ -304,7 +311,7 @@ std::string build_query(const ForeignKeysCatalogRequest& request) {
   return query;
 }
 
-std::string build_query(const ColumnsCatalogRequest& request) {
+std::string build_query(const ColumnsCatalogRequest& request, CatalogLiteral literal) {
   const auto character_length =
       catalog_character_length_sql("character_maximum_length");
   const auto character_octet_length =
@@ -417,22 +424,22 @@ std::string build_query(const ColumnsCatalogRequest& request) {
       catalog_base_type_join_sql("types.oid") + ") "
       "AS odbcpp_columns WHERE 1=1";
   if (request.catalog) {
-    query += " AND table_cat = " + quote_catalog_literal(*request.catalog);
+    query += " AND table_cat = " + quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
-    query += " AND table_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema);
+    query += " AND table_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema, literal);
   }
   if (request.table) {
-    query += " AND table_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.table);
+    query += " AND table_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.table, literal);
   }
   if (request.column) {
-    query += " AND column_name" + std::string(request.name_matches.member == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.column);
+    query += " AND column_name" + std::string(request.name_matches.member == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.column, literal);
   }
   query += " ORDER BY table_cat, table_schem, table_name, ordinal_position";
   return query;
 }
 
-std::string build_query(const StatisticsCatalogRequest& request) {
+std::string build_query(const StatisticsCatalogRequest& request, CatalogLiteral literal) {
   std::string query =
       "SELECT current_database()::text AS table_cat, "
       "namespaces.nspname::text AS table_schem, "
@@ -470,14 +477,14 @@ std::string build_query(const StatisticsCatalogRequest& request) {
       "ON columns.attrelid = tables.oid "
       "AND columns.attnum = index_columns.attribute_number "
       "WHERE indexes.indisvalid AND indexes.indislive "
-      "AND tables.relname = " + quote_catalog_literal(request.table);
+      "AND tables.relname = " + quote_catalog_literal(request.table, literal);
   if (request.catalog) {
     query += " AND current_database() = " +
-        quote_catalog_literal(*request.catalog);
+        quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
     query += " AND namespaces.nspname = " +
-        quote_catalog_literal(*request.schema);
+        quote_catalog_literal(*request.schema, literal);
   }
   if (request.unique_only) query += " AND indexes.indisunique";
   query +=
@@ -486,7 +493,7 @@ std::string build_query(const StatisticsCatalogRequest& request) {
   return query;
 }
 
-std::string build_query(const ProceduresCatalogRequest& request) {
+std::string build_query(const ProceduresCatalogRequest& request, CatalogLiteral literal) {
   std::string query =
       "SELECT current_database()::text AS procedure_cat, "
       "namespaces.nspname::text AS procedure_schem, "
@@ -507,20 +514,20 @@ std::string build_query(const ProceduresCatalogRequest& request) {
       "WHERE procedures.prokind IN ('f', 'p')";
   if (request.catalog) {
     query += " AND current_database() = " +
-        quote_catalog_literal(*request.catalog);
+        quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
-    query += " AND namespaces.nspname" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema);
+    query += " AND namespaces.nspname" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema, literal);
   }
   if (request.procedure) {
-    query += " AND procedures.proname" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.procedure);
+    query += " AND procedures.proname" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.procedure, literal);
   }
   query +=
       " ORDER BY procedure_cat, procedure_schem, procedure_name";
   return query;
 }
 
-std::string build_query(const ProcedureColumnsCatalogRequest& request) {
+std::string build_query(const ProcedureColumnsCatalogRequest& request, CatalogLiteral literal) {
   const std::string base_type_oid =
       "resolved_type.oid";
   const auto character_length = catalog_character_length_sql("0");
@@ -610,16 +617,16 @@ std::string build_query(const ProcedureColumnsCatalogRequest& request) {
       catalog_base_type_join_sql("types.oid") + " WHERE 1=1";
   if (request.catalog) {
     query += " AND columns.procedure_cat = " +
-        quote_catalog_literal(*request.catalog);
+        quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
-    query += " AND columns.procedure_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema);
+    query += " AND columns.procedure_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.schema, literal);
   }
   if (request.procedure) {
-    query += " AND columns.procedure_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.procedure);
+    query += " AND columns.procedure_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.procedure, literal);
   }
   if (request.column) {
-    query += " AND columns.column_name" + std::string(request.name_matches.member == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.column);
+    query += " AND columns.column_name" + std::string(request.name_matches.member == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.column, literal);
   }
   query +=
       " ORDER BY procedure_cat, procedure_schem, procedure_name, "
@@ -627,7 +634,7 @@ std::string build_query(const ProcedureColumnsCatalogRequest& request) {
   return query;
 }
 
-std::string build_query(const SpecialColumnsCatalogRequest& request) {
+std::string build_query(const SpecialColumnsCatalogRequest& request, CatalogLiteral literal) {
   if (request.identifier == SpecialColumnsCatalogRequest::Identifier::RowVersion ||
       request.scope != SpecialColumnsCatalogRequest::Scope::CurrentRow) {
     return std::string(
@@ -664,7 +671,7 @@ std::string build_query(const SpecialColumnsCatalogRequest& request) {
       "JOIN pg_catalog.pg_index AS indexes "
       "ON indexes.indrelid = tables.oid "
       "WHERE tables.relkind IN ('r', 'p') "
-      "AND tables.relname = " + quote_catalog_literal(request.table) +
+      "AND tables.relname = " + quote_catalog_literal(request.table, literal) +
       " AND indexes.indisunique AND indexes.indisvalid "
       "AND indexes.indisready AND indexes.indpred IS NULL "
       "AND indexes.indexprs IS NULL AND indexes.indnkeyatts > 0 "
@@ -674,11 +681,11 @@ std::string build_query(const SpecialColumnsCatalogRequest& request) {
       "AND key_numbers.attnum <= 0)";
   if (request.catalog) {
     query += " AND current_database() = " +
-        quote_catalog_literal(*request.catalog);
+        quote_catalog_literal(*request.catalog, literal);
   }
   if (request.schema) {
     query += " AND schemas.nspname = " +
-        quote_catalog_literal(*request.schema);
+        quote_catalog_literal(*request.schema, literal);
   }
   if (request.require_non_nullable) {
     query +=
@@ -800,6 +807,15 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
   if (!normalized) return rs::util::Result<std::string>{
       rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), "Invalid catalog name semantics"};
   const auto& request = *normalized;
+  // Literal escaping assumes the UTF-8 client encoding requested at startup;
+  // some multibyte encodings let a lead byte swallow an escaping backslash.
+  if (const auto encoding = get_parameter_status("client_encoding")) {
+    std::string upper = *encoding;
+    for (auto& c : upper) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    if (upper != "UTF8" && upper != "UNICODE")
+      return {rs::util::DbErrorCode::UnsupportedFeature,
+              "Catalog functions require the UTF8 client encoding"};
+  }
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
     bool visible_databases = false;
     const auto* tables_scope = std::get_if<TablesCatalogRequest>(&request);
@@ -822,7 +838,7 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
           "Redshift routine catalogs require modern exact-schema execution"};
     if (const auto* tables = std::get_if<TablesCatalogRequest>(&request)) {
       if (tables->mode == TablesCatalogRequest::Mode::Schemas) return redshift_schemas_query(visible_databases);
-      return build_query(*tables, catalog_detailed_table_types(), true, visible_databases);
+      return build_query(*tables, CatalogLiteral::Redshift, catalog_detailed_table_types(), true, visible_databases);
     }
     if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request))
       return redshift_columns_query(*columns, visible_databases);
@@ -836,7 +852,9 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
       return {rs::util::DbErrorCode::UnsupportedFeature,
           "Redshift row identity requires exact-schema native execution"};
   }
-  return std::visit([](const auto& catalog) { return build_query(catalog); }, request);
+  const auto literal = catalog_profile_ == PgCatalogProfile::Redshift
+      ? CatalogLiteral::Redshift : CatalogLiteral::PostgreSql;
+  return std::visit([literal](const auto& catalog) { return build_query(catalog, literal); }, request);
 }
 
 } // namespace rs::core::database::postgres

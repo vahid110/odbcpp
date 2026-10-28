@@ -2014,6 +2014,7 @@ class MetadataScopeQuerySession final : public PgDatabaseConnection {
   std::optional<std::string> get_parameter_status(std::string_view key) const override {
     if (key == "datashare_enabled") return share;
     if (key == "external_database") return external;
+    if (key == "client_encoding") return std::string("UTF8");
     ADD_FAILURE() << "Unexpected metadata scope parameter";
     return std::nullopt;
   }
