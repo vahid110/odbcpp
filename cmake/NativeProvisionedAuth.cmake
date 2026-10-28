@@ -47,7 +47,7 @@ foreach(_include IN LISTS SDK_FIXTURE_INCLUDES)
     message(FATAL_ERROR "Native provisioned auth missing generated SDK include root")
   endif()
 endforeach()
-# Only the eight optional headers are staged. Ordinary AuthCore headers retain
+# Only the optional headers listed below are staged. Ordinary AuthCore headers retain
 # their existing checked canonical stage; optional inputs are not installed.
 set(_native_stage "${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-include")
 set(_native_pairs "")
