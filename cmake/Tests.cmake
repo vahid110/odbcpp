@@ -984,6 +984,13 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ProbeInternalIncludes.cmake")
 set_tests_properties(test_internal_include_closure
   PROPERTIES LABELS "unit;architecture" TIMEOUT 90)
 
+# Reconfigure must not re-stamp unchanged staged headers (issue #119).
+add_test(NAME test_stable_header_staging COMMAND "${CMAKE_COMMAND}"
+  "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+  "-DFIXTURE_DIR=${CMAKE_CURRENT_BINARY_DIR}/stable header staging fixtures"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestStableHeaderStaging.cmake")
+set_tests_properties(test_stable_header_staging PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
+
 # Backend-private first/only include; compile-only, with no source-root fallback.
 add_library(odbcpp_mysql_session_header_isolation OBJECT
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/header_isolation/mysql_session_first_include.cpp")
