@@ -121,6 +121,7 @@ jobs:
         run: |
           cmake --build build-codeql --parallel 2 --verbose --target all \
             it_redshift_routine_schema_patterns it_redshift_columns_omitted_table \
+            it_redshift_native_idp_live \
             2>&1 | tee codeql-evidence/build.log
 
       - name: Compile the original standalone C# helper as a library without executing it
