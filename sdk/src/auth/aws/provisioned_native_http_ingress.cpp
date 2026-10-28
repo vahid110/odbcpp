@@ -367,6 +367,11 @@ class IngressHttp final:public Aws::Http::HttpClient {
       // carries a session token; a static-key source does not, so this is the
       // offline discriminator for "DB dispatch signed by the assumed key".
       state_.metrics.signed_with_session_token=!request->GetHeaderValue("x-amz-security-token").empty();
+      const auto frozen = state_.source_value();
+      const auto expected_credential = Aws::String{"Credential="} + frozen.GetAWSAccessKeyId() + "/";
+      state_.metrics.signed_with_frozen_key =
+          request->GetHeaderValue("authorization").find(expected_credential) != Aws::String::npos &&
+          request->GetHeaderValue("x-amz-security-token") == frozen.GetSessionToken();
       ++state_.metrics.selected_sends;
       auto captured=rs::core::auth::aws::detail::ProvisionedNativeCaptureOwner::run(request,state_,read,write);
       state_.wire=std::move(captured.wire);state_.sync();

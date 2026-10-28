@@ -56,15 +56,10 @@ class NamedSourceAcquisitionOwner final {
   // routed through STS AssumeRole (the standalone STS owner owns its own
   // scope/InitAPI and cannot nest). Returns nullopt for a static-key profile
   // (the caller uses the normal load path); throws Refused on any refusal.
-  // The trusted clock-quality bounds (UTC uncertainty, drift and suspend error)
-  // must be supplied by an explicitly trusted sampler; when absent the role
-  // path is refused before any STS send rather than declaring unsupported
-  // bounds for Aws::Utils::DateTime::Now().
+  // An explicitly selected trusted source supplies UTC and quantitative quality
+  // together. Missing quality refuses before STS; there is no wall-clock fallback.
   static std::optional<FrozenNamedSource> resolve(const ProtectedNamedSourceSpec&, const Context&,
-      const Request&, std::shared_ptr<WorkerCancellation>,
-      std::optional<std::chrono::microseconds> utc_uncertainty = std::nullopt,
-      std::optional<std::chrono::microseconds> drift_error = std::nullopt,
-      std::optional<std::chrono::microseconds> suspend_error = std::nullopt);
+      const Request&, std::shared_ptr<WorkerCancellation>, TrustedUtcSource* = nullptr);
 };
 }
 } // namespace

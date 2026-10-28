@@ -14,7 +14,7 @@ FetchContent_MakeAvailable(googletest)
 # ---- Test Discovery and Setup ----
 # Auth-core units link only odbcpp_auth_core, never the driver core.
 set(ODBCPP_AUTH_CORE_UNIT_TESTS
-  test_auth_core test_temporary_db_validity test_issuer_timestamp
+  test_auth_core test_temporary_db_validity test_trusted_clock_sample test_issuer_timestamp
   test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response
   test_aws_db_xml_response test_redshift_serverless_response
   test_redshift_provisioned_response test_redshift_withiam_response

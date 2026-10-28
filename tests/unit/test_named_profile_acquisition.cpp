@@ -94,7 +94,7 @@ TEST(NamedProfileAcquisition, SourceProfileMultiSectionAcceptedAndRefused){
 TEST(NamedProfileAcquisition, RoleProfilesRefusedBeforeStaticKeyFallback){
   // R1/R1b: a role_arn (inline) or source_profile profile must never fall back
   // to the static-key provider. The role path is refused (zero STS sends, zero
-  // provider reads, zero DB dispatches) because this adapter has no trusted
+  // provider reads, zero DB dispatches) because this fixture supplies no trusted
   // sampler to supply the clock-quality bounds required by the checked
   // temporary-validity conversion; Aws::Utils::DateTime::Now() is not a trusted
   // UTC source. The source principal's keys are never adopted.
@@ -179,23 +179,6 @@ TEST(NamedProfileAcquisition, RoleBoundAdmissionRefusesForeignGenerationFailingC
     EXPECT_EQ(made.counts.named_provider_loads,0U);
     EXPECT_EQ(made.counts.selected_sends,0U);
   }
-}
-TEST(NamedProfileAcquisition, RoleProfilesSuppliedClockErrorExceedingAdmittedBoundRefused){
-  // R1b slow-UTC discriminator: when a trusted sampler supplies bounds but the
-  // UTC error exceeds the admitted policy bound (11s uncertainty > 10s
-  // max_total_error), the checked conversion refuses after the STS send with
-  // zero DB dispatches, so it cannot extend retained expiry or permit a send.
-  const std::string body="[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
-  detail::fake_http_observation().reset();
-  detail::fake_http_configure(detail::FakeHttpScenario::Success,0,nullptr);
-  detail::fake_http_set_expiry_ms(now_epoch_ms()+900000ULL);
-  Files files;Files::write(files.credential,body);NamedSetup setup;
-  auto c=p::FixedFixture::context();auto r=p::FixedFixture::request(c,rs::util::Clock::now()+std::chrono::seconds{20});
-  EXPECT_ANY_THROW((void)p::detail::NamedSourceAcquisitionOwner::resolve(files.spec(),c,r,setup.cancel,
-      std::chrono::microseconds{11000000},std::chrono::microseconds::zero(),std::chrono::microseconds::zero()));
-  // The STS send happened (bounds were supplied), but the checked conversion
-  // refused the out-of-bound error before any frozen source or DB dispatch.
-  EXPECT_EQ(detail::fake_http_observation().assume_role.load(),1U);
 }
 TEST(NamedProfileAcquisition, PrivateFdValidationRefusesUnsafeSources){
  for(unsigned kind=0;kind<6;++kind){SCOPED_TRACE(kind);Files files;
@@ -299,4 +282,148 @@ TEST(NamedProfileFdCursor, RepeatedCacheOrUnknownPhaseIsPermanentWithoutMoreRead
   const auto phase=kind==0?p::detail::NamedReadPhase::CacheInitialization:static_cast<p::detail::NamedReadPhase>(99);
   EXPECT_FALSE(cursor.rewind(phase,reset));EXPECT_FALSE(cursor.rewind(p::detail::NamedReadPhase::ExplicitProvider,reset));
   EXPECT_TRUE(cursor.failed());EXPECT_EQ(calls,2U);}
+}
+
+namespace {
+const std::string inline_role = "[pilot]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\nrole_arn=arn:aws:iam::123456789012:role/MyRole\n";
+const std::string source_role = "[pilot]\nrole_arn=arn:aws:iam::123456789012:role/MyRole\nsource_profile=base\n[base]\naws_access_key_id=synthetic-access-key\naws_secret_access_key=synthetic-secret-key\n";
+struct RoleElapsed final : a::SuspendAwareClock {
+  std::chrono::microseconds now{100s};
+  std::optional<std::chrono::microseconds> read() noexcept override { return now; }
+};
+struct RoleClock final : a::TrustedUtcSource {
+  std::shared_ptr<RoleElapsed> elapsed = std::make_shared<RoleElapsed>();
+  std::chrono::microseconds uncertainty{1s};
+  std::int64_t utc_offset{};
+  std::optional<a::TrustedUtcReading> read(std::chrono::microseconds horizon) override {
+    return a::TrustedUtcReading{{static_cast<std::int64_t>(now_epoch_ms()) * 1000 + utc_offset}, uncertainty, 1ms, horizon};
+  }
+  std::shared_ptr<a::SuspendAwareClock> elapsed_clock() override { return elapsed; }
+};
+}
+TEST(NamedProfileAcquisition, TrustedInlineAndSourceRoleFreezeAssumedKeys) {
+  for (const auto& body : {inline_role, source_role}) {
+    detail::fake_http_observation().reset();
+    detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+    detail::fake_http_set_expiry_ms(now_epoch_ms() + 900000ULL);
+    Files files;
+    Files::write(files.credential, body);
+    NamedSetup setup;
+    auto clock = std::make_shared<RoleClock>();
+    auto made = p::FixedFixture::create_named(files.spec(), setup.reader, setup.generation, setup.cancel,
+        rs::util::Clock::now() + 20s, clock);
+    ASSERT_TRUE(made.owner);
+    EXPECT_EQ(detail::fake_http_observation().assume_role.load(), 1U);
+    EXPECT_EQ(made.counts.named_provider_loads, 0U);
+    Files::write(files.credential, "removed after freezing\n");
+    auto out = made.owner->acquire_observation();
+    ASSERT_TRUE(out.observation);
+    EXPECT_EQ(out.counts.selected_sends, 1U);
+    EXPECT_TRUE(out.counts.signed_with_session_token);
+    EXPECT_TRUE(out.counts.signed_with_frozen_key);
+    EXPECT_EQ(out.counts.named_provider_loads, 0U);
+    EXPECT_TRUE(out.observation->close());
+    EXPECT_TRUE(made.owner->close());
+  }
+}
+TEST(NamedProfileAcquisition, TrustedRoleRetirementShortExpiryAndSuspendRefuseDatabaseSends) {
+  for (unsigned kind = 0; kind != 4; ++kind) {
+    SCOPED_TRACE(kind);
+    detail::fake_http_observation().reset();
+    detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+    detail::fake_http_set_expiry_ms(now_epoch_ms() + (kind == 0 ? 1000ULL : 900000ULL));
+    Files files;
+    Files::write(files.credential, source_role);
+    NamedSetup setup;
+    auto clock = std::make_shared<RoleClock>();
+    if (kind == 1) detail::fake_http_set_during([&] { (void)setup.generation->retire(a::SourceRetirement::Closed); });
+    auto made = p::FixedFixture::create_named(files.spec(), setup.reader, setup.generation, setup.cancel,
+        rs::util::Clock::now() + 20s, clock);
+    if (kind < 2) {
+      EXPECT_FALSE(made.owner);
+      EXPECT_EQ(made.counts.selected_sends, 0U);
+    } else {
+      ASSERT_TRUE(made.owner);
+      if (kind == 2) clock->elapsed->now += 900s;
+      if (kind == 3) (void)setup.generation->retire(a::SourceRetirement::Closed);
+      auto out = made.owner->acquire_observation();
+      EXPECT_FALSE(out.observation);
+      EXPECT_EQ(out.counts.selected_sends, 0U);
+      EXPECT_TRUE(made.owner->close());
+    }
+    EXPECT_EQ(detail::fake_http_observation().assume_role.load(), 1U);
+  }
+}
+TEST(NamedProfileAcquisition, ExcessiveClockErrorRefusesBeforeStsAndSlowUtcBoundWorks) {
+  for (unsigned kind = 0; kind != 2; ++kind) {
+    detail::fake_http_observation().reset();
+    detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+    detail::fake_http_set_expiry_ms(now_epoch_ms() + 900000ULL);
+    Files files;
+    Files::write(files.credential, inline_role);
+    NamedSetup setup;
+    auto clock = std::make_shared<RoleClock>();
+    clock->uncertainty = kind == 0 ? 11s : 2s;
+    clock->utc_offset = kind == 0 ? 0 : -1000000; // Slow UTC, covered by explicit uncertainty.
+    auto made = p::FixedFixture::create_named(files.spec(), setup.reader, setup.generation, setup.cancel,
+        rs::util::Clock::now() + 20s, clock);
+    if (kind == 0) {
+      EXPECT_FALSE(made.owner);
+      EXPECT_EQ(detail::fake_http_observation().assume_role.load(), 0U);
+      EXPECT_EQ(made.counts.selected_sends, 0U);
+    } else {
+      ASSERT_TRUE(made.owner);
+      auto out = made.owner->acquire_observation();
+      ASSERT_TRUE(out.observation);
+      EXPECT_EQ(out.counts.selected_sends, 1U);
+      EXPECT_TRUE(out.observation->close());
+      EXPECT_TRUE(made.owner->close());
+    }
+  }
+}
+
+TEST(NamedProfileAcquisition, SuspendDuringSigningCheckpointRefusesBeforeDatabaseSend) {
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+  detail::fake_http_set_expiry_ms(now_epoch_ms() + 900000ULL);
+  Files files;
+  Files::write(files.credential, inline_role);
+  NamedSetup setup;
+  auto clock = std::make_shared<RoleClock>();
+  auto made = p::FixedFixture::create_named(files.spec(), setup.reader, setup.generation, setup.cancel,
+      rs::util::Clock::now() + 20s, clock);
+  ASSERT_TRUE(made.owner);
+  setup.reader->callback = [&] {
+    if (made.owner->counts().frozen_provider_reads != 0) clock->elapsed->now += 900s;
+  };
+  auto out = made.owner->acquire_observation();
+  EXPECT_FALSE(out.observation);
+  EXPECT_GT(out.counts.frozen_provider_reads, 0U);
+  EXPECT_EQ(out.counts.selected_sends, 0U);
+  EXPECT_TRUE(made.owner->close());
+}
+
+TEST(NamedProfileAcquisition, RealHostClockFeedsSyntheticRoleAcquisitionWithoutCloud) {
+  auto clock = a::system_trusted_utc_source();
+  ASSERT_TRUE(clock);
+  auto sampled = a::sample_trusted_clock(*clock, {10s, 10s, 10s, 3600s});
+  if (std::holds_alternative<a::TimeFailure>(sampled)) {
+    GTEST_SKIP() << "Host trusted clock unavailable; real provider integration unpassed";
+  }
+  detail::fake_http_observation().reset();
+  detail::fake_http_configure(detail::FakeHttpScenario::Success, 0, nullptr);
+  detail::fake_http_set_expiry_ms(now_epoch_ms() + 900000ULL);
+  Files files;
+  Files::write(files.credential, source_role);
+  NamedSetup setup;
+  auto made = p::FixedFixture::create_named(files.spec(), setup.reader, setup.generation, setup.cancel,
+      rs::util::Clock::now() + 20s, clock);
+  ASSERT_TRUE(made.owner);
+  auto out = made.owner->acquire_observation();
+  ASSERT_TRUE(out.observation);
+  EXPECT_EQ(detail::fake_http_observation().assume_role.load(), 1U);
+  EXPECT_EQ(out.counts.selected_sends, 1U);
+  EXPECT_TRUE(out.counts.signed_with_frozen_key);
+  EXPECT_TRUE(out.observation->close());
+  EXPECT_TRUE(made.owner->close());
 }
