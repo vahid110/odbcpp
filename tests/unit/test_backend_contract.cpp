@@ -558,6 +558,12 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       error.native_state = "FAKE_ERROR";
       error.disposition = SessionDisposition::Reusable;
       error.session_state = SessionState::Idle;
+      // Like a server, an error inside a transaction leaves it failed.
+      if (seen_->transaction_state == SessionState::Transaction) {
+        seen_->transaction_state = SessionState::FailedTransaction;
+        error.session_state = SessionState::FailedTransaction;
+        error.disposition = SessionDisposition::ResetRequired;
+      }
       error.operation = BackendOperation::ExecuteDirect;
       return error;
     }
@@ -930,13 +936,43 @@ TEST_F(BackendContractTest, ManualCommitBeginsAgainAfterSqlEndsTheTransaction) {
   EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[2]);
 }
 
+// With autocommit on, transactions are outside ODBC's model: a SQL BEGIN does
+// not make the driver own one, so SQLEndTran stays a no-op and disconnect is
+// not refused.
+TEST_F(BackendContractTest, AutocommitSqlBeginDoesNotMakeTheDriverOwnATransaction) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("BEGIN"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  stmt = nullptr;
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+}
+
+// A statement that fails inside a transaction leaves it failed, not ended; the
+// driver must still send ROLLBACK for SQLEndTran.
+TEST_F(BackendContractTest, ManualCommitFailedStatementStillRollsBack) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  EXPECT_EQ(SQL_ERROR, execute("statement error"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[1]);
+}
+
 // The parameterized dispatch path must reconcile the same way.
 TEST_F(BackendContractTest, ManualCommitParameterizedStatementsBeginAgainAfterSqlCommit) {
   seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
   ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
       reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
   seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
-  ASSERT_EQ(SQL_SUCCESS, execute("COMMIT"));
+  // COMMIT itself runs through the prepared (parameterized dispatch) path.
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"COMMIT", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
   ASSERT_EQ(1u, seen->transaction_calls.size());
   char input[] = "ok"; SQLLEN length = 2;
