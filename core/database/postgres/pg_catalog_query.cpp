@@ -801,21 +801,29 @@ std::string build_query(const SpecialColumnsCatalogRequest& request, CatalogLite
 
 } // namespace
 
+// Some multibyte encodings (SJIS, BIG5, GBK) let a lead byte swallow an
+// escaping backslash, so literal escaping is only sound under UTF-8.
+bool PgDatabaseConnection::catalog_encoding_is_utf8() const {
+  try {
+    const auto encoding = get_parameter_status("client_encoding");
+    if (!encoding) return true;
+    std::string upper = *encoding;
+    for (auto& c : upper) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    return upper == "UTF8" || upper == "UNICODE";
+  } catch (...) {
+    return false;  // An unreadable encoding is not known to be safe.
+  }
+}
+
 rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
     const CatalogRequest& input) const {
   auto normalized = native_catalog_request(input);
   if (!normalized) return rs::util::Result<std::string>{
       rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), "Invalid catalog name semantics"};
   const auto& request = *normalized;
-  // Literal escaping assumes the UTF-8 client encoding requested at startup;
-  // some multibyte encodings let a lead byte swallow an escaping backslash.
-  if (const auto encoding = get_parameter_status("client_encoding")) {
-    std::string upper = *encoding;
-    for (auto& c : upper) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    if (upper != "UTF8" && upper != "UNICODE")
-      return {rs::util::DbErrorCode::UnsupportedFeature,
-              "Catalog functions require the UTF8 client encoding"};
-  }
+  if (!catalog_encoding_is_utf8())
+    return {rs::util::DbErrorCode::UnsupportedFeature,
+            "Catalog functions require the UTF8 client encoding"};
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
     bool visible_databases = false;
     const auto* tables_scope = std::get_if<TablesCatalogRequest>(&request);

@@ -1098,6 +1098,10 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     error.disposition = SessionDisposition::Retire;
     return error;
   }
+  if (!catalog_encoding_is_utf8())
+    return local_backend_error(LocalFailure::Unsupported,
+        "Catalog functions require the UTF8 client encoding",
+        BackendOperation::ExecuteCatalog, session_state());
   const auto unsupported = [this] {
     return local_backend_error(LocalFailure::Unsupported,
         "Exact modern Redshift primary-key discovery is unavailable",
