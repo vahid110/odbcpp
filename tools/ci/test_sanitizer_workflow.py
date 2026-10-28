@@ -99,14 +99,8 @@ class SchedulingSafety(unittest.TestCase):
             flags['run_sanitizer_only'] = True
             self.assertEqual([n for n,b in jobs(self.ci).items() if enabled(b,'workflow_dispatch',flags)], ['sanitizer-only'])
 
-    def test_all_legacy_full_bodies_and_sanitizer_profile_are_preserved(self):
-        old, new = jobs(self.old), jobs(self.ci)
-        for name in old:
-            if name in ['ubuntu-development-pilot', 'ubuntu-product-qualification', 'windows-product-qualification']:
-                continue
-            strip = lambda b: re.sub(r'^    if: .*\n', '', b, flags=re.M)
-            self.assertEqual(strip(old[name]), strip(new[name]), name)
-        only = new['sanitizer-only']
+    def test_sanitizer_profile_is_preserved(self):
+        only = jobs(self.ci)['sanitizer-only']
         for text in ['timeout-minutes: 30', 'runs-on: ubuntu-latest', 'retention-days: 3',
                      'persist-credentials: false', 'if: always()', 'sanitizer_evidence.py']:
             self.assertIn(text, only)

@@ -23,6 +23,12 @@ Every periodic batch still requires fresh reviewed finite admission, exact sourc
 binary/control binding, one-use consumption, bounded execution and independent
 exact-principal cleanup. No budget or authorization-horizon extension follows.
 
+The `tools/redshift/pilot_*` launchers, ledgers and accounting helpers named in
+the historical sections below were removed once `tools/development/live_checkpoint.py`
+replaced them; read them from git history before `codex/build-tooling-cleanup`
+(PR #125). `pilot_preflight.py` (private-file checks and the lock) and
+`pilot_runtime.py` (bounded processes) remain because the current runner uses them.
+
 ## Historical execution order — human approved 2026-10-06
 
 Follow the current [delivery order](REDSHIFT_FEATURE_PLAN.md#human-approved-delivery-order--2026-10-06):
@@ -408,7 +414,11 @@ cleanup checks complement, rather than replace, server-side cancellation proof.
 
 ### R0 offline foundation candidate
 
-`tools/redshift/pilot_preflight.py` provides sanitized strict observation and
+Historical: PR #125 cut `pilot_preflight.py` down to its private-file checks and
+the lock; the accounting validation, reservation arithmetic and CLI described
+here are in git history.
+
+`tools/redshift/pilot_preflight.py` provided sanitized strict observation and
 accounting validation, conservative max-capacity reservation arithmetic and a
 stable nonblocking POSIX lock at the canonical pilot path. Its CLI only validates
 supplied records and always returns `live_enabled=false`; it neither verifies

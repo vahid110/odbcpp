@@ -114,12 +114,26 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Some tooling tests read earlier commits.
+          fetch-depth: 0
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
-      - name: Check PR scheduling and build safety offline
+      # Every tooling unit test under tools/ runs here, so none can silently rot.
+      # Windows-only tests run in the Windows PR job; test_spdlog_fmt_patch needs
+      # build inputs and runs under CTest.
+      - name: Run tooling unit tests offline
         run: |
-          python3 -B tools/ci/test_pr_three_platform_builds.py -v
-          python3 -B tools/development/test_check_dm_offline_evidence.py -v
+          set -o pipefail
+          status=0
+          for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
+            echo "::group::$test"
+            # A file that runs no test (for example, no unittest.main()) also fails.
+            if ! PYTHONPATH="$PWD" python3 -B "$test" 2>&1 | tee tooling-test.log || ! grep -qE '^Ran [1-9][0-9]* tests? ' tooling-test.log; then
+              echo "::error file=$test::tooling unit test failed or ran no tests"; status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
       - name: Install existing build dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
@@ -178,8 +192,28 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Some tooling tests read earlier commits.
+          fetch-depth: 0
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
+      - name: Run Windows tooling unit tests offline
+        run: |
+          $env:PYTHONPATH = $PWD.Path
+          $failed = @()
+          # Owner-model checks need a non-admin account that owns its files by
+          # default; they qualify the coordinator host, not the hosted runner.
+          $hostOnly = 'test_windows_live_backend.py', 'test_windows_powerbi_applicability.py', 'test_windows_powerbi_publication.py'
+          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
+            Write-Host "::group::$test"
+            $output = @(python -B $test 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+            $output | Write-Host
+            if ($code -ne 0 -or -not ($output -match '^Ran [1-9][0-9]* tests? ')) {
+              $failed += $test; Write-Host "::error file=$test::tooling unit test failed or ran no tests"
+            }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count) { throw "Windows tooling unit tests failed: $($failed -join ', ')" }
       - name: Verify existing runner OpenSSL
         run: openssl version
       - name: Configure PostgreSQL x64 MSVC build
@@ -656,15 +690,17 @@ jobs:
         shell: pwsh
         run: |
           $env:GTEST_OUTPUT = "xml:$env:RUNNER_TEMP/odbcpp-integration-results/"
-          ctest --test-dir build-windows -C Release -L integration -E '^it_crypto_profile_live$' --timeout 90 --output-on-failure
+          $selection = @('--test-dir', 'build-windows', '-C', 'Release', '-L', 'integration', '-E', '^it_crypto_profile_live$')
+          ctest @selection --timeout 90 --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed" }
+          # Every GoogleTest integration image writes <name>.xml; plain executables are
+          # labelled no-gtest-report where they are registered.
+          $registered = @((ctest @selection -LE '^no-gtest-report$' --show-only=json-v1 | ConvertFrom-Json).tests.name | Sort-Object)
+          if ($LASTEXITCODE -ne 0 -or $registered.Count -eq 0) { throw "No registered Windows integration tests" }
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
-          $expectedReports = @(
-            Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_auth_pg_material_tls.cpp', 'it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_redshift_serverless_sts_auth.cpp', 'it_redshift_serverless_jwt_iam_auth.cpp', 'it_redshift_routine_schema_patterns.cpp', 'it_redshift_columns_omitted_table.cpp', 'it_redshift_powerbi_relationship.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
-          ).Count
-          if ($reports.Count -ne $expectedReports) {
-            throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
+          $reported = @($reports.BaseName | Sort-Object)
+          if (Compare-Object $registered $reported) {
+            throw "Integration reports ($($reported -join ', ')) do not match registered tests ($($registered -join ', '))"
           }
           foreach ($report in $reports) {
             [xml]$result = Get-Content $report.FullName

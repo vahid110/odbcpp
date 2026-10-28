@@ -80,7 +80,8 @@ class BackendObserverEligibility(unittest.TestCase):
                     '-Observer', str(SCRIPT), '-InputXml', str(original)]
             if not full_script:
                 args.append('-ClassifyOnly')
-            result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=15)
+            # A harness bound only: a cold PowerShell start on a hosted runner can exceed 15 s.
+            result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=120)
             self.assertEqual(before, [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths])
             self.assertFalse((build / 'windows-backend-direct-exit009').exists(), result.stdout + result.stderr)
             return result
