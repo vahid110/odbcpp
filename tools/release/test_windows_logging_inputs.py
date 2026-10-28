@@ -18,6 +18,11 @@ REQUIRE_PWSH = os.environ.get('ODBCPP_REQUIRE_PWSH') == '1'
 
 @unittest.skipUnless(PWSH or REQUIRE_PWSH, 'PowerShell 7 (pwsh) is not available')
 class WindowsLoggingInputsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not PWSH:
+            raise AssertionError('ODBCPP_REQUIRE_PWSH=1 but PowerShell 7 (pwsh) is not on PATH')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='windows logging inputs ')
         self.addCleanup(self.temp.cleanup)
@@ -38,7 +43,7 @@ class WindowsLoggingInputsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def read(self, error=None):
-        result = subprocess.run([PWSH or 'pwsh', '-NoProfile', '-File', str(self.reader)],
+        result = subprocess.run([PWSH, '-NoProfile', '-File', str(self.reader)],
                                 capture_output=True, text=True, timeout=30)
         if error:
             self.assertNotEqual(result.returncode, 0, result.stdout)
