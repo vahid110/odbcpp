@@ -314,7 +314,10 @@ def validate_manager_profiles(plan, profiles):
         value = PureWindowsPath(native['driver']['path'])
         lifecycle.need(value.is_absolute() and len(value.drive) == 2, 'native_driver_path')
         registered = str(PurePosixPath('/mnt', value.drive[0].lower(), *value.parts[1:]))
+    lifecycle.need(type(profiles) is dict, 'profile_inventory')
     for profile in profiles.values():
+        lifecycle.need(type(profile) is dict and type(profile.get('private_input')) is dict,
+                       'profile_schema')
         manager = profile.get('driver_manager')
         if native is None:
             lifecycle.need(manager != 'Windows', 'posix_plan_windows_manager_profile')

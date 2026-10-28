@@ -238,14 +238,23 @@ class NativeBackendTests(unittest.TestCase):
                       model='C:/invented/model.json', case_count=1, runtime_directories=[],
                       tools=dict(cmake='C:/invented/cmake.exe', ctest='C:/invented/ctest.exe',
                                  ninja='C:/invented/ninja.exe'))
-        saved = backend.DESCRIPTION
+        # configure_context sets module globals; restore every one afterwards.
+        names = ('ROOT', 'WORK', 'REPO', 'HEAD', 'SID', 'DRIVER', 'DRIVER_SHA', 'DESCRIPTION',
+                 'CMAKE', 'CTEST', 'NINJA', 'MODEL', 'RUNTIME_DIRS', 'APPLICABLE_COUNT')
+        missing = object()
+        saved = {name: getattr(backend, name, missing) for name in names}
         try:
             backend.configure_context(dict(native, driver_description='ODBCPP Redshift Beta (x64)'))
             for description in ('ODBCPP {Redshift}', 'ODBCPP;Redshift', 'ODBCPP Redshift ', ''):
                 with self.assertRaisesRegex(RuntimeError, 'registered_driver_description'):
                     backend.configure_context(dict(native, driver_description=description))
         finally:
-            backend.DESCRIPTION = saved
+            for name, value in saved.items():
+                if value is missing:
+                    if hasattr(backend, name):
+                        delattr(backend, name)
+                else:
+                    setattr(backend, name, value)
 
     def test_private_file_exact_bytes_acl_and_retirement(self):
         parent = Path(tempfile.mkdtemp(prefix='odbcpp-native-workflow-'))

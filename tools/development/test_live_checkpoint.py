@@ -235,6 +235,17 @@ class ManagerProfileHostTests(unittest.TestCase):
         for plan, value, reason in refused:
             with self.assertRaisesRegex(checkpoint.lifecycle.Refused, reason):
                 checkpoint.validate_manager_profiles(plan, {'ok': self.profile(None), 'bad': value})
+        for profiles in ([], {'bad': {}}, {'bad': {'private_input': None}}):
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused, 'profile_(inventory|schema)'):
+                checkpoint.validate_manager_profiles(native, profiles)
+
+    def test_read_plan_applies_the_host_check_to_the_pinned_profiles(self):
+        import inspect
+        source = inspect.getsource(checkpoint.read_plan)
+        self.assertIn("validate_manager_profiles(plan, json.loads(pinned(plan['profiles'])", source)
+        # Public plan validation, before execute() opens the admission.
+        execute = inspect.getsource(checkpoint.execute)
+        self.assertLess(execute.index('plan = read_plan(plan_path'), execute.index('private_json(admission_path)'))
 
 class LocalValidationTests(unittest.TestCase):
     """Pinned synthetic coordinator assessments; no product/live acceptance."""
