@@ -38,6 +38,8 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_serverless_fake_http.h" "${_native_stage}/odbcpp/auth/aws/sts_serverless_fake_http.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_assume_role_owner.h" "${_native_stage}/odbcpp/auth/aws/sts_assume_role_owner.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/profile_role_assumption.h" "${_native_stage}/odbcpp/auth/aws/profile_role_assumption.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/browser_idc_owner.h" "${_native_stage}/odbcpp/auth/aws/browser_idc_owner.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
@@ -51,6 +53,8 @@ add_library(odbcpp_auth_aws_idc STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/native_body_capture.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/explicit_profile_source.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_serverless_fake_http.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/sts_assume_role_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/profile_role_assumption.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/provisioned_query_transport.cpp")
 target_compile_features(odbcpp_auth_aws_idc PRIVATE cxx_std_20)
 target_include_directories(odbcpp_auth_aws_idc PRIVATE
@@ -61,7 +65,7 @@ target_compile_definitions(odbcpp_auth_aws_idc PRIVATE
   AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
 target_link_libraries(odbcpp_auth_aws_idc PRIVATE
   odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless
-  aws-cpp-sdk-sso-oidc OpenSSL::Crypto)
+  aws-cpp-sdk-sts aws-cpp-sdk-sso-oidc OpenSSL::Crypto)
 apply_compiler_settings(odbcpp_auth_aws_idc)
 
 # macOS browser launch (LaunchServices + CoreFoundation).
