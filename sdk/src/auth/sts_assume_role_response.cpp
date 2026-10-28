@@ -72,6 +72,34 @@ bool arn_ok(std::string_view value) noexcept {
   return true;
 }
 }
+std::optional<StsRoleArn> parse_sts_role_arn(std::string_view arn) {
+  if (!arn.starts_with("arn:")) return std::nullopt;
+  arn.remove_prefix(4);
+  auto next = [&]() -> std::optional<std::string_view> {
+    const auto p = arn.find(':');
+    if (p == std::string_view::npos) return std::nullopt;
+    const auto part = arn.substr(0, p);
+    arn.remove_prefix(p + 1);
+    return part;
+  };
+  StsRoleArn out{};
+  const auto part = next();
+  if (part == "aws") out.partition = StsAssumeRolePartition::Aws;
+  else if (part == "aws-cn") out.partition = StsAssumeRolePartition::AwsCn;
+  else if (part == "aws-us-gov") out.partition = StsAssumeRolePartition::AwsUsGov;
+  else return std::nullopt;
+  if (next() != "iam") return std::nullopt;
+  const auto region = next(); // iam ARNs have an empty region field
+  if (!region || !region->empty()) return std::nullopt;
+  const auto account = next();
+  if (!account || !account_valid(*account)) return std::nullopt;
+  if (!arn.starts_with("role/")) return std::nullopt;
+  arn.remove_prefix(5);
+  if (!role_name_valid(arn)) return std::nullopt;
+  out.account.assign(*account);
+  out.role_name.assign(arn);
+  return out;
+}
 std::string_view StsAssumeRoleError::safe_message() const noexcept {
   switch (failure) {
     case StsAssumeRoleFailure::UnsupportedPartition: return "STS AssumeRole partition unsupported";
@@ -82,6 +110,7 @@ std::string_view StsAssumeRoleError::safe_message() const noexcept {
     case StsAssumeRoleFailure::Cancelled: return "STS AssumeRole credential admission cancelled";
     case StsAssumeRoleFailure::AllocationFailed: return "STS AssumeRole credential allocation unavailable";
     case StsAssumeRoleFailure::DeadlineElapsed: return "STS AssumeRole credential deadline elapsed";
+    case StsAssumeRoleFailure::ServiceRejected: return "STS AssumeRole service rejected identity or role trust";
   }
   return "STS AssumeRole credential response malformed";
 }

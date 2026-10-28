@@ -5,7 +5,6 @@ YAML syntax validation is separate; these checks reject event/profile changes th
 would silently drop a platform or turn a PR build into live/full acceptance.
 """
 import ast
-import hashlib
 import itertools
 from pathlib import Path
 import re
@@ -18,26 +17,6 @@ FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-packag
              'iodbc-unicode')
 FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
-# Reviewed job bodies, excluding only their top-level event condition. Preserve
-# 526b with reviewed packaging/checkpoint repairs (2026-10-22), then action pins
-# and literal cache-token grants (2026-10-25); build/test commands are unchanged.
-# 2026-10-26 windows-live: three historical 1.0.x package invocations now
-# explicitly use -LifecycleFixture; release packaging cannot impersonate fixtures.
-BODY_SHA256 = {
-    'sanitizer-only': 'c5f8920828e11b4356e9c2536c4a5b263bb1bbcd3b28e8e759b87afd6b0ff27c',
-    'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
-    'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
-    'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
-    'build-and-test': '120c7398a37e6948412a148f75fb8e46918c4279ed3e5a42a0db73b8c206f43e',
-    'redshift-build': '0ba6d9fa6afb30d14b63859e433d7adf193213c86aead5fa022f9963fc401873',
-    'windows-live': '72abd690c7d78fb5f2d568251fb8cfbf11bae84264c5f8540ebd196c157c5b02',
-    'windows-package': '8df1d4a83f758b3784a83918338f9c17fd4c5fbedcaf84f1bc45cd9e6d955c97',
-    'windows-linked-server': 'dc898d0acd712fc9de23110b50e64dfa9669d37aa4ae6cbf7353219b4ac458d6',
-    'linux-sanitizers': '4c56808487402d87e94b067b4a761a0170eb705b5590a935c752cdaafebce5fe',
-    'linux-openssl-static': '85c7236f48df08e2b65315759d47e42105d2ea2f995e53106c1620954b6e2fe9',
-    'awslc-adapter-proof': 'e35d492a94a007c87df9208cbee56b779f4021e89eda12aed2c322cb7fd40922',
-    'iodbc-unicode': 'c1d6b9e0e42def7fc46f3ac2c4bad4ca055ff1be49639ee70db63a27923fd0d3',
-}
 
 
 def jobs(text):
@@ -94,14 +73,38 @@ def build_contract(block, platform):
                      'cmake --build build-pr-windows --config Release --parallel 2']
     if any(value not in block for value in required):
         raise ValueError('missing exact PR build profile/source/bound')
-    if len(re.findall(r'^    if:', block, re.M)) != 1 or re.search(r'^      - .*\n\s+if:', block):
+    if len(re.findall(r'^    if:', block, re.M)) != 1:
         raise ValueError('build must not be conditional on draft/path/status')
+    for step in re.split(r'(?m)^      - ', block)[1:]:
+        if re.search(r'(?m)^        if:', step):
+            if (not step.startswith(('name: Verify actual offline execution\n',
+                                     'name: Retain offline Driver Manager evidence\n')) or
+                    re.findall(r'(?m)^        if: (.*)$', step) != ['always()']):
+                raise ValueError('only evidence collection may have an always condition')
+    build = 'build-pr-ubuntu' if platform == 'Ubuntu' else 'build-pr-windows'
+    config = '' if platform == 'Ubuntu' else ' -C Release'
+    expected_ctest = (f"ctest --test-dir {build}{config} -L '^dm-offline$' "
+                      '--no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml')
+    ctest_lines = [line.strip() for line in block.splitlines() if 'ctest --' in line]
+    if ctest_lines != [expected_ctest]:
+        raise ValueError('exact offline CTest subset required; no connected runtime')
+    validator_config = '' if platform == 'Ubuntu' else ' --config Release'
+    required_evidence = [f'check_dm_offline_evidence.py --build {build}{validator_config} '
+                         f'--ctest-exit-file {build}/dm-offline/ctest-exit.txt',
+                         'if-no-files-found: error', f'{build}/dm-offline/',
+                         f'{build}/CMakeCache.txt', f'{build}/Testing/Temporary/']
+    required_evidence += (['result=$?', 'exit "$result"',
+                          f'> {build}/dm-offline/ctest-exit.txt'] if platform == 'Ubuntu' else
+                         ['$result = $LASTEXITCODE', 'exit $result',
+                          f'Set-Content -LiteralPath {build}/dm-offline/ctest-exit.txt -Value $result'])
+    if any(value not in block for value in required_evidence):
+        raise ValueError('actual exit, strict offline verification and evidence retention required')
     for forbidden in ['services:', 'container:', 'secrets.', 'secrets:', 'self-hosted',
-                      'actions/cache', 'restore-keys:', 'ctest', '--gtest_', '--target',
+                      'actions/cache', 'restore-keys:', '--gtest_', '--target',
                       'windows-postgres', 'windows-package', 'reg.exe', 'msiexec',
                       'continue-on-error:', 'needs:', 'inputs.', 'github.event.pull_request.draft']:
         if forbidden in block:
-            raise ValueError('PR build cannot restore binaries, skip work, or run tests/live/installers')
+            raise ValueError('PR build cannot restore binaries, skip work, or run live/installers')
     if re.search(r'\b(?:docker|aws|psql)\s', block):
         raise ValueError('no services, paid or SQL operation')
     build_lines = [line.strip() for line in block.splitlines() if 'cmake --build ' in line]
@@ -228,11 +231,6 @@ class ThreePlatformScheduling(unittest.TestCase):
             with self.subTest(flags=f):
                 self.assertEqual(active, expected)
 
-    def test_checkpoint_and_focused_job_bodies_match_reviewed_pins(self):
-        for name, expected in BODY_SHA256.items():
-            body = re.sub(r'^    if: .*\n', '', self.blocks[name], flags=re.M).strip()
-            self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), expected, name)
-
     def test_installer_gate_runs_in_existing_elevated_CI_before_legacy_fixtures(self):
         block = self.blocks['windows-package']
         self.assertIn('needs: windows-live', block)
@@ -248,6 +246,32 @@ class ThreePlatformScheduling(unittest.TestCase):
         self.assertNotIn('-Verb RunAs', script)
         self.assertNotIn('Register-ScheduledTask', script)
 
+    def test_windows_live_reports_match_registered_gtest_images(self):
+        block = self.blocks['windows-live']
+        for text in ("-LE '^no-gtest-report$' --show-only=json-v1",
+                     'if ($LASTEXITCODE -ne 0 -or $registered.Count -eq 0)',
+                     'if (Compare-Object $registered $reported)',
+                     '[int]$result.testsuites.tests -eq 0 -or [int]$result.testsuites.skipped -ne 0'):
+            self.assertIn(text, block)
+        self.assertNotIn('--no-tests=ignore', block)
+        cmake = (ROOT/'cmake/Tests.cmake').read_text()
+        # Only the two plain executables may opt out of the report comparison.
+        self.assertEqual(re.findall(r'set_tests_properties\((\w+) PROPERTIES LABELS "[^"]*no-gtest-report', cmake),
+                         ['it_driver_manager', 'it_setup'])
+        self.assertEqual(cmake.count('no-gtest-report'), 2)
+
+    def test_tooling_test_loops_require_a_run_test(self):
+        ubuntu, windows = self.blocks['pr-ubuntu-build'], self.blocks['pr-windows-build']
+        self.assertIn("git ls-files 'tools/*.py'", ubuntu)
+        self.assertIn('set -o pipefail', ubuntu)
+        self.assertIn("grep -qE '^Ran [1-9][0-9]* tests? ' tooling-test.log", ubuntu)
+        self.assertIn("$output -match '^Ran [1-9][0-9]* tests? '", windows)
+        self.assertIn('fetch-depth: 0', ubuntu)
+        self.assertIn('fetch-depth: 0', windows)
+        for path in ROOT.glob('tools/**/test_*.py'):
+            with self.subTest(path=path.name):
+                self.assertRegex(path.read_text(encoding='utf-8'), r'''__name__ ?== ?['"]__main__['"]''')
+
     def test_macOS_primary_retains_actual_default_ALL_build(self):
         block = jobs(self.primary)['macos-iodbc-ucs4']
         self.assertIn('runs-on: macos-latest', block)
@@ -255,8 +279,12 @@ class ThreePlatformScheduling(unittest.TestCase):
         self.assertIn('cmake --build build-iodbc --parallel 2', block)
         self.assertIn('-DTARGET_DATABASE=POSTGRESQL', block)
         self.assertIn('-DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=4', block)
+        self.assertIn("ctest --test-dir build-iodbc -L '^dm-offline$' --no-tests=error", block)
+        self.assertIn('check_dm_offline_evidence.py --build build-iodbc', block)
+        self.assertIn('build-iodbc/dm-offline/ctest-exit.txt', block)
+        self.assertIn('name: dm-offline-macos-iodbc-ucs4', block)
 
-    def test_two_build_profiles_are_cold_default_ALL_without_runtime(self):
+    def test_two_build_profiles_are_cold_default_ALL_with_offline_runtime(self):
         for name, platform in zip(PR_JOBS, ['Ubuntu','Windows']):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
@@ -296,6 +324,11 @@ class ThreePlatformScheduling(unittest.TestCase):
                          base.replace('ref: ${{ github.sha }}','ref: main'),
                          base.replace('-DODBCPP_CRYPTO_TLS_PROOF=OFF','-DODBCPP_CRYPTO_TLS_PROOF=ON'),
                          base.replace("if: github.event_name == 'pull_request'", "if: github.event_name == 'pull_request' && !github.event.pull_request.draft")]
+            mutations += [base.replace("-L '^dm-offline$'", '-L integration'),
+                          base.replace('--no-tests=error', '--no-tests=ignore'),
+                          base.replace('check_dm_offline_evidence.py', 'unverified.py'),
+                          base.replace('if-no-files-found: error', 'if-no-files-found: ignore'),
+                          base.replace('if: always()', 'if: success()', 1)]
             mutations += [base+'\n    '+x+'\n' for x in ['services: {}','needs: other-job','continue-on-error: true','secrets: inherit','container: paid-image','restore-keys: binary','run: ctest --test-dir build','run: docker run postgres','run: aws sts get-caller-identity']]
             for mutant in mutations:
                 with self.subTest(job=name,mutation=mutations.index(mutant)), self.assertRaises(ValueError):

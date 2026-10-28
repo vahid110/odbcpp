@@ -1,5 +1,33 @@
 # Supported local commands
 
+The Windows coordinator may explicitly issue a finite local pilot AWS session
+from WSL using `python3 -m tools.development.redshift_operator_session
+--output-directory /home/vahid/.local/state/odbcpp/operator-sessions/NEW_RUN`.
+The parent must already be owner-only `0700`; `NEW_RUN` must not exist. The fixed
+bootstrap `operator-bootstrap024/credentials.ini` must contain only the existing
+pilot's long-term profile, with owner-only `0600` file / `0700` parent custody.
+The issuer verifies the pinned CLI and pilot identity, requests 43200 seconds
+(12 hours),
+then verifies the temporary identity. It makes at most three STS CLI invocations,
+without retries or ambient providers. Success leaves private `credentials.ini`
+and secret-free `metadata.json`; failure leaves metadata and reports any
+unverified process cleanup rather than erasing potentially active inputs.
+Per-call exit, timeout and reap facts remain in the metadata after raw output
+retirement. Late/failed metadata publication revokes success, retires exact owned
+credentials, and records public failure facts in `failure.json` when writable.
+Final descriptor-close failures also revoke success. Every acquired descriptor
+gets one close attempt; recovery reacquires only the original directories and
+unchanged owned files to retire success metadata and credentials. A separate
+`close-failure.json` records sanitized failure facts when writable. Replacements
+and inputs with unverified readers are retained, with cleanup reported unresolved.
+Only credential validity is extended. Issuance remains bounded to 90 seconds;
+operational runs retain their own finite admissions, deadlines and caps. There
+is no duration option or automatic renewal.
+Keep the bootstrap protected for future explicit issuance; retire each issued
+credential file only after its consumers are reaped. This grants no resource or
+live-test admission. Offline controls: `python3 -m unittest
+tools.development.test_redshift_operator_session tools.redshift.test_pilot_runtime`.
+
 Run from the chosen source checkout. CMake 3.21+, CTest, Python 3.9+, Git and the
 platform compiler are required; Unix profiles use Ninja. `cmake --list-presets`
 and `ctest --list-presets` discover the checked-in commands. Each configure preset
@@ -53,6 +81,31 @@ For Windows GUI checks, run locally in the actual interactive desktop:
 This checked-in runner builds/tests its three GUI suites without registering a
 system driver or requiring a database. It does not replace privileged full-suite
 coverage. It owns bounded child cleanup and records native GUI evidence.
+
+## Windows repair loop
+
+Use the existing build directory for the current product, driver-manager, ABI and
+crypto profile. During a bounded repair, build the owning targets incrementally
+and run their relevant CTest cases. Once the candidate is stable, run its required
+platform/profile gates. An initiated full collection still completes before
+repairs; focused passes do not replace full acceptance. Preserve the old source,
+images and failure evidence before reusing a qualified build for a new candidate.
+
+Follow each active command or hosted check set through one finite completion
+path. Do not add a second watcher or repeatedly query the same run manually while
+that path owns completion. Use available time for independent diagnosis, then
+collect terminal exits, logs and artifacts together, including raw scanner
+findings. Review the actual input and privilege boundaries before repairing a
+scanner finding; retain source-backed false-positive dispositions explicitly.
+
+When configure time is unexpectedly high, measure an unchanged-source warm
+configure before changing parallelism or caching. Compare the same build/profile
+and toolchain before and after the proposed change. Keep trace-instrumented
+measurements separate from uninstrumented elapsed time, and do not sum overlapping
+runs. Preserve include-ownership, staging and compile-probe checks. The internal
+include checker reuses validated logical/physical pairs only within one invocation;
+subsequent invocations must revalidate changed maps, headers and symlinks. This
+avoids repeated resolution without creating a cross-call validation cache.
 
 ## Complete live collection
 

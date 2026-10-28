@@ -1,16 +1,18 @@
 #include <gtest/gtest.h>
 #include <string_view>
 #include <cstdlib>
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbcpp/database/backend_provider.h"
 #include <algorithm>
 #include <chrono>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
-#include "core/database/database_factory.h"
-#include "odbc/odbc_types.h"
-#include "odbc/unicode.h"
-#include "tests/test_connection_config.h"
 #include "tests/test_handle_helpers.h"
+#endif
+#include "tests/test_connection_config.h"
+#include "tests/test_dm_expectations.h"
+#include "tests/test_product_profile.h"
+#include "tests/test_text.h"
 
 #include <array>
 #include <cstddef>
@@ -81,7 +83,7 @@ bool fixture_connection_budget(std::chrono::steady_clock::time_point end, SQLHDB
       // An already-connected connect call is a local 08002 test, not new I/O.
       return true;
     }
-    if (SQLGetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT, &current, sizeof(current), nullptr) != SQL_SUCCESS) return true;
+    if (odbcpp::test::get_login_timeout(connection, &current) != SQL_SUCCESS) return true;
     const auto seconds = fixture_timeout_seconds(static_cast<std::int64_t>(left), current);
     if (SQLSetConnectAttr(connection, SQL_ATTR_LOGIN_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(seconds)), 0) != SQL_SUCCESS) {
@@ -217,6 +219,12 @@ public:
         property("timeout_fixture_schema", schema);
         property("timeout_fixture_table", table_);
         property("timeout_fixture_oid", oid_);
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+        // The verified-TLS check resolves the private DSN through the driver's
+        // own parser, which a Driver Manager build cannot link. The blocker is
+        // used only for the Redshift product.
+        if (odbcpp::test::compiled_redshift_product()) return fail("verified TLS profile check needs the direct build");
+#else
         try {
             const auto resolved = rs::odbc::ConnectionString::resolve(
                 odbcpp::test::configured_connection_string(),
@@ -227,11 +235,12 @@ public:
             const auto ssl = rs::odbc::ConnectionString::to_upper(rs::odbc::ConnectionString::trim(fields.at("SSL")));
             if (ssl != "1" && ssl != "TRUE" && ssl != "YES" && ssl != "ON") return fail("TLS must be enabled");
         } catch (...) { return fail("private DSN resolution"); }
+#endif
         if (!identity(waiter, "timeout_waiter_before") || !server_timeout(waiter, "timeout_waiter_before")) return false;
         if (!accept(::SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc_), "allocate blocker")) return false;
         if (!fixture_connection_budget(end_, dbc_, true)) return fail("blocker login budget");
         known_ = false;
-        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_connection_string_data(), SQL_NTS,
+        if (!accept(::SQLConnect(dbc_, odbcpp::test::configured_server_name_data(), SQL_NTS,
                 nullptr, 0, nullptr, 0), "blocker login")) return false;
         connected_ = true;
         if (!accept(::SQLAllocHandle(SQL_HANDLE_STMT, dbc_, &stmt_), "allocate blocker statement") ||
@@ -393,8 +402,8 @@ namespace {
 std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
     SQLCHAR state[6]{};
     EXPECT_EQ(SQL_SUCCESS,
-              SQLGetDiagRec(handle_type, handle, 1, state, nullptr, nullptr,
-                            0, nullptr));
+              odbcpp::test::diag_rec(handle_type, handle, 1, state, nullptr, nullptr,
+                                     0, nullptr));
     return reinterpret_cast<const char*>(state);
 }
 
@@ -429,6 +438,50 @@ protected:
 
     // Fixture-local forwards cover repetitions, reconnects and sibling handles.
     // The original assertions/arguments below still call the actual public API.
+    // Manager builds check NULL-buffer diagnostics against the expectation
+    // table and still return the record; direct builds call the driver.
+    SQLRETURN SQLGetDiagRec(SQLSMALLINT type, SQLHANDLE handle, SQLSMALLINT record,
+        SQLCHAR* state, SQLINTEGER* native, SQLCHAR* message, SQLSMALLINT length,
+        SQLSMALLINT* text_length) {
+      return odbcpp::test::diag_rec(type, handle, record, state, native, message,
+          length, text_length);
+    }
+    // A manager that follows the ODBC state tables still has a cursor after
+    // SQLMoreResults fails, although the driver has ended the batch
+    // (MoreResultsErrorKeepsCursorOpen): it refuses the next statement with
+    // 24000 until the application closes the cursor.
+    void close_cursor_after_failed_more_results() {
+      if (!odbcpp::test::dm::deviates(
+              odbcpp::test::dm::Deviation::MoreResultsErrorKeepsCursorOpen)) {
+        return;
+      }
+      EXPECT_EQ(SQL_ERROR, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+      EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
+    }
+    // unixODBC 2.3.14 forgets the driver's open cursor once a call on it has
+    // failed (FailedCallForgetsOpenCursor): it refuses SQLFetch itself, so the
+    // rest of the case cannot be reached. Returns whether the case must end.
+    bool cursor_forgotten_after_failed_call() {
+      if (!odbcpp::test::dm::stops_case(
+              odbcpp::test::dm::Deviation::FailedCallForgetsOpenCursor)) {
+        return false;
+      }
+      EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+      EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+      return true;
+    }
+    // A failed count call's output, normally left untouched. unixODBC 2.3.14
+    // writes -1 for its own SQLRowCount refusal; iODBC 3.52.16 copies its own
+    // column count of 0 (RowCountWrittenOnError, ColumnCountWrittenOnError).
+    static SQLLEN untouched_row_count(SQLLEN sentinel) {
+      return odbcpp::test::dm::value(
+          odbcpp::test::dm::Deviation::RowCountWrittenOnError, sentinel, SQLLEN{-1});
+    }
+    static SQLSMALLINT untouched_column_count(SQLSMALLINT sentinel) {
+      return odbcpp::test::dm::value(
+          odbcpp::test::dm::Deviation::ColumnCountWrittenOnError, sentinel, SQLSMALLINT{0});
+    }
     SQLRETURN SQLColumns(SQLHSTMT statement, SQLCHAR* catalog_name, SQLSMALLINT name_length1,
         SQLCHAR* schema_name, SQLSMALLINT name_length2, SQLCHAR* table_name,
         SQLSMALLINT name_length3, SQLCHAR* column_name, SQLSMALLINT name_length4) {
@@ -615,8 +668,7 @@ protected:
     }
 
     static bool redshift_profile() {
-        return rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-            rs::core::database::DatabaseType::Redshift;
+        return odbcpp::test::compiled_redshift_product();
     }
 
     void resolve_redshift_temporary_schema(const char* table, std::string& schema) {
@@ -653,7 +705,7 @@ protected:
         
         // Connect to test database
         SQLRETURN ret = SQLConnect(
-            hdbc, odbcpp::test::configured_connection_string_data(), SQL_NTS,
+            hdbc, odbcpp::test::configured_server_name_data(), SQL_NTS,
             nullptr, 0, nullptr, 0);
         ASSERT_EQ(SQL_SUCCESS, ret) << "Failed to connect to test database";
         
@@ -807,7 +859,12 @@ TEST_F(MetadataIntegrationTest, ReportsAnsiColumnNameTruncation) {
     EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLColAttribute(
         hstmt, 1, SQL_DESC_NAME, name, sizeof(name), &length, nullptr));
     EXPECT_STREQ("long", name);
-    EXPECT_EQ(16, length);
+    // iODBC 3.52.16 reports the ANSI characters it copied, not the total.
+    EXPECT_EQ(odbcpp::test::dm::value(
+                  odbcpp::test::dm::Deviation::AnsiColAttributeLengthInWideBytes,
+                  odbcpp::test::dm::value(
+                      odbcpp::test::dm::Deviation::AnsiTruncatedLengthIsCopied, 16, 4), 32),
+              length);
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
@@ -853,6 +910,16 @@ TEST_F(MetadataIntegrationTest, ImplementationDescriptorReportsResultMetadata) {
     EXPECT_EQ(2, scale);
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    // unixODBC 2.3.14 refuses the IRD of a statement whose cursor is closed.
+    if (odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::RowDescriptorUnavailableAfterClose)) {
+        EXPECT_EQ(SQL_ERROR, SQLGetDescField(
+            descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+        EXPECT_EQ(odbcpp::test::dm::text(
+                      odbcpp::test::dm::Deviation::RowDescriptorUnavailableAfterClose, ""),
+                  diagnostic_state(SQL_HANDLE_DESC, descriptor));
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
         descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
     EXPECT_EQ(0, count);
@@ -958,7 +1025,7 @@ TEST_F(MetadataIntegrationTest, ImplementationDescriptorCompletesFieldMatrix) {
     EXPECT_EQ(3, name_length);
     EXPECT_EQ(SQL_DATETIME, type);
     EXPECT_EQ(SQL_CODE_DATE, subtype);
-    const auto wide_name_utf8 = rs::odbc::wide_to_utf8(
+    const auto wide_name_utf8 = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(wide_name, 3));
     ASSERT_TRUE(wide_name_utf8.has_value());
     EXPECT_EQ("day", *wide_name_utf8);
@@ -1065,7 +1132,7 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     const std::string expected =
         "Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "
         "\xf0\x9f\x99\x82";
-    auto direct_sql = rs::odbc::utf8_to_wide(
+    auto direct_sql = odbcpp::test::text::utf8_to_wide(
         "SELECT 'Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "
         "\xf0\x9f\x99\x82'::text");
     ASSERT_TRUE(direct_sql.has_value());
@@ -1078,7 +1145,7 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
               SQLBindCol(hstmt, 1, SQL_C_WCHAR, bound_value,
                          sizeof(bound_value), &bound_length));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    const auto converted_bound = rs::odbc::wide_to_utf8(
+    const auto converted_bound = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             bound_value, static_cast<std::size_t>(bound_length) /
                              sizeof(SQLWCHAR)));
@@ -1089,7 +1156,7 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetData(hstmt, 1, SQL_C_WCHAR, value, sizeof(value),
                          &value_length));
-    const auto converted_value = rs::odbc::wide_to_utf8(
+    const auto converted_value = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             value, static_cast<std::size_t>(value_length) /
                        sizeof(SQLWCHAR)));
@@ -1097,13 +1164,13 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     EXPECT_EQ(expected, *converted_value);
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-    auto prepared_sql = rs::odbc::utf8_to_wide("SELECT ?::text");
+    auto prepared_sql = odbcpp::test::text::utf8_to_wide("SELECT ?::text");
     ASSERT_TRUE(prepared_sql.has_value());
     ASSERT_EQ(SQL_SUCCESS,
               SQLPrepareW(hstmt, prepared_sql->data(),
                           static_cast<SQLINTEGER>(prepared_sql->size())));
     const std::string prepared_expected = "\xf0\x9f\x9a\x80 prepared";
-    auto parameter = rs::odbc::utf8_to_wide(prepared_expected);
+    auto parameter = odbcpp::test::text::utf8_to_wide(prepared_expected);
     ASSERT_TRUE(parameter.has_value());
     parameter->push_back(0);
     SQLLEN parameter_length = SQL_NTS;
@@ -1121,7 +1188,7 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetData(hstmt, 1, SQL_C_WCHAR, prepared_value,
                          sizeof(prepared_value), &prepared_length));
-    const auto converted_prepared = rs::odbc::wide_to_utf8(
+    const auto converted_prepared = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             prepared_value, static_cast<std::size_t>(prepared_length) /
                                 sizeof(SQLWCHAR)));
@@ -1134,7 +1201,7 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
         "odbcpp\xe4\xb8\x96\xe7\x95\x8c" "table";
     const std::string column_name =
         "gr\xc3\xbc\xc3\x9f" "ecolumn";
-    auto create_sql = rs::odbc::utf8_to_wide(
+    auto create_sql = odbcpp::test::text::utf8_to_wide(
         "CREATE TEMP TABLE \"odbcpp\xe4\xb8\x96\xe7\x95\x8c"
         "table\" (\"gr\xc3\xbc\xc3\x9f" "ecolumn\" text)");
     ASSERT_TRUE(create_sql.has_value());
@@ -1142,7 +1209,7 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
               SQLExecDirectW(hstmt, create_sql->data(),
                              static_cast<SQLINTEGER>(create_sql->size())));
 
-    auto wide_table = rs::odbc::utf8_to_wide(table_name);
+    auto wide_table = odbcpp::test::text::utf8_to_wide(table_name);
     ASSERT_TRUE(wide_table.has_value());
     ASSERT_EQ(SQL_SUCCESS,
               SQLTablesW(hstmt, nullptr, 0, nullptr, 0,
@@ -1155,7 +1222,7 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetData(hstmt, 3, SQL_C_WCHAR, returned_table,
                          sizeof(returned_table), &returned_table_bytes));
-    const auto converted_table = rs::odbc::wide_to_utf8(
+    const auto converted_table = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             returned_table,
             static_cast<std::size_t>(returned_table_bytes) /
@@ -1164,7 +1231,7 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
     EXPECT_EQ(table_name, *converted_table);
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-    auto wide_column = rs::odbc::utf8_to_wide(column_name);
+    auto wide_column = odbcpp::test::text::utf8_to_wide(column_name);
     ASSERT_TRUE(wide_column.has_value());
     ASSERT_EQ(SQL_SUCCESS,
               SQLColumnsW(hstmt, nullptr, 0, nullptr, 0,
@@ -1178,7 +1245,7 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetData(hstmt, 4, SQL_C_WCHAR, returned_column,
                          sizeof(returned_column), &returned_column_bytes));
-    const auto converted_column = rs::odbc::wide_to_utf8(
+    const auto converted_column = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             returned_column,
             static_cast<std::size_t>(returned_column_bytes) /
@@ -1190,7 +1257,7 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
 TEST_F(MetadataIntegrationTest, DescribesUnicodeColumnNames) {
     const std::string expected =
         "r\xc3\xa9sultat\xe4\xb8\x96\xe7\x95\x8c";
-    auto query = rs::odbc::utf8_to_wide(
+    auto query = odbcpp::test::text::utf8_to_wide(
         "SELECT 1 AS \"r\xc3\xa9sultat\xe4\xb8\x96\xe7\x95\x8c\"");
     ASSERT_TRUE(query.has_value());
     ASSERT_EQ(SQL_SUCCESS,
@@ -1203,7 +1270,7 @@ TEST_F(MetadataIntegrationTest, DescribesUnicodeColumnNames) {
               SQLDescribeColW(hstmt, 1, described_name, 64,
                               &described_units, nullptr, nullptr, nullptr,
                               nullptr));
-    const auto described = rs::odbc::wide_to_utf8(
+    const auto described = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             described_name, static_cast<std::size_t>(described_units)));
     ASSERT_TRUE(described.has_value());
@@ -1215,7 +1282,7 @@ TEST_F(MetadataIntegrationTest, DescribesUnicodeColumnNames) {
               SQLColAttributeW(hstmt, 1, SQL_DESC_NAME, attribute_name,
                                sizeof(attribute_name), &attribute_bytes,
                                nullptr));
-    const auto attribute = rs::odbc::wide_to_utf8(
+    const auto attribute = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             attribute_name,
             static_cast<std::size_t>(attribute_bytes) /
@@ -1305,7 +1372,14 @@ TEST_F(MetadataIntegrationTest, CountOutputsHandleUnalignedBuffers) {
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(empty_statement, column_output));
     EXPECT_EQ(previous_output, storage);
     EXPECT_EQ(SQL_ERROR, SQLRowCount(empty_statement, row_output));
-    EXPECT_EQ(previous_output, storage);
+    if (odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::RowCountWrittenOnError)) {
+        SQLLEN written = 0;
+        std::memcpy(&written, storage.data() + 1, sizeof(written));
+        EXPECT_EQ(-1, written);
+    } else {
+        EXPECT_EQ(previous_output, storage);
+    }
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, empty_statement));
 }
 
@@ -1330,7 +1404,7 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
 
     SQLLEN row_count = 91;
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(91, row_count);
+    EXPECT_EQ(untouched_row_count(91), row_count);
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
@@ -1381,7 +1455,7 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
             0, 0, &input, 0, nullptr));
         row_count = 93;
         EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-        EXPECT_EQ(93, row_count);
+        EXPECT_EQ(untouched_row_count(93), row_count);
         EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, hstmt));
         column_count = -1;
         ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count))
@@ -1408,7 +1482,7 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
     EXPECT_EQ(1, column_count);
     row_count = 92;
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(92, row_count);
+    EXPECT_EQ(untouched_row_count(92), row_count);
 }
 
 TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
@@ -1461,9 +1535,23 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
         char ignored_text[]{"keep"};
         SQLSMALLINT ignored_length = 82;
         SQLLEN value = -1;
-        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        const auto result = SQLColAttribute(
             hstmt, 1, attribute.field, ignored_text, -7, &ignored_length,
-            &value));
+            &value);
+        if (odbcpp::test::dm::deviates(
+                odbcpp::test::dm::Deviation::NumericAttributeNegativeBufferRejected)) {
+            EXPECT_EQ(SQL_ERROR, result);
+            EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+            EXPECT_EQ(-1, value);
+            EXPECT_STREQ("keep", ignored_text);
+            EXPECT_EQ(82, ignored_length);
+            // Retain the numeric-value assertion after the manager's refusal
+            // by repeating with a valid, still ignored, text-buffer length.
+            ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+                hstmt, 1, attribute.field, ignored_text, 0, &ignored_length, &value));
+        } else {
+            ASSERT_EQ(SQL_SUCCESS, result);
+        }
         EXPECT_EQ(attribute.expected, value);
         EXPECT_STREQ("keep", ignored_text);
         EXPECT_EQ(82, ignored_length);
@@ -1472,9 +1560,21 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
     char ignored_text[]{"keep"};
     SQLSMALLINT ignored_length = 83;
     SQLLEN count = -1;
-    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+    const auto count_result = SQLColAttribute(
         hstmt, 999, SQL_DESC_COUNT, ignored_text, -7, &ignored_length,
-        &count));
+        &count);
+    if (odbcpp::test::dm::deviates(
+            odbcpp::test::dm::Deviation::NumericAttributeNegativeBufferRejected)) {
+        EXPECT_EQ(SQL_ERROR, count_result);
+        EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        EXPECT_EQ(-1, count);
+        EXPECT_STREQ("keep", ignored_text);
+        EXPECT_EQ(83, ignored_length);
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, 999, SQL_DESC_COUNT, ignored_text, 0, &ignored_length, &count));
+    } else {
+        ASSERT_EQ(SQL_SUCCESS, count_result);
+    }
     EXPECT_EQ(2, count);
     EXPECT_STREQ("keep", ignored_text);
     EXPECT_EQ(83, ignored_length);
@@ -1731,7 +1831,11 @@ TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
         hstmt, 1, SQL_DESC_TYPE_NAME, short_type_name,
         sizeof(short_type_name), &required_length, nullptr));
     EXPECT_STREQ("num", short_type_name);
-    EXPECT_EQ(7, required_length);
+    EXPECT_EQ(odbcpp::test::dm::value(
+                  odbcpp::test::dm::Deviation::AnsiColAttributeLengthInWideBytes,
+                  odbcpp::test::dm::value(
+                      odbcpp::test::dm::Deviation::AnsiTruncatedLengthIsCopied, 7, 3), 14),
+              required_length);
     EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     SQLWCHAR wide_type_name[16]{};
@@ -1740,7 +1844,7 @@ TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
         hstmt, 2, SQL_DESC_TYPE_NAME, wide_type_name,
         sizeof(wide_type_name), &required_bytes, nullptr));
     EXPECT_EQ(static_cast<SQLSMALLINT>(7 * sizeof(SQLWCHAR)), required_bytes);
-    const auto wide_text = rs::odbc::wide_to_utf8(
+    const auto wide_text = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(wide_type_name, 7));
     ASSERT_TRUE(wide_text.has_value());
     EXPECT_EQ("varchar", *wide_text);
@@ -1844,7 +1948,7 @@ TEST_F(MetadataIntegrationTest, ColumnMetadataStateErrorsPreserveOutputs) {
 TEST_F(MetadataIntegrationTest, DescribesPreparedWideColumnNames) {
     const std::string expected =
         "pr\xc3\xa9par\xc3\xa9\xe4\xb8\x96\xe7\x95\x8c";
-    auto query = rs::odbc::utf8_to_wide(
+    auto query = odbcpp::test::text::utf8_to_wide(
         "SELECT 1 AS \"pr\xc3\xa9par\xc3\xa9\xe4\xb8\x96\xe7\x95\x8c\"");
     ASSERT_TRUE(query.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLPrepareW(
@@ -1855,7 +1959,7 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedWideColumnNames) {
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(
         hstmt, 1, name, 32, &name_units, nullptr, nullptr, nullptr,
         nullptr));
-    const auto described = rs::odbc::wide_to_utf8(
+    const auto described = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(name, static_cast<std::size_t>(name_units)));
     ASSERT_TRUE(described.has_value());
     EXPECT_EQ(expected, *described);
@@ -1866,7 +1970,7 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedWideColumnNames) {
     ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(
         hstmt, 1, SQL_DESC_LABEL, label, sizeof(label), &label_bytes,
         &ignored_numeric));
-    const auto described_label = rs::odbc::wide_to_utf8(
+    const auto described_label = odbcpp::test::text::wide_to_utf8(
         std::span<const SQLWCHAR>(
             label, static_cast<std::size_t>(label_bytes) /
                        sizeof(SQLWCHAR)));
@@ -1897,6 +2001,17 @@ TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
         hstmt = nullptr;
         ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc));
         const std::string configured = odbcpp::test::configured_connection_string();
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+        // A manager takes only a DSN name in SQLConnect, and the driver's
+        // connection-string parser is not linked: add the override to the
+        // configured string and connect with SQLDriverConnect.
+        std::string connection = configured;
+        if (!connection.empty() && connection.back() != ';') connection += ';';
+        connection += "MAXVARCHARSIZE=0";
+        ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(hdbc, nullptr,
+            reinterpret_cast<SQLCHAR*>(connection.data()), SQL_NTS,
+            nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+#else
         auto options = rs::odbc::ConnectionString::parse(configured);
         if (configured.find('=') == std::string::npos) {
             options["DSN"] = configured;
@@ -1918,6 +2033,7 @@ TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
         ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
             reinterpret_cast<SQLCHAR*>(connection.data()), SQL_NTS,
             nullptr, 0, nullptr, 0));
+#endif
         ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
         ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
             (SQLCHAR*)"SELECT ? AS typed_value", SQL_NTS));
@@ -2049,7 +2165,7 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
     EXPECT_EQ(71, column_count);
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(72, row_count);
+    EXPECT_EQ(untouched_row_count(72), row_count);
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
@@ -2089,9 +2205,9 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
     column_count = 73;
     row_count = 74;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
-    EXPECT_EQ(73, column_count);
+    EXPECT_EQ(untouched_column_count(73), column_count);
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(74, row_count);
+    EXPECT_EQ(untouched_row_count(74), row_count);
 
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"UPDATE result_state SET value = value + 10",
@@ -2100,7 +2216,7 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
     EXPECT_EQ(0, column_count);
     row_count = 75;
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(75, row_count);
+    EXPECT_EQ(untouched_row_count(75), row_count);
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
     EXPECT_EQ(0, column_count);
@@ -2111,14 +2227,14 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
         hstmt, (SQLCHAR*)"SELECT * FROM", SQL_NTS));
     column_count = 76;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
-    EXPECT_EQ(76, column_count);
+    EXPECT_EQ(untouched_column_count(76), column_count);
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("42000", reinterpret_cast<char*>(state));
     row_count = 77;
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(77, row_count);
+    EXPECT_EQ(untouched_row_count(77), row_count);
 
     EXPECT_EQ(SQL_ERROR, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT * FROM definitely_missing_odbcpp_table",
@@ -2128,7 +2244,7 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
     EXPECT_EQ(78, column_count);
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
-    EXPECT_EQ(79, row_count);
+    EXPECT_EQ(untouched_row_count(79), row_count);
 }
 
 TEST_F(MetadataIntegrationTest, TypeInfoSchemaUsesNormalizedDescriptorMetadata) {
@@ -2166,8 +2282,7 @@ TEST_F(MetadataIntegrationTest, TypeInfoSchemaUsesNormalizedDescriptorMetadata) 
 }
 
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
-    const bool redshift = rs::core::database::DatabaseFactory::get_compiled_database_type() ==
-        rs::core::database::DatabaseType::Redshift;
+    const bool redshift = odbcpp::test::compiled_redshift_product();
     std::optional<SQLINTEGER> server_version = 0;
     if (!redshift) {
         ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
@@ -2188,6 +2303,9 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     EXPECT_EQ(SQL_ERROR, SQLGetTypeInfoW(hstmt, SQL_INTEGER));
     EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    if (cursor_forgotten_after_failed_call()) {
+        return;
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     struct ExpectedType {
@@ -2375,14 +2493,29 @@ TEST_F(MetadataIntegrationTest, BackendColumnCatalogsPreserveDomainDimensionsAnd
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_batch_domain AS numeric(8,3)",
         SQL_NTS));
+    auto create_table = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE TEMP TABLE \"odbcpp'catalog_%é\"(\"id'é\" pg_temp.odbcpp_catalog_batch_domain PRIMARY KEY)");
+    ASSERT_TRUE(create_table.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'catalog_%é\"(\"id'é\" pg_temp.odbcpp_catalog_batch_domain PRIMARY KEY)",
-        SQL_NTS));
-    SQLCHAR pattern[] = "odbcpp'catalog\\_\\%é";
-    SQLCHAR name[] = "odbcpp'catalog_%é";
+        hstmt, reinterpret_cast<SQLCHAR*>(create_table->data()), SQL_NTS));
+    auto pattern_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'catalog\\_\\%é");
+    ASSERT_TRUE(pattern_text.has_value());
+    auto* pattern = reinterpret_cast<SQLCHAR*>(pattern_text->data());
+    auto name_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'catalog_%é");
+    ASSERT_TRUE(name_text.has_value());
+    auto* name = reinterpret_cast<SQLCHAR*>(name_text->data());
     ASSERT_EQ(SQL_SUCCESS, SQLColumns(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
+    // stores one code point per byte of the name (ansi_widened); the wide
+    // lookups below use the real name and cannot match, so the case asserts
+    // the stored name and ends.
+    if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::ansi_widened("id'é")),
+                  text_cell(hstmt, 4));
+        return;
+    }
     EXPECT_EQ(std::optional<std::string>("id'é"), text_cell(hstmt, 4));
     EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NUMERIC), integer_cell(hstmt, 5));
     EXPECT_EQ(std::optional<SQLINTEGER>(8), integer_cell(hstmt, 7));
@@ -2424,11 +2557,15 @@ TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAnd
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_routine_batch_domain AS varchar(11)",
         SQL_NTS));
+    auto create_routine = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE FUNCTION pg_temp.\"odbcpp'routine_%é\"(\"arg'é\" pg_temp.odbcpp_routine_batch_domain) "
+        "RETURNS pg_temp.odbcpp_routine_batch_domain LANGUAGE SQL AS 'SELECT $1'");
+    ASSERT_TRUE(create_routine.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE FUNCTION pg_temp.\"odbcpp'routine_%é\"(\"arg'é\" pg_temp.odbcpp_routine_batch_domain) "
-                        "RETURNS pg_temp.odbcpp_routine_batch_domain LANGUAGE SQL AS 'SELECT $1'",
-        SQL_NTS));
-    SQLCHAR pattern[] = "odbcpp'routine\\_\\%é";
+        hstmt, reinterpret_cast<SQLCHAR*>(create_routine->data()), SQL_NTS));
+    auto pattern_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'routine\\_\\%é");
+    ASSERT_TRUE(pattern_text.has_value());
+    auto* pattern = reinterpret_cast<SQLCHAR*>(pattern_text->data());
     SQLCHAR empty[] = "";
     ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
         hstmt, empty, SQL_NTS, nullptr, 0, pattern, SQL_NTS));
@@ -2437,6 +2574,15 @@ TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAnd
     ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
+    // stores one code point per byte of the name (ansi_widened); the wide
+    // lookups below use the real name and cannot match, so the case asserts
+    // the stored name and ends.
+    if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::ansi_widened("odbcpp'routine_%é")),
+                  text_cell(hstmt, 3));
+        return;
+    }
     EXPECT_EQ(std::optional<std::string>("odbcpp'routine_%é"), text_cell(hstmt, 3));
     EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 4));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
@@ -2456,17 +2602,32 @@ TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAnd
 }
 
 TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
+    auto create_parent = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE TEMP TABLE \"odbcpp'parent_%é\"(id integer PRIMARY KEY)");
+    ASSERT_TRUE(create_parent.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'parent_%é\"(id integer PRIMARY KEY)",
-        SQL_NTS));
+        hstmt, reinterpret_cast<SQLCHAR*>(create_parent->data()), SQL_NTS));
+    auto create_child = odbcpp::test::text::utf8_to_ansi_input(
+        "CREATE TEMP TABLE \"odbcpp'child_%é\"(id integer REFERENCES \"odbcpp'parent_%é\"(id))");
+    ASSERT_TRUE(create_child.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'child_%é\"(id integer REFERENCES \"odbcpp'parent_%é\"(id))",
-        SQL_NTS));
-    SQLCHAR pattern[] = "odbcpp'parent\\_\\%é";
+        hstmt, reinterpret_cast<SQLCHAR*>(create_child->data()), SQL_NTS));
+    auto pattern_text = odbcpp::test::text::utf8_to_ansi_input("odbcpp'parent\\_\\%é");
+    ASSERT_TRUE(pattern_text.has_value());
+    auto* pattern = reinterpret_cast<SQLCHAR*>(pattern_text->data());
     SQLCHAR types[] = " 'local temporary', 'unknown' ";
     ASSERT_EQ(SQL_SUCCESS, SQLTables(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, types, SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    // iODBC 3.52.16 widens the ANSI statement byte by byte, so the server
+    // stores one code point per byte of the name (ansi_widened); the wide
+    // lookups below use the real name and cannot match, so the case asserts
+    // the stored name and ends.
+    if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::AnsiTextWidenedPerByte)) {
+        EXPECT_EQ(std::optional<std::string>(odbcpp::test::dm::ansi_widened("odbcpp'parent_%é")),
+                  text_cell(hstmt, 3));
+        return;
+    }
     EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
     EXPECT_EQ(std::optional<std::string>("LOCAL TEMPORARY"), text_cell(hstmt, 4));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
@@ -2488,7 +2649,7 @@ TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
         // Modern Redshift key discovery takes an exact schema. Both TEMP
         // tables share this session's namespace; preserve PostgreSQL's NULL.
         ASSERT_NO_FATAL_FAILURE(resolve_redshift_temporary_schema("odbcpp'parent_%é", session_schema));
-        auto converted = rs::odbc::utf8_to_wide(session_schema);
+        auto converted = odbcpp::test::text::utf8_to_wide(session_schema);
         ASSERT_TRUE(converted.has_value());
         ASSERT_FALSE(converted->empty());
         ASSERT_LE(converted->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()));
@@ -2795,8 +2956,8 @@ TEST_F(MetadataIntegrationTest, ColumnPatternsAndCatalogArgumentsFollowOdbc) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp\\_columns\\_a\\_b");
-    auto wide_column = rs::odbc::utf8_to_wide("column\\_a\\_b");
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp\\_columns\\_a\\_b");
+    auto wide_column = odbcpp::test::text::utf8_to_wide("column\\_a\\_b");
     ASSERT_TRUE(wide_table.has_value());
     ASSERT_TRUE(wide_column.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
@@ -2868,8 +3029,8 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_catalog_type_test");
-    auto wide_column = rs::odbc::utf8_to_wide("domain_key");
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp_catalog_type_test");
+    auto wide_column = odbcpp::test::text::utf8_to_wide("domain_key");
     ASSERT_TRUE(wide_table.has_value());
     ASSERT_TRUE(wide_column.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
@@ -2961,7 +3122,7 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
     EXPECT_EQ(36u, result_size);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_procedure = rs::odbc::utf8_to_wide(
+    auto wide_procedure = odbcpp::test::text::utf8_to_wide(
         "odbcpp\\_catalog\\_type\\_function");
     ASSERT_TRUE(wide_procedure.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumnsW(
@@ -3008,7 +3169,7 @@ TEST_F(MetadataIntegrationTest, NestedDomainsKeepBaseCatalogMetadata) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_nested_domain_test");
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp_nested_domain_test");
     ASSERT_TRUE(wide_table.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
         hstmt, nullptr, 0, nullptr, 0,
@@ -3314,8 +3475,8 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_catalog_domain_dimensions");
-    auto wide_column = rs::odbc::utf8_to_wide("nested_v");
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp_catalog_domain_dimensions");
+    auto wide_column = odbcpp::test::text::utf8_to_wide("nested_v");
     ASSERT_TRUE(wide_table.has_value());
     ASSERT_TRUE(wide_column.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
@@ -3382,7 +3543,7 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_procedure = rs::odbc::utf8_to_wide(
+    auto wide_procedure = odbcpp::test::text::utf8_to_wide(
         "odbcpp\\_catalog\\_domain\\_func");
     ASSERT_TRUE(wide_procedure.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumnsW(
@@ -3454,8 +3615,8 @@ TEST_F(MetadataIntegrationTest, NegativeNumericScaleMetadata) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_negative_scale_metadata");
-    auto wide_column = rs::odbc::utf8_to_wide("domain_n");
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp_negative_scale_metadata");
+    auto wide_column = odbcpp::test::text::utf8_to_wide("domain_n");
     ASSERT_TRUE(wide_table.has_value());
     ASSERT_TRUE(wide_column.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
@@ -3820,9 +3981,9 @@ TEST_F(MetadataIntegrationTest, PrimaryKeyArgumentsAreLiteralAndKeepEmpty) {
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
         EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-        auto wide_catalog = rs::odbc::utf8_to_wide(catalog_name);
-        auto wide_schema = rs::odbc::utf8_to_wide(session_schema);
-        auto wide_table = rs::odbc::utf8_to_wide("odbcpp.primary_'_keys");
+        auto wide_catalog = odbcpp::test::text::utf8_to_wide(catalog_name);
+        auto wide_schema = odbcpp::test::text::utf8_to_wide(session_schema);
+        auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp.primary_'_keys");
         ASSERT_TRUE(wide_catalog.has_value());
         ASSERT_TRUE(wide_schema.has_value());
         ASSERT_TRUE(wide_table.has_value());
@@ -3898,9 +4059,9 @@ TEST_F(MetadataIntegrationTest, PrimaryKeyArgumentsAreLiteralAndKeepEmpty) {
     EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    auto wide_catalog = rs::odbc::utf8_to_wide(catalog_name);
-    auto wide_schema = rs::odbc::utf8_to_wide(schema_name);
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp.primary_'_keys");
+    auto wide_catalog = odbcpp::test::text::utf8_to_wide(catalog_name);
+    auto wide_schema = odbcpp::test::text::utf8_to_wide(schema_name);
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp.primary_'_keys");
     ASSERT_TRUE(wide_catalog.has_value());
     ASSERT_TRUE(wide_schema.has_value());
     ASSERT_TRUE(wide_table.has_value());
@@ -4132,10 +4293,10 @@ TEST_F(MetadataIntegrationTest, ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdb
         EXPECT_EQ(5u, both.size());
         EXPECT_EQ(imported, both);
 
-        auto wide_catalog = rs::odbc::utf8_to_wide(database);
-        auto wide_schema = rs::odbc::utf8_to_wide(session_schema);
-        auto wide_parent = rs::odbc::utf8_to_wide("odbcpp_fk_rules_parent");
-        auto wide_child = rs::odbc::utf8_to_wide("odbcpp_fk_rules_child");
+        auto wide_catalog = odbcpp::test::text::utf8_to_wide(database);
+        auto wide_schema = odbcpp::test::text::utf8_to_wide(session_schema);
+        auto wide_parent = odbcpp::test::text::utf8_to_wide("odbcpp_fk_rules_parent");
+        auto wide_child = odbcpp::test::text::utf8_to_wide("odbcpp_fk_rules_child");
         ASSERT_TRUE(wide_catalog.has_value());
         ASSERT_TRUE(wide_schema.has_value());
         ASSERT_TRUE(wide_parent.has_value());
@@ -4312,10 +4473,10 @@ TEST_F(MetadataIntegrationTest, ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdb
     expect_no_foreign_keys(nullptr, nullptr, nullptr,
                            nullptr, nullptr, wildcard);
 
-    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
-    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
-    auto wide_parent = rs::odbc::utf8_to_wide("odbcpp_fk_rules_parent");
-    auto wide_child = rs::odbc::utf8_to_wide("odbcpp_fk_rules_child");
+    auto wide_catalog = odbcpp::test::text::utf8_to_wide(*catalog);
+    auto wide_schema = odbcpp::test::text::utf8_to_wide(*schema);
+    auto wide_parent = odbcpp::test::text::utf8_to_wide("odbcpp_fk_rules_parent");
+    auto wide_child = odbcpp::test::text::utf8_to_wide("odbcpp_fk_rules_child");
     ASSERT_TRUE(wide_catalog.has_value());
     ASSERT_TRUE(wide_schema.has_value());
     ASSERT_TRUE(wide_parent.has_value());
@@ -4424,6 +4585,9 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
         hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
         SQL_INDEX_ALL, SQL_QUICK));
     EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    if (cursor_forgotten_after_failed_call()) {
+        return;
+    }
 
     std::optional<std::string> catalog;
     std::optional<std::string> schema;
@@ -4552,9 +4716,9 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
     expect_no_statistics(nullptr, wildcard, table_name);
     expect_no_statistics(nullptr, nullptr, wildcard);
 
-    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
-    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp.stats_'_table");
+    auto wide_catalog = odbcpp::test::text::utf8_to_wide(*catalog);
+    auto wide_schema = odbcpp::test::text::utf8_to_wide(*schema);
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp.stats_'_table");
     ASSERT_TRUE(wide_catalog.has_value());
     ASSERT_TRUE(wide_schema.has_value());
     ASSERT_TRUE(wide_table.has_value());
@@ -4641,6 +4805,9 @@ TEST_F(MetadataIntegrationTest, RoutinePatternsTypesAndOverloadsFollowOdbc) {
     EXPECT_EQ(SQL_ERROR, SQLProcedures(
         hstmt, nullptr, 0, nullptr, 0, escaped_pattern, SQL_NTS));
     EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    if (cursor_forgotten_after_failed_call()) {
+        return;
+    }
 
     std::optional<std::string> catalog;
     std::optional<std::string> schema;
@@ -4689,9 +4856,9 @@ TEST_F(MetadataIntegrationTest, RoutinePatternsTypesAndOverloadsFollowOdbc) {
     expect_no_routines(nullptr, empty, escaped_pattern);
     expect_no_routines(nullptr, nullptr, empty);
 
-    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
-    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
-    auto wide_pattern = rs::odbc::utf8_to_wide("odbcpp\\_routine\\_a\\_b");
+    auto wide_catalog = odbcpp::test::text::utf8_to_wide(*catalog);
+    auto wide_schema = odbcpp::test::text::utf8_to_wide(*schema);
+    auto wide_pattern = odbcpp::test::text::utf8_to_wide("odbcpp\\_routine\\_a\\_b");
     ASSERT_TRUE(wide_catalog.has_value());
     ASSERT_TRUE(wide_schema.has_value());
     ASSERT_TRUE(wide_pattern.has_value());
@@ -4828,6 +4995,9 @@ TEST_F(MetadataIntegrationTest, ProcedureColumnModesAndPatternsFollowOdbc) {
         hstmt, nullptr, 0, nullptr, 0, escaped_procedure, SQL_NTS,
         all_columns, SQL_NTS));
     EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    if (cursor_forgotten_after_failed_call()) {
+        return;
+    }
 
     const std::array<const char*, 3> expected_names{
         "input_arg", "inout_arg", "output_arg"};
@@ -4898,10 +5068,10 @@ TEST_F(MetadataIntegrationTest, ProcedureColumnModesAndPatternsFollowOdbc) {
     expect_no_procedure_columns(nullptr, nullptr, empty, all_columns);
     expect_no_procedure_columns(nullptr, nullptr, escaped_procedure, empty);
 
-    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
-    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
-    auto wide_procedure = rs::odbc::utf8_to_wide("odbcpp\\_param\\_a\\_b");
-    auto wide_column = rs::odbc::utf8_to_wide("input%");
+    auto wide_catalog = odbcpp::test::text::utf8_to_wide(*catalog);
+    auto wide_schema = odbcpp::test::text::utf8_to_wide(*schema);
+    auto wide_procedure = odbcpp::test::text::utf8_to_wide("odbcpp\\_param\\_a\\_b");
+    auto wide_column = odbcpp::test::text::utf8_to_wide("input%");
     ASSERT_TRUE(wide_catalog.has_value());
     ASSERT_TRUE(wide_schema.has_value());
     ASSERT_TRUE(wide_procedure.has_value());
@@ -4999,6 +5169,9 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
         special_schema, special_schema ? SQL_NTS : 0,
         table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
     EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    if (cursor_forgotten_after_failed_call()) {
+        return;
+    }
 
     const std::array<const char*, 2> expected_names{"first_key", "second_key"};
     const std::array<SQLINTEGER, 2> expected_types{SQL_INTEGER, SQL_BIGINT};
@@ -5060,9 +5233,9 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
     expect_no_special_columns(nullptr, wildcard, table_name);
     expect_no_special_columns(nullptr, nullptr, wildcard);
 
-    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
-    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
-    auto wide_table = rs::odbc::utf8_to_wide("odbcpp.special_'_table");
+    auto wide_catalog = odbcpp::test::text::utf8_to_wide(*catalog);
+    auto wide_schema = odbcpp::test::text::utf8_to_wide(*schema);
+    auto wide_table = odbcpp::test::text::utf8_to_wide("odbcpp.special_'_table");
     ASSERT_TRUE(wide_catalog.has_value());
     ASSERT_TRUE(wide_schema.has_value());
     ASSERT_TRUE(wide_table.has_value());
@@ -5111,9 +5284,14 @@ TEST_F(MetadataIntegrationTest, SpecialColumnsFallsBackToUsableUniqueIndex) {
         hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
         table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    EXPECT_EQ(std::optional<std::string>("nullable_code"),
+    // iODBC 3.52.16 passes the driver SQL_NO_NULLS for this SQL_NULLABLE
+    // call, so the driver correctly skips the nullable unique index.
+    const bool nullable_dropped = odbcpp::test::dm::deviates(
+        odbcpp::test::dm::Deviation::SpecialColumnsNullableDropped);
+    EXPECT_EQ(std::optional<std::string>(nullable_dropped ? "stable_code" : "nullable_code"),
               text_cell(hstmt, 2));
-    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<SQLINTEGER>(nullable_dropped ? SQL_BIGINT : SQL_INTEGER),
+              integer_cell(hstmt, 3));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
@@ -5250,6 +5428,7 @@ TEST_F(MetadataIntegrationTest, InvalidTextCastUsesOdbcSqlstate) {
     EXPECT_EQ(7, integer_cell(hstmt, 1));
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
     EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    close_cursor_after_failed_more_results();
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 1 AS recovered", SQL_NTS));
@@ -5314,6 +5493,7 @@ TEST_F(MetadataIntegrationTest, MissingObjectsUseOdbcSqlstates) {
     EXPECT_EQ(7, integer_cell(hstmt, 1));
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
     EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    close_cursor_after_failed_more_results();
 
     constexpr auto missing_column =
         "SELECT absent_column FROM (SELECT 1 AS existing_column) AS t";
@@ -5366,6 +5546,7 @@ TEST_F(MetadataIntegrationTest, DuplicateObjectsUseOdbcSqlstates) {
     EXPECT_EQ(7, integer_cell(hstmt, 1));
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
     EXPECT_EQ("42S21", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    close_cursor_after_failed_more_results();
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 8; "
@@ -5375,6 +5556,7 @@ TEST_F(MetadataIntegrationTest, DuplicateObjectsUseOdbcSqlstates) {
     EXPECT_EQ(8, integer_cell(hstmt, 1));
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
     EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    close_cursor_after_failed_more_results();
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_duplicate_diag",
@@ -5411,6 +5593,7 @@ TEST_F(MetadataIntegrationTest, DuplicateIndexUsesIndexSqlstate) {
     EXPECT_EQ(7, integer_cell(hstmt, 1));
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
     EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    close_cursor_after_failed_more_results();
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_duplicate_index_diag",
@@ -5440,6 +5623,7 @@ TEST_F(MetadataIntegrationTest, MissingIndexUsesIndexSqlstate) {
     EXPECT_EQ(7, integer_cell(hstmt, 1));
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
     EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    close_cursor_after_failed_more_results();
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 1 AS recovered", SQL_NTS));
@@ -5477,6 +5661,7 @@ TEST_F(MetadataIntegrationTest, MissingSchemaUsesOdbcSqlstate) {
         EXPECT_EQ(7, integer_cell(hstmt, 1));
         EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
         EXPECT_EQ("3F000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        close_cursor_after_failed_more_results();
     }
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
@@ -5533,7 +5718,12 @@ TEST_F(MetadataIntegrationTest, NegativeTests) {
     ASSERT_EQ(SQL_SUCCESS, ret);
     
     ret = SQLNumResultCols(hstmt, nullptr);
-    EXPECT_EQ(SQL_ERROR, ret);
+    // iODBC 3.52.16 gives the driver its own column-count variable, so the
+    // driver never sees the NULL output.
+    EXPECT_EQ(odbcpp::test::dm::value(
+                  odbcpp::test::dm::Deviation::ColumnCountNullOutputAccepted,
+                  SQLRETURN{SQL_ERROR}, SQLRETURN{SQL_SUCCESS}),
+              ret);
     
     // Test SQLDescribeCol with invalid parameters
     ret = SQLDescribeCol(hstmt, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr);
@@ -5652,15 +5842,22 @@ TEST_F(MetadataIntegrationTest, CompletionKindsDriveEachBatchResultDiagnostic) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"WITH item AS (SELECT 1) SELECT * FROM item; "
                    "SET application_name = 'odbcpp'; SELECT 2", SQL_NTS));
+    // iODBC 3.52.16 forwards statement header fields with SQL_HANDLE_DBC and
+    // the statement handle, so the driver rejects the handle.
+    const SQLRETURN header_result = odbcpp::test::dm::value(
+        odbcpp::test::dm::Deviation::StatementDiagHeaderWrongHandleType,
+        SQLRETURN{SQL_SUCCESS}, SQLRETURN{SQL_INVALID_HANDLE});
     const auto expect_kind = [&](SQLINTEGER expected, const char* name) {
         SQLINTEGER code = -1;
         SQLCHAR text[40]{};
-        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+        ASSERT_EQ(header_result, SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
             SQL_DIAG_DYNAMIC_FUNCTION_CODE, &code, 0, nullptr));
-        EXPECT_EQ(expected, code);
-        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+        ASSERT_EQ(header_result, SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
             SQL_DIAG_DYNAMIC_FUNCTION, text, sizeof(text), nullptr));
-        EXPECT_STREQ(name, reinterpret_cast<char*>(text));
+        if (header_result == SQL_SUCCESS) {
+            EXPECT_EQ(expected, code);
+            EXPECT_STREQ(name, reinterpret_cast<char*>(text));
+        }
     };
     expect_kind(SQL_DIAG_SELECT_CURSOR, "SELECT CURSOR");
     ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(hstmt));
@@ -5704,7 +5901,7 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) 
         ASSERT_TRUE(expected);
         // Internal timeout close must preserve BOTH existing child handles.
         ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
-            odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+            odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0));
         ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, nullptr, 0));
         ASSERT_TRUE(blocker.reconnected(other));
         ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
@@ -5728,9 +5925,19 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) 
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)1, 0));
     ASSERT_EQ(SQL_ERROR, SQLExecDirect(other, (SQLCHAR*)"SELECT pg_sleep(2)", SQL_NTS));
     EXPECT_EQ("HYT00", diagnostic_state(SQL_HANDLE_STMT, other));
+    // The driver closed the session internally, but the manager still has the
+    // connection open, so it refuses the reconnect itself and the rest of the
+    // case cannot be reached (ReconnectAfterInternalCloseRefused).
+    if (odbcpp::test::dm::stops_case(
+            odbcpp::test::dm::Deviation::ReconnectAfterInternalCloseRefused)) {
+        EXPECT_EQ(SQL_ERROR, SQLConnect(hdbc,
+            odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+        EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, hdbc));
+        return;
+    }
     // Internal timeout close preserves child handles, unlike public SQLDisconnect.
     ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
-        odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+        odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, nullptr, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
         (SQLCHAR*)"CREATE TEMP TABLE metadata_session_scope (value text, extra boolean)", SQL_NTS));
@@ -5738,6 +5945,8 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) 
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
 }
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
+// Backend session health and reset are reachable only through the test view.
 TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutationAndReset) {
     SQLHSTMT other{};
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
@@ -5778,7 +5987,7 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutatio
         cleanup.value = SQL_NULL_HSTMT;
         ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc));
         ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
-            odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+            odbcpp::test::configured_server_name_data(), SQL_NTS, nullptr, 0, nullptr, 0));
         ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
         ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
         cleanup.value = other;
@@ -5800,3 +6009,4 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutatio
         (SQLCHAR*)"CREATE TEMP TABLE metadata_epoch_scope (value text, extra boolean, third integer)", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(3, columns);
 }
+#endif

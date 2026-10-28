@@ -1,4 +1,4 @@
-"""Bounded local execution helpers for the Redshift pilot.
+"""Bounded local execution helpers for live tooling.
 
 These helpers grant no live admission. The caller must hold the canonical lock,
 persist its reservation, verify AWS controls, and verify server cleanup afterward.
@@ -6,25 +6,11 @@ Private raw output is never returned as a diagnostic. Killing the process group
 does not prove cancellation of remote SQL.
 """
 from dataclasses import dataclass
-import hashlib
-import importlib.util
 import os
 from pathlib import Path
 import signal
 import subprocess
 import time
-import xml.etree.ElementTree as ET
-
-# Resolve only this source tree's parser, not a cwd or installed substitute.
-try:
-    _xml_spec = importlib.util.spec_from_file_location(
-        'odbcpp_xml_evidence', Path(__file__).resolve().parents[1] / 'odbcpp_xml_evidence.py')
-    _xml_module = importlib.util.module_from_spec(_xml_spec)
-    _xml_spec.loader.exec_module(_xml_module)
-    parse_xml_file = _xml_module.parse_xml_file
-    XmlLimits = _xml_module.XmlLimits
-except Exception:
-    raise RuntimeError('Bounded XML evidence parser unavailable') from None
 
 from tools.redshift.pilot_preflight import Blocked, validate_private_file
 
@@ -33,13 +19,6 @@ from tools.redshift.pilot_preflight import Blocked, validate_private_file
 class ProcessResult:
     returncode: int
     timed_out: bool
-
-
-def verify_executable(path: Path, expected_sha256: str) -> None:
-    if not path.is_absolute() or path.is_symlink() or not path.is_file():
-        raise Blocked('invalid_executable')
-    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
-        raise Blocked('executable_changed')
 
 
 def _group_alive(group_id):
@@ -124,41 +103,3 @@ def bounded_process(argv, *, env, seconds, output: Path, input_bytes=None):
         if fd is not None:
             os.close(fd)
 
-
-def test_summary(xml_path: Path, expected_cases: tuple[str, ...]):
-    """Validate exact completed case inventory; omit all assertion/native text."""
-    try:
-        validate_private_file(str(xml_path))
-        if xml_path.stat().st_size > 1024 * 1024:
-            raise Blocked('invalid_test_report')
-        root = parse_xml_file(xml_path, limits=XmlLimits(max_bytes=1024 * 1024))
-        if (root.tag != 'testsuites' or not expected_cases
-                or len(expected_cases) != len(set(expected_cases))
-                or any(c.tag != 'testsuite' for c in root)
-                or root.findall('.//error')):
-            raise Blocked('invalid_test_report')
-        cases = []
-        for suite in root:
-            if any(c.tag != 'testcase' for c in suite):
-                raise Blocked('invalid_test_report')
-            cases.extend(list(suite))
-        names = tuple(c.get('classname', '') + '.' + c.get('name', '') for c in cases)
-        if len(names) != len(set(names)) or set(names) != set(expected_cases):
-            raise Blocked('test_inventory_mismatch')
-        if any(c.get('status') != 'run' or c.get('result') != 'completed'
-               or c.find('skipped') is not None for c in cases):
-            raise Blocked('incomplete_test_run')
-        for case in cases:
-            if any(c.tag not in ('failure', 'properties') for c in case):
-                raise Blocked('invalid_test_report')
-            if any(list(c) for c in case.findall('failure')):
-                raise Blocked('invalid_test_report')
-            for properties in case.findall('properties'):
-                if any(p.tag != 'property' or list(p) for p in properties):
-                    raise Blocked('invalid_test_report')
-        if root.get('errors', '0') != '0':
-            raise Blocked('invalid_test_report')
-        return {'cases': sorted(names), 'passed': sum(c.find('failure') is None for c in cases),
-                'failed': sum(c.find('failure') is not None for c in cases)}
-    except (OSError, ET.ParseError, ValueError):
-        raise Blocked('invalid_test_report') from None

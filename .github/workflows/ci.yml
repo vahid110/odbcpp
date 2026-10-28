@@ -3,7 +3,8 @@ name: ci
 on:
   # All PRs, including docs and drafts, build on Ubuntu and Windows here.
   # The existing primary workflow supplies the macOS build and regression.
-  # Complete cross-platform tests remain a coordinator-dispatched checkpoint.
+  # A bounded offline DM subset runs on PRs; complete cross-platform tests
+  # remain a coordinator-dispatched checkpoint.
   pull_request:
   workflow_dispatch:
     inputs:
@@ -104,19 +105,35 @@ concurrency:
 
 jobs:
   pr-ubuntu-build:
-    name: PR Ubuntu build (no tests)
+    name: PR Ubuntu build and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Some tooling tests read earlier commits.
+          fetch-depth: 0
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
-      - name: Check PR scheduling and build safety offline
-        run: python3 -B tools/ci/test_pr_three_platform_builds.py -v
+      # Every tooling unit test under tools/ runs here, so none can silently rot.
+      # Windows-only tests run in the Windows PR job; test_spdlog_fmt_patch needs
+      # build inputs and runs under CTest.
+      - name: Run tooling unit tests offline
+        run: |
+          set -o pipefail
+          status=0
+          for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
+            echo "::group::$test"
+            # A file that runs no test (for example, no unittest.main()) also fails.
+            if ! PYTHONPATH="$PWD" python3 -B "$test" 2>&1 | tee tooling-test.log || ! grep -qE '^Ran [1-9][0-9]* tests? ' tooling-test.log; then
+              echo "::error file=$test::tooling unit test failed or ran no tests"; status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
       - name: Install existing build dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
@@ -141,9 +158,29 @@ jobs:
       # Building test executables does not execute their test bodies.
       - name: Build default ALL j2
         run: cmake --build build-pr-ubuntu --parallel 2
+      - name: Run offline Driver Manager subset
+        run: |
+          set +e
+          ctest --test-dir build-pr-ubuntu -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          result=$?
+          printf '%s\n' "$result" > build-pr-ubuntu/dm-offline/ctest-exit.txt
+          exit "$result"
+      - name: Verify actual offline execution
+        if: always()
+        run: python3 -B tools/development/check_dm_offline_evidence.py --build build-pr-ubuntu --ctest-exit-file build-pr-ubuntu/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-ubuntu
+          path: |
+            build-pr-ubuntu/dm-offline/
+            build-pr-ubuntu/Testing/Temporary/
+            build-pr-ubuntu/CMakeCache.txt
+          if-no-files-found: error
 
   pr-windows-build:
-    name: PR Windows build (no tests)
+    name: PR Windows build and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: windows-2025
     timeout-minutes: 30
@@ -151,12 +188,32 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Some tooling tests read earlier commits.
+          fetch-depth: 0
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
+      - name: Run Windows tooling unit tests offline
+        run: |
+          $env:PYTHONPATH = $PWD.Path
+          $failed = @()
+          # Owner-model checks need a non-admin account that owns its files by
+          # default; they qualify the coordinator host, not the hosted runner.
+          $hostOnly = 'test_windows_live_backend.py', 'test_windows_powerbi_applicability.py', 'test_windows_powerbi_publication.py'
+          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
+            Write-Host "::group::$test"
+            $output = @(python -B $test 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+            $output | Write-Host
+            if ($code -ne 0 -or -not ($output -match '^Ran [1-9][0-9]* tests? ')) {
+              $failed += $test; Write-Host "::error file=$test::tooling unit test failed or ran no tests"
+            }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count) { throw "Windows tooling unit tests failed: $($failed -join ', ')" }
       - name: Verify existing runner OpenSSL
         run: openssl version
       - name: Configure PostgreSQL x64 MSVC build
@@ -174,6 +231,25 @@ jobs:
           -DODBCPP_CRYPTO_ROOT="C:/Program Files/OpenSSL"
       - name: Build default ALL Release j2
         run: cmake --build build-pr-windows --config Release --parallel 2
+      - name: Run offline Driver Manager subset
+        run: |
+          ctest --test-dir build-pr-windows -C Release -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
+          $result = $LASTEXITCODE
+          Set-Content -LiteralPath build-pr-windows/dm-offline/ctest-exit.txt -Value $result -Encoding utf8
+          exit $result
+      - name: Verify actual offline execution
+        if: always()
+        run: python -B tools/development/check_dm_offline_evidence.py --build build-pr-windows --config Release --ctest-exit-file build-pr-windows/dm-offline/ctest-exit.txt
+      - name: Retain offline Driver Manager evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dm-offline-windows
+          path: |
+            build-pr-windows/dm-offline/
+            build-pr-windows/Testing/Temporary/
+            build-pr-windows/CMakeCache.txt
+          if-no-files-found: error
 
   sanitizer-only:
     # Arbitrary product CMake/tests must receive no cache token authority.
@@ -204,7 +280,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: test "$ACTIONS_CACHE_MODE" = none
       - name: Check out exact workflow and evidence helper
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: sanitizer-workflow
@@ -214,7 +290,7 @@ jobs:
         working-directory: sanitizer-workflow
         run: python3 -B tools/ci/sanitizer_evidence.py request
       - name: Check out frozen immutable product
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.product_head }}
           path: sanitizer-product
@@ -328,7 +404,7 @@ jobs:
       ODBCINI: ${{ github.workspace }}/.ci-odbc/odbc.ini
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: |
@@ -508,7 +584,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && !(inputs.run_development_pilot || inputs.run_product_qualification || inputs.run_windows_product_qualification || inputs.run_sanitizer_only) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify offline Redshift pilot admission safeguards
         run: python3 -m unittest discover -s tools/redshift -p 'test_pilot_*.py'
       - name: Install deps
@@ -559,7 +635,7 @@ jobs:
       ODBCSYSINI: ${{ github.workspace }}/.ci-odbc
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Verify runner OpenSSL
         shell: pwsh
@@ -614,15 +690,17 @@ jobs:
         shell: pwsh
         run: |
           $env:GTEST_OUTPUT = "xml:$env:RUNNER_TEMP/odbcpp-integration-results/"
-          ctest --test-dir build-windows -C Release -L integration -E '^it_crypto_profile_live$' --timeout 90 --output-on-failure
+          $selection = @('--test-dir', 'build-windows', '-C', 'Release', '-L', 'integration', '-E', '^it_crypto_profile_live$')
+          ctest @selection --timeout 90 --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed" }
+          # Every GoogleTest integration image writes <name>.xml; plain executables are
+          # labelled no-gtest-report where they are registered.
+          $registered = @((ctest @selection -LE '^no-gtest-report$' --show-only=json-v1 | ConvertFrom-Json).tests.name | Sort-Object)
+          if ($LASTEXITCODE -ne 0 -or $registered.Count -eq 0) { throw "No registered Windows integration tests" }
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
-          $expectedReports = @(
-            Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_auth_pg_material_tls.cpp', 'it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_redshift_routine_schema_patterns.cpp', 'it_redshift_columns_omitted_table.cpp', 'it_redshift_powerbi_relationship.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
-          ).Count
-          if ($reports.Count -ne $expectedReports) {
-            throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
+          $reported = @($reports.BaseName | Sort-Object)
+          if (Compare-Object $registered $reported) {
+            throw "Integration reports ($($reported -join ', ')) do not match registered tests ($($registered -join ', '))"
           }
           foreach ($report in $reports) {
             [xml]$result = Get-Content $report.FullName
@@ -716,7 +794,7 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-package-acceptance-inputs
@@ -757,7 +835,7 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: odbcpp-postgresql-beta-x64
@@ -784,7 +862,7 @@ jobs:
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: |
@@ -847,7 +925,7 @@ jobs:
       ODBCINI: ${{ github.workspace }}/.ci-openssl-static/odbc.ini
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: |
@@ -1114,7 +1192,7 @@ jobs:
       matrix:
         shared: ["OFF", "ON"]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install ODBC development dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
@@ -1185,7 +1263,7 @@ jobs:
       ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: brew install libiodbc unixodbc postgresql@17 python@3.12

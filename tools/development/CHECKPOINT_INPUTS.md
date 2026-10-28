@@ -42,6 +42,21 @@ PostgreSQL/System DSN tests remain separate local desktop commands in `COMMANDS.
 Package/vendor/macOS-only and unsupported-width boundaries remain explicit unrun
 entries in the accepted applicability record; they are not silently omitted.
 
+The `dm_it_*` images run through the Windows Driver Manager with profiles whose
+`driver_manager` is `Windows`. Their driver must already be the plan's exact
+registered image: the same SHA256, SQLWCHAR width 2, and the WSL mount path of
+`native_windows.driver.path` (for example `/mnt/c/...`). `read_plan` checks this
+before private acquisition, and the receiver checks it again (ignoring case, as
+Windows does) instead of rebinding the driver. CORE_ENV and invalid-password
+connections select `DRIVER={<driver_description>}` and keep TLS, limits and
+logging; the description must be a plain name without braces, separators or
+edge spaces. OWN_DSN keeps SQLConnect through the same owned HKCU DSN. Native
+plans refuse iODBC/unixODBC profiles and POSIX plans refuse `Windows` ones.
+
+The receiver stages one HKCU DSN per run. A plan whose OWN_DSN profiles produce
+different DSN values is refused (`single_native_dsn_profile`); prepare each DSN
+configuration as its own complete plan and run, as the `dm` plans already are.
+
 ## Public recipe
 
 The JSON recipe has these fields. Paths are absolute. This is a data interface,

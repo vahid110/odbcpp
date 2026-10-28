@@ -331,7 +331,7 @@ if(BUILD_TESTING)
   add_test(NAME test_release_controls COMMAND "${Python3_EXECUTABLE}" -B -m unittest
     discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/release" -p "test_*.py" -v)
   set_tests_properties(test_release_controls PROPERTIES LABELS "offline;release")
-  foreach(_info_test IN ITEMS test_attribute_apis it_get_info it_driver_manager)
+  foreach(_info_test IN ITEMS test_attribute_apis it_get_info dm_it_get_info it_driver_manager)
     if(TARGET ${_info_test})
       target_compile_definitions(${_info_test} PRIVATE
         ODBCPP_EXPECT_DRIVER_FILENAME="$<TARGET_FILE_NAME:${PROJECT_NAME}_driver>")

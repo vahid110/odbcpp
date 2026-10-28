@@ -7,8 +7,11 @@
 #include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/crt/io/HostResolver.h>
 #include <aws/sts/STSClient.h>
+#include <aws/sts/STSErrors.h>
 #include <aws/sts/model/AssumeRoleRequest.h>
 #include <aws/sts/model/AssumeRoleResult.h>
+#include <aws/sts/model/AssumeRoleWithWebIdentityRequest.h>
+#include <aws/sts/model/AssumeRoleWithWebIdentityResult.h>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
@@ -20,6 +23,24 @@
 namespace rs::core::auth::aws::sts {
 namespace {
 constexpr const char* tag = "StsAssumeRoleOwner";
+bool service_rejected(const Aws::STS::STSError& error) {
+  const auto status = error.GetResponseCode();
+  if ((status != Aws::Http::HttpResponseCode::BAD_REQUEST &&
+       status != Aws::Http::HttpResponseCode::FORBIDDEN) ||
+      error.GetExceptionName().empty()) return false;
+  // The SDK may attach a 4xx status even to a local/client error. Require its
+  // parsed modeled exception as well; metadata alone is not rejection proof.
+  switch (error.GetErrorType()) {
+    case Aws::STS::STSErrors::ACCESS_DENIED:
+      return error.GetExceptionName() == "AccessDenied" || error.GetExceptionName() == "AccessDeniedException";
+    case Aws::STS::STSErrors::INVALID_IDENTITY_TOKEN:
+      return error.GetExceptionName() == "InvalidIdentityToken";
+    case Aws::STS::STSErrors::I_D_P_REJECTED_CLAIM:
+      return error.GetExceptionName() == "IDPRejectedClaim";
+    default:
+      return false;
+  }
+}
 bool main_entry() noexcept {
 #if defined(__APPLE__)
   return ::pthread_main_np() != 0;
@@ -76,6 +97,7 @@ bool empty_file(const std::string& path) {
 struct StsAssumeRoleOwner::State {
   StsAssumeRoleTarget target;
   SecretBytes access_key, secret_key, session_token;
+  std::optional<SecretBytes> web_identity_token;
   rs::util::Deadline deadline;
   std::shared_ptr<provisioned_native::WorkerCancellation> cancellation;
   std::thread::id creator;
@@ -83,10 +105,10 @@ struct StsAssumeRoleOwner::State {
   Aws::SDKOptions options;
   std::string staged_directory, staged_config, staged_credentials;
   std::optional<StsAssumeRoleResponseUtc> response;
-  State(StsAssumeRoleTarget t, SecretBytes ak, SecretBytes sk, SecretBytes tok,
+  State(StsAssumeRoleTarget t, SecretBytes ak, SecretBytes sk, SecretBytes tok, std::optional<SecretBytes> web,
       rs::util::Deadline d, std::shared_ptr<provisioned_native::WorkerCancellation> c)
       : target(std::move(t)), access_key(std::move(ak)), secret_key(std::move(sk)),
-        session_token(std::move(tok)), deadline(d), cancellation(std::move(c)),
+        session_token(std::move(tok)), web_identity_token(std::move(web)), deadline(d), cancellation(std::move(c)),
         creator(std::this_thread::get_id()) {}
   ~State() {
     // A partially-entered InitAPI has no proven rollback; never claim cleanup.
@@ -113,12 +135,29 @@ bool StsAssumeRoleOwner::close() noexcept {
 OwnerOutcome StsAssumeRoleOwner::create(StsAssumeRoleTarget target, SecretBytes access_key, SecretBytes secret_key,
     SecretBytes session_token, rs::util::Deadline deadline, std::shared_ptr<provisioned_native::WorkerCancellation> cancel) {
   return create_impl(std::move(target), std::move(access_key), std::move(secret_key), std::move(session_token),
-      deadline, std::move(cancel), OwnerInitFixture::None);
+      std::nullopt, deadline, std::move(cancel), OwnerInitFixture::None);
+}
+
+OwnerOutcome StsAssumeRoleOwner::create_web_identity(StsAssumeRoleTarget target, SecretBytes web_identity_token,
+    rs::util::Deadline deadline, std::shared_ptr<provisioned_native::WorkerCancellation> cancel) {
+  auto none = [] {
+    auto made = SecretBytes::create({});
+    if (!made) throw std::bad_alloc();
+    return std::move(made).value();
+  };
+  try {
+    return create_impl(std::move(target), none(), none(), none(), std::move(web_identity_token),
+        deadline, std::move(cancel), OwnerInitFixture::None);
+  } catch (const std::bad_alloc&) {
+    OwnerOutcome out;
+    out.failure = OwnerFailure::LocalFailure;
+    return out;
+  }
 }
 
 OwnerOutcome StsAssumeRoleOwner::create_impl(StsAssumeRoleTarget target, SecretBytes access_key, SecretBytes secret_key,
-    SecretBytes session_token, rs::util::Deadline deadline, std::shared_ptr<provisioned_native::WorkerCancellation> cancel,
-    OwnerInitFixture injected) {
+    SecretBytes session_token, std::optional<SecretBytes> web_identity_token, rs::util::Deadline deadline,
+    std::shared_ptr<provisioned_native::WorkerCancellation> cancel, OwnerInitFixture injected) {
   OwnerOutcome out;
   if (!main_entry()) { out.failure = OwnerFailure::MainEntryRequired; return out; }
   if (!cancel || deadline == rs::util::Deadline::min() || deadline == rs::util::Deadline::max()) {
@@ -128,7 +167,11 @@ OwnerOutcome StsAssumeRoleOwner::create_impl(StsAssumeRoleTarget target, SecretB
   if (rs::util::remaining(deadline) == std::chrono::milliseconds::zero()) {
     out.failure = OwnerFailure::DeadlineElapsed; return out;
   }
-  if (access_key.empty() || secret_key.empty()) { out.failure = OwnerFailure::InvalidSource; return out; }
+  if (web_identity_token ? (web_identity_token->empty() || !access_key.empty() || !secret_key.empty() ||
+                            !session_token.empty())
+                         : (access_key.empty() || secret_key.empty())) {
+    out.failure = OwnerFailure::InvalidSource; return out;
+  }
   if (!partition_text(target.partition) || !region_valid(target.region)) { out.failure = OwnerFailure::InvalidTarget; return out; }
   std::unique_ptr<State> state;
   try {
@@ -136,7 +179,7 @@ OwnerOutcome StsAssumeRoleOwner::create_impl(StsAssumeRoleTarget target, SecretB
     // allocation failure cannot leak the occupied flag.
     if (injected == OwnerInitFixture::AllocationFailure) throw std::bad_alloc{};
     state = std::make_unique<State>(std::move(target), std::move(access_key), std::move(secret_key),
-        std::move(session_token), deadline, std::move(cancel));
+        std::move(session_token), std::move(web_identity_token), deadline, std::move(cancel));
     if (!provisioned_native::detail::take_sdk_scope()) { out.failure = OwnerFailure::Unavailable; return out; }
     state->sdk_scope = true;
     // Standalone entry precondition; never adopt unrelated SDK users.
@@ -202,10 +245,17 @@ StsOutcome<StsAssumeRoleResponseUtc> StsAssumeRoleOwner::acquire() {
     if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
       return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
     const std::string arn = role_arn(s.target);
-    const std::string ak = sdk_string(s.access_key);
-    const std::string sk = sdk_string(s.secret_key);
-    const std::string tok = sdk_string(s.session_token);
-    auto provider = Aws::MakeShared<Aws::Auth::SimpleAWSCredentialsProvider>(tag, ak.c_str(), sk.c_str(), tok.c_str());
+    const bool web_identity = s.web_identity_token.has_value();
+    // AssumeRoleWithWebIdentity is unsigned: the token is the only credential.
+    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider;
+    if (web_identity) {
+      provider = Aws::MakeShared<Aws::Auth::AnonymousAWSCredentialsProvider>(tag);
+    } else {
+      const std::string ak = sdk_string(s.access_key);
+      const std::string sk = sdk_string(s.secret_key);
+      const std::string tok = sdk_string(s.session_token);
+      provider = Aws::MakeShared<Aws::Auth::SimpleAWSCredentialsProvider>(tag, ak.c_str(), sk.c_str(), tok.c_str());
+    }
     Aws::Client::ClientConfigurationInitValues init;
     init.shouldDisableIMDS = true;
     Aws::STS::STSClientConfiguration config(init);
@@ -226,25 +276,49 @@ StsOutcome<StsAssumeRoleResponseUtc> StsAssumeRoleOwner::acquire() {
     config.requestTimeoutMs = static_cast<long>(budget.count());
     config.connectTimeoutMs = static_cast<long>(budget.count());
     Aws::STS::STSClient client(provider, config);
+    // R3: attach the original deadline/cancellation to the SDK continuation so
+    // the synchronous call is observed during transport, not only before/after.
+    auto continuation = [cancel = s.cancellation, deadline = s.deadline](const Aws::Http::HttpRequest*) {
+      return (!cancel || !cancel->cancelled()) && rs::util::remaining(deadline) > std::chrono::milliseconds::zero();
+    };
+    if (web_identity) {
+      Aws::STS::Model::AssumeRoleWithWebIdentityRequest request;
+      request.SetRoleArn(arn.c_str());
+      request.SetRoleSessionName(s.target.role_session_name.c_str());
+      request.SetDurationSeconds(s.target.duration_seconds);
+      request.SetWebIdentityToken(sdk_string(*s.web_identity_token).c_str());
+      request.SetContinueRequestHandler(continuation);
+      // R3: recheck immediately before invocation; reject a budget consumed by
+      // source/provider/config preparation rather than dispatching with zero.
+      if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
+        return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
+      return finish(s, client.AssumeRoleWithWebIdentity(request));
+    }
     Aws::STS::Model::AssumeRoleRequest request;
     request.SetRoleArn(arn.c_str());
     request.SetRoleSessionName(s.target.role_session_name.c_str());
     request.SetDurationSeconds(s.target.duration_seconds);
-    // R3: attach the original deadline/cancellation to the SDK continuation so
-    // the synchronous call is observed during transport, not only before/after.
-    request.SetContinueRequestHandler([cancel = s.cancellation, deadline = s.deadline](const Aws::Http::HttpRequest*) {
-      return (!cancel || !cancel->cancelled()) && rs::util::remaining(deadline) > std::chrono::milliseconds::zero();
-    });
+    request.SetContinueRequestHandler(continuation);
     // R3: recheck immediately before invocation; reject a budget consumed by
     // source/provider/config preparation rather than dispatching with zero.
     if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
       return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
-    const auto result = client.AssumeRole(request);
+    return finish(s, client.AssumeRole(request));
+  } catch (const std::bad_alloc&) { return StsAssumeRoleError{StsAssumeRoleFailure::AllocationFailed}; }
+  catch (...) { return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse}; }
+}
+
+// Shared result handling for AssumeRole and AssumeRoleWithWebIdentity, whose
+// results carry the same Credentials/AssumedRoleUser shape.
+template<class Outcome>
+StsOutcome<StsAssumeRoleResponseUtc> StsAssumeRoleOwner::finish(State& s, const Outcome& result) {
+  try {
     // R3: refuse a late successful completion under the same original deadline.
     if (rs::util::remaining(s.deadline) == std::chrono::milliseconds::zero())
       return StsAssumeRoleError{StsAssumeRoleFailure::DeadlineElapsed};
     if (s.cancellation && s.cancellation->cancelled()) return StsAssumeRoleError{StsAssumeRoleFailure::Cancelled};
-    if (!result.IsSuccess()) return StsAssumeRoleError{StsAssumeRoleFailure::InvalidResponse};
+    if (!result.IsSuccess()) return StsAssumeRoleError{service_rejected(result.GetError())
+        ? StsAssumeRoleFailure::ServiceRejected : StsAssumeRoleFailure::InvalidResponse};
     const auto& creds = result.GetResult().GetCredentials();
     const auto millis = creds.GetExpiration().Millis();
     if (millis <= 0 || millis > (std::numeric_limits<std::int64_t>::max)() / 1000)
@@ -281,7 +355,7 @@ OwnerOutcome StsOwnerFixture::create_init_failure(OwnerInitFixture fault) {
   };
   StsAssumeRoleTarget target{StsAssumeRolePartition::Aws, "123456789012", "eu-north-1", "MyRole", "session", 900};
   return StsAssumeRoleOwner::create_impl(std::move(target), secret("synthetic-access-key"),
-      secret("synthetic-secret-key"), secret(""), rs::util::Clock::now() + std::chrono::seconds{20},
+      secret("synthetic-secret-key"), secret(""), std::nullopt, rs::util::Clock::now() + std::chrono::seconds{20},
       std::make_shared<provisioned_native::WorkerCancellation>(), fault);
 }
 

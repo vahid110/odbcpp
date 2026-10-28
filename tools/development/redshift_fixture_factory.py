@@ -47,7 +47,7 @@ def validate_targets(targets):
     need(all((type(v) is dict and v == {'schema': FIXTURE_SCHEMA, 'table': FIXTURE_TABLE} for v in targets.values())), 'fixture_exact_identifier')
     return targets
 
-def dsn_documents(config, limits=None, driver=None):
+def dsn_documents(config, limits=None, driver=None, driver_manager=None):
     limits = limits_for(1) if limits is None else limits
     build_connection(config, limits)
     fields = {'DRIVER': 'ODBCPP Current44', 'SERVER': config['host'], 'PORT': '5439', 'DATABASE': config['database'], 'UID': config['test_user'], 'PWD': config['test_password'], 'SSL': '1', 'SSLCAFILE': config['ca'], 'TRANSPORTMODE': 'Sync', 'LoginTimeout': '5', 'QueryTimeout': '5'}
@@ -58,7 +58,18 @@ def dsn_documents(config, limits=None, driver=None):
     need(len(text.encode('utf-8')) <= 32768, 'dsn_bytes')
     driver = '/private/tmp/odbcpp-current44-checkpoint-native001/build/libodbcpp.1.0.0.dylib' if driver is None else driver
     need(type(driver) is str and Path(driver).is_absolute() and ('..' not in driver.split('/')) and (not any((x in driver for x in '\r\n\x00'))), 'dsn_driver')
-    return (text, '[ODBCPP Current44]\nDriver=' + driver + '\n')
+    registration = '[ODBCPP Current44]\nDriver=' + driver + '\n'
+    if driver_manager == 'iODBC':
+        # iODBC converts SQLWCHAR text by the driver's declared width.
+        registration += 'DriverUnicodeType=UCS4\n'
+    return (text, registration)
+
+# Driver SQLWCHAR width each manager profile loads the owned driver with.
+DRIVER_MANAGER_WCHAR_BYTES = {'iODBC': 4, 'unixODBC': 2, 'Windows': 2}
+
+# A registered Windows driver description safe to emit as DRIVER={...}: no
+# braces, separators or edge whitespace. Fails closed on rarer legal names.
+DRIVER_DESCRIPTION = re.compile('[A-Za-z0-9](?:[A-Za-z0-9 ._()-]{0,126}[A-Za-z0-9._()-])?')
 
 def _pin(value):
     need(type(value) is dict and set(value) in ({'path', 'sha256'}, {'path', 'sha256', 'bytes'}) and (type(value['path']) is str) and Path(value['path']).is_absolute() and ('..' not in value['path'].split('/')) and (type(value['sha256']) is str) and (re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None), 'evidence_pin')
@@ -66,7 +77,8 @@ def _pin(value):
         need(type(value['bytes']) is int and 0 <= value['bytes'] <= 16 * 1024 * 1024, 'evidence_size')
 
 def validate_profile(profile):
-    need(type(profile) is dict and set(profile) in ({'profile_name', 'limits', 'connection_environment', 'uses_private_dsn', 'variables', 'review', 'private_input'}, {'profile_name', 'limits', 'connection_environment', 'uses_private_dsn', 'variables', 'review', 'private_input', 'emitted_resource_omissions'}), 'profile_schema')
+    base = {'profile_name', 'limits', 'connection_environment', 'uses_private_dsn', 'variables', 'review', 'private_input'}
+    need(type(profile) is dict and set(profile) - {'driver_manager'} in (base, base | {'emitted_resource_omissions'}), 'profile_schema')
     _pin(profile['review'])
     need(type(profile['profile_name']) is str and 0 < len(profile['profile_name']) <= 256, 'profile_name')
     limits = profile['limits']
@@ -87,7 +99,18 @@ def validate_profile(profile):
         need(kind == 'CORE_ENV' and type(omissions) is list and (omissions == ['MAXROWS', 'MAXCELLS', 'MAXRESPONSEBYTES', 'MAXRESPONSEMESSAGES']), 'emitted_resource_omissions')
         need(all((limits[k] == v for k, v in {'MAXROWS': 1000000, 'MAXCELLS': 4000000, 'MAXRESPONSEBYTES': 67108864, 'MAXRESPONSEMESSAGES': 100000}.items())), 'materialized_resolved_SDK_defaults')
     driver = private['driver']
-    if kind == 'CORE_ENV':
+    manager = profile.get('driver_manager')
+    if manager is not None:
+        # The owned driver loaded through an installed Driver Manager: by
+        # DRIVER= path (POSIX) or registered description (Windows) for
+        # CORE_ENV, by the private DSN for OWN_DSN.
+        need(kind in ('CORE_ENV', 'OWN_DSN') and manager in DRIVER_MANAGER_WCHAR_BYTES, 'driver_manager_profile')
+        need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'} and driver['kind'] == 'OWN' and (driver['wchar_bytes'] == DRIVER_MANAGER_WCHAR_BYTES[manager]), 'driver_manager_driver')
+        _pin({'path': driver['path'], 'sha256': driver['sha256']})
+        # iODBC 3.52.16 passes a braced DRIVER value to dlopen unchanged, so
+        # the path is emitted bare and must not need quoting.
+        need(not any((ch in driver['path'] for ch in ';{}=')) and driver['path'] == driver['path'].strip(), 'driver_manager_bare_path')
+    elif kind == 'CORE_ENV':
         need(driver is None, 'CORE_has_no_DM_driver')
     else:
         need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'}, 'profile_driver_schema')
@@ -130,12 +153,22 @@ def profile_connection_fields(config, profile, *, password_rejection=False):
         values.update({k: str(v) for k, v in profile['limits'].items() if k not in profile.get('emitted_resource_omissions', [])})
     return values
 
-def build_profile_connection(config, profile, *, password_rejection=False):
+def build_profile_connection(config, profile, *, password_rejection=False, registered_driver=None):
     values = profile_connection_fields(config, profile, password_rejection=password_rejection)
+    manager = profile.get('driver_manager')
+    # Only the Windows manager selects the owned driver by the registered
+    # description the native receiver verified; the caller supplies it.
+    need((registered_driver is None) == (manager != 'Windows'), 'registered_driver_selector')
     if profile['private_input']['kind'] in ('CORE_ENV', 'OWN_DSN'):
         adapted = dict(config)
         adapted['test_password'] = values['PWD']
-        return build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
+        connection = build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
+        if manager == 'Windows':
+            need(type(registered_driver) is str and DRIVER_DESCRIPTION.fullmatch(registered_driver) is not None, 'registered_driver_description')
+            connection = 'DRIVER=' + field(registered_driver) + ';' + connection
+        elif manager is not None:
+            connection = 'DRIVER=' + profile['private_input']['driver']['path'] + ';' + connection
+        return connection
     text = ''.join((k + '=' + field(v) + ';' for k, v in values.items()))
     maximum = 4096 if profile['private_input']['kind'] in ('OWN_DM_FILE', 'VENDOR_DM_FILE') else 16384
     need(0 < len(text.encode('utf-8')) <= maximum and (not any((c in text for c in '\x00\r\n'))), 'private_connection_size')

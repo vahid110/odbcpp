@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <functional>
+#include <iterator>
 #include <streambuf>
 #include <thread>
 
@@ -44,11 +45,12 @@ Config& config() noexcept {
   return value;
 }
 
-std::string sts_xml(unsigned long long expiry_ms) {
+std::string sts_xml(unsigned long long expiry_ms, bool web_identity) {
   const Aws::Utils::DateTime expiry(static_cast<std::int64_t>(expiry_ms));
   const std::string iso = expiry.ToGmtString(Aws::Utils::DateFormat::ISO_8601);
-  return "<AssumeRoleResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">"
-      "<AssumeRoleResult><Credentials>"
+  const std::string action = web_identity ? "AssumeRoleWithWebIdentity" : "AssumeRole";
+  return "<" + action + "Response xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">"
+      "<" + action + "Result><Credentials>"
       "<AccessKeyId>ASIA_ASSUMED_KEY</AccessKeyId>"
       "<SecretAccessKey>assumed-secret-key</SecretAccessKey>"
       "<SessionToken>assumed-session-token</SessionToken>"
@@ -56,9 +58,9 @@ std::string sts_xml(unsigned long long expiry_ms) {
       "</Credentials><AssumedRoleUser>"
       "<Arn>arn:aws:sts::123456789012:assumed-role/MyRole/session</Arn>"
       "<AssumedRoleId>AROAASSUMED:session</AssumedRoleId>"
-      "</AssumedRoleUser></AssumeRoleResult>"
+      "</AssumedRoleUser></" + action + "Result>"
       "<ResponseMetadata><RequestId>synthetic-request-id</RequestId></ResponseMetadata>"
-      "</AssumeRoleResponse>";
+      "</" + action + "Response>";
 }
 std::string serverless_json(unsigned long long expiry_ms) {
   // redshift-serverless GetCredentials returns the expiry/refresh timestamps as
@@ -67,6 +69,17 @@ std::string serverless_json(unsigned long long expiry_ms) {
   return "{\"dbUser\":\"IAM:assumed-user\",\"dbPassword\":\"assumed-password\","
       "\"dbName\":\"fixture_db\",\"expiration\":" + seconds + ","
       "\"nextRefreshTime\":" + seconds + "}";
+}
+
+// Reads the form-encoded STS query body and restores the stream for the caller.
+bool is_web_identity(const std::shared_ptr<Aws::Http::HttpRequest>& request) {
+  const auto body = request->GetContentBody();
+  if (!body) return false;
+  const auto start = body->tellg();
+  std::string text((std::istreambuf_iterator<char>(*body)), std::istreambuf_iterator<char>());
+  body->clear();
+  body->seekg(start);
+  return text.find("Action=AssumeRoleWithWebIdentity") != std::string::npos;
 }
 
 std::shared_ptr<Aws::Http::HttpResponse> client_error_response(
@@ -78,6 +91,40 @@ std::shared_ptr<Aws::Http::HttpResponse> client_error_response(
   response->SetResponseCode(Aws::Http::HttpResponseCode::BAD_REQUEST);
   response->SetClientErrorType(error);
   response->SetClientErrorMessage("Synthetic endpoint refused");
+  return response;
+}
+
+std::shared_ptr<Aws::Http::HttpResponse> sts_error_response(
+    const std::shared_ptr<Aws::Http::HttpRequest>& request, FakeHttpScenario scenario) {
+  auto response = Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>(tag, request);
+  response->AddHeader("content-type", "text/xml");
+  response->SetResponseCode(Aws::Http::HttpResponseCode::FORBIDDEN);
+  const char* code = "AccessDenied";
+  switch (scenario) {
+    case FakeHttpScenario::StsInvalidIdentityToken:
+      code = "InvalidIdentityToken";
+      response->SetResponseCode(Aws::Http::HttpResponseCode::BAD_REQUEST);
+      break;
+    case FakeHttpScenario::StsIdpRejectedClaim:
+      code = "IDPRejectedClaim";
+      break;
+    case FakeHttpScenario::StsThrottled:
+      code = "Throttling";
+      response->SetResponseCode(Aws::Http::HttpResponseCode::BAD_REQUEST);
+      break;
+    case FakeHttpScenario::StsServerError:
+      // Even a recognized rejection code must not classify a 5xx as rejection.
+      response->SetResponseCode(Aws::Http::HttpResponseCode::INTERNAL_SERVER_ERROR);
+      break;
+    default:
+      break;
+  }
+  const std::string body = scenario == FakeHttpScenario::StsMalformedError
+      ? "not an XML service error"
+      : std::string("<ErrorResponse><Error><Type>Sender</Type><Code>") + code +
+          "</Code><Message>Synthetic issuer error</Message></Error>"
+          "<RequestId>synthetic-request-id</RequestId></ErrorResponse>";
+  response->GetResponseBody().write(body.data(), static_cast<std::streamsize>(body.size()));
   return response;
 }
 
@@ -95,9 +142,23 @@ class FakeHttpClient final : public Aws::Http::HttpClient {
       if (uri.GetScheme() != Aws::Http::Scheme::HTTPS) { ++obs.foreign_scheme; return client_error_response(request, Aws::Client::CoreErrors::VALIDATION); }
       if (std::string(uri.GetAuthority().c_str(), uri.GetAuthority().size()) != authority_) { ++obs.foreign_authority; return client_error_response(request, Aws::Client::CoreErrors::VALIDATION); }
       ++obs.approved;
+      if (request->HasHeader(Aws::Http::AUTHORIZATION_HEADER)) ++obs.signed_requests;
+      const bool web_identity = sts_ && is_web_identity(request);
+      if (web_identity) ++obs.web_identity;
       if (sts_) ++obs.assume_role; else ++obs.get_credentials;
       const auto scenario = static_cast<FakeHttpScenario>(config().scenario.load());
       if (scenario == FakeHttpScenario::Denied) { ++obs.denied; return client_error_response(request, Aws::Client::CoreErrors::ACCESS_DENIED); }
+      if (scenario == FakeHttpScenario::TransportFailure)
+        return client_error_response(request, Aws::Client::CoreErrors::NETWORK_CONNECTION);
+      if (sts_ && (scenario == FakeHttpScenario::StsAccessDenied ||
+                   scenario == FakeHttpScenario::StsInvalidIdentityToken ||
+                   scenario == FakeHttpScenario::StsIdpRejectedClaim ||
+                   scenario == FakeHttpScenario::StsThrottled ||
+                   scenario == FakeHttpScenario::StsServerError ||
+                   scenario == FakeHttpScenario::StsMalformedError)) {
+        ++obs.denied;
+        return sts_error_response(request, scenario);
+      }
       if (scenario == FakeHttpScenario::CancelDuringTransport) {
         if (config().cancellation) config().cancellation->cancel();
       }
@@ -119,7 +180,7 @@ class FakeHttpClient final : public Aws::Http::HttpClient {
       response->SetResponseCode(Aws::Http::HttpResponseCode::OK);
       response->AddHeader("content-type", sts_ ? "text/xml" : "application/x-amz-json-1.1");
       const unsigned long long expiry_ms = config().expiry_ms.load();
-      std::string body = sts_ ? sts_xml(expiry_ms) : serverless_json(expiry_ms);
+      std::string body = sts_ ? sts_xml(expiry_ms, web_identity) : serverless_json(expiry_ms);
       response->GetResponseBody().write(body.data(), static_cast<std::streamsize>(body.size()));
       return response;
     } catch (...) { std::terminate(); }

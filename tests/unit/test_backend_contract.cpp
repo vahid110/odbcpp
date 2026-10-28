@@ -8890,6 +8890,15 @@ class StaticBufferedScrollTest : public BackendContractTest {
     ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_ROW_NUMBER,&actual,0,nullptr));
     EXPECT_EQ(expected,actual);
   }
+  // An off-row row-number query is refused; the SQLSTATE depends on why the
+  // cursor is off-row: 24000 before the start or after the end of the result
+  // set, HY109 when the row could not be fetched. The output stays untouched.
+  void row_number_refused(const char* sqlstate) {
+    SQLULEN actual = 99;
+    ASSERT_EQ(SQL_ERROR,SQLGetStmtAttr(stmt,SQL_ATTR_ROW_NUMBER,&actual,0,nullptr));
+    EXPECT_EQ(sqlstate,state());
+    EXPECT_EQ(99u,actual);
+  }
   void guards() {
     EXPECT_EQ(991,output.before); EXPECT_EQ(992,output.after);
     EXPECT_EQ(881,lengths.before); EXPECT_EQ(882,lengths.after);
@@ -8904,7 +8913,7 @@ class StaticBufferedScrollTest : public BackendContractTest {
 
 TEST_F(StaticBufferedScrollTest, ScalarOwningNavigationNullAndUnicodeRefetchResetContinuation) {
   ASSERT_NO_FATAL_FAILURE(ready());
-  ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,999));
   EXPECT_EQ(1,output.values[0]); ASSERT_NO_FATAL_FAILURE(row_number(1));
   seen->date_result->rows[0][1] = "mutated backend source";
@@ -8936,7 +8945,7 @@ TEST_F(StaticBufferedScrollTest, ScalarOwningNavigationNullAndUnicodeRefetchRese
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(7,output.values[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_PRIOR,0)); EXPECT_EQ(6,output.values[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,-1)); EXPECT_EQ(7,output.values[0]);
-  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   EXPECT_EQ(7,output.values[0]); EXPECT_EQ(0u,fetched); EXPECT_EQ(SQL_ROW_NOROW,statuses[0]);
   ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk),&chunk_length)); EXPECT_EQ("24000",state());
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0)); EXPECT_EQ(1,output.values[0]);
@@ -8960,7 +8969,7 @@ TEST_F(StaticBufferedScrollTest, RowsetLiteralPositionsOldSizeOverlapAndExtremeO
   EXPECT_EQ(static_cast<SQLLEN>(4*sizeof(SQLWCHAR)),chunk_length);
   EXPECT_EQ(static_cast<SQLWCHAR>('l'),chunk[0]); EXPECT_EQ(static_cast<SQLWCHAR>('a'),chunk[1]); EXPECT_EQ(0,chunk[2]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,-2)); EXPECT_EQ(5,output.values[0]);
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,0)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,0)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,2)); EXPECT_EQ(2,output.values[0]);
   ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,8));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,-2)); EXPECT_EQ(6,output.values[0]); EXPECT_EQ(2u,fetched);
@@ -9014,7 +9023,7 @@ TEST_F(StaticBufferedScrollTest, MoreResultsPreparedRefillMaxRowsErrorsAndSiblin
   first.additional_results.push_back(second); seen->date_result=first;
   ASSERT_EQ(SQL_SUCCESS,execute("ordered snapshots"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(7,output.values[0]);
-  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,3));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,small_values,0,lengths.values));
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
@@ -9034,7 +9043,7 @@ TEST_F(StaticBufferedScrollTest, MoreResultsPreparedRefillMaxRowsErrorsAndSiblin
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&input,0,&input_length));
   EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(stmt,SQL_ATTR_CONCURRENCY,reinterpret_cast<SQLPOINTER>(SQL_CONCUR_READ_ONLY),0));
   EXPECT_EQ("HY011",state());
-  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(2,output.values[0]);
   ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,3)); EXPECT_EQ(2,output.values[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt)); input=43;
@@ -9045,7 +9054,7 @@ TEST_F(StaticBufferedScrollTest, MoreResultsPreparedRefillMaxRowsErrorsAndSiblin
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   auto empty=snapshot(); empty.rows.clear(); seen->date_result=empty;
   ASSERT_EQ(SQL_SUCCESS,execute("empty owning snapshot"));
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_LAST,0)); EXPECT_EQ(0u,fetched);
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   seen->date_result=snapshot();
@@ -9289,7 +9298,7 @@ TEST_F(StaticBookmarkTest, MetadataRowsetIdentityAndLiteralOffsetsRemainOwning) 
   ASSERT_NO_FATAL_FAILURE(row_number(1));
   ASSERT_NO_FATAL_FAILURE(fetch_saved(1));
   ASSERT_NO_FATAL_FAILURE(row_number(3));
-  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,-2)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,-2)); ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   EXPECT_EQ(0u,fetched); EXPECT_EQ(SQL_ROW_NOROW,statuses[0]);
   ASSERT_NO_FATAL_FAILURE(fetch_saved());
   ASSERT_NO_FATAL_FAILURE(row_number(2));
@@ -9391,8 +9400,15 @@ TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKe
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE)); seen->date_result=snapshot();
   ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"refill snapshot",SQL_NTS)); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  // A fresh refill is before the start of its result set: 24000 until any
+  // row is fetched. The stale bookmark then fails HY111, which leaves the
+  // row unfetchable: HY109 with the output untouched. A successful fetch
+  // repositions the cursor and restores the reported row number.
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("24000"));
   ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
-  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("HY109"));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_NO_FATAL_FAILURE(save_selected());
   ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
@@ -10072,7 +10088,7 @@ TEST_F(BulkBookmarkTest, ForeignStaleAndConversionErrorsKeepSlotsMasksAndNeighbo
   ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
   ASSERT_NO_FATAL_FAILURE(diagnose_slot(1,"HY111",1,0));
   EXPECT_EQ(1u,fetched); EXPECT_EQ(SQL_ROW_ERROR,statuses[0]);
-  ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_NO_FATAL_FAILURE(row_number_refused("HY109"));
 }
 
 TEST_F(BulkBookmarkTest, PaddedOffsetBoundedPreflightRefusalAndRepairPreserveBases) {
