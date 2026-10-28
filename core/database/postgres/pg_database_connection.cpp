@@ -83,6 +83,7 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
           .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
           .redshift_catalog_mode = settings.redshift_catalog_mode,
           .application_name = settings.application_name,
+          .native_idp = {},  // the token travels only in the bound material
           .read_only = settings.read_only,
           .character_metadata = settings.character_metadata,
           .detailed_table_types = settings.detailed_table_types,
@@ -139,7 +140,7 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         .response_limits = settings.response_limits, .result_limits = settings.result_limits,
         .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
         .redshift_catalog_mode = settings.redshift_catalog_mode,
-        .application_name = settings.application_name,
+        .application_name = settings.application_name, .native_idp = {},
         .read_only = settings.read_only,
         .character_metadata = settings.character_metadata,
         .detailed_table_types = settings.detailed_table_types,
