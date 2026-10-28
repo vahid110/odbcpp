@@ -340,7 +340,7 @@ namespace {
       bool read_only_session) {
     switch (info_type) {
       case SQL_DRIVER_NAME: return ODBCPP_DRIVER_FILENAME;
-      case SQL_DRIVER_VER: return "01.00.0000";
+      case SQL_DRIVER_VER: return ODBCPP_DRIVER_VERSION;
       case SQL_DRIVER_ODBC_VER:
       case SQL_ODBC_VER: return "03.80";
       case SQL_DBMS_NAME: return backend.dbms_name;

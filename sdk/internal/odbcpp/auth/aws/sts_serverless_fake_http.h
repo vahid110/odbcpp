@@ -27,6 +27,7 @@ struct FakeHttpObservation {
   std::atomic<unsigned> denied{0};
   std::atomic<unsigned> assume_role{0};
   std::atomic<unsigned> get_credentials{0};
+  std::atomic<unsigned> get_idc_token{0};
   std::atomic<unsigned> late_completion{0};
   std::atomic<unsigned> continuation_denied{0};
   // STS sends that were AssumeRoleWithWebIdentity (a subset of assume_role),
@@ -35,7 +36,7 @@ struct FakeHttpObservation {
   std::atomic<unsigned> signed_requests{0};
   void reset() noexcept {
     sends = 0; approved = 0; foreign_scheme = 0; foreign_authority = 0;
-    denied = 0; assume_role = 0; get_credentials = 0; late_completion = 0;
+    denied = 0; assume_role = 0; get_credentials = 0; get_idc_token = 0; late_completion = 0;
     continuation_denied = 0; web_identity = 0; signed_requests = 0;
   }
 };
@@ -53,6 +54,10 @@ void fake_http_set_during(std::function<void()>);
 // Set the synthetic credential expiry (epoch milliseconds) so a credential that
 // expires before the request window can be exercised.
 void fake_http_set_expiry_ms(unsigned long long expiry_ms);
+// Offline test seam for the BrowserIdcAuthPlugin owner: when the fake-HTTP
+// marker is active, the browser+loopback step is skipped and this canned
+// authorization code is consumed instead.
+std::string& fake_browser_auth_code() noexcept;
 std::shared_ptr<Aws::Http::HttpClientFactory> make_fake_http_factory(
     std::string expected_authority, bool sts);
 } // namespace rs::core::auth::aws::detail

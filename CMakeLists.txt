@@ -1,5 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
-project(odbcpp VERSION 1.0.0 LANGUAGES CXX)
+# One version authority, also consumed by package and release tooling.
+find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/version.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/version.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/version.py"
+  --source "${CMAKE_CURRENT_SOURCE_DIR}" --output "${CMAKE_CURRENT_BINARY_DIR}/version"
+  RESULT_VARIABLE _version_result)
+if(NOT _version_result EQUAL 0)
+  message(FATAL_ERROR "Cannot derive product version")
+endif()
+include("${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.cmake")
+project(odbcpp VERSION ${ODBCPP_VERSION_CORE} LANGUAGES CXX)
+# Numeric ODBC identity applies to the driver and its checked-in assertions.
+add_compile_definitions(ODBCPP_DRIVER_VERSION="${ODBCPP_VERSION_ODBC}")
 include(GNUInstallDirs)
 
 # ---- Project Options ----
@@ -189,7 +204,7 @@ endif()
 set_target_properties(${PROJECT_NAME}_driver PROPERTIES
   OUTPUT_NAME "odbcpp"
   VERSION ${PROJECT_VERSION}
-  SOVERSION 1
+  SOVERSION ${ODBCPP_VERSION_ABI}
 )
 # SQL_DRIVER_NAME is the configured driver filename, not a display label.
 foreach(_odbc_object IN ITEMS ${PROJECT_NAME}_core_odbc ${PROJECT_NAME}_driver_odbc)
@@ -268,7 +283,9 @@ endif()
 
 if(WIN32)
   enable_language(RC)
+  target_sources(${PROJECT_NAME}_driver PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.rc")
   add_library(odbcpp_setup SHARED odbc/setup/setup.cpp odbc/setup/setup_dialog.cpp odbc/setup/setup.rc odbc/setup/setup.def)
+  target_sources(odbcpp_setup PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.rc")
   target_include_directories(odbcpp_setup PRIVATE "${ODBCPP_INTERNAL_INCLUDE_odbc}"
     "${CMAKE_CURRENT_SOURCE_DIR}/odbc/setup")
   target_compile_definitions(odbcpp_setup PRIVATE UNICODE _UNICODE)
@@ -311,6 +328,9 @@ endif()
 if(BUILD_TESTING)
   include(CTest)
   include(cmake/Tests.cmake)
+  add_test(NAME test_release_controls COMMAND "${Python3_EXECUTABLE}" -B -m unittest
+    discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/release" -p "test_*.py" -v)
+  set_tests_properties(test_release_controls PROPERTIES LABELS "offline;release")
   foreach(_info_test IN ITEMS test_attribute_apis it_get_info dm_it_get_info it_driver_manager)
     if(TARGET ${_info_test})
       target_compile_definitions(${_info_test} PRIVATE

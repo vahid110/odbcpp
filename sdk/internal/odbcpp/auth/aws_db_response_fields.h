@@ -12,7 +12,7 @@ struct NullAtom {}; struct BooleanAtom {}; struct ObjectAtom {}; struct ArrayAto
 using FieldAtom = std::variant<TextBytes, NumberLexeme, NullAtom, BooleanAtom, ObjectAtom, ArrayAtom>;
 enum class FieldFailure {
   UnsupportedOperation, InvalidShape, ResourceLimit, InvalidFieldName, UnknownField,
-  MissingField, DuplicateField, WrongType, InvalidUser, InvalidPassword,
+  MissingField, DuplicateField, WrongType, InvalidUser, InvalidPassword, InvalidToken,
   InvalidTimestamp, Cancelled, AllocationFailed, DeadlineElapsed
 };
 struct FieldError {
