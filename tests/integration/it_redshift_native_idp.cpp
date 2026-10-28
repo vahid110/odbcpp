@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "core/database/postgres/pg_database_connection.h"
 #include "odbcpp/database/backend_provider.h"
 #include "odbcpp/database/i_database_connection.h"
 #include "odbcpp/transport/i_transport.h"
@@ -7,6 +8,7 @@
 #include "odbcpp/transport/tls_configurable_transport.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -45,7 +47,7 @@ class NativeIdpWire final : public t::ITransport, public t::IStartTlsTransport,
   rs::util::Result<void> upgrade_to_tls(std::string_view, rs::util::Deadline) override {
     return {};
   }
-  bool peer_identity_verified() noexcept override { return true; }
+  bool peer_identity_verified() noexcept override { return verified; }
   void set_ca_locations(const std::string&, const std::string&) override { ++configured; }
   rs::util::Result<t::IOResult> send(std::span<const std::byte> bytes, rs::util::Deadline) override {
     sent.insert(sent.end(), bytes.begin(), bytes.end());
@@ -80,6 +82,7 @@ class NativeIdpWire final : public t::ITransport, public t::IStartTlsTransport,
   std::vector<std::byte> sent, input;
   std::size_t at = 0;
   bool ssl_pending = false;
+  bool verified = true;
   unsigned configured = 0, closed = 0;
 };
 
@@ -175,5 +178,61 @@ TEST(RedshiftNativeIdpIntegration, PostgreSQLProviderRefusesNativeIdpResolution)
   options.plugin_name = "Okta";
   auto refused = provider.resolve_connection_options(std::move(options));
   ASSERT_FALSE(refused);
+}
+// Direct connect_until bypasses PgDatabaseConnection::connect's composition
+// checks; the shared connection path must still protect the bearer token.
+d::ConnectionSettings direct_native_idp_settings() {
+  d::ConnectionSettings settings;
+  settings.host = "fixed.invalid";
+  settings.port = 5439;
+  settings.database = "db";
+  settings.use_ssl = true;
+  settings.native_idp = d::NativeIdpSettings{"synthetic-jwt-token", "AwsIdc", "odbcpp_idc",
+                                             "ACCESS_TOKEN", "", "IdpTokenAuthPlugin"};
+  return settings;
+}
+
+rs::util::Deadline direct_deadline() {
+  return rs::util::Clock::now() + std::chrono::duration_cast<rs::util::Clock::duration>(std::chrono::seconds{10});
+}
+
+TEST(RedshiftNativeIdpIntegration, DirectConnectUntilRefusesPlaintextBeforeIo) {
+  auto wire = std::make_unique<NativeIdpWire>();
+  auto* observed = wire.get();
+  d::postgres::PgDatabaseConnection connection{std::move(wire), std::nullopt,
+                                              d::postgres::PgCatalogProfile::Redshift};
+  auto settings = direct_native_idp_settings();
+  settings.use_ssl = false;
+  const auto connected = connection.connect_until(settings, direct_deadline());
+  ASSERT_FALSE(connected);
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_TRUE(observed->sent.empty());
+}
+
+TEST(RedshiftNativeIdpIntegration, UnverifiedTlsPeerReceivesNoTokenBytes) {
+  auto wire = std::make_unique<NativeIdpWire>();
+  auto* observed = wire.get();
+  observed->verified = false;
+  d::postgres::PgDatabaseConnection connection{std::move(wire), std::nullopt,
+                                              d::postgres::PgCatalogProfile::Redshift};
+  const auto connected = connection.connect_until(direct_native_idp_settings(), direct_deadline());
+  ASSERT_FALSE(connected);
+  EXPECT_FALSE(connection.is_connected());
+  // Only the eight-byte SSLRequest reached the wire.
+  EXPECT_EQ(8U, observed->sent.size());
+  EXPECT_FALSE(observed->contains("synthetic-jwt-token"));
+  EXPECT_FALSE(observed->contains("web_identity_token"));
+}
+
+TEST(RedshiftNativeIdpIntegration, DirectConnectUntilVerifiedTlsSendsToken) {
+  auto wire = std::make_unique<NativeIdpWire>();
+  auto* observed = wire.get();
+  d::postgres::PgDatabaseConnection connection{std::move(wire), std::nullopt,
+                                              d::postgres::PgCatalogProfile::Redshift};
+  const auto connected = connection.connect_until(direct_native_idp_settings(), direct_deadline());
+  ASSERT_TRUE(connected) << connected.backend_error().safe_summary();
+  EXPECT_TRUE(observed->contains("web_identity_token"));
+  EXPECT_TRUE(observed->contains_idp_token_packet("synthetic-jwt-token"));
+  connection.disconnect();
 }
 }  // namespace

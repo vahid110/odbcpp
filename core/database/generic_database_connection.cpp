@@ -152,6 +152,14 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
             "PostgreSQL authentication credential contains an "
             "embedded NUL byte"};
   }
+  // A native IdP bearer token rides in the startup packet, so every entry point
+  // must refuse plaintext before any I/O and verified TLS is checked before the
+  // startup write below.
+  if (settings.native_idp.has_value() &&
+      (!settings.use_ssl || settings.native_idp->token.empty() || !settings.password.empty())) {
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "Native IdP login requires TLS, a token and no password"};
+  }
   const auto trust = select_tls_trust_source(
       settings.use_ssl, std::nullopt, settings.ssl_ca_file, settings.ssl_ca_dir);
   if (trust.conflict == TlsTrustConflict::FileAndDirectory) {
@@ -284,6 +292,10 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
     if (upgrade_result.has_error()) return {upgrade_result.error(), upgrade_result.error_message()};
     peer_identity_verified_ = start_tls->peer_identity_verified();
+    if (settings.native_idp.has_value() && !peer_identity_verified_) {
+      return {rs::util::DbErrorCode::TLSError,
+              "Native IdP login requires a verified TLS peer"};
+    }
   } else {
     if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
