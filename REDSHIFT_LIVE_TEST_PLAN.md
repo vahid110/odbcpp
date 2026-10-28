@@ -414,7 +414,11 @@ cleanup checks complement, rather than replace, server-side cancellation proof.
 
 ### R0 offline foundation candidate
 
-`tools/redshift/pilot_preflight.py` provides sanitized strict observation and
+Historical: PR #125 cut `pilot_preflight.py` down to its private-file checks and
+the lock; the accounting validation, reservation arithmetic and CLI described
+here are in git history.
+
+`tools/redshift/pilot_preflight.py` provided sanitized strict observation and
 accounting validation, conservative max-capacity reservation arithmetic and a
 stable nonblocking POSIX lock at the canonical pilot path. Its CLI only validates
 supplied records and always returns `live_enabled=false`; it neither verifies

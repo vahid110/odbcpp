@@ -246,6 +246,31 @@ class ThreePlatformScheduling(unittest.TestCase):
         self.assertNotIn('-Verb RunAs', script)
         self.assertNotIn('Register-ScheduledTask', script)
 
+    def test_windows_live_reports_match_registered_gtest_images(self):
+        block = self.blocks['windows-live']
+        for text in ("-LE '^no-gtest-report$' --show-only=json-v1",
+                     'if ($LASTEXITCODE -ne 0 -or $registered.Count -eq 0)',
+                     'if (Compare-Object $registered $reported)',
+                     '[int]$result.testsuites.tests -eq 0 -or [int]$result.testsuites.skipped -ne 0'):
+            self.assertIn(text, block)
+        self.assertNotIn('--no-tests=ignore', block)
+        cmake = (ROOT/'cmake/Tests.cmake').read_text()
+        # Only the two plain executables may opt out of the report comparison.
+        self.assertEqual(re.findall(r'set_tests_properties\((\w+) PROPERTIES LABELS "[^"]*no-gtest-report', cmake),
+                         ['it_driver_manager', 'it_setup'])
+
+    def test_tooling_test_loops_require_a_run_test(self):
+        ubuntu, windows = self.blocks['pr-ubuntu-build'], self.blocks['pr-windows-build']
+        self.assertIn("git ls-files 'tools/*.py'", ubuntu)
+        self.assertIn('set -o pipefail', ubuntu)
+        self.assertIn("grep -qE '^Ran [1-9][0-9]* tests? ' tooling-test.log", ubuntu)
+        self.assertIn("$output -match '^Ran [1-9][0-9]* tests? '", windows)
+        self.assertIn('fetch-depth: 0', ubuntu)
+        self.assertIn('fetch-depth: 0', windows)
+        for path in ROOT.glob('tools/**/test_*.py'):
+            with self.subTest(path=path.name):
+                self.assertRegex(path.read_text(encoding='utf-8'), r'''__name__ ?== ?['"]__main__['"]''')
+
     def test_macOS_primary_retains_actual_default_ALL_build(self):
         block = jobs(self.primary)['macos-iodbc-ucs4']
         self.assertIn('runs-on: macos-latest', block)

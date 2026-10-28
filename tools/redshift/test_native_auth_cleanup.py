@@ -176,3 +176,7 @@ class CleanupExceptionPrivacyTests(unittest.TestCase):
             else:
                 self.fail('permanent failure did not refuse')
             self.assertEqual((setup.reads, len(setup.calls)), before)
+
+
+if __name__ == '__main__':
+    unittest.main()

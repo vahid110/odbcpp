@@ -123,10 +123,14 @@ jobs:
       # build inputs and runs under CTest.
       - name: Run tooling unit tests offline
         run: |
+          set -o pipefail
           status=0
           for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
             echo "::group::$test"
-            PYTHONPATH="$PWD" python3 -B "$test" || { echo "::error file=$test::tooling unit test failed"; status=1; }
+            # A file that runs no test (for example, no unittest.main()) also fails.
+            if ! PYTHONPATH="$PWD" python3 -B "$test" 2>&1 | tee tooling-test.log || ! grep -qE '^Ran [1-9][0-9]* tests? ' tooling-test.log; then
+              echo "::error file=$test::tooling unit test failed or ran no tests"; status=1
+            fi
             echo "::endgroup::"
           done
           exit "$status"
@@ -201,8 +205,12 @@ jobs:
           $hostOnly = 'test_windows_live_backend.py', 'test_windows_powerbi_applicability.py', 'test_windows_powerbi_publication.py'
           foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
             Write-Host "::group::$test"
-            python -B $test
-            if ($LASTEXITCODE -ne 0) { $failed += $test; Write-Host "::error file=$test::tooling unit test failed" }
+            $output = @(python -B $test 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+            $output | Write-Host
+            if ($code -ne 0 -or -not ($output -match '^Ran [1-9][0-9]* tests? ')) {
+              $failed += $test; Write-Host "::error file=$test::tooling unit test failed or ran no tests"
+            }
             Write-Host "::endgroup::"
           }
           if ($failed.Count) { throw "Windows tooling unit tests failed: $($failed -join ', ')" }

@@ -322,3 +322,7 @@ class NativeAuthInputsTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), 'cleanup_unknown')
         self.assertEqual([e for e in fs.events if e[0] == 'close'], [('close', 10), ('close', 11)])
         self.assertFalse(any(e[0] in ('read', 'write', 'mkdir') for e in fs.events))
+
+
+if __name__ == '__main__':
+    unittest.main()
