@@ -57,6 +57,20 @@ struct InputLimits {
 
 enum class RedshiftCatalogMode { Show, Legacy };
 
+// Redshift native IdP token login. Mutually exclusive with `password`: the
+// token is the login secret and `idp_type`/`provider_name`/`token_type`/
+// `identity_namespace`/`plugin_name` are native startup spellings owned by the
+// backend. `user` may be empty: the token carries the identity.
+struct NativeIdpSettings {
+  std::string token;
+  std::string idp_type;
+  std::string provider_name;
+  std::string token_type;
+  std::string identity_namespace;
+  std::string plugin_name;
+  bool present() const noexcept { return !token.empty(); }
+};
+
 struct ConnectionSettings {
   std::string host;
   std::string user;
@@ -75,6 +89,8 @@ struct ConnectionSettings {
   std::optional<RedshiftCatalogMode> redshift_catalog_mode;
   // Provider-neutral client identity; native startup spelling stays backend-owned.
   std::optional<std::string> application_name;
+  // Redshift native IdP token login; present only for the native-IdP material.
+  std::optional<NativeIdpSettings> native_idp;
   // Confirm before successful connection publication, or refuse locally.
   bool read_only = false;
   CharacterMetadataPolicy character_metadata;

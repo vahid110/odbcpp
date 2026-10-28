@@ -148,7 +148,8 @@ endwhile()
 set(_unit_tests_registered_elsewhere
   test_named_profile_acquisition test_provisioned_native_owner
   test_provisioned_pg_connector test_provisioned_sdk_runtime
-  test_sts_serverless_owner test_jwt_iam_auth test_odbc_trace_reload)
+  test_sts_serverless_owner test_jwt_iam_auth test_idc_token_owner
+  test_browser_idc_owner test_odbc_trace_reload)
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
@@ -435,6 +436,9 @@ endif()
 option(ODBCPP_NATIVE_PROVISIONED_AUTH_TESTS "Build the separately admitted native provisioned auth test" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeProvisionedAuth.cmake")
 
+option(ODBCPP_REDSHIFT_NATIVE_IDC_TOKEN_TESTS "Build the native IdC token owner (offline fake-HTTP + separately admitted live login)" OFF)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeIdcTokenAuth.cmake")
+
 # ---- Integration Tests ----
 # Authored real Redshift routine A/W coverage is opt-in execution only. Keep a
 # separately buildable target for compile checks without placing it in ordinary
@@ -470,13 +474,30 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
     set_tests_properties(it_redshift_columns_omitted_table PROPERTIES LABELS "integration;redshift;columns" TIMEOUT 120)
   endif()
 endif()
+# Native IdP token login (direct-token) live test: opt-in, separately admitted
+# against a real Redshift + Identity Center token. Compile/link is ordinary
+# evidence; execution is absent from the default CTest graph.
+option(ODBCPP_REDSHIFT_NATIVE_IDP_LIVE_TESTS "Run separately admitted Redshift native IdP direct-token live tests" OFF)
+if(TARGET_DATABASE STREQUAL "REDSHIFT")
+  add_executable(it_redshift_native_idp_live EXCLUDE_FROM_ALL
+    tests/integration/it_redshift_native_idp_live.cpp)
+  target_link_libraries(it_redshift_native_idp_live PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+  apply_compiler_settings(it_redshift_native_idp_live)
+  set_target_properties(it_redshift_native_idp_live PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  if(ODBCPP_REDSHIFT_NATIVE_IDP_LIVE_TESTS)
+    add_test(NAME it_redshift_native_idp_live COMMAND it_redshift_native_idp_live)
+    set_tests_properties(it_redshift_native_idp_live PROPERTIES
+      LABELS "integration;redshift;native-idp;live" TIMEOUT 120)
+  endif()
+endif()
 # Opt-in native, auth and pinned-fixture images are registered explicitly; the
 # Driver Manager suite never links odbcpp_core.
 set(_integration_tests_registered_elsewhere
   it_redshift_routine_schema_patterns it_redshift_columns_omitted_table
   it_redshift_powerbi_relationship it_driver_manager_unicode it_auth_pg_material_tls
   it_redshift_native_auth it_redshift_serverless_sts_auth
-  it_redshift_serverless_jwt_iam_auth ${_mysql_fixture_test_names})
+  it_redshift_serverless_jwt_iam_auth it_redshift_native_idp_live it_redshift_native_idc_token_live
+  it_redshift_browser_idc_live   ${_mysql_fixture_test_names})
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
@@ -487,6 +508,10 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   # it against the PostgreSQL fixture would turn a green PostgreSQL job into a
   # false Redshift compatibility claim.
   if(test_name STREQUAL "it_redshift_real" AND
+     NOT TARGET_DATABASE STREQUAL "REDSHIFT")
+    continue()
+  endif()
+  if(test_name STREQUAL "it_redshift_native_idp" AND
      NOT TARGET_DATABASE STREQUAL "REDSHIFT")
     continue()
   endif()

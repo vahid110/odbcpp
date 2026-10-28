@@ -104,6 +104,7 @@ std::string_view FieldError::safe_message() const noexcept {
     case FieldFailure::WrongType: return "Credential response field type invalid";
     case FieldFailure::InvalidUser: return "Credential response user malformed";
     case FieldFailure::InvalidPassword: return "Credential response password malformed";
+    case FieldFailure::InvalidToken: return "Credential response token malformed";
     case FieldFailure::InvalidTimestamp: return "Credential response timestamp refused";
     case FieldFailure::Cancelled: return "Credential response extraction cancelled";
     case FieldFailure::AllocationFailed: return "Credential response allocation unavailable";

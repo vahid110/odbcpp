@@ -152,6 +152,14 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
             "PostgreSQL authentication credential contains an "
             "embedded NUL byte"};
   }
+  // A native IdP bearer token rides in the startup packet, so every entry point
+  // must refuse plaintext before any I/O and verified TLS is checked before the
+  // startup write below.
+  if (settings.native_idp.has_value() &&
+      (!settings.use_ssl || settings.native_idp->token.empty() || !settings.password.empty())) {
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "Native IdP login requires TLS, a token and no password"};
+  }
   const auto trust = select_tls_trust_source(
       settings.use_ssl, std::nullopt, settings.ssl_ca_file, settings.ssl_ca_dir);
   if (trust.conflict == TlsTrustConflict::FileAndDirectory) {
@@ -166,6 +174,16 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   params["application_name"] = settings.application_name.value_or("odbcpp");
   params["client_encoding"] = "UTF8";
   params["DateStyle"] = "ISO, YMD";
+  if (settings.native_idp.has_value()) {
+    params["idp_type"] = settings.native_idp->idp_type;
+    params["provider_name"] = settings.native_idp->provider_name;
+    params["token_type"] = settings.native_idp->token_type;
+    if (!settings.native_idp->identity_namespace.empty())
+      params["identity_namespace"] = settings.native_idp->identity_namespace;
+    if (!settings.native_idp->plugin_name.empty())
+      params["plugin_name"] = settings.native_idp->plugin_name;
+    params["web_identity_token"] = settings.native_idp->token;
+  }
   std::vector<std::byte> startup;
   try {
     startup = parser_->create_startup_message(
@@ -274,6 +292,10 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
     if (upgrade_result.has_error()) return {upgrade_result.error(), upgrade_result.error_message()};
     peer_identity_verified_ = start_tls->peer_identity_verified();
+    if (settings.native_idp.has_value() && !peer_identity_verified_) {
+      return {rs::util::DbErrorCode::TLSError,
+              "Native IdP login requires a verified TLS peer"};
+    }
   } else {
     if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
@@ -306,6 +328,12 @@ void GenericDatabaseConnection::clear_authentication_state() noexcept {
   rs::core::security::secure_cleanse({
       reinterpret_cast<unsigned char*>(settings_.password.data()), settings_.password.size()});
   settings_.password.clear();
+  if (settings_.native_idp.has_value()) {
+    rs::core::security::secure_cleanse({
+        reinterpret_cast<unsigned char*>(settings_.native_idp->token.data()),
+        settings_.native_idp->token.size()});
+    settings_.native_idp.reset();
+  }
   if (parser_) parser_->clear_authentication_state();
 }
 
@@ -1234,8 +1262,12 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
           continue; // Authentication successful
         }
       
+        // Native IdP token auth uses the token as the credential; otherwise the
+        // ordinary password. The native token is sent in response to AUTH_REQ_IDP.
+        const std::string& auth_password = settings_.native_idp.has_value()
+            ? settings_.native_idp->token : settings_.password;
         auto auth_response = parser_->create_auth_response(
-            auth_req, settings_.password, settings_.user,
+            auth_req, auth_password, settings_.user,
             peer_identity_verified_, settings_.input_limits.max_auth_wire_bytes);
         struct ResponseCleanup {
           std::vector<std::byte>& bytes;

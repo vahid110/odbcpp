@@ -42,6 +42,7 @@ struct ConnectionOptionSupport {
   bool detailed_table_types = false;
   bool catalog_database_scope = false;
   bool catalog_mode = false;
+  bool native_idp = false;
 };
 
 struct ConnectionOptions {
@@ -72,6 +73,13 @@ struct ConnectionOptions {
   bool boolean_as_character = false;
   std::optional<bool> detailed_table_types;
   std::optional<CatalogDatabaseScope> catalog_database_scope;
+  // Redshift native IdP token login. plugin_name selects the method; token is
+  // the login secret. Absent for ordinary/temporary password login.
+  std::optional<std::string> plugin_name;
+  std::optional<std::string> provider_name;
+  std::optional<std::string> token_type;
+  std::optional<std::string> identity_namespace;
+  std::optional<std::string> token;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

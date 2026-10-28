@@ -470,7 +470,9 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
     if (bytes > max_wire_bytes || size > max_wire_bytes - bytes) throw RequestWireLimitExceeded{};
     bytes += size;
   };
-  add(6); add(user.size()); add(10); add(database.size());
+  // An empty user is omitted (native IdP login: the token carries the identity).
+  if (!user.empty()) { add(6); add(user.size()); }
+  add(10); add(database.size());
   for (const auto& [key, value] : params) {
     add(key.size()); add(1); add(value.size()); add(1);
   }
@@ -479,7 +481,7 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
   if (float_digits) add(std::string_view("extra_float_digits").size() + 1 + 2);
   if (bytes > std::numeric_limits<std::uint32_t>::max()) throw RequestWireLimitExceeded{};
   std::vector<std::pair<std::string, std::string>> kv;
-  kv.push_back({"user", user});
+  if (!user.empty()) kv.push_back({"user", user});
   kv.push_back({"database", database});
   for (const auto& p : params) {
     kv.push_back(p);
@@ -577,6 +579,7 @@ AuthenticationRequest PgProtocolParser::parse_auth_request(const std::vector<std
     case 10: req.type = AuthenticationRequest::Type::SASL; break;
     case 11: req.type = AuthenticationRequest::Type::SASLContinue; break;
     case 12: req.type = AuthenticationRequest::Type::SASLFinal; break;
+    case 14: req.type = AuthenticationRequest::Type::Idp; break;
     default: throw std::runtime_error("Unsupported auth method: " + std::to_string(code));
   }
   if (code >= 10 && code <= 12) {
@@ -708,6 +711,26 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       scram_client_->verify_server_final(final);
       scram_server_verified_ = true;
       return {};
+    }
+    case AuthenticationRequest::Type::Idp: {
+      // Redshift native IdP token exchange (AUTH_REQ_IDP). The token is the
+      // credential and must only travel over a verified TLS channel.
+      if (!peer_identity_verified) {
+        throw std::runtime_error("Native IdP token authentication requires verified TLS");
+      }
+      if (max_wire_bytes < 6 || password.size() > max_wire_bytes - 6) throw RequestWireLimitExceeded{};
+      size_t total_len = 1 + 4 + password.size() + 1;
+      std::vector<std::byte> buf(total_len);
+      auto* data = reinterpret_cast<unsigned char*>(buf.data());
+      data[0] = 'i';
+      uint32_t len = static_cast<uint32_t>(4 + password.size() + 1);
+      data[1] = (len >> 24) & 0xFF;
+      data[2] = (len >> 16) & 0xFF;
+      data[3] = (len >> 8) & 0xFF;
+      data[4] = len & 0xFF;
+      std::memcpy(data + 5, password.data(), password.size());
+      data[5 + password.size()] = 0;
+      return buf;
     }
     default:
       throw std::runtime_error("Unsupported auth type");
