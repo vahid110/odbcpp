@@ -272,6 +272,31 @@ TEST(RedshiftCatalogExecution, FacetIsExplicitProfileOnly) {
   no_execution(postgres);
 }
 
+namespace {
+class EncodingSpySession final : public SpySession {
+ public:
+  std::optional<std::string> encoding;
+  std::optional<std::string> get_parameter_status(std::string_view key) const override {
+    if (key == "client_encoding") return encoding;
+    return std::nullopt;
+  }
+};
+}  // namespace
+
+// Native catalog execution builds literals too; it shares the UTF8 guard with
+// catalog_query and refuses before reading capabilities or sending SQL.
+TEST(RedshiftCatalogExecution, NonUtf8ClientEncodingRefusesBeforeCapabilityOrSql) {
+  EncodingSpySession spy;
+  spy.encoding = "SJIS";
+  auto refused = spy.execute_catalog(request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), refused.error());
+  EXPECT_EQ(0u, spy.capability_reads);
+  no_execution(spy);
+  spy.encoding = "UNICODE";
+  EXPECT_TRUE(spy.execute_catalog(request(), rs::util::make_deadline(std::chrono::seconds{1})));
+}
+
 TEST(RedshiftCatalogExecution, DisconnectedReturnsNotConnectedWithoutCapabilityOrSql) {
   SpySession spy; spy.connected = false;
   auto result = spy.execute_catalog(request(), rs::util::make_deadline(std::chrono::seconds{1}));
@@ -3950,7 +3975,7 @@ class CurrentPrimaryKeySession final : public RoutineExecutionSession {
   bool lost_scope{false};
   std::vector<QueryParameter> bound;
   std::optional<std::string> get_parameter_status(std::string_view key) const override {
-    if (lost_scope) throw std::runtime_error("Fixture scope observation loss");
+    if (lost_scope && key != "client_encoding") throw std::runtime_error("Fixture scope observation loss");
     if (key=="datashare_enabled") return share;
     if (key=="external_database") return external;
     return std::nullopt;
@@ -4200,7 +4225,7 @@ class CurrentForeignKeySession final : public RoutineExecutionSession {
   std::vector<QueryParameter> bound, foreign_bound;
   QueryResult declared_foreign;
   std::optional<std::string> get_parameter_status(std::string_view key) const override {
-    if (lost_scope) {
+    if (lost_scope && key != "client_encoding") {
       throw std::runtime_error("Fixture scope observation loss");
     }
     if (key == "datashare_enabled") return share;
