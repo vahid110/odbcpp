@@ -1,6 +1,7 @@
 #include "odbcpp/auth/aws/browser_idc_owner.h"
 #include "odbcpp/auth/aws/provisioned_native_http_ingress.h"
 #include "odbcpp/auth/aws/sts_serverless_fake_http.h"
+#include "odbcpp/security/crypto.h"
 #include <aws/core/Globals.h>
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/core/client/ClientConfiguration.h>
@@ -15,15 +16,16 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
-#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstdlib>
 #include <cstring>
+#include <array>
+#include <cerrno>
 #include <limits>
 #include <new>
-#include <random>
 #include <thread>
 #if defined(__APPLE__)
 #include <ApplicationServices/ApplicationServices.h>
@@ -38,8 +40,6 @@ constexpr const char* redirect_prefix = "http://127.0.0.1:";
 constexpr const char* client_type = "public";
 constexpr const char* grant_type = "authorization_code";
 constexpr const char* challenge_method = "S256";
-constexpr const char* base64url_chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 bool main_entry() noexcept {
 #if defined(__APPLE__)
   return ::pthread_main_np() != 0;
@@ -96,20 +96,6 @@ std::string base64url(const unsigned char* data, std::size_t size) {
   }
   return out;  // PKCE/OIDC base64url is unpadded.
 }
-std::string random_base64url(std::size_t length) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<std::size_t> dist(0, 63);
-  std::string out;
-  out.reserve(length);
-  for (std::size_t i = 0; i < length; ++i) out.push_back(base64url_chars[dist(gen)]);
-  return out;
-}
-std::string sha256_base64url(std::string_view input) {
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), hash);
-  return base64url(hash, SHA256_DIGEST_LENGTH);
-}
 std::string url_encode(std::string_view value) {
   std::string out;
   out.reserve(value.size());
@@ -141,8 +127,26 @@ bool empty_file(const std::string& path) {
 }
 } // namespace
 
-namespace {
-// Bind 127.0.0.1:<port> and listen. Returns the socket fd or -1.
+namespace detail {
+std::optional<std::string> random_url_token(const RandomFill& fill) {
+  std::array<unsigned char, 32> raw{};
+  struct Cleanse {
+    std::array<unsigned char, 32>& bytes;
+    ~Cleanse() { rs::core::security::secure_cleanse(bytes); }
+  } cleanse{raw};
+  try {
+    if (!fill) return std::nullopt;
+    fill(raw);
+    return base64url(raw.data(), raw.size());
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+std::string pkce_challenge(std::string_view verifier) {
+  unsigned char hash[SHA256_DIGEST_LENGTH];
+  SHA256(reinterpret_cast<const unsigned char*>(verifier.data()), verifier.size(), hash);
+  return base64url(hash, SHA256_DIGEST_LENGTH);
+}
 int loopback_listen(unsigned short port) {
   const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
   if (listener < 0) return -1;
@@ -152,49 +156,70 @@ int loopback_listen(unsigned short port) {
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-    ::close(listener);
-    return -1;
-  }
-  if (::listen(listener, 1) != 0) {
+  if (::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+      ::listen(listener, 1) != 0 || ::fcntl(listener, F_SETFL, O_NONBLOCK) != 0) {
     ::close(listener);
     return -1;
   }
   return listener;
 }
-// Accept one loopback connection, read the HTTP GET, extract the query, respond
-// with a fixed HTML page. Returns the query string (after '?') or empty.
-std::string loopback_accept(int listener, rs::util::Deadline deadline,
-    const std::shared_ptr<provisioned_native::WorkerCancellation>& cancel, bool& ok) {
-  ok = false;
-  struct CloseGuard { int fd; ~CloseGuard() { if (fd >= 0) ::close(fd); } } guard{listener};
-  int client = -1;
+namespace {
+// Waits for `events` on fd in short slices so cancellation is observed promptly;
+// false on deadline, cancellation or poll failure.
+bool wait_ready(int fd, short events, rs::util::Deadline deadline,
+    const std::shared_ptr<provisioned_native::WorkerCancellation>& cancel) {
   for (;;) {
-    if (cancel && cancel->cancelled()) return {};
-    if (rs::util::remaining(deadline) == std::chrono::milliseconds::zero()) return {};
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(listener, &readfds);
-    timeval tv{1, 0};
-    const int ready = ::select(listener + 1, &readfds, nullptr, nullptr, &tv);
-    if (ready < 0) return {};
-    if (ready == 0) continue;
-    client = ::accept(listener, nullptr, nullptr);
-    if (client >= 0) break;
+    if (cancel && cancel->cancelled()) return false;
+    const auto left = rs::util::remaining(deadline);
+    if (left == std::chrono::milliseconds::zero()) return false;
+    pollfd entry{fd, events, 0};
+    const int slice = static_cast<int>(std::min<std::chrono::milliseconds::rep>(left.count(), 100));
+    const int ready = ::poll(&entry, 1, slice);
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready < 0) return false;
+    if (ready > 0) return true;
   }
-  struct ClientGuard { int fd; ~ClientGuard() { if (fd >= 0) ::close(fd); } } cguard{client};
-  char buffer[8192];
-  const ssize_t read = ::recv(client, buffer, sizeof(buffer) - 1, 0);
-  if (read <= 0) return {};
-  buffer[read] = '\0';
-  const std::string request(buffer, static_cast<std::size_t>(read));
-  const std::size_t get = request.find("GET ");
-  const std::size_t path_end = request.find(" HTTP/", get);
-  std::string query;
-  if (get != std::string::npos && path_end != std::string::npos) {
-    const std::string target_path = request.substr(get + 4, path_end - (get + 4));
-    const std::size_t q = target_path.find('?');
-    if (q != std::string::npos) query = target_path.substr(q + 1);
+}
+}  // namespace
+// Accept one loopback connection, read the HTTP request head (possibly
+// fragmented), extract the query and answer with a fixed HTML page.
+LoopbackRequest loopback_receive(int listener, rs::util::Deadline deadline,
+    const std::shared_ptr<provisioned_native::WorkerCancellation>& cancel) {
+  struct CloseGuard { int fd; ~CloseGuard() { if (fd >= 0) ::close(fd); } } guard{listener};
+  if (listener < 0) return {};
+  int client = -1;
+  while (client < 0) {
+    if (!wait_ready(listener, POLLIN, deadline, cancel)) return {};
+    client = ::accept(listener, nullptr, nullptr);
+    if (client < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR &&
+        errno != ECONNABORTED) return {};
+  }
+  struct ClientGuard { int fd; ~ClientGuard() { ::close(fd); } } cguard{client};
+  if (::fcntl(client, F_SETFL, O_NONBLOCK) != 0) return {};
+#if defined(SO_NOSIGPIPE)
+  int no_sigpipe = 1;
+  ::setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
+  constexpr std::size_t max_request = 8192;
+  std::string request;
+  while (request.find("\r\n\r\n") == std::string::npos) {
+    if (request.size() >= max_request) return {};
+    if (!wait_ready(client, POLLIN, deadline, cancel)) return {};
+    char buffer[1024];
+    const ssize_t got = ::recv(client, buffer,
+        std::min(sizeof(buffer), max_request - request.size()), 0);
+    if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
+    if (got <= 0) return {};
+    request.append(buffer, static_cast<std::size_t>(got));
+  }
+  LoopbackRequest result;
+  if (request.rfind("GET ", 0) == 0) {
+    const std::size_t path_end = request.find(" HTTP/");
+    if (path_end != std::string::npos) {
+      const std::string target_path = request.substr(4, path_end - 4);
+      const std::size_t q = target_path.find('?');
+      if (q != std::string::npos) result.query = target_path.substr(q + 1);
+    }
   }
   const std::string body =
       "<html><body><p>Sign-in complete. You may close this window and return "
@@ -202,10 +227,25 @@ std::string loopback_accept(int listener, rs::util::Deadline deadline,
   const std::string response =
       "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " +
       std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-  ::send(client, response.data(), response.size(), 0);
-  ok = true;
-  return query;
+#if defined(MSG_NOSIGNAL)
+  constexpr int send_flags = MSG_NOSIGNAL;
+#else
+  constexpr int send_flags = 0;
+#endif
+  std::size_t sent = 0;
+  while (sent < response.size()) {
+    if (!wait_ready(client, POLLOUT, deadline, cancel)) return {};
+    const ssize_t put = ::send(client, response.data() + sent, response.size() - sent, send_flags);
+    if (put < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
+    if (put <= 0) return {};
+    sent += static_cast<std::size_t>(put);
+  }
+  result.ok = true;
+  return result;
 }
+} // namespace detail
+
+namespace {
 std::string query_param(std::string_view query, std::string_view name) {
   std::string needle(name);
   needle.push_back('=');
@@ -380,9 +420,13 @@ FieldOutcome<BrowserIdcToken> BrowserIdcOwner::acquire() {
         register_result.GetResult().GetClientSecret().size());
     if (client_id.empty() || client_secret.empty()) return FieldError{FieldFailure::InvalidShape};
 
-    const std::string code_verifier = random_base64url(60);
-    const std::string code_challenge = sha256_base64url(code_verifier);
-    const std::string state = random_base64url(24);
+    // 256 bits each from the checked CSPRNG; verifier and state are independent.
+    const auto code_verifier = detail::random_url_token(
+        [](std::span<unsigned char> out) { rs::core::security::secure_random(out); });
+    const auto state = detail::random_url_token(
+        [](std::span<unsigned char> out) { rs::core::security::secure_random(out); });
+    if (!code_verifier || !state) return FieldError{FieldFailure::UnsupportedOperation};
+    const std::string code_challenge = detail::pkce_challenge(*code_verifier);
     const std::string redirect_uri = std::string(redirect_prefix) + std::to_string(s.target.listen_port);
 
     // Authorization code: loopback + browser, or the offline fake seam.
@@ -393,17 +437,16 @@ FieldOutcome<BrowserIdcToken> BrowserIdcOwner::acquire() {
       const std::string authorize_url = "https://" + oidc_host(s.target.region) +
           "/authorize?response_type=code" + "&client_id=" + url_encode(client_id) +
           "&redirect_uri=" + url_encode(redirect_uri) + "&scopes=" + url_encode(scope) +
-          "&state=" + url_encode(state) + "&code_challenge=" + url_encode(code_challenge) +
+          "&state=" + url_encode(*state) + "&code_challenge=" + url_encode(code_challenge) +
           "&code_challenge_method=" + challenge_method;
-      const int listener = loopback_listen(s.target.listen_port);
+      const int listener = detail::loopback_listen(s.target.listen_port);
       if (listener < 0) return FieldError{FieldFailure::InvalidShape};
       launch_browser(authorize_url);
-      bool loopback_ok = false;
-      const std::string query = loopback_accept(listener, s.deadline, s.cancellation, loopback_ok);
-      if (!loopback_ok || cancelled() || expired()) return FieldError{FieldFailure::Cancelled};
-      authorization_code = query_param(query, "code");
-      const std::string got_state = query_param(query, "state");
-      if (authorization_code.empty() || got_state != state) return FieldError{FieldFailure::InvalidShape};
+      const auto callback = detail::loopback_receive(listener, s.deadline, s.cancellation);
+      if (!callback.ok || cancelled() || expired()) return FieldError{FieldFailure::Cancelled};
+      authorization_code = query_param(callback.query, "code");
+      const std::string got_state = query_param(callback.query, "state");
+      if (authorization_code.empty() || got_state != *state) return FieldError{FieldFailure::InvalidShape};
     }
 
     // CreateToken -> access token + expiry.
@@ -412,7 +455,7 @@ FieldOutcome<BrowserIdcToken> BrowserIdcOwner::acquire() {
     token_request.SetClientSecret(client_secret.c_str());
     token_request.SetCode(authorization_code.c_str());
     token_request.SetGrantType(grant_type);
-    token_request.SetCodeVerifier(code_verifier.c_str());
+    token_request.SetCodeVerifier(code_verifier->c_str());
     token_request.SetRedirectUri(redirect_uri.c_str());
     token_request.SetContinueRequestHandler([cancel = s.cancellation, deadline = s.deadline](const Aws::Http::HttpRequest*) {
       return (!cancel || !cancel->cancelled()) && rs::util::remaining(deadline) > std::chrono::milliseconds::zero();

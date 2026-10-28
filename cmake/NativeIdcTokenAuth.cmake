@@ -57,14 +57,15 @@ add_library(odbcpp_auth_aws_idc STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/profile_role_assumption.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/provisioned_query_transport.cpp")
 target_compile_features(odbcpp_auth_aws_idc PRIVATE cxx_std_20)
+# The checked CSPRNG (odbcpp/security/crypto.h) is the runtime partition's.
 target_include_directories(odbcpp_auth_aws_idc PRIVATE
-  "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
+  "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}" "${ODBCPP_INTERNAL_INCLUDE_runtime}")
 target_include_directories(odbcpp_auth_aws_idc SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
 target_compile_definitions(odbcpp_auth_aws_idc PRIVATE
   AWS_SDK_USE_CRT_HTTP HAVE_H2_CLIENT PLATFORM_APPLE AWS_ENABLE_DISPATCH_QUEUE
   AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
 target_link_libraries(odbcpp_auth_aws_idc PRIVATE
-  odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless
+  odbcpp_auth_core odbcpp::core Threads::Threads aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless
   aws-cpp-sdk-sts aws-cpp-sdk-sso-oidc OpenSSL::Crypto)
 apply_compiler_settings(odbcpp_auth_aws_idc)
 
