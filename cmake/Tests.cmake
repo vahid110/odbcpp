@@ -12,44 +12,35 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ---- Test Discovery and Setup ----
-# MySQL connection-phase codec tests are backend-private and intentionally run
-# in the protected PostgreSQL/Redshift builds before MySQL product composition.
+# Auth-core units link only odbcpp_auth_core, never the driver core.
+set(ODBCPP_AUTH_CORE_UNIT_TESTS
+  test_auth_core test_temporary_db_validity test_issuer_timestamp
+  test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response
+  test_aws_db_xml_response test_redshift_serverless_response
+  test_redshift_provisioned_response test_redshift_withiam_response
+  test_sts_assume_role_response test_auth_raw_response_projection
+  test_checked_response_boundary test_checked_response_stream
+  test_checked_aws_db_json_response test_response_operation
+  test_checked_aws_db_xml_response)
+foreach(_test IN LISTS ODBCPP_AUTH_CORE_UNIT_TESTS)
+  set(ODBCPP_TEST_LIBRARIES_${_test} odbcpp_auth_core)
+endforeach()
+set(ODBCPP_TEST_LIBRARIES_test_pg_credential_consumer odbcpp_auth_pg_consumer)
+
+# Builds one GoogleTest image into tests/ and registers it. The image links the
+# driver core unless ODBCPP_TEST_LIBRARIES_<name> names its libraries instead;
+# other per-test additions follow the discovery loops.
 function(add_test_executable test_name test_file)
   add_executable(${test_name} ${test_file})
-  if(test_name STREQUAL "test_pg_credential_consumer")
-    target_link_libraries(${test_name} PRIVATE odbcpp_auth_pg_consumer GTest::gtest_main)
-    target_include_directories(${test_name} PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}"
-      "${ODBCPP_INTERNAL_INCLUDE_auth}" "${ODBCPP_INTERNAL_INCLUDE_backend}")
-  elseif(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_sts_assume_role_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
-    target_link_libraries(${test_name} PRIVATE odbcpp_auth_core GTest::gtest_main)
-    target_include_directories(${test_name} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
+  if(DEFINED ODBCPP_TEST_LIBRARIES_${test_name})
+    target_link_libraries(${test_name} PRIVATE ${ODBCPP_TEST_LIBRARIES_${test_name}} GTest::gtest_main)
   else()
-    target_link_libraries(${test_name} PRIVATE
-      ${PROJECT_NAME}::core
-      GTest::gtest_main
-    )
-  endif()
-  if(test_name MATCHES "^(test_connection_pool|test_thread_safety|it_connection_pool)$")
-    target_link_libraries(${test_name} PRIVATE odbcpp_prototype_pool)
-  endif()
-  if(test_name STREQUAL "test_pg_staged_refusal_observer")
-    target_sources(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/pg_staged_refusal_observer.cpp")
-  endif()
-  if(test_name STREQUAL "test_odbc_trace")
-    target_compile_definitions(${test_name} PRIVATE
-      ODBCPP_EXPORTS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
-  endif()
-  if(test_name MATCHES "^(test_response_operation|test_session_cancellation)$")
-    target_link_libraries(${test_name} PRIVATE Threads::Threads)
+    target_link_libraries(${test_name} PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
   endif()
   apply_compiler_settings(${test_name})
-  
   add_test(NAME ${test_name} COMMAND ${test_name})
-  
-  # Set output directory
   set_target_properties(${test_name} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
-  )
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endfunction()
 
 option(ODBCPP_REDSHIFT_POWERBI_RELATIONSHIP_LIVE_TESTS "Build/register separately admitted single-key relationship DM assertions" OFF)
@@ -127,64 +118,59 @@ apply_compiler_settings(mysql_auth_probe)
 set_target_properties(mysql_auth_probe PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 
-# Explicit pinned-fixture executable; never admitted by default CTest.
+# Pinned-fixture MySQL executables; the fixture runs them, default CTest never does.
 option(ODBCPP_MYSQL_DECIMAL_LIVE_TESTS "Build pinned MySQL decimal result qualification" OFF)
-if(ODBCPP_MYSQL_DECIMAL_LIVE_TESTS)
-  add_executable(it_mysql_decimal_results tests/integration/it_mysql_decimal_results.cpp)
-  target_link_libraries(it_mysql_decimal_results PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
-  apply_compiler_settings(it_mysql_decimal_results)
-  set_target_properties(it_mysql_decimal_results PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-endif()
-
 option(ODBCPP_MYSQL_DATETIME_LIVE_TESTS "Build pinned MySQL valid DATETIME result qualification" OFF)
-if(ODBCPP_MYSQL_DATETIME_LIVE_TESTS)
-  add_executable(it_mysql_datetime_results tests/integration/it_mysql_datetime_results.cpp)
-  target_link_libraries(it_mysql_datetime_results PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
-  apply_compiler_settings(it_mysql_datetime_results)
-  set_target_properties(it_mysql_datetime_results PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-endif()
-
 option(ODBCPP_MYSQL_DATE_PARAMETERS_LIVE_TESTS "Build pinned MySQL valid DATE parameter qualification" OFF)
-if(ODBCPP_MYSQL_DATE_PARAMETERS_LIVE_TESTS)
-  add_executable(it_mysql_date_parameters tests/integration/it_mysql_date_parameters.cpp)
-  target_link_libraries(it_mysql_date_parameters PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
-  apply_compiler_settings(it_mysql_date_parameters)
-  set_target_properties(it_mysql_date_parameters PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-endif()
-
-# Explicit diagnostic observation only; never admitted by default CTest.
 option(ODBCPP_MYSQL_DATETIME_RECEIPT_LIVE_TESTS "Build pinned MySQL DATETIME prepare metadata observation" OFF)
-if(ODBCPP_MYSQL_DATETIME_RECEIPT_LIVE_TESTS)
-  add_executable(it_mysql_datetime_parameter_receipt tests/integration/it_mysql_datetime_parameter_receipt.cpp)
-  target_link_libraries(it_mysql_datetime_parameter_receipt PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
-  apply_compiler_settings(it_mysql_datetime_parameter_receipt)
-  set_target_properties(it_mysql_datetime_parameter_receipt PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-endif()
-
-# Explicit diagnostic observation only; never admitted by default CTest.
 option(ODBCPP_MYSQL_DECIMAL_RECEIPT_LIVE_TESTS "Build pinned MySQL DECIMAL prepare metadata observation" OFF)
-if(ODBCPP_MYSQL_DECIMAL_RECEIPT_LIVE_TESTS)
-  add_executable(it_mysql_decimal_parameter_receipt tests/integration/it_mysql_decimal_parameter_receipt.cpp)
-  target_link_libraries(it_mysql_decimal_parameter_receipt PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
-  apply_compiler_settings(it_mysql_decimal_parameter_receipt)
-  set_target_properties(it_mysql_decimal_parameter_receipt PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-endif()
+set(ODBCPP_MYSQL_FIXTURE_TESTS
+  DECIMAL it_mysql_decimal_results
+  DATETIME it_mysql_datetime_results
+  DATE_PARAMETERS it_mysql_date_parameters
+  DATETIME_RECEIPT it_mysql_datetime_parameter_receipt
+  DECIMAL_RECEIPT it_mysql_decimal_parameter_receipt)
+set(_mysql_fixture_test_names "")
+while(ODBCPP_MYSQL_FIXTURE_TESTS)
+  list(POP_FRONT ODBCPP_MYSQL_FIXTURE_TESTS _option _test)
+  list(APPEND _mysql_fixture_test_names ${_test})
+  if(ODBCPP_MYSQL_${_option}_LIVE_TESTS)
+    add_executable(${_test} tests/integration/${_test}.cpp)
+    target_link_libraries(${_test} PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+    apply_compiler_settings(${_test})
+    set_target_properties(${_test} PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  endif()
+endwhile()
 
 # ---- Unit Tests ----
+# Optional SDK consumers and dynamic-load tests are explicitly registered below.
+set(_unit_tests_registered_elsewhere
+  test_named_profile_acquisition test_provisioned_native_owner
+  test_provisioned_pg_connector test_provisioned_sdk_runtime
+  test_sts_serverless_owner test_jwt_iam_auth test_odbc_trace_reload)
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector|test_provisioned_sdk_runtime|test_sts_serverless_owner|test_jwt_iam_auth|test_odbc_trace_reload)$")
-    continue() # Optional SDK consumers and dynamic-load tests are explicitly registered below.
+  if(test_name IN_LIST _unit_tests_registered_elsewhere)
+    continue()
   endif()
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
+target_include_directories(test_pg_credential_consumer PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}"
+  "${ODBCPP_INTERNAL_INCLUDE_auth}" "${ODBCPP_INTERNAL_INCLUDE_backend}")
+foreach(_test IN LISTS ODBCPP_AUTH_CORE_UNIT_TESTS)
+  target_include_directories(${_test} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
+endforeach()
+target_link_libraries(test_connection_pool PRIVATE odbcpp_prototype_pool)
+target_link_libraries(test_thread_safety PRIVATE odbcpp_prototype_pool)
+target_link_libraries(test_response_operation PRIVATE Threads::Threads)
+target_link_libraries(test_session_cancellation PRIVATE Threads::Threads)
+target_sources(test_pg_staged_refusal_observer PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/pg_staged_refusal_observer.cpp")
+target_compile_definitions(test_odbc_trace PRIVATE
+  ODBCPP_EXPORTS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
 # Loads the real driver library like a Driver Manager; it must not link the
 # static core, so unload runs the driver image's own shutdown path.
 add_executable(test_odbc_trace_reload tests/unit/test_odbc_trace_reload.cpp)
@@ -247,7 +233,7 @@ if(MSVC)
   target_link_options(test_backend_contract PRIVATE
     "/MAP:$<TARGET_FILE_DIR:test_backend_contract>/test_backend_contract.map")
 endif()
-set_tests_properties(test_pg_credential_consumer test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response test_aws_db_xml_response test_redshift_serverless_response test_redshift_provisioned_response test_redshift_withiam_response test_auth_raw_response_projection test_checked_response_boundary test_checked_response_stream test_checked_aws_db_json_response test_response_operation test_checked_aws_db_xml_response
+set_tests_properties(test_pg_credential_consumer ${ODBCPP_AUTH_CORE_UNIT_TESTS}
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
 set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation test_mysql_authentication test_mysql_session test_mysql_query_wire test_mysql_prepared_wire test_mysql_connect_until test_mysql_datetime_q6_preflight_deadlines test_mysql_q6_preflight_phase_binding
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
@@ -484,16 +470,17 @@ if(TARGET_DATABASE STREQUAL "REDSHIFT")
     set_tests_properties(it_redshift_columns_omitted_table PROPERTIES LABELS "integration;redshift;columns" TIMEOUT 120)
   endif()
 endif()
+# Opt-in native, auth and pinned-fixture images are registered explicitly; the
+# Driver Manager suite never links odbcpp_core.
+set(_integration_tests_registered_elsewhere
+  it_redshift_routine_schema_patterns it_redshift_columns_omitted_table
+  it_redshift_powerbi_relationship it_driver_manager_unicode it_auth_pg_material_tls
+  it_redshift_native_auth it_redshift_serverless_sts_auth
+  it_redshift_serverless_jwt_iam_auth ${_mysql_fixture_test_names})
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_redshift_routine_schema_patterns" OR test_name STREQUAL "it_redshift_columns_omitted_table" OR test_name STREQUAL "it_redshift_powerbi_relationship")
-    continue() # Explicit opt-in native registration above.
-  endif()
-  if(test_name STREQUAL "it_driver_manager_unicode")
-    continue() # Registered below against the Driver Manager, never odbcpp_core.
-  endif()
-  if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_redshift_serverless_sts_auth" OR test_name STREQUAL "it_redshift_serverless_jwt_iam_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
+  if(test_name IN_LIST _integration_tests_registered_elsewhere)
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running
@@ -507,11 +494,12 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
     continue()
   endif()
   add_test_executable(${test_name} ${test_file})
-  if(test_name STREQUAL "it_session_baseline")
-    target_link_libraries(${test_name} PRIVATE odbcpp_session_baseline)
-  endif()
   set_tests_properties(${test_name} PROPERTIES LABELS "integration")
 endforeach()
+target_link_libraries(it_connection_pool PRIVATE odbcpp_prototype_pool)
+if(TARGET it_session_baseline)
+  target_link_libraries(it_session_baseline PRIVATE odbcpp_session_baseline)
+endif()
 
 # Exercise the shared driver through the platform ODBC Driver Manager. This
 # deliberately does not link odbcpp_core, so missing exports or registration

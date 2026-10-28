@@ -656,15 +656,16 @@ jobs:
         shell: pwsh
         run: |
           $env:GTEST_OUTPUT = "xml:$env:RUNNER_TEMP/odbcpp-integration-results/"
-          ctest --test-dir build-windows -C Release -L integration -E '^it_crypto_profile_live$' --timeout 90 --output-on-failure
+          $selection = @('--test-dir', 'build-windows', '-C', 'Release', '-L', 'integration', '-E', '^it_crypto_profile_live$')
+          ctest @selection --timeout 90 --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed" }
+          # Every registered integration test is a GoogleTest image that writes <name>.xml.
+          $registered = @((ctest @selection --show-only=json-v1 | ConvertFrom-Json).tests.name | Sort-Object)
+          if ($LASTEXITCODE -ne 0 -or $registered.Count -eq 0) { throw "No registered Windows integration tests" }
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
-          $expectedReports = @(
-            Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_auth_pg_material_tls.cpp', 'it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_redshift_serverless_sts_auth.cpp', 'it_redshift_serverless_jwt_iam_auth.cpp', 'it_redshift_routine_schema_patterns.cpp', 'it_redshift_columns_omitted_table.cpp', 'it_redshift_powerbi_relationship.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
-          ).Count
-          if ($reports.Count -ne $expectedReports) {
-            throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
+          $reported = @($reports.BaseName | Sort-Object)
+          if (Compare-Object $registered $reported) {
+            throw "Integration reports ($($reported -join ', ')) do not match registered tests ($($registered -join ', '))"
           }
           foreach ($report in $reports) {
             [xml]$result = Get-Content $report.FullName
