@@ -131,11 +131,13 @@ class Output:
         self.path, self.parent, self.fd = directory, None, None
         self.files = {}
         self.retired = set()
+        self.closed_stamps = {}
         try:
             parts = private._parts(directory)
             self.name = parts[-1]
             self.parent = private._directory(parts[:-1])
             _private_directory(os.fstat(self.parent))
+            self.parent_identity = private._stamp(os.fstat(self.parent))[:2]
             # An existing directory is never adopted, even if apparently empty.
             os.mkdir(self.name, 0o700, dir_fd=self.parent)
             self.fd = os.open(self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
@@ -219,14 +221,65 @@ class Output:
         return clean
 
     def close(self):
-        for fd, _ in self.files.values():
-            os.close(fd)
-        self.files.clear()
+        """Consume every acquisition once, even if close consumed it then failed."""
+        failures = []
+        for name, (fd, identity) in list(self.files.items()):
+            if fd is None:
+                continue
+            self.files[name] = (None, identity)
+            try:
+                # Reopening after a close failure must also match the complete
+                # final stamp, not just an inode number that could be reused.
+                self.closed_stamps[name] = private._stamp(os.fstat(fd))
+            except Exception:
+                failures.append(name)
+            try:
+                os.close(fd)
+            except Exception:
+                if name not in failures:
+                    failures.append(name)
         for attr in ('fd', 'parent'):
             fd = getattr(self, attr, None)
             setattr(self, attr, None)
             if fd is not None:
-                os.close(fd)
+                try:
+                    os.close(fd)
+                except Exception:
+                    failures.append(attr)
+        return failures
+
+    def retire_closed(self, names):
+        """Recover custody of exact published outputs; never retry a closed fd.
+
+        Only used after final close failed. New acquisitions are checked against
+        the original directories and final file stamps before any retirement.
+        A replacement is retained and reported as unresolved cleanup.
+        """
+        self.parent = private._directory(private._parts(self.path)[:-1])
+        need(private._stamp(os.fstat(self.parent))[:2] == self.parent_identity,
+             'output_directory_changed')
+        self.fd = os.open(self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                          os.O_CLOEXEC, dir_fd=self.parent)
+        need(private._stamp(os.fstat(self.fd))[:2] == self.identity,
+             'output_directory_changed')
+        self.check()
+        clean = True
+        for name in names:
+            if name not in self.files or name in self.retired:
+                continue
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC |
+                             os.O_NONBLOCK, dir_fd=self.fd)
+                identity = self.files[name][1]
+                self.files[name] = (fd, identity)
+                need(private._stamp(os.fstat(fd)) == self.closed_stamps.get(name),
+                     'output_changed')
+                if not self.retire(only=(name,)):
+                    clean = False
+            except Exception:
+                clean = False
+        return clean
+
 
 
 def _json(data):
@@ -447,7 +500,28 @@ def issue(directory):
                 success, reason = False, 'input_close_failed'
             _finish(output, metadata, success, reason, deadline)
         finally:
-            output.close()
+            close_failures = output.close()
+            if close_failures:
+                metadata.update({'verified': False, 'status': 'output_close_failed',
+                                 'output_close_failures': close_failures,
+                                 'failure_metadata_file': None})
+                try:
+                    # Unknown readers keep their inputs. Metadata is never an
+                    # input to the child and can always be retired if still ours.
+                    names = ('metadata.json', 'failure.json')
+                    if metadata['readers_reaped']:
+                        names += ('credentials.ini',)
+                    metadata['failed_publication_outputs_retired'] = output.retire_closed(names)
+                    metadata['failure_metadata_file'] = 'close-failure.json'
+                    output.create('close-failure.json',
+                                  (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode('ascii'))
+                except Exception:
+                    metadata['failed_publication_outputs_retired'] = False
+                    metadata['failure_metadata_file'] = None
+                finally:
+                    # No retry of any original descriptor or of publication.
+                    # Even persistent storage/close failures cannot restore success.
+                    output.close()
     return metadata
 
 

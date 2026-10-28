@@ -15,6 +15,11 @@ unverified process cleanup rather than erasing potentially active inputs.
 Per-call exit, timeout and reap facts remain in the metadata after raw output
 retirement. Late/failed metadata publication revokes success, retires exact owned
 credentials, and records public failure facts in `failure.json` when writable.
+Final descriptor-close failures also revoke success. Every acquired descriptor
+gets one close attempt; recovery reacquires only the original directories and
+unchanged owned files to retire success metadata and credentials. A separate
+`close-failure.json` records sanitized failure facts when writable. Replacements
+and inputs with unverified readers are retained, with cleanup reported unresolved.
 Only credential validity is extended. Issuance remains bounded to 90 seconds;
 operational runs retain their own finite admissions, deadlines and caps. There
 is no duration option or automatic renewal.

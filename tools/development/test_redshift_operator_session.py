@@ -1,5 +1,7 @@
 """POSIX offline controls only: all AWS executions use a local fake process."""
 from datetime import datetime, timedelta, timezone
+import contextlib
+import io
 import hashlib
 import json
 import os
@@ -491,6 +493,145 @@ class OperatorTests(unittest.TestCase):
                 self.assertTrue(result['temporary_outputs_retired'])
                 self.assertEqual({path.name for path in self.output.iterdir()}, {'metadata.json'})
                 self.assertNotIn('private-close-diagnostic', json.dumps(result))
+
+    def output_close_fault(self, target, *, after_close=None, persistent=False):
+        """Call the real CLI with fake AWS, fault only owned final-close fds."""
+        original_close = session.os.close
+        original_output_close = session.Output.close
+        phases = []
+        injected = []
+
+        def closing(owned):
+            descriptors = {fd: name for name, (fd, _) in owned.files.items() if fd is not None}
+            descriptors.update({getattr(owned, attr): attr for attr in ('fd', 'parent')
+                                if getattr(owned, attr) is not None})
+            attempts = []
+            phases.append((set(descriptors.values()), attempts))
+
+            def fail(fd):
+                label = descriptors[fd]
+                attempts.append(label)
+                original_close(fd)
+                if label == target and (not injected or persistent):
+                    injected.append(label)
+                    if after_close is not None:
+                        after_close()
+                    raise OSError('private-output-close-diagnostic')
+
+            with patch.object(session.os, 'close', side_effect=fail):
+                return original_output_close(owned)
+
+        before = set(os.listdir('/proc/self/fd')) if LINUX_FD_TABLE else None
+        stdout = io.StringIO()
+        with patch.object(session.Output, 'close', closing), contextlib.redirect_stdout(stdout):
+            rc = session.main(['--output-directory', str(self.output)])
+        result = json.loads(stdout.getvalue())
+        if before is not None:
+            self.assertEqual(set(os.listdir('/proc/self/fd')), before, 'no output descriptors leak')
+        self.assertEqual(rc, 1)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['status'], 'output_close_failed')
+        self.assertEqual(result['output_close_failures'], [target])
+        self.assertTrue(injected)
+        for expected, attempted in phases:
+            self.assertEqual(set(attempted), expected)
+            self.assertEqual(len(attempted), len(expected), 'each acquisition closes exactly once')
+        self.assertEqual(self.bootstrap.read_bytes(), self.original)
+        for secret in ('private-output-close-diagnostic', 'bootstrap-secret', 'temporary-secret', 'private-token'):
+            self.assertNotIn(secret, stdout.getvalue())
+        if result['failure_metadata_file']:
+            self.assertEqual(json.loads((self.output / result['failure_metadata_file']).read_text()), result)
+        return result
+
+    def test_output_close_faults_revoke_durable_success_and_attempt_every_close(self):
+        # Include retired files, both still-published files and both directory fds.
+        targets = ('bootstrap.private', 'config.private', 'before.private', 'session.private',
+                   'credentials.ini', 'after.private', 'metadata.json', 'fd', 'parent')
+        for index, target in enumerate(targets):
+            with self.subTest(target=target):
+                self.output = self.base / ('output-close-' + str(index))
+                self.calls.clear()
+                result = self.output_close_fault(target)
+                self.assertEqual(len(self.calls), 3)
+                self.assertTrue(result['readers_reaped'])
+                self.assertTrue(result['failed_publication_outputs_retired'])
+                self.assertEqual({p.name for p in self.output.iterdir()}, {'close-failure.json'})
+
+    def test_output_close_fault_does_not_delete_replaced_credentials(self):
+        def replace():
+            # Rename preserves the old inode, making identity mismatch deterministic.
+            (self.output / 'credentials.ini').rename(self.output / 'original-for-fixture')
+            replacement = self.output / 'credentials.ini'
+            replacement.write_text('replacement-must-remain')
+            replacement.chmod(0o600)
+        result = self.output_close_fault('parent', after_close=replace)
+        self.assertFalse(result['failed_publication_outputs_retired'])
+        self.assertEqual((self.output / 'credentials.ini').read_text(), 'replacement-must-remain')
+        self.assertFalse((self.output / 'metadata.json').exists())
+
+    def test_output_close_fault_does_not_delete_replaced_metadata(self):
+        def replace():
+            (self.output / 'metadata.json').rename(self.output / 'original-for-fixture')
+            replacement = self.output / 'metadata.json'
+            replacement.write_text('replacement-must-remain')
+            replacement.chmod(0o600)
+        result = self.output_close_fault('parent', after_close=replace)
+        self.assertFalse(result['failed_publication_outputs_retired'])
+        self.assertEqual((self.output / 'metadata.json').read_text(), 'replacement-must-remain')
+        self.assertFalse((self.output / 'credentials.ini').exists())
+
+    def test_output_close_fault_does_not_follow_replaced_directory(self):
+        moved = self.base / 'original-output-for-fixture'
+        def replace():
+            self.output.rename(moved)
+            self.output.mkdir(mode=0o700)
+            (self.output / 'marker').write_text('replacement-must-remain')
+        result = self.output_close_fault('parent', after_close=replace)
+        self.assertFalse(result['failed_publication_outputs_retired'])
+        self.assertIsNone(result['failure_metadata_file'])
+        self.assertEqual({p.name for p in self.output.iterdir()}, {'marker'})
+        # Custody was lost: retain and report the original artifacts, not a pass.
+        self.assertTrue((moved / 'credentials.ini').exists())
+
+    def test_output_close_fault_recovery_checks_complete_file_stamp(self):
+        def modify():
+            # Same inode, different bytes: recovery must not retire it as ours.
+            (self.output / 'credentials.ini').write_text('modified-must-remain')
+        result = self.output_close_fault('parent', after_close=modify)
+        self.assertFalse(result['failed_publication_outputs_retired'])
+        self.assertEqual((self.output / 'credentials.ini').read_text(), 'modified-must-remain')
+        self.assertFalse((self.output / 'metadata.json').exists())
+
+    def test_output_close_fault_with_unknown_readers_preserves_their_inputs(self):
+        original_process = self.fake
+        def unknown(*args, **kwargs):
+            if len(self.calls) == 2:
+                raise RuntimeError('private-reader-diagnostic')
+            return original_process(*args, **kwargs)
+        with patch.object(session, 'bounded_process', unknown):
+            result = self.output_close_fault('parent')
+        self.assertFalse(result['readers_reaped'])
+        self.assertTrue((self.output / 'credentials.ini').exists())
+        self.assertTrue((self.output / 'bootstrap.private').exists())
+        self.assertFalse((self.output / 'metadata.json').exists())
+
+    def test_persistent_output_directory_close_fault_still_retires_success(self):
+        result = self.output_close_fault('parent', persistent=True)
+        self.assertTrue(result['failed_publication_outputs_retired'])
+        self.assertEqual({p.name for p in self.output.iterdir()}, {'close-failure.json'})
+
+    def test_output_close_fault_and_failure_record_write_failure_never_accept(self):
+        original_create = session.Output.create
+        def fail(owned, name, data):
+            if name == 'close-failure.json':
+                raise OSError('private-storage-diagnostic')
+            original_create(owned, name, data)
+        with patch.object(session.Output, 'create', fail):
+            result = self.output_close_fault('parent')
+        self.assertIsNone(result['failure_metadata_file'])
+        self.assertFalse((self.output / 'credentials.ini').exists())
+        self.assertFalse((self.output / 'metadata.json').exists())
+
 
 
 if __name__ == '__main__':
