@@ -388,6 +388,8 @@ TEST_P(Odbc2Connected, LegacyTransactionCommitAndRollback) {
   ASSERT_EQ(SQL_SUCCESS, execute("INSERT INTO odbc2_transaction VALUES (2)"));
   ASSERT_EQ(SQL_SUCCESS, SQLTransact(environment_, connection_, SQL_COMMIT));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  // A no-op COMMIT must fail: its pending insert would be undone here.
+  ASSERT_EQ(SQL_SUCCESS, SQLTransact(environment_, connection_, SQL_ROLLBACK));
   ASSERT_EQ(SQL_SUCCESS, execute("SELECT count(*)::integer FROM odbc2_transaction"));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
   ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement_, 1, SQL_C_SLONG, &count, sizeof(count), &length));
@@ -406,7 +408,7 @@ TEST_P(Odbc2Connected, FunctionArrayUsesOdbc2BooleansAndAgreesWithSingleQueries)
   for (std::size_t i = 1; i <= 100; ++i) {
     EXPECT_TRUE(functions[i] == SQL_TRUE || functions[i] == SQL_FALSE) << i - 1;
   }
-  for (const SQLUSMALLINT id : {SQL_API_SQLALLOCENV, SQL_API_SQLALLOCCONNECT,
+  for (const auto id : std::array<SQLUSMALLINT, 15>{SQL_API_SQLALLOCENV, SQL_API_SQLALLOCCONNECT,
       SQL_API_SQLALLOCSTMT, SQL_API_SQLFREEENV, SQL_API_SQLFREECONNECT,
       SQL_API_SQLFREESTMT, SQL_API_SQLSETCONNECTOPTION, SQL_API_SQLGETCONNECTOPTION,
       SQL_API_SQLSETSTMTOPTION, SQL_API_SQLGETSTMTOPTION, SQL_API_SQLTRANSACT,

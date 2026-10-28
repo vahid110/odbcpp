@@ -16,6 +16,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${ODBC_DRIVER_MANAGER_LIBRARY}
     file(REAL_PATH "${ODBC_DRIVER_MANAGER_LIBRARY}" _odbc2_manager_path)
     set(_odbc2_snapshot "${CMAKE_CURRENT_BINARY_DIR}/dm-identity/odbc2-iodbc.bin")
     configure_file("${_odbc2_manager_path}" "${_odbc2_snapshot}" COPYONLY)
+    file(SHA256 "${_odbc2_snapshot}" _odbc2_snapshot_hash)
+    if(NOT _odbc2_snapshot_hash STREQUAL _odbc2_manager_hash)
+      message(FATAL_ERROR "ODBC2 manager snapshot changed while copying; qualification refused")
+    endif()
     target_compile_definitions(test_odbc2_compatibility PRIVATE
       ODBCPP_ODBC2_IODBC_PATH="${_odbc2_manager_path}"
       ODBCPP_ODBC2_IODBC_SHA256="${_odbc2_manager_hash}"
