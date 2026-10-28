@@ -436,6 +436,9 @@ endif()
 option(ODBCPP_NATIVE_PROVISIONED_AUTH_TESTS "Build the separately admitted native provisioned auth test" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeProvisionedAuth.cmake")
 
+option(ODBCPP_REDSHIFT_NATIVE_IDC_TOKEN_TESTS "Build the native IdC token owner (offline fake-HTTP + separately admitted live login)" OFF)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeIdcTokenAuth.cmake")
+
 # ---- Integration Tests ----
 # Authored real Redshift routine A/W coverage is opt-in execution only. Keep a
 # separately buildable target for compile checks without placing it in ordinary
