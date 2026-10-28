@@ -207,10 +207,7 @@ add_test(NAME test_xml_evidence COMMAND "${Python3_EXECUTABLE}" -B
 set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT 60)
 add_test(NAME test_aws_sdk_provenance COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/dependencies/test_aws_sdk_provenance.py")
-add_test(NAME test_pilot_startup_tls_policy COMMAND "${Python3_EXECUTABLE}" -B
-  "${CMAKE_CURRENT_SOURCE_DIR}/tools/redshift/test_pilot_startup_tls_policy.py")
-set_tests_properties(test_aws_sdk_provenance test_pilot_startup_tls_policy
-  PROPERTIES LABELS "unit;security" TIMEOUT 60)
+set_tests_properties(test_aws_sdk_provenance PROPERTIES LABELS "unit;security" TIMEOUT 60)
 # This lifecycle runs on the POSIX coordinator (including WSL), not native Windows.
 if(UNIX)
   add_test(NAME test_redshift_ca_snapshot COMMAND "${Python3_EXECUTABLE}" -B

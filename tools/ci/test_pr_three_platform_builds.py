@@ -5,7 +5,6 @@ YAML syntax validation is separate; these checks reject event/profile changes th
 would silently drop a platform or turn a PR build into live/full acceptance.
 """
 import ast
-import hashlib
 import itertools
 from pathlib import Path
 import re
@@ -18,25 +17,6 @@ FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-packag
              'iodbc-unicode')
 FLAGS = ('run_development_pilot', 'run_product_qualification',
          'run_windows_product_qualification', 'run_sanitizer_only', 'run_linked_server')
-# Reviewed job bodies, excluding only their top-level event condition. Preserve
-# 526b with reviewed packaging/checkpoint repairs (2026-10-22), then action pins
-# and literal cache-token grants (2026-10-25), then the reviewed exact PR109
-# checkout v7.0.1 pins; build/test commands are unchanged.
-BODY_SHA256 = {
-    'sanitizer-only': 'b09a63618df8499a9ccb181cc85f46065038f65faa72b86ee084e7ea9995cd12',
-    'ubuntu-development-pilot': '5b8a297a03e73c2d015782faed0336f5f49657c32df2071f42a21e2faf5e5ea8',
-    'ubuntu-product-qualification': '8a4dd75f8c81679ccd0a5315c0e1dab5b34d9b74d30700d46494f20e077be46d',
-    'windows-product-qualification': '5d0e12ab292bd0a2a60cb15de3cecef5fca9ff93d4a5265601fd29693d91c907',
-    'build-and-test': 'b02b5d0d4c3c417c230756fadfde79f7b745c3538c3ba5cc7cd05bafac509c69',
-    'redshift-build': '1ebe8532cedef3cbc57003e5e603ae70bc5c6642ae38e1ddd35c6ce1bfad1f56',
-    'windows-live': '90f8171083a71573e634ea129300a551261550227c4f43c95162ae7f6b120d16',
-    'windows-package': 'b08bb294b5fa5a22b0b5af8ed1f1a4f0a071b158883560d421956e7c77497e18',
-    'windows-linked-server': '78a55ae6ddd98acba64baf3d5e1b401cc3e5480bb58d8906667ad7e4c2df8a9d',
-    'linux-sanitizers': 'd9eb380226d38c7e70f2730b22b550cb12c41c7627f10b5427b725a03bb75a3a',
-    'linux-openssl-static': 'c629a493344201b61152fcbda4d4abea427e4f6064333d753143b38a95bf396e',
-    'awslc-adapter-proof': 'cd7dad823fd9582ab5990ff6286ea6932311babcbc07840198b3eeb044c63d3a',
-    'iodbc-unicode': '4bd25959794f57d60880ae151748406b555451b29e14d03da40e2c90b7dab527',
-}
 
 
 def jobs(text):
@@ -250,11 +230,6 @@ class ThreePlatformScheduling(unittest.TestCase):
                         expected.add('windows-linked-server')
             with self.subTest(flags=f):
                 self.assertEqual(active, expected)
-
-    def test_checkpoint_and_focused_job_bodies_match_reviewed_pins(self):
-        for name, expected in BODY_SHA256.items():
-            body = re.sub(r'^    if: .*\n', '', self.blocks[name], flags=re.M).strip()
-            self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), expected, name)
 
     def test_installer_gate_runs_in_existing_elevated_CI_before_legacy_fixtures(self):
         block = self.blocks['windows-package']

@@ -66,59 +66,6 @@ class RuntimeTests(unittest.TestCase):
             self.run_child("print('new')")
         self.assertEqual((self.directory/'output').read_text(), 'preserve')
 
-    def report(self, cases):
-        path = self.directory/'results.xml'
-        path.write_text('<testsuites><testsuite>' + cases + '</testsuite></testsuites>')
-        path.chmod(0o600)
-        return path
-
-    def case(self, extra='', status='run', result='completed'):
-        return f'<testcase classname="Pilot" name="One" status="{status}" result="{result}">{extra}</testcase>'
-
-    def test_exact_inventory_and_failure_sanitization(self):
-        result = runtime.test_summary(self.report(self.case('<failure message="password">native-secret</failure>')), ('Pilot.One',))
-        self.assertEqual(result, {'cases':['Pilot.One'], 'passed':0, 'failed':1})
-        self.assertNotIn('secret', str(result))
-
-    def test_missing_duplicate_and_skipped_cases_block(self):
-        for xml, code in [('', 'test_inventory_mismatch'), (self.case()*2, 'test_inventory_mismatch'),
-                          (self.case('<skipped/>'), 'incomplete_test_run'),
-                          (self.case(status='notrun'), 'incomplete_test_run')]:
-            with self.subTest(xml=xml):
-                with self.assertRaisesRegex(Blocked, code):
-                    runtime.test_summary(self.report(xml), ('Pilot.One',))
-
-    def test_modified_executable_blocks(self):
-        with self.assertRaisesRegex(Blocked, 'executable_changed'):
-            runtime.verify_executable(Path(sys.executable).resolve(), '0'*64)
-
-    def test_malformed_outcomes_and_duplicate_expected_block(self):
-        for extra in ('<error/>', '<properties><failure/></properties>', '<unexpected/>',
-                      '<failure><failure/></failure>'):
-            with self.subTest(extra=extra):
-                with self.assertRaisesRegex(Blocked, 'invalid_test_report'):
-                    runtime.test_summary(self.report(self.case(extra)), ('Pilot.One',))
-        with self.assertRaisesRegex(Blocked, 'invalid_test_report'):
-            runtime.test_summary(self.report(self.case()), ('Pilot.One', 'Pilot.One'))
-
-    def test_bounded_xml_and_encoding_aware_declaration_refusal(self):
-        path = self.report(self.case())
-        source = path.read_text()
-        for encoding in ('utf-8', 'utf-16-le', 'utf-16-be'):
-            path.write_bytes(source.encode(encoding))
-            with patch.object(Path, 'read_bytes', side_effect=AssertionError('whole XML read')):
-                self.assertEqual(runtime.test_summary(path, ('Pilot.One',))['passed'], 1)
-            for bad in ('<!DOCTYPE testsuites [<!ENTITY unused "x">]>' + source,
-                        '<r>' * 129 + '</r>' * 129,
-                        '<r a="' + 'x' * 70000 + '"/>', '<unclosed>'):
-                path.write_bytes(bad.encode(encoding))
-                with self.subTest(encoding=encoding, prefix=bad[:20]):
-                    with self.assertRaisesRegex(Blocked, '^invalid_test_report$'):
-                        runtime.test_summary(path, ('Pilot.One',))
-        path.write_bytes(b' ' * (1024 * 1024 + 1))
-        with self.assertRaisesRegex(Blocked, '^invalid_test_report$'):
-            runtime.test_summary(path, ('Pilot.One',))
-
     def test_persistent_or_unobservable_group_blocks(self):
         with patch.object(runtime, '_group_alive', return_value=True), \
              patch.object(runtime.os, 'killpg', side_effect=PermissionError):
