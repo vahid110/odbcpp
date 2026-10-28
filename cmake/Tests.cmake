@@ -769,7 +769,8 @@ if(UNIX OR WIN32)
 
     apply_compiler_settings(it_driver_manager)
     add_test(NAME it_driver_manager COMMAND it_driver_manager)
-    set_tests_properties(it_driver_manager PROPERTIES LABELS "integration")
+    # A plain executable: it writes no GoogleTest report.
+    set_tests_properties(it_driver_manager PROPERTIES LABELS "integration;no-gtest-report")
     set_target_properties(it_driver_manager PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 
@@ -908,7 +909,8 @@ if(WIN32)
   add_dependencies(it_setup odbcpp_setup odbcpp_driver)
   set_target_properties(it_setup PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   add_test(NAME it_setup COMMAND it_setup)
-  set_tests_properties(it_setup PROPERTIES LABELS "integration" TIMEOUT 90)
+  # A plain executable: it writes no GoogleTest report.
+  set_tests_properties(it_setup PROPERTIES LABELS "integration;no-gtest-report" TIMEOUT 90)
 endif()
 
 if(WIN32)

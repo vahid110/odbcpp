@@ -114,6 +114,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Some tooling tests read earlier commits.
+          fetch-depth: 0
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
       # Every tooling unit test under tools/ runs here, so none can silently rot.
@@ -186,13 +188,18 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          # Some tooling tests read earlier commits.
+          fetch-depth: 0
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
       - name: Run Windows tooling unit tests offline
         run: |
           $env:PYTHONPATH = $PWD.Path
           $failed = @()
-          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' })) {
+          # Owner-model checks need a non-admin account that owns its files by
+          # default; they qualify the coordinator host, not the hosted runner.
+          $hostOnly = 'test_windows_live_backend.py', 'test_windows_powerbi_applicability.py', 'test_windows_powerbi_publication.py'
+          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
             Write-Host "::group::$test"
             python -B $test
             if ($LASTEXITCODE -ne 0) { $failed += $test; Write-Host "::error file=$test::tooling unit test failed" }
@@ -678,8 +685,9 @@ jobs:
           $selection = @('--test-dir', 'build-windows', '-C', 'Release', '-L', 'integration', '-E', '^it_crypto_profile_live$')
           ctest @selection --timeout 90 --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed" }
-          # Every registered integration test is a GoogleTest image that writes <name>.xml.
-          $registered = @((ctest @selection --show-only=json-v1 | ConvertFrom-Json).tests.name | Sort-Object)
+          # Every GoogleTest integration image writes <name>.xml; plain executables are
+          # labelled no-gtest-report where they are registered.
+          $registered = @((ctest @selection -LE '^no-gtest-report$' --show-only=json-v1 | ConvertFrom-Json).tests.name | Sort-Object)
           if ($LASTEXITCODE -ne 0 -or $registered.Count -eq 0) { throw "No registered Windows integration tests" }
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $reported = @($reports.BaseName | Sort-Object)
