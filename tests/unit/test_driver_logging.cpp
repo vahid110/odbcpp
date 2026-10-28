@@ -4,6 +4,7 @@
 #include "odbc/connection_string.h"
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
+#include "tests/support/scoped_driver_config.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,7 @@
 #include <process.h>
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 namespace {
@@ -67,20 +69,31 @@ TEST(DriverLoggingOptionsTest, AppliesDriverDsnAndConnectionPrecedence) {
       {"LogLevel", "Debug"}, {"LogFile", "dsn.log"},
       {"LogSink", "File,Stderr"}, {"LogQueries", "yes"}};
   const std::map<std::string, std::string> connection{
-      {"LogFormat", "Json"}, {"LogAsync", "false"},
-      {"LogMaxSize", "2048"}};
+      {"LogLevel", "Info"}, {"LogFormat", "Json"}, {"LogAsync", "false"}};
 
   const auto options = LoggingOptions::resolve(driver, dsn, connection);
-  EXPECT_EQ(LogLevel::Debug, options.level);
+  EXPECT_EQ(LogLevel::Info, options.level);
   EXPECT_EQ(LogFormat::Json, options.format);
   EXPECT_EQ("dsn.log", options.file);
-  EXPECT_EQ(2048u, options.max_file_size);
+  EXPECT_EQ(1024u, options.max_file_size);
   EXPECT_EQ(2u, options.max_files);
   EXPECT_FALSE(options.asynchronous);
   EXPECT_TRUE(options.log_queries);
   ASSERT_EQ(2u, options.sinks.size());
   EXPECT_EQ(LogSink::File, options.sinks[0]);
   EXPECT_EQ(LogSink::Stderr, options.sinks[1]);
+}
+
+// A connection string comes from the application; it must not choose log file
+// paths, sinks, rotation or query logging. The DSN and driver section can.
+TEST(DriverLoggingOptionsTest, ConnectionStringCannotSetAdministratorKeys) {
+  for (const auto& [key, value] : std::map<std::string, std::string>{
+           {"LogFile", "/tmp/odbcpp-hostile.log"}, {"logsink", "File"},
+           {"LogQueries", "true"}, {"LogMaxSize", "1"}, {"LogMaxFiles", "9"}}) {
+    EXPECT_THROW(LoggingOptions::resolve({}, {}, {{key, value}}), std::invalid_argument) << key;
+    EXPECT_NO_THROW(LoggingOptions::resolve({{key, value}}, {}, {})) << key;
+    EXPECT_NO_THROW(LoggingOptions::resolve({}, {{key, value}}, {})) << key;
+  }
 }
 
 TEST(DriverLoggingOptionsTest, RejectsInvalidConfiguration) {
@@ -165,16 +178,44 @@ TEST(DriverLoggerTest, WritesEscapedStructuredJson) {
   std::filesystem::remove_all(directory);
 }
 
+#ifndef _WIN32
+// A configured log path that is a symbolic link is refused before the rotating
+// sink can append to or rename its target; a new file is owner-only.
+TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
+  const auto directory = temporary_directory("odbcpp-log-symlink");
+  const auto target = directory / "target.txt";
+  {
+    std::ofstream file(target);
+    file << "keep";
+  }
+  const auto link = directory / "driver.log";
+  std::filesystem::create_symlink(target, link);
+  const auto linked = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", link.string()}}, {}, {});
+  EXPECT_THROW(DriverLogger::create(linked, 1), std::invalid_argument);
+  EXPECT_EQ("keep", read_file(target));
+  const auto fresh = directory / "fresh.log";
+  const auto created = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", fresh.string()}}, {}, {});
+  { const auto logger = DriverLogger::create(created, 1); }
+  struct stat info {};
+  ASSERT_EQ(0, ::stat(fresh.c_str(), &info));
+  EXPECT_EQ(0600, info.st_mode & 0777);
+  std::filesystem::remove_all(directory);
+}
+#endif
+
 TEST(DriverLoggerTest, ConnectionLoggingNeverWritesPassword) {
   const auto directory = temporary_directory("odbcpp-connection-log");
   const auto path = directory / "driver.log";
   {
+    const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+        {{"LogSink", "File"}, {"LogFile", path.string()}, {"LogQueries", "true"}});
     rs::odbc::ODBCConnection connection(nullptr);
     ASSERT_EQ(SQL_SUCCESS, connection.set_attribute(SQL_ATTR_LOGIN_TIMEOUT, 1));
-    const auto result = connection.connect(
+    const auto result = connection.connect(config.connection_prefix() +
         "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
-        "TransportMode=Sync;LogLevel=Debug;LogSink=File;LogFile=" +
-            path.string() + ";LogAsync=false;LogQueries=true");
+        "TransportMode=Sync;LogLevel=Debug;LogAsync=false");
     EXPECT_EQ(SQL_ERROR, result);
     connection.disconnect();
   }
@@ -198,10 +239,11 @@ TEST(DriverLoggerTest, ApiFailuresIncludeOperationAndDiagnosticContext) {
                           reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  const std::string connection_string =
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}});
+  const std::string connection_string = config.connection_prefix() +
       "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
-      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogSink=File;LogFile=" +
-      path.string() + ";LogAsync=false";
+      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogAsync=false";
   EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
       connection, nullptr,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string.c_str())),
@@ -255,10 +297,11 @@ TEST(DriverLoggerTest, DiagnosticRetrievalLogsWithoutChangingDiagnostics) {
                           reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  const std::string connection_string =
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}});
+  const std::string connection_string = config.connection_prefix() +
       "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
-      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogSink=File;LogFile=" +
-      path.string() + ";LogAsync=false";
+      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogAsync=false";
   ASSERT_EQ(SQL_ERROR, SQLDriverConnect(
       connection, nullptr,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string.c_str())),
@@ -439,8 +482,9 @@ TEST(DriverLoggerTest, FailureSummaryKeepsSensitiveDsnOnlyInOdbcDiagnostic) {
       reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
   const std::string marker = "odbcpp-secret-dsn-928174";
-  const std::string input = "DSN=" + marker + ";LogLevel=Trace;LogSink=File;LogFile=" +
-      path.string() + ";LogAsync=false";
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}});
+  const std::string input = config.connection_prefix() + "DSN=" + marker + ";LogLevel=Trace;LogAsync=false";
   EXPECT_EQ(SQL_ERROR, SQLDriverConnect(connection, nullptr,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(input.c_str())), SQL_NTS,
       nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));

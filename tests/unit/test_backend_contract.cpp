@@ -4,6 +4,7 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
+#include "tests/support/scoped_driver_config.h"
 #include "odbcpp/util/hex.h"
 #include "odbc/unicode.h"
 
@@ -1400,7 +1401,9 @@ TEST_F(BackendContractTest, BackendDiagnosticStaysDetailedWhileFailureLogUsesPub
   std::filesystem::create_directories(directory);
   const auto path = directory / "driver.log";
   seen->failure_message = "credential=server-secret-981724\nprivate SQL and identifiers";
-  connect_with("SERVER=fake;SSL=0;LogLevel=Trace;LogQueries=false;LogAsync=false;LogSink=File;LogFile=" + path.string());
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}, {"LogQueries", "false"}});
+  connect_with(config.connection_prefix() + "SERVER=fake;SSL=0;LogLevel=Trace;LogAsync=false");
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   for (const bool prepared : {false, true}) {
     if (prepared) {
@@ -1435,7 +1438,9 @@ TEST_F(BackendContractTest, MetadataCacheEventsExposeNoSqlContents) {
       ("odbcpp-metadata-log-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   std::filesystem::create_directories(directory);
   const auto path = directory / "driver.log";
-  connect_with("SERVER=fake;SSL=0;LogLevel=Debug;LogQueries=false;LogAsync=false;LogSink=File;LogFile=" + path.string());
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}, {"LogQueries", "false"}});
+  connect_with(config.connection_prefix() + "SERVER=fake;SSL=0;LogLevel=Debug;LogAsync=false");
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"private_sql_canary_781 ?", SQL_NTS));
   SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
