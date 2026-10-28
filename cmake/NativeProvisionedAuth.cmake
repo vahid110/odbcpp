@@ -50,20 +50,25 @@ endforeach()
 # Only the eight optional headers are staged. Ordinary AuthCore headers retain
 # their existing checked canonical stage; optional inputs are not installed.
 set(_native_stage "${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-include")
-file(REMOVE_RECURSE "${_native_stage}")
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_native_owner.h" "${_native_stage}/odbcpp/auth/aws/provisioned_native_owner.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_sdk_runtime.h" "${_native_stage}/odbcpp/auth/aws/provisioned_sdk_runtime.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_native_http_ingress.h" "${_native_stage}/odbcpp/auth/aws/provisioned_native_http_ingress.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile_acquisition.h" "${_native_stage}/odbcpp/auth/aws/named_profile_acquisition.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_assume_role_owner.h" "${_native_stage}/odbcpp/auth/aws/sts_assume_role_owner.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/serverless_credentials_owner.h" "${_native_stage}/odbcpp/auth/aws/serverless_credentials_owner.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/sts_serverless_fake_http.h" "${_native_stage}/odbcpp/auth/aws/sts_serverless_fake_http.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/profile_role_assumption.h" "${_native_stage}/odbcpp/auth/aws/profile_role_assumption.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/jwt_iam_auth.h" "${_native_stage}/odbcpp/auth/aws/jwt_iam_auth.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
-configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_pg_connector.h" "${_native_stage}/odbcpp/auth/aws/provisioned_pg_connector.h" COPYONLY)
+set(_native_pairs "")
+foreach(_header IN ITEMS
+    odbcpp/auth/aws/provisioned_native_owner.h
+    odbcpp/auth/aws/provisioned_sdk_runtime.h
+    odbcpp/auth/aws/provisioned_native_http_ingress.h
+    odbcpp/auth/aws/named_profile_acquisition.h
+    odbcpp/auth/aws/native_body_capture.h
+    odbcpp/auth/aws/explicit_profile_source.h
+    odbcpp/auth/aws/sts_assume_role_owner.h
+    odbcpp/auth/aws/serverless_credentials_owner.h
+    odbcpp/auth/aws/sts_serverless_fake_http.h
+    odbcpp/auth/aws/profile_role_assumption.h
+    odbcpp/auth/aws/jwt_iam_auth.h
+    odbcpp/auth/provisioned_query_transport.h
+    odbcpp/auth/aws/provisioned_pg_connector.h
+)
+  list(APPEND _native_pairs "${_header}" "${PROJECT_SOURCE_DIR}/sdk/internal/${_header}")
+endforeach()
+odbcpp_stage_headers("${_native_stage}" ${_native_pairs})
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
 add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_native_owner.cpp"
