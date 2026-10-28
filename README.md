@@ -135,6 +135,13 @@ application's protected login mechanism, not source files or command-line argume
 Logging is disabled by default. Configure it in the driver section of
 `odbcinst.ini`, a DSN, or a connection string. The precedence is the same as
 transport settings: connection string, DSN, driver section, then defaults.
+Settings that choose a log file or record query text (`LogFile`,
+`LogMaxSize`, `LogMaxFiles`, `LogSink` including `File`, and
+`LogQueries=true`) are accepted only from the DSN or driver section; a
+connection string that sets them is refused. On macOS and Linux, log files
+are created owner-only (0600), must be regular files owned by the driver's
+user, and are never opened through a symbolic link, including after rotation.
+Windows log files keep the default ACLs of their directory.
 
 ```ini
 [ODBCPP PostgreSQL]
