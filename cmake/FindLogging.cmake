@@ -24,3 +24,8 @@ endif()
 include("${CMAKE_CURRENT_LIST_DIR}/dependencies/ApplySpdlogFmtSecurity.cmake")
 odbcpp_patch_spdlog_fmt("${spdlog_SOURCE_DIR}")
 set(SPDLOG_INCLUDE_DIR "${spdlog_SOURCE_DIR}/include")
+if(WIN32)
+  include("${CMAKE_CURRENT_LIST_DIR}/LoggingPackageMetadata.cmake")
+  odbcpp_write_logging_package_metadata("${spdlog_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-logging-package-inputs.json")
+endif()
