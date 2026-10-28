@@ -8,6 +8,9 @@
 #ifndef _WIN32
 #include <spdlog/sinks/syslog_sink.h>
 #include <syslog.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -108,10 +111,24 @@ std::vector<LogSink> parse_sinks(const std::string& value) {
   return result;
 }
 
+// Keys that choose where log files are written, how they rotate, or whether
+// query text is recorded belong to whoever configures the driver or DSN. An
+// application connection string must not choose them: a file path there could
+// create, append to or rotate (rename) arbitrary files in the host process.
+bool administrator_key(const std::string& key) {
+  return key == "LOGFILE" || key == "LOGSINK" || key == "LOGQUERIES" ||
+         key == "LOGMAXSIZE" || key == "LOGMAXFILES";
+}
+
 void apply(LoggingOptions& options,
-           const std::map<std::string, std::string>& parameters) {
+           const std::map<std::string, std::string>& parameters,
+           bool administrator_layer) {
   for (const auto& [raw_key, value] : parameters) {
     const auto key = uppercase(raw_key);
+    if (!administrator_layer && administrator_key(key)) {
+      throw std::invalid_argument(
+          raw_key + " can only be set in the DSN or driver configuration");
+    }
     if (key == "LOGLEVEL") {
       options.level = parse_level(value);
     } else if (key == "LOGFORMAT") {
@@ -130,6 +147,21 @@ void apply(LoggingOptions& options,
       options.log_queries = parse_flag("LogQueries", value);
     }
   }
+}
+
+// Creates a new log file owner-only and refuses a symbolic link or any
+// non-regular file at the configured path before the rotating sink opens it.
+void prepare_log_file(const std::string& path) {
+#ifndef _WIN32
+  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) throw std::invalid_argument("LogFile cannot be opened as a regular file");
+  struct stat info {};
+  const bool regular = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
+  ::close(fd);
+  if (!regular) throw std::invalid_argument("LogFile must be a regular file");
+#else
+  (void)path;
+#endif
 }
 
 spdlog::level::level_enum spdlog_level(LogLevel level) noexcept {
@@ -267,9 +299,9 @@ LoggingOptions LoggingOptions::resolve(
     const std::map<std::string, std::string>& dsn_parameters,
     const std::map<std::string, std::string>& connection_parameters) {
   LoggingOptions options;
-  apply(options, driver_parameters);
-  apply(options, dsn_parameters);
-  apply(options, connection_parameters);
+  apply(options, driver_parameters, true);
+  apply(options, dsn_parameters, true);
+  apply(options, connection_parameters, false);
 
   if (options.level != LogLevel::Off && options.sinks.empty()) {
     options.sinks.push_back(options.file.empty() ? LogSink::Stderr
@@ -314,6 +346,7 @@ std::shared_ptr<DriverLogger> DriverLogger::create(
   for (const auto sink : options.sinks) {
     switch (sink) {
       case LogSink::File:
+        prepare_log_file(options.file);
         sinks.push_back(
             std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                 options.file, options.max_file_size, options.max_files));
