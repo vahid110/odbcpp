@@ -116,10 +116,18 @@ jobs:
           persist-credentials: false
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
-      - name: Check PR scheduling and build safety offline
+      # Every tooling unit test under tools/ runs here, so none can silently rot.
+      # Windows-only tests run in the Windows PR job; test_spdlog_fmt_patch needs
+      # build inputs and runs under CTest.
+      - name: Run tooling unit tests offline
         run: |
-          python3 -B tools/ci/test_pr_three_platform_builds.py -v
-          python3 -B tools/development/test_check_dm_offline_evidence.py -v
+          status=0
+          for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
+            echo "::group::$test"
+            PYTHONPATH="$PWD" python3 -B "$test" || { echo "::error file=$test::tooling unit test failed"; status=1; }
+            echo "::endgroup::"
+          done
+          exit "$status"
       - name: Install existing build dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
@@ -180,6 +188,17 @@ jobs:
           persist-credentials: false
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
+      - name: Run Windows tooling unit tests offline
+        run: |
+          $env:PYTHONPATH = $PWD.Path
+          $failed = @()
+          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' })) {
+            Write-Host "::group::$test"
+            python -B $test
+            if ($LASTEXITCODE -ne 0) { $failed += $test; Write-Host "::error file=$test::tooling unit test failed" }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count) { throw "Windows tooling unit tests failed: $($failed -join ', ')" }
       - name: Verify existing runner OpenSSL
         run: openssl version
       - name: Configure PostgreSQL x64 MSVC build
