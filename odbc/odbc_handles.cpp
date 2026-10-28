@@ -2620,6 +2620,9 @@ rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_nee
 void ODBCConnection::reconcile_transaction_state(
     rs::core::database::SessionSnapshot snapshot) noexcept {
   using rs::core::database::SessionState;
+  // Autocommit leaves transactions outside ODBC's model: SQLEndTran is a
+  // no-op there, so a SQL BEGIN must not make the driver own a transaction.
+  if (autocommit_ == SQL_AUTOCOMMIT_ON) return;
   if (snapshot.state == SessionState::Transaction ||
       snapshot.state == SessionState::FailedTransaction) {
     transaction_active_ = true;
