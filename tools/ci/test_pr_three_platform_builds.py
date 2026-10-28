@@ -258,6 +258,7 @@ class ThreePlatformScheduling(unittest.TestCase):
         # Only the two plain executables may opt out of the report comparison.
         self.assertEqual(re.findall(r'set_tests_properties\((\w+) PROPERTIES LABELS "[^"]*no-gtest-report', cmake),
                          ['it_driver_manager', 'it_setup'])
+        self.assertEqual(cmake.count('no-gtest-report'), 2)
 
     def test_tooling_test_loops_require_a_run_test(self):
         ubuntu, windows = self.blocks['pr-ubuntu-build'], self.blocks['pr-windows-build']
