@@ -60,13 +60,20 @@ Width mechanisms, verified against the local headers and `odbc/odbc_types.h`:
   bound `SQL_C_WCHAR` buffers, across ABI widths (comment in `odbc_types.h`).
 
 Qualified pairs today: Windows 2/2, Ubuntu unixODBC 2/2, macOS unixODBC 2/2,
-macOS iODBC 4/4. **No mixed pair (2/4 or 4/2) is built, registered or executed
-by any preset, CI job or recorded qualification run; none has recorded results.**
-The only mixed-width artifact is the compile-time guard
-`kManagerConvertsNonBmpCharacterCounts` in `it_driver_manager_unicode.cpp`,
-written for the iODBC driver-2/app-4 pairing, but no configuration selects a
-mixed pair, so it has no recorded execution. The reverse pairing — 4-byte
-driver under a 2-byte application — has no expectation-mapped code at all.
+macOS iODBC 4/4. **No recorded mixed-pair (2/4 or 4/2) qualification results
+exist.** A mixed build path does exist but has no recorded execution: the
+`iodbc-unicode` workflow_dispatch job in `.github/workflows/ci.yml` builds the
+driver against either unixodbc (2-byte) or libiodbc (4-byte) headers while the
+manager-linked tests compile against libiodbc headers at 4 bytes, registers the
+driver via `odbcinst.ini` `DriverUnicodeType`, and runs against a disposable
+PostgreSQL server. It is dispatch-only, its results are not recorded in any
+plan document, and it never builds a 2-byte application. The mixed-width guard
+`kManagerConvertsNonBmpCharacterCounts` in `it_driver_manager_unicode.cpp` is
+written for that driver-2/app-4 pairing and has never produced recorded results.
+The reverse pairing — 4-byte driver under a 2-byte application — has no
+representation on macOS/Linux: iODBC headers outside WIN32 are 4-byte only and
+unixODBC requires a matched driver ABI, so that boundary must be recorded as
+explicitly unsupported rather than qualified.
 
 ## 3. ODBC 2 compatibility surface
 
@@ -121,7 +128,7 @@ application profile has ever been executed through any manager.
 | ID | Item | Concrete missing evidence | First step | Blocked by |
 |---|---|---|---|---|
 | G5.1 | 1 | Windows DM execution of the applicable existing Redshift inventory, reported separately from direct-driver results | Record #117 outcome; fill runner gaps | #117 resource release |
-| G2.1 | 2 | A build + registration path for mixed pairs: 2-byte driver under iODBC 4-byte app, and 4-byte driver under 2-byte app | Add explicit mixed-pair build/registration profile on macOS iODBC | none |
+| G2.1 | 2 | Recorded mixed-pair qualification; the driver-2/app-4 build path exists (dispatch-only `iodbc-unicode` CI job) but has no recorded results; app-2/driver-4 must be recorded as explicitly unsupported | Reproduce the existing path locally with recorded identities, then qualify | none |
 | G2.2 | 2 | Mixed-width buffer/indicator/diagnostic boundary cases (truncation, non-BMP counts, unit-vs-byte lengths, bound-buffer limits) | Extend `it_driver_manager_unicode` and `test_dm_expectations.h` entries | G2.1 |
 | G2.3 | 2 | Per-profile expectations for mixed pairs; the existing `kManagerConvertsNonBmpCharacterCounts` skip converted to an asserted deviation | Assert the known iODBC non-BMP count behavior with evidence | G2.2 |
 | G3.1 | 3 | Checked-in definition of the supported ODBC 2 surface (native support vs manager remapping vs unsupported) | Write the surface definition doc | none |
@@ -144,19 +151,19 @@ checkpoint-scope.
 - **Unit C:** ODBC2 application profiles through the three managers (G3.2).
   Requires manager identity receipts (unixODBC receipt, observed Windows/iODBC
   versions). Offline where possible; loopback PostgreSQL for connected paths.
-- **Unit D:** mixed-pair build and registration path on macOS iODBC (G2.1):
-  2-byte driver (unixODBC-header build) under the 4-byte iODBC app, and the
-  reverse; run the existing identity/unicode/login-timeout images; record actual
-  manager/version/width identities.
-- **Unit E:** mixed-width boundary cases and expectation-table entries
-  (G2.2/G2.3); qualify on the macOS mixed pairs, keeping 2/2 and 4/4 assertions
-  unchanged.
+- **Unit D:** mixed-width qualification (G2.1/G2.2/G2.3): activate the existing
+  `iodbc-unicode` build/registration path locally on macOS — 2-byte driver
+  (unixodbc headers) registered under the 4-byte iODBC manager — record actual
+  manager/version/width identities, run the offline subset and the connected
+  Unicode cases against a disposable local PostgreSQL, convert the non-BMP
+  count skip into an asserted deviation, and record app-2/driver-4 as an
+  explicitly unsupported boundary.
 - **Unit F:** fake-backend gap assessment (G4.1); analysis only.
 - **Unit G:** Windows generic Redshift DM checkpoint (G5.1), sequenced after
   #117 closes or releases its resources; reuses #117's validated runner and
   registration, and reports DM results separately from direct-driver results.
 
-Recommended order: Units B/C and D/E are independent local source/test lanes;
+Recommended order: Units B/C and D are independent local source/test lanes;
 F can run anytime as analysis; G waits for #117. No pooling work (#101/#102) is
 in scope.
 
