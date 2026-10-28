@@ -8,6 +8,11 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#ifdef _MSC_VER
+// These tests intentionally exercise deprecated ODBC 2 entry points.
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
@@ -102,7 +107,7 @@ TEST_F(Odbc2PreDriver, LegacyAllocationSelectsOdbc2AndFreesInOrder) {
 TEST_F(Odbc2PreDriver, ExplicitOdbc2SupportsLegacyConnectionAllocation) {
   SQLHDBC legacy_connection = SQL_NULL_HDBC;
   ASSERT_EQ(SQL_SUCCESS, SQLAllocConnect(environment_, &legacy_connection));
-  EXPECT_NE(SQL_NULL_HDBC, legacy_connection);
+  EXPECT_NE(nullptr, legacy_connection);
   EXPECT_EQ(SQL_SUCCESS, SQLFreeConnect(legacy_connection));
 }
 
@@ -127,7 +132,7 @@ TEST_F(Odbc2PreDriver, LoginTimeoutAliasesRoundTripWithoutLoadingDriver) {
 TEST_F(Odbc2PreDriver, StatementAllocationRequiresConnection) {
   SQLHSTMT statement = SQL_NULL_HSTMT;
   EXPECT_EQ(SQL_ERROR, SQLAllocStmt(connection_, &statement));
-  EXPECT_EQ(SQL_NULL_HSTMT, statement);
+  EXPECT_EQ(nullptr, statement);
   const auto record = diagnostic(connection_);
   ASSERT_EQ(SQL_SUCCESS, record.result);
   EXPECT_EQ("08003", record.sqlstate()) << record.message.data();
@@ -160,3 +165,6 @@ TEST_F(Odbc2PreDriver, LegacyErrorIsConsumedAndNewCallClearsDiagnostics) {
   EXPECT_EQ(SQL_NO_DATA, diagnostic(connection_).result);
 }
 }  // namespace
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
