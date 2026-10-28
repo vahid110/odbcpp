@@ -600,6 +600,7 @@ if(UNIX OR WIN32)
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME test_dm_identity COMMAND test_dm_identity)
     set_tests_properties(test_dm_identity PROPERTIES LABELS "unit;dm-identity" TIMEOUT 30)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Odbc2CompatibilityTests.cmake")
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dm-offline")
     add_test(NAME dm_offline_identity COMMAND test_dm_identity
       "--gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/dm-offline/identity.xml")
