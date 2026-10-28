@@ -263,6 +263,10 @@ public:
   SQLRETURN end_transaction(SQLSMALLINT completion_type);
   rs::core::database::BackendResult<void> begin_transaction_if_needed(
       rs::util::Deadline deadline);
+  // Follows the server's reported post-statement state, so SQL that begins or
+  // ends a transaction keeps manual-commit bookkeeping truthful. Unreported or
+  // terminal states leave the flag to the existing failure handling.
+  void reconcile_transaction_state(rs::core::database::SessionSnapshot snapshot) noexcept;
   void log(rs::core::logging::LogLevel level, std::string_view event,
            std::string_view message,
            std::initializer_list<rs::core::logging::LogField> fields = {})

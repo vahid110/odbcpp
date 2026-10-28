@@ -2617,6 +2617,17 @@ rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_nee
   return result;
 }
 
+void ODBCConnection::reconcile_transaction_state(
+    rs::core::database::SessionSnapshot snapshot) noexcept {
+  using rs::core::database::SessionState;
+  if (snapshot.state == SessionState::Transaction ||
+      snapshot.state == SessionState::FailedTransaction) {
+    transaction_active_ = true;
+  } else if (snapshot.state == SessionState::Idle) {
+    transaction_active_ = false;
+  }
+}
+
 SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
   if (has_pending_result_sequence()) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Parameter result sequence is pending"); return SQL_ERROR;
@@ -3909,6 +3920,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
       return SQL_ERROR;
     }
     auto result = conn_->backend_query(*native_sql, deadline);
+    conn_->reconcile_transaction_state(result.session_snapshot());
     const auto cancellation_outcome = cancellation.finish();
     if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
       set_error("HY008", "Statement cancelled");
@@ -7649,6 +7661,7 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
       return complete_parameter_set(SQL_ERROR,input);
     }
     auto result = conn_->backend_prepared(prepared_sql_, param_values, deadline);
+    conn_->reconcile_transaction_state(result.session_snapshot());
     const auto cancellation_outcome = cancellation.finish();
     if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
       set_error("HY008", "Statement cancelled");
