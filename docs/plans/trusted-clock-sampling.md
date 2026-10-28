@@ -31,7 +31,7 @@ is outside TLS validation's trust boundary.
 
 Darwin `ntp_gettime` reports UTC and maximum/estimated error. A read-only
 `ntp_adjtime` call (`modes=0`) supplies synchronization status and frequency
- tolerance. The adapter requires `TIME_OK` and active discipline, and refuses
+tolerance. The adapter requires `TIME_OK` and active discipline, and refuses
 unsynchronized/hardware-error/leap/PPS-error states, unavailable/negative bounds,
 range overflow or bounds exceeding the admission policy. The maximum of both
 reported error estimates is used, plus one microsecond for conversion precision.
@@ -62,6 +62,13 @@ ordinary steady clock advances during sleep.
 See Apple's [continuous time documentation](https://developer.apple.com/documentation/kernel/mach_continuous_time()),
 which distinguishes continuous time from absolute time and recommends
 `CLOCK_MONOTONIC_RAW` for nanoseconds.
+
+The Darwin elapsed reader also captures `kern.sleeptime` and `kern.waketime`
+and verifies them before and after each read. A changed or unavailable epoch
+refuses use: active oscillator tolerance does not prove RTC accuracy during
+sleep. A fresh acquisition selects a fresh source after resume. Thus this
+implementation deliberately does **not** promise retained credentials survive
+suspend, even if their nominal expiry has not yet arrived.
 
 A missing elapsed read, rollback or expiry permanently retires the guard; it
 cannot heal after time moves back. UTC is never resampled to extend existing

@@ -3,22 +3,47 @@
 #include <limits>
 #if defined(__APPLE__)
 #include <sys/timex.h>
+#include <sys/sysctl.h>
+#include <sys/time.h>
 #include <time.h>
 #endif
 namespace rs::core::auth {
 #if defined(__APPLE__)
 namespace {
 using namespace std::chrono;
+struct PowerEpoch {
+  timeval sleep{}, wake{};
+  bool same(const PowerEpoch& other) const noexcept {
+    return sleep.tv_sec == other.sleep.tv_sec && sleep.tv_usec == other.sleep.tv_usec &&
+        wake.tv_sec == other.wake.tv_sec && wake.tv_usec == other.wake.tv_usec;
+  }
+};
+std::optional<PowerEpoch> power_epoch() noexcept {
+  PowerEpoch value;
+  auto sleep_size = sizeof(value.sleep), wake_size = sizeof(value.wake);
+  if (::sysctlbyname("kern.sleeptime", &value.sleep, &sleep_size, nullptr, 0) ||
+      ::sysctlbyname("kern.waketime", &value.wake, &wake_size, nullptr, 0) ||
+      sleep_size != sizeof(value.sleep) || wake_size != sizeof(value.wake)) return std::nullopt;
+  return value;
+}
 class DarwinElapsed final : public SuspendAwareClock {
  public:
   std::optional<microseconds> read() noexcept override {
+    // Active oscillator tolerance does not establish RTC accuracy during sleep.
+    // Retire on a changed sleep/wake epoch; never reuse this source after sleep.
+    const auto before = power_epoch();
+    if (!epoch_ || !before || !epoch_->same(*before)) return std::nullopt;
     timespec time{};
     if (::clock_gettime(CLOCK_MONOTONIC_RAW, &time) || time.tv_sec < 0 ||
         time.tv_nsec < 0 || time.tv_nsec >= 1000000000 ||
         time.tv_sec > (std::numeric_limits<std::int64_t>::max() - 999999) / 1000000)
       return std::nullopt;
+    const auto after = power_epoch();
+    if (!after || !epoch_->same(*after)) return std::nullopt;
     return microseconds{time.tv_sec * 1000000 + time.tv_nsec / 1000};
   }
+ private:
+  const std::optional<PowerEpoch> epoch_ = power_epoch();
 };
 class DarwinUtc final : public TrustedUtcSource {
  public:
