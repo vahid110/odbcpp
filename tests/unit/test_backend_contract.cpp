@@ -604,7 +604,18 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       for (const auto& item : result.additional_results)
         seen_->additional_row_storage.push_back(item.rows.data());
     }
-    return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
+    // Like a server, SQL transaction control changes the reported state.
+    if (sql.ends_with("BEGIN")) seen_->transaction_state = SessionState::Transaction;
+    if (sql.ends_with("COMMIT") || sql.ends_with("ROLLBACK")) seen_->transaction_state = SessionState::Idle;
+    return BackendResult<QueryResult>{std::move(result), reported_snapshot()};
+  }
+  // The server's post-statement state: an open transaction needs a reset
+  // before reuse; anything else keeps the historical idle report.
+  SessionSnapshot reported_snapshot() const {
+    const auto state = seen_->transaction_state.value_or(SessionState::Idle);
+    if (state == SessionState::Transaction || state == SessionState::FailedTransaction)
+      return {state, SessionDisposition::ResetRequired};
+    return {SessionState::Idle, SessionDisposition::Reusable};
   }
   BackendResult<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
                                       Deadline deadline) override {
@@ -896,6 +907,47 @@ class BackendContractTest : public ::testing::Test {
 
 // These tests specify the prerequisite BEGIN boundary only. They do not enable
 // manual-transaction PrimaryKeys or model native PostgreSQL/Redshift acceptance.
+// A transaction ended by SQL (not SQLEndTran) leaves the server idle. In
+// manual-commit mode the next statement must begin a new transaction instead of
+// running in autocommit, so a later SQLEndTran(ROLLBACK) still covers it.
+TEST_F(BackendContractTest, ManualCommitBeginsAgainAfterSqlEndsTheTransaction) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  ASSERT_EQ(SQL_SUCCESS, execute("first"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS, execute("COMMIT"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  EXPECT_EQ(1u, seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS, execute("second"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(3u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[2]);
+}
+
+// The parameterized dispatch path must reconcile the same way.
+TEST_F(BackendContractTest, ManualCommitParameterizedStatementsBeginAgainAfterSqlCommit) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  ASSERT_EQ(SQL_SUCCESS, execute("COMMIT"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  char input[] = "ok"; SQLLEN length = 2;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows ?"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[1]);
+}
+
 TEST_F(BackendContractTest, BeginPreservesVerifiedTransactionSnapshotAndOriginalDeadline) {
   seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
   ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
