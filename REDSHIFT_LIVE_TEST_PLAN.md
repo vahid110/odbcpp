@@ -23,6 +23,12 @@ Every periodic batch still requires fresh reviewed finite admission, exact sourc
 binary/control binding, one-use consumption, bounded execution and independent
 exact-principal cleanup. No budget or authorization-horizon extension follows.
 
+The `tools/redshift/pilot_*` launchers, ledgers and accounting helpers named in
+the historical sections below were removed once `tools/development/live_checkpoint.py`
+replaced them; read them from git history before `codex/build-tooling-cleanup`
+(PR #125). `pilot_preflight.py` (private-file checks and the lock) and
+`pilot_runtime.py` (bounded processes) remain because the current runner uses them.
+
 ## Historical execution order — human approved 2026-10-06
 
 Follow the current [delivery order](REDSHIFT_FEATURE_PLAN.md#human-approved-delivery-order--2026-10-06):
