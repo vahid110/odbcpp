@@ -1,14 +1,28 @@
 """Execute the real PowerShell package-input reader without installing anything."""
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 
-from tools.release.test_logging_metadata import ROOT, INPUTS, populate, generate
+# Sibling import, like the other release tests: unittest discovery and direct
+# script runs both put this directory on sys.path.
+from test_logging_metadata import ROOT, INPUTS, populate, generate
+
+# Hosts without PowerShell 7 skip; the Windows tooling job sets the requirement.
+PWSH = shutil.which('pwsh')
+REQUIRE_PWSH = os.environ.get('ODBCPP_REQUIRE_PWSH') == '1'
 
 
+@unittest.skipUnless(PWSH or REQUIRE_PWSH, 'PowerShell 7 (pwsh) is not available')
 class WindowsLoggingInputsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not PWSH:
+            raise AssertionError('ODBCPP_REQUIRE_PWSH=1 but PowerShell 7 (pwsh) is not on PATH')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='windows logging inputs ')
         self.addCleanup(self.temp.cleanup)
@@ -29,7 +43,7 @@ class WindowsLoggingInputsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def read(self, error=None):
-        result = subprocess.run(['pwsh', '-NoProfile', '-File', str(self.reader)],
+        result = subprocess.run([PWSH, '-NoProfile', '-File', str(self.reader)],
                                 capture_output=True, text=True, timeout=30)
         if error:
             self.assertNotEqual(result.returncode, 0, result.stdout)
