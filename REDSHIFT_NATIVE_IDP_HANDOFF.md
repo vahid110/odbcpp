@@ -15,7 +15,8 @@ operator handoff (`~/.local/state/odbcpp/continuation/`) and the AWS console.
   official AWS drivers.
 - The live login is **blocked by an AWS-side defect**: Redshift's own
   `identitystore:DescribeUser` call at login is denied. Both official AWS
-  drivers (ODBC 2.x and Python `redshift_connector`) fail identically, through
+  drivers (ODBC 2.x and Python `redshift_connector`) and a third-party driver
+  (Columnar's ADBC Redshift driver) fail identically, through
   both the browser flow and the external trusted-token-issuer flow. Another AWS
   service (S3 Access Grants) succeeds against the same identity store and user.
 - Next actions: get an AWS answer (re:Post question posted; a paid support case
@@ -145,6 +146,7 @@ Redshift's login-time call does not carry its source context.
 | Suspect | Test | Result |
 |---|---|---|
 | Our driver | AWS ODBC 2.3.0.0 (iODBC, `BrowserIdcAuthPlugin`) and `redshift_connector` 2.2.0 | identical 28000 |
+| Any one vendor's client | Columnar ADBC Redshift driver 1.8.1 (closed-source Go, `BrowserIdcAuthPlugin`), fresh us-east-1 workgroup + IdC app, 2026-10-27 | identical 28000; CloudTrail DescribeUser AccessDenied in the same second |
 | Sign-in flow | Browser PKCE (`ACCESS_TOKEN`) and Cognito trusted token issuer (`EXT_JWT`, our driver + Python) | exchange succeeds, same DescribeUser denial |
 | IdC replica region | Fresh stack in the primary region (us-east-1) | same |
 | Customer managed multi-region KMS key / replication | IdC reduced to single region on an AWS owned key; fresh workgroup + IdC app | same |
@@ -153,6 +155,11 @@ Redshift's login-time call does not carry its source context.
 | Integration IAM role | Redshift never assumes it during login (only the service-linked role) | not involved |
 | Scope / assignment | `redshift:connect` via service integration; user assigned; `AssignmentRequired=true` | present |
 | Simba / AWS Simba 1.6.x ODBC | No IdC support in that driver (Simba's licensed 1.5.10+ has it) | not testable |
+
+ADBC test notes: the driver uses the same native IdP startup keys and browser
+flow (public client, PKCE, loopback 7890). It ignored `redshift.auth.idc_region`
+at `RegisterClient` ("Missing Region") until `AWS_REGION` was also set, and it
+sends the OS user name as `user` by default. Neither changed the outcome.
 
 Side effect seen with the external JWT: after one denied login, further logins
 with the same token returned `28000 Token credentials expired or invalid.` with no
