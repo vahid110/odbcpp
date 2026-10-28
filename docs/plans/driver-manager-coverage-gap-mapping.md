@@ -25,10 +25,10 @@ in-flight and is not restated as completed.
 | Platform | Manager (observed identity) | App/driver SQLWCHAR | Executed evidence |
 |---|---|---|---|
 | Windows x64 | odbc32, `SQL_DM_VER=03.81.26100.0000` | 2/2 | dm-offline 4 entries / 8 cases at PR #98 head `7277f4c`; seven shared suites through the manager: 373 cases collected, 346 PASS / 27 FAIL, all classified W1–W10 in `tests/test_dm_expectations.h` (`docs/plans/driver-manager-windows-results.md`). PR #126 added manager host checks and `dm_it_*` image execution through the Windows DM. |
-| Windows x64 | as above | 2/2 | #117 in flight (separate owner): 487 prepared DM live cases / 53 exclusions, fresh 137 offline PASS; awaiting the shared pilot SG rule release. Not complete; not claimed here. |
+| Windows x64 | as above | 2/2 | #117 in flight (separate owner): 487 prepared DM live cases / 53 exclusions, fresh 137 offline PASS. The owner reported a network timeout before CTest on 2026-10-28: its current public IP no longer matches the pilot SG rule. This is a blocked planned run, not active execution or a pass; see [the owner receipt](https://github.com/vahid110/odbcpp/issues/117). |
 | Ubuntu | unixODBC 2.3.14 (qualified receipt) | 2/2 | dm-offline CI at `7277f4c`; complete native/live checkpoint through unixODBC pending (#117). |
-| macOS | iODBC 3.52.16 | 4/4 | dm-offline CI; first live run `dm-live-macos-9c79c86-a`: 487 cases collected, 338 PASS / 149 FAIL (mostly W2-masked braced `DRIVER=`); source fixes landed; complete re-run pending (#117). Inventory of 1,495 cases with 104 boundaries recorded. |
-| macOS | unixODBC 2.3.14 (qualified receipt) | 2/2 | First live run: 488 cases collected, 451 PASS / 37 FAIL; deviation buckets D1–D4 and R1–R17 recorded in `tests/test_dm_expectations.h`; re-run pending (#117). |
+| macOS | iODBC 3.52.16 | 4/4 | dm-offline CI; first live run `dm-live-macos-9c79c86-a`: 487 cases collected, 338 PASS / 149 FAIL (mostly W2-masked braced `DRIVER=`); the fifth checkpoint at `4010fe8` then passed all 485 iODBC cases. Combined historical checkpoint: 1,495 PASS / 0 FAIL / 0 SKIP (524 direct, 485 iODBC, 486 unixODBC), with 36 manager early stops and 104 unrun boundary instances explicitly retained in `driver-manager-live-macos.md`. Current-source #117 qualification remains separate and pending. |
+| macOS | unixODBC 2.3.14 (qualified receipt) | 2/2 | First live run: 488 cases collected, 451 PASS / 37 FAIL; deviation buckets D1–D4 and R1–R17 recorded in `tests/test_dm_expectations.h`; the fifth checkpoint at `4010fe8` passed all 486 unixODBC cases. These historical passes do not establish current-source #117 acceptance. |
 
 ### 1.3 Manager-only images (never link `odbcpp_core`)
 
@@ -117,7 +117,7 @@ application profile has ever been executed through any manager.
   (manager-linked `it_redshift_real`, 157 case definitions) and the seven
   `dm_*` suites; the Windows PR job built them at `7277f4c`.
 - #117 owns the current Windows DM live checkpoint (487 prepared cases, runner
-  and registration exercised, awaiting resource release). #118 must not
+  and registration exercised; the latest owner receipt reports a network timeout before CTest). #118 must not
   duplicate or replace it: the remaining item-1 work is the *distinct* generic
   Redshift inventory execution through the DM with retained manager identity,
   filling only runner gaps #117 leaves, and reporting it separately from
@@ -138,8 +138,11 @@ application profile has ever been executed through any manager.
 
 ## 7. Bounded implementation sequence
 
-Each unit is independently reviewable, keeps existing assertions unchanged, and
-needs no cloud/live admission. Platform rule from `AGENTS.md`: every PR carries
+Each unit is independently reviewable and preserves valid assertions. Units
+A–F use local source, offline tests or a disposable loopback database and need
+no cloud admission. Unit G requires separately coordinated Redshift live
+authority and must reuse or follow #117 without duplicating its resource ownership.
+Platform rule from `AGENTS.md`: every product PR carries
 one actual macOS, Ubuntu and Windows build; full cross-platform tests stay
 checkpoint-scope.
 
