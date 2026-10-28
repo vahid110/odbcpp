@@ -207,6 +207,35 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn('/private/tmp/',source)
         self.assertNotIn('protected-lifecycle-extension',source)
 
+class ManagerProfileHostTests(unittest.TestCase):
+    DRIVER = 'C:\\Program Files\\ODBCPP\\Redshift\\odbcpp.dll'
+    MOUNTED = '/mnt/c/Program Files/ODBCPP/Redshift/odbcpp.dll'
+
+    def profile(self, manager, path=MOUNTED, sha256='a' * 64):
+        result = {'private_input': {'kind': 'CORE_ENV', 'password_rejection': False,
+                                    'driver': {'path': path, 'sha256': sha256,
+                                               'wchar_bytes': 2, 'kind': 'OWN'}}}
+        if manager is not None:
+            result['driver_manager'] = manager
+        return result
+
+    def test_manager_profiles_must_match_the_plan_host_and_registered_driver(self):
+        native = {'native_windows': {'driver': {'path': self.DRIVER, 'sha256': 'a' * 64}}}
+        checkpoint.validate_manager_profiles(native, {'direct': self.profile(None),
+                                                      'dm': self.profile('Windows')})
+        checkpoint.validate_manager_profiles({}, {'unix': self.profile('unixODBC'),
+                                                  'iodbc': self.profile('iODBC')})
+        refused = ((native, self.profile('unixODBC'), 'native_plan_posix_manager_profile'),
+                   (native, self.profile('iODBC'), 'native_plan_posix_manager_profile'),
+                   (native, self.profile('Windows', path=self.DRIVER), 'native_manager_profile_registered_driver'),
+                   (native, self.profile('Windows', path='/mnt/d/Program Files/ODBCPP/Redshift/odbcpp.dll'),
+                    'native_manager_profile_registered_driver'),
+                   (native, self.profile('Windows', sha256='b' * 64), 'native_manager_profile_registered_driver'),
+                   ({}, self.profile('Windows'), 'posix_plan_windows_manager_profile'))
+        for plan, value, reason in refused:
+            with self.assertRaisesRegex(checkpoint.lifecycle.Refused, reason):
+                checkpoint.validate_manager_profiles(plan, {'ok': self.profile(None), 'bad': value})
+
 class LocalValidationTests(unittest.TestCase):
     """Pinned synthetic coordinator assessments; no product/live acceptance."""
     def setUp(self):

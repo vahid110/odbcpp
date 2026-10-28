@@ -751,6 +751,8 @@ def configure_context(native):
     APPLICABLE_COUNT = native['case_count']
     need(all((p.is_absolute() for p in (ROOT, WORK, REPO, DRIVER, CMAKE, CTEST, NINJA, MODEL, *RUNTIME_DIRS))) and type(APPLICABLE_COUNT) is int and (APPLICABLE_COUNT > 0) and (re.fullmatch('[0-9a-f]{40}', HEAD) is not None), 'native_configuration')
     need(REPO == Path(__file__).resolve().parents[2], 'fixed_native_source_checkout')
+    need(type(DESCRIPTION) is str and factory_module().DRIVER_DESCRIPTION.fullmatch(DESCRIPTION) is not None,
+         'registered_driver_description')
 if __name__ == '__main__':
     try:
         raise SystemExit(main())

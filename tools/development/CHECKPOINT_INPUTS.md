@@ -37,19 +37,25 @@ python -B tools/development/windows_live_backend.py --initialize-state C:/absolu
 
 Windows driver registration remains an existing approved installation/fixture
 prerequisite. The receiver verifies the registered exact driver and mapping; it
-does not install/overwrite HKLM entries.
-
-The `dm_it_*` images run through the Windows Driver Manager with profiles whose
-`driver_manager` is `Windows`. Their driver must already be the exact registered
-image (same SHA256, WSL `/mnt/c/` or native path, SQLWCHAR width 2); the receiver
-refuses rather than rebinding it. CORE_ENV and invalid-password connections select
-`DRIVER={<driver_description>}` and keep TLS, limits and logging. OWN_DSN keeps
-SQLConnect through the same owned HKCU DSN. iODBC/unixODBC profiles are refused
-here, and the POSIX stager refuses `Windows` profiles. All OWN_DSN profiles in one
-plan must still produce one DSN; split differing DSN configurations into partitions. Native GUI checks and privileged full
+does not install/overwrite HKLM entries. Native GUI checks and privileged full
 PostgreSQL/System DSN tests remain separate local desktop commands in `COMMANDS.md`.
 Package/vendor/macOS-only and unsupported-width boundaries remain explicit unrun
 entries in the accepted applicability record; they are not silently omitted.
+
+The `dm_it_*` images run through the Windows Driver Manager with profiles whose
+`driver_manager` is `Windows`. Their driver must already be the plan's exact
+registered image: the same SHA256, SQLWCHAR width 2, and the WSL mount path of
+`native_windows.driver.path` (for example `/mnt/c/...`). `read_plan` checks this
+before private acquisition, and the receiver checks it again (ignoring case, as
+Windows does) instead of rebinding the driver. CORE_ENV and invalid-password
+connections select `DRIVER={<driver_description>}` and keep TLS, limits and
+logging; the description must be a plain name without braces, separators or
+edge spaces. OWN_DSN keeps SQLConnect through the same owned HKCU DSN. Native
+plans refuse iODBC/unixODBC profiles and POSIX plans refuse `Windows` ones.
+
+The receiver stages one HKCU DSN per run. A plan whose OWN_DSN profiles produce
+different DSN values is refused (`single_native_dsn_profile`); prepare each DSN
+configuration as its own complete plan and run, as the `dm` plans already are.
 
 ## Public recipe
 

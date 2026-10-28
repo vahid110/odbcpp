@@ -80,7 +80,10 @@ class DriverManagerProfileTests(unittest.TestCase):
         # Without the verified description the POSIX path form is refused.
         with self.assertRaisesRegex(factory.FactoryRefused, 'registered_driver_selector'):
             factory.build_profile_connection(self.config, profile)
-        for selector in ('', 'a;b', 'x}', 'a=b', '{x}', 'x' * 129):
+        self.assertTrue(factory.build_profile_connection(
+            self.config, profile, registered_driver='ODBCPP Redshift Beta (x64)').startswith(
+                'DRIVER={ODBCPP Redshift Beta (x64)};'))
+        for selector in ('', 'a;b', 'x}', 'a=b', '{x}', 'x ', ' x', 'x' * 129, None, 7):
             with self.assertRaisesRegex(factory.FactoryRefused, 'registered_driver_description'):
                 factory.build_profile_connection(self.config, profile, registered_driver=selector)
         # Direct and POSIX manager profiles never take a description.

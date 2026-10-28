@@ -254,6 +254,7 @@ def read_plan(path, *, require_ci=False):
             plan['source_head'], plan['partition'], expected)
     if 'native_windows' in plan:
         validate_native_plan(plan, index, expected)
+    validate_manager_profiles(plan, json.loads(pinned(plan['profiles']).read_text(encoding='utf-8-sig')))
     if require_ci and validation_mode == 'human_directed_local':
         validate_local_validation(plan)
     return plan
@@ -298,6 +299,32 @@ def validate_native_plan(plan, index, expected):
                        and local(image['executable']) == Path(index['images'][key]['executable'])
                        and pins.get(image['executable']) == image['sha256'],
                        'same_actual_native_owning_images')
+
+
+def validate_manager_profiles(plan, profiles):
+    """Driver Manager profiles match the plan's host before private acquisition.
+
+    A native Windows plan accepts only the Windows manager, whose driver must be
+    the plan's exact registered image by its WSL mount path; a POSIX plan never
+    accepts the Windows manager.
+    """
+    from pathlib import PurePosixPath, PureWindowsPath
+    native = plan.get('native_windows')
+    if native is not None:
+        value = PureWindowsPath(native['driver']['path'])
+        lifecycle.need(value.is_absolute() and len(value.drive) == 2, 'native_driver_path')
+        registered = str(PurePosixPath('/mnt', value.drive[0].lower(), *value.parts[1:]))
+    for profile in profiles.values():
+        manager = profile.get('driver_manager')
+        if native is None:
+            lifecycle.need(manager != 'Windows', 'posix_plan_windows_manager_profile')
+            continue
+        lifecycle.need(manager in (None, 'Windows'), 'native_plan_posix_manager_profile')
+        if manager == 'Windows':
+            driver = profile['private_input']['driver']
+            lifecycle.need(type(driver) is dict and driver.get('path') == registered
+                           and driver.get('sha256') == native['driver']['sha256'],
+                           'native_manager_profile_registered_driver')
 
 
 def profile_driver_pins(profiles, public_pins):

@@ -67,6 +67,10 @@ def dsn_documents(config, limits=None, driver=None, driver_manager=None):
 # Driver SQLWCHAR width each manager profile loads the owned driver with.
 DRIVER_MANAGER_WCHAR_BYTES = {'iODBC': 4, 'unixODBC': 2, 'Windows': 2}
 
+# A registered Windows driver description safe to emit as DRIVER={...}: no
+# braces, separators or edge whitespace. Fails closed on rarer legal names.
+DRIVER_DESCRIPTION = re.compile('[A-Za-z0-9](?:[A-Za-z0-9 ._()-]{0,126}[A-Za-z0-9._()-])?')
+
 def _pin(value):
     need(type(value) is dict and set(value) in ({'path', 'sha256'}, {'path', 'sha256', 'bytes'}) and (type(value['path']) is str) and Path(value['path']).is_absolute() and ('..' not in value['path'].split('/')) and (type(value['sha256']) is str) and (re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None), 'evidence_pin')
     if 'bytes' in value:
@@ -160,7 +164,7 @@ def build_profile_connection(config, profile, *, password_rejection=False, regis
         adapted['test_password'] = values['PWD']
         connection = build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
         if manager == 'Windows':
-            need(type(registered_driver) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9 ._()-]{0,127}', registered_driver) is not None, 'registered_driver_description')
+            need(type(registered_driver) is str and DRIVER_DESCRIPTION.fullmatch(registered_driver) is not None, 'registered_driver_description')
             connection = 'DRIVER=' + field(registered_driver) + ';' + connection
         elif manager is not None:
             connection = 'DRIVER=' + profile['private_input']['driver']['path'] + ';' + connection
