@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "policy": "Build on the oldest intended baseline; test exact package bytes on that baseline and a named newer environment before claiming support.",
+  "qualificationClaimed": false,
+  "buildTools": {
+    "cmakeMinimum": "3.20",
+    "pythonMinimum": "3.9",
+    "cppStandard": 20,
+    "compilerMinimum": null,
+    "windowsPackaging": {
+      "wix": "6.0.2",
+      "dotnetSdk": "toolchain requirement only"
+    },
+    "elfInspection": "GNU readelf; not needed on end-user machines"
+  },
+  "runtimePolicy": "OpenSSL ABI 3 is a source/build requirement, not a secure minimum patch declaration. Select a supported security-maintained provider/runtime and record exact packaged or system-resolved versions and hashes.",
+  "profiles": {
+    "linux-ubuntu22.04-x86-64-unixodbc-ucs2-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "Linux",
+      "proposedBaseline": "22.04 LTS",
+      "architecture": "x86_64",
+      "packageFormats": [
+        "deb",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "unixODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 2
+      },
+      "driverSqlwcharBytes": 2,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "distribution": "ubuntu",
+      "minimumOsVersion": "22.04",
+      "maxRequiredSymbolVersions": {
+        "GLIBC": "2.35",
+        "GLIBCXX": null,
+        "CXXABI": null
+      },
+      "baselineEvidence": {
+        "GLIBC": "https://discourse.ubuntu.com/t/jammy-jellyfish-release-notes/24668",
+        "GLIBCXX": null,
+        "CXXABI": null
+      }
+    },
+    "linux-rhel9-x86-64-unixodbc-ucs2-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "Linux",
+      "proposedBaseline": "9",
+      "architecture": "x86_64",
+      "packageFormats": [
+        "rpm",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "unixODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 2
+      },
+      "driverSqlwcharBytes": 2,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "distribution": "rhel",
+      "minimumOsVersion": "9",
+      "maxRequiredSymbolVersions": {
+        "GLIBC": "2.34",
+        "GLIBCXX": null,
+        "CXXABI": null
+      },
+      "baselineEvidence": {
+        "GLIBC": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/9.0_release_notes/overview",
+        "GLIBCXX": null,
+        "CXXABI": null
+      }
+    },
+    "linux-amazonlinux2023-x86-64-unixodbc-ucs2-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "Linux",
+      "proposedBaseline": "2023",
+      "architecture": "x86_64",
+      "packageFormats": [
+        "rpm",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "unixODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 2
+      },
+      "driverSqlwcharBytes": 2,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "distribution": "amazonlinux",
+      "minimumOsVersion": "2023",
+      "maxRequiredSymbolVersions": {
+        "GLIBC": "2.34",
+        "GLIBCXX": null,
+        "CXXABI": null
+      },
+      "baselineEvidence": {
+        "GLIBC": "https://docs.aws.amazon.com/linux/al2023/ug/glibc-gcc-and-binutils.html",
+        "GLIBCXX": null,
+        "CXXABI": null
+      }
+    },
+    "linux-ubuntu22.04-x86-64-iodbc-ucs4-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "Linux",
+      "proposedBaseline": "22.04 LTS",
+      "architecture": "x86_64",
+      "packageFormats": [
+        "deb",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "iODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 4
+      },
+      "driverSqlwcharBytes": 4,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "distribution": "ubuntu",
+      "minimumOsVersion": "22.04",
+      "maxRequiredSymbolVersions": {
+        "GLIBC": "2.35",
+        "GLIBCXX": null,
+        "CXXABI": null
+      },
+      "baselineEvidence": {
+        "GLIBC": "https://discourse.ubuntu.com/t/jammy-jellyfish-release-notes/24668",
+        "GLIBCXX": null,
+        "CXXABI": null
+      }
+    },
+    "windows-x86-64-windowsdm-ucs2-openssl-bundled-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "Windows",
+      "proposedBaseline": "Windows 11 evaluation target; minimum supported edition/build undecided",
+      "architecture": "x86_64",
+      "packageFormats": [
+        "msi"
+      ],
+      "driverManager": {
+        "family": "Windows DM",
+        "minimumVersion": null,
+        "sqlwcharBytes": 2
+      },
+      "driverSqlwcharBytes": 2,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "BUNDLED_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "minimumOsVersion": null,
+      "msvcRuntimeMinimum": null,
+      "buildEnvironment": "windows-2025 runner / Visual Studio C++ tools",
+      "installerArchitectureGuard": "VersionNT64 AND NOT Arm64; architecture guard is not a minimum-OS policy"
+    },
+    "macos-x86-64-iodbc-ucs4-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "macOS",
+      "proposedBaseline": null,
+      "architecture": "x86_64",
+      "packageFormats": [
+        "pkg",
+        "optional-dmg",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "iODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 4
+      },
+      "driverSqlwcharBytes": 4,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "minimumOsVersion": null,
+      "deploymentTarget": null,
+      "buildEnvironment": "macos-latest CI; deployment target not pinned"
+    },
+    "macos-x86-64-unixodbc-ucs2-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "macOS",
+      "proposedBaseline": null,
+      "architecture": "x86_64",
+      "packageFormats": [
+        "pkg",
+        "optional-dmg",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "unixODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 2
+      },
+      "driverSqlwcharBytes": 2,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "minimumOsVersion": null,
+      "deploymentTarget": null,
+      "buildEnvironment": "macos-latest CI; deployment target not pinned"
+    },
+    "macos-arm64-iodbc-ucs4-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "macOS",
+      "proposedBaseline": null,
+      "architecture": "arm64",
+      "packageFormats": [
+        "pkg",
+        "optional-dmg",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "iODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 4
+      },
+      "driverSqlwcharBytes": 4,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "minimumOsVersion": null,
+      "deploymentTarget": null,
+      "buildEnvironment": "macos-latest CI; deployment target not pinned"
+    },
+    "macos-arm64-unixodbc-ucs2-openssl-system-shared": {
+      "status": "proposed-unqualified",
+      "osFamily": "macOS",
+      "proposedBaseline": null,
+      "architecture": "arm64",
+      "packageFormats": [
+        "pkg",
+        "optional-dmg",
+        "tar.gz"
+      ],
+      "driverManager": {
+        "family": "unixODBC",
+        "minimumVersion": null,
+        "sqlwcharBytes": 2
+      },
+      "driverSqlwcharBytes": 2,
+      "crypto": {
+        "provider": "OPENSSL",
+        "linkage": "SYSTEM_SHARED",
+        "abiMajor": 3,
+        "minimumPatchedVersion": null
+      },
+      "oldestRuntimeQualification": null,
+      "newerRuntimeQualification": null,
+      "minimumOsVersion": null,
+      "deploymentTarget": null,
+      "buildEnvironment": "macos-latest CI; deployment target not pinned"
+    }
+  }
+}

@@ -1,0 +1,117 @@
+name: Beta release candidate (draft only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_draft:
+        description: Create a private draft prerelease with these exact candidate bytes
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    # No pull-request trigger, arbitrary source ref, or privileged candidate input.
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check release controls
+        run: python -B -m unittest discover -s tools/release -p 'test_*.py' -v
+      - name: Build each product once, test its binaries, package the same binaries
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          foreach ($product in @('POSTGRESQL', 'REDSHIFT')) {
+            $build = "build-release-$($product.ToLower())"
+            cmake -S . -B $build -A x64 -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=ON "-DTARGET_DATABASE=$product" `
+              -DODBCPP_CRYPTO_PROVIDER=OPENSSL -DODBCPP_CRYPTO_LINKAGE=BUNDLED_SHARED `
+              '-DODBCPP_CRYPTO_ROOT=C:/Program Files/OpenSSL' `
+              -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2 -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+            cmake --build $build --config Release --parallel 2
+            ctest --test-dir $build -C Release -L unit --output-on-failure --output-junit release-unit.xml
+            ./packaging/windows/test-inputs.ps1 -BuildDirectory $build
+            ./packaging/windows/build.ps1 -BuildDirectory $build
+            $version = Get-Content "$build/version/odbcpp-version.json" -Raw | ConvertFrom-Json
+            $stage = (Resolve-Path "$build/package/payload-$($version.msi)").Path
+            $inventory = Get-Content "$stage/inventory.json" -Raw | ConvertFrom-Json
+            $ssl = ($inventory.cryptoDependencies | Where-Object role -eq 'ssl').file
+            $crypto = ($inventory.cryptoDependencies | Where-Object role -eq 'crypto').file
+            & "$build/tests/Release/it_package_load.exe" $stage $ssl $crypto |
+              Tee-Object "$build/package-load.log"
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged runtime load failed' }
+          }
+      - name: Qualify actual MSI databases and seal exact artifacts
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = Get-Content 'build-release-postgresql/version/odbcpp-version.json' -Raw | ConvertFrom-Json
+          ./packaging/windows/test-products.ps1 `
+            -PostgreSqlPackage "build-release-postgresql/package/odbcpp-postgresql-$($version.semver)-x64.msi" `
+            -RedshiftPackage "build-release-redshift/package/odbcpp-redshift-$($version.semver)-x64.msi" *>&1 |
+              Tee-Object release-msi-inspection.log
+          foreach ($product in @('POSTGRESQL', 'REDSHIFT')) {
+            $build = "build-release-$($product.ToLower())"
+            Copy-Item release-msi-inspection.log "$build/release-msi-inspection.log"
+            python -B tools/release/artifacts.py seal --build $build --package "$build/package" `
+              --output "release/$product" --revision $env:EXPECTED_REVISION --product $product
+          }
+      - name: Retain candidate bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: beta-windows-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain original build and package evidence including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: beta-windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build-release-*/CMakeCache.txt
+            build-release-*/release-unit.xml
+            build-release-*/Testing/Temporary/
+            build-release-*/package-load.log
+            release-msi-inspection.log
+            build-release-*/version/
+          retention-days: 30
+
+  draft:
+    needs: windows
+    if: inputs.create_draft && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: beta-windows-${{ github.sha }}
+          path: release
+      - name: Verify and draft without rebuilding or publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          python3 -B tools/release/draft.py --directory release --revision "$EXPECTED_REVISION"

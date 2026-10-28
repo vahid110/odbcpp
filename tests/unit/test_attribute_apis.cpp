@@ -1631,7 +1631,7 @@ TEST_F(AttributeApisTest, DriverFilenameErrorsPreserveOutputsAndOtherIdentityFie
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_NAME,narrow,sizeof(narrow),&length));EXPECT_STREQ(ODBCPP_EXPECT_DRIVER_FILENAME,reinterpret_cast<char*>(narrow));
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_NAME,narrow,sizeof(narrow),&length));EXPECT_STREQ("MetadataDB",reinterpret_cast<char*>(narrow));
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("08.00.0002",reinterpret_cast<char*>(narrow));
-  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("01.00.0000",reinterpret_cast<char*>(narrow));EXPECT_EQ(0u,metadata_queries_);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ(ODBCPP_DRIVER_VERSION,reinterpret_cast<char*>(narrow));EXPECT_EQ(0u,metadata_queries_);
 }
 
 // A provider without stable shape authority must retain the scalar contract.

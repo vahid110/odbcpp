@@ -203,7 +203,8 @@ jobs:
           # Owner-model checks need a non-admin account that owns its files by
           # default; they qualify the coordinator host, not the hosted runner.
           $hostOnly = 'test_windows_live_backend.py', 'test_windows_powerbi_applicability.py', 'test_windows_powerbi_publication.py'
-          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
+          # Release controls also exercise native Windows filesystem semantics.
+          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { ($_ -match '/test_windows_[^/]*\.py$' -or $_ -match '^tools/release/test_[^/]*\.py$') -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
             Write-Host "::group::$test"
             $output = @(python -B $test 2>&1 | ForEach-Object { "$_" })
             $code = $LASTEXITCODE
@@ -721,9 +722,9 @@ jobs:
         shell: pwsh
         run: |
           ./packaging/windows/test-inputs.ps1
-          ./packaging/windows/build.ps1 -Version 1.0.0
-          ./packaging/windows/build.ps1 -Version 1.0.1
-          ./packaging/windows/build.ps1 -Version 1.0.2 -FailureFixture
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.0
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.1
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.2 -FailureFixture
           New-Item build-windows/package-acceptance -ItemType Directory | Out-Null
           Copy-Item build-windows/package/*.msi build-windows/package-acceptance
           Copy-Item build-windows/tests/Release/it_driver_manager.exe,build-windows/tests/Release/it_setup.exe,build-windows/tests/Release/it_package_load.exe build-windows/package-acceptance
