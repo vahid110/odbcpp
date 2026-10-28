@@ -199,6 +199,8 @@ jobs:
       - name: Run Windows tooling unit tests offline
         run: |
           $env:PYTHONPATH = $PWD.Path
+          # The Windows package-input reader must run here, never skip.
+          $env:ODBCPP_REQUIRE_PWSH = '1'
           $failed = @()
           # Owner-model checks need a non-admin account that owns its files by
           # default; they qualify the coordinator host, not the hosted runner.
