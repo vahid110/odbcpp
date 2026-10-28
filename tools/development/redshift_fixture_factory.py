@@ -64,6 +64,9 @@ def dsn_documents(config, limits=None, driver=None, driver_manager=None):
         registration += 'DriverUnicodeType=UCS4\n'
     return (text, registration)
 
+# Driver SQLWCHAR width each manager profile loads the owned driver with.
+DRIVER_MANAGER_WCHAR_BYTES = {'iODBC': 4, 'unixODBC': 2, 'Windows': 2}
+
 def _pin(value):
     need(type(value) is dict and set(value) in ({'path', 'sha256'}, {'path', 'sha256', 'bytes'}) and (type(value['path']) is str) and Path(value['path']).is_absolute() and ('..' not in value['path'].split('/')) and (type(value['sha256']) is str) and (re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None), 'evidence_pin')
     if 'bytes' in value:
@@ -95,9 +98,10 @@ def validate_profile(profile):
     manager = profile.get('driver_manager')
     if manager is not None:
         # The owned driver loaded through an installed Driver Manager: by
-        # DRIVER= path for CORE_ENV, by the private DSN for OWN_DSN.
-        need(kind in ('CORE_ENV', 'OWN_DSN') and manager in ('iODBC', 'unixODBC'), 'driver_manager_profile')
-        need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'} and driver['kind'] == 'OWN' and (driver['wchar_bytes'] == (4 if manager == 'iODBC' else 2)), 'driver_manager_driver')
+        # DRIVER= path (POSIX) or registered description (Windows) for
+        # CORE_ENV, by the private DSN for OWN_DSN.
+        need(kind in ('CORE_ENV', 'OWN_DSN') and manager in DRIVER_MANAGER_WCHAR_BYTES, 'driver_manager_profile')
+        need(type(driver) is dict and set(driver) == {'path', 'sha256', 'wchar_bytes', 'kind'} and driver['kind'] == 'OWN' and (driver['wchar_bytes'] == DRIVER_MANAGER_WCHAR_BYTES[manager]), 'driver_manager_driver')
         _pin({'path': driver['path'], 'sha256': driver['sha256']})
         # iODBC 3.52.16 passes a braced DRIVER value to dlopen unchanged, so
         # the path is emitted bare and must not need quoting.
@@ -145,13 +149,20 @@ def profile_connection_fields(config, profile, *, password_rejection=False):
         values.update({k: str(v) for k, v in profile['limits'].items() if k not in profile.get('emitted_resource_omissions', [])})
     return values
 
-def build_profile_connection(config, profile, *, password_rejection=False):
+def build_profile_connection(config, profile, *, password_rejection=False, registered_driver=None):
     values = profile_connection_fields(config, profile, password_rejection=password_rejection)
+    manager = profile.get('driver_manager')
+    # Only the Windows manager selects the owned driver by the registered
+    # description the native receiver verified; the caller supplies it.
+    need((registered_driver is None) == (manager != 'Windows'), 'registered_driver_selector')
     if profile['private_input']['kind'] in ('CORE_ENV', 'OWN_DSN'):
         adapted = dict(config)
         adapted['test_password'] = values['PWD']
         connection = build_connection(adapted, profile['limits'], tuple(profile.get('emitted_resource_omissions', [])))
-        if profile.get('driver_manager') is not None:
+        if manager == 'Windows':
+            need(type(registered_driver) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9 ._()-]{0,127}', registered_driver) is not None, 'registered_driver_description')
+            connection = 'DRIVER=' + field(registered_driver) + ';' + connection
+        elif manager is not None:
             connection = 'DRIVER=' + profile['private_input']['driver']['path'] + ';' + connection
         return connection
     text = ''.join((k + '=' + field(v) + ';' for k, v in values.items()))

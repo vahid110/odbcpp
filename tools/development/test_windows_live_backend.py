@@ -107,6 +107,104 @@ class NativeBackendTests(unittest.TestCase):
                         tree.close_handles()
                     self.assertFalse(run.exists())
 
+    def test_windows_manager_profiles_select_the_registered_driver(self):
+        from tools.development import redshift_fixture_factory as factory
+        driver = Path(sys.executable)
+        digest = hashlib.sha256(driver.read_bytes()).hexdigest()
+        # The WSL plan names the driver by its mounted path; both forms map.
+        mounted = '/mnt/' + driver.drive[0].lower() + driver.as_posix()[2:]
+        with tempfile.TemporaryDirectory(prefix='odbcpp-manager-native-input-') as temporary:
+            root = Path(temporary)
+            def profile(kind, manager='Windows', path=mounted, sha256=digest, width=2,
+                        rejection=False):
+                result = dict(profile_name='manager-offline/' + kind,
+                    limits=dict(factory.CANONICAL_LIMITS),
+                    connection_environment=['ODBCPP_REDSHIFT_TEST_CONNECTION'],
+                    uses_private_dsn=kind == 'OWN_DSN',
+                    variables={'ODBCPP_TEST_DSN': 'DSN=RedshiftProd'} if kind == 'OWN_DSN' else {},
+                    review=dict(path=str(root/'review.json'),sha256='0'*64),
+                    private_input=dict(kind=kind,password_rejection=rejection,
+                        driver=dict(path=path,sha256=sha256,wchar_bytes=width,kind='OWN')))
+                if manager is not None:
+                    result['driver_manager'] = manager
+                return result
+            def inputs(profiles):
+                rows = [(dict(origin_id='m'+str(i),origin_image='dm_owner',host_profile='h'+str(i),
+                              executable=sys.executable,sha256='0'*64,filter='Suite.Case'+str(i)),
+                         dict(case='Suite.Case'+str(i),env=None,marker=None,profile='p'+str(i)),value)
+                        for i,value in enumerate(profiles)]
+                payload = dict(config=dict(host='invented.invalid',port=5439,database='odbcpp_pilot',
+                                           test_user='odbcpp_pilot_test',test_password='invented-only',
+                                           ca=str(root/'invented-ca.pem')),
+                               case_variables=[dict(id=row['origin_id'],variables=dict(spec_profile['variables']))
+                                               for row,_,spec_profile in rows])
+                return payload, rows
+            def staged(tree):
+                return {held.path.name: json.loads(held.read())['environment'] for held in tree.files}
+            def retire(tree):
+                for held in reversed(tree.files):
+                    held.retire()
+                tree.files.clear()
+                for path,handle in list(reversed(tree.directories)):
+                    tree.rmdir(path)
+                tree.close_handles()
+            with patch.object(backend,'HEAD','a'*40,create=True), \
+                 patch.object(backend,'DRIVER',driver,create=True), \
+                 patch.object(backend,'DRIVER_SHA',digest,create=True):
+                core = profile('CORE_ENV', rejection=True)
+                payload, rows = inputs([core, profile('OWN_DSN', path=str(driver))])
+                tree = backend.PrivateTree()
+                run = tree.mkdir(root/'accepted')
+                try:
+                    index, expected, dsn = backend.build_inputs(payload,rows,factory,tree,run)
+                    self.assertEqual(len(expected['cases']),2)
+                    environments = staged(tree)
+                    selector = 'DRIVER={'+backend.DESCRIPTION+'};'
+                    core_values = dict(v.split('=',1) for v in environments['h0.json'])
+                    for name in ('ODBCPP_REDSHIFT_TEST_CONNECTION','ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION'):
+                        self.assertTrue(core_values[name].startswith(selector), name)
+                        self.assertNotIn(str(driver), core_values[name])
+                        # Verified TLS, profile limits and driver logging are retained.
+                        for field in ('SSL={1};','SSLCAFILE={'+str(root/'invented-ca.pem')+'};',
+                                      'MAXRESULTS=1;','LogLevel=Debug;','LogSink=Stderr;'):
+                            self.assertIn(field, core_values[name])
+                    self.assertNotIn('PWD={invented-only}',
+                                     core_values['ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION'])
+                    # OWN_DSN keeps SQLConnect through the exact owned HKCU DSN.
+                    self.assertIn('ODBCPP_TEST_DSN=DSN=RedshiftProd', environments['h1.json'])
+                    self.assertEqual(Path(dsn['DRIVER']), driver)
+                    self.assertEqual(dsn['UID'],'odbcpp_pilot_test')
+                finally:
+                    retire(tree)
+                self.assertFalse(run.exists())
+                refused = (('posix_driver_manager_profile', profile('CORE_ENV', manager='unixODBC')),
+                           ('posix_driver_manager_profile', profile('CORE_ENV', manager='iODBC', width=4)),
+                           ('manager_profile_owned_driver', profile('CORE_ENV', sha256='1'*64)),
+                           ('manager_profile_owned_driver', profile('CORE_ENV', path='/mnt/c/other/odbcpp.dll')),
+                           ('manager_profile_owned_driver', profile('CORE_ENV', width=4)))
+                for reason, value in refused:
+                    payload, rows = inputs([value, profile('OWN_DSN')])
+                    tree = backend.PrivateTree()
+                    run = tree.mkdir(root/reason)
+                    try:
+                        with self.assertRaisesRegex(RuntimeError, reason):
+                            backend.build_inputs(payload,rows,factory,tree,run)
+                        # Refused before any private connection was staged.
+                        self.assertEqual(tree.files, [])
+                    finally:
+                        retire(tree)
+                # Conflicting owned DSN configurations still need separate partitions.
+                other = profile('OWN_DSN')
+                other['limits']['MAXRESULTS'] = 3
+                payload, rows = inputs([profile('OWN_DSN', manager=None), other])
+                tree = backend.PrivateTree()
+                run = tree.mkdir(root/'conflict')
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'single_native_dsn_profile'):
+                        backend.build_inputs(payload,rows,factory,tree,run)
+                finally:
+                    retire(tree)
+
     def test_private_file_exact_bytes_acl_and_retirement(self):
         parent = Path(tempfile.mkdtemp(prefix='odbcpp-native-workflow-'))
         root = parent/'owned';tree = backend.PrivateTree()

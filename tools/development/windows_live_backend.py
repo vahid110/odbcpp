@@ -16,7 +16,7 @@ import datetime as dt
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import sys
 import time
@@ -400,6 +400,14 @@ class RegistryDsn:
         self.created.clear()
         self.expected = None
 
+def native_path(path):
+    """A profile path as Windows sees it: WSL /mnt/<drive>/ maps to <DRIVE>:/."""
+    need(type(path) is str, 'profile_path')
+    mounted = re.fullmatch('/mnt/([a-z])/(.+)', path)
+    value = PureWindowsPath(mounted[1].upper() + ':/' + mounted[2] if mounted else path)
+    need(value.is_absolute() and '..' not in value.parts, 'absolute_profile_path')
+    return value
+
 def factory_module():
     from tools.development import redshift_fixture_factory
     return redshift_fixture_factory
@@ -467,11 +475,20 @@ def build_inputs(payload, rows, factory, tree, run):
     for entry, (row, spec, original) in zip(payload['case_variables'], rows):
         profile = copy.deepcopy(original)
         private = profile['private_input']
+        # iODBC/unixODBC profiles are POSIX; Windows uses its registered manager.
+        manager = profile.get('driver_manager')
+        need(manager in (None, 'Windows'), 'posix_driver_manager_profile')
+        if manager is not None:
+            # The manager loads the registered image, so the profile must
+            # already name that exact owned driver, not be rebound to it.
+            driver = private['driver']
+            need(type(driver) is dict and native_path(driver.get('path')) == PureWindowsPath(DRIVER)
+                 and driver.get('sha256') == DRIVER_SHA and driver.get('wchar_bytes') == 2,
+                 'manager_profile_owned_driver')
         if private['driver'] is not None:
             private['driver'].update(path=str(DRIVER), sha256=DRIVER_SHA, wchar_bytes=2)
         factory.validate_profile(profile)
-        # iODBC/unixODBC profiles are POSIX; Windows uses its registered manager.
-        need('driver_manager' not in profile, 'posix_driver_manager_profile')
+        selector = DESCRIPTION if manager is not None else None
         variables = dict(entry['variables'])
         kind = private['kind']
         if kind == 'OWN_DSN':
@@ -497,11 +514,12 @@ def build_inputs(payload, rows, factory, tree, run):
                 variables.update(ODBCPP_REDSHIFT_PACKAGE_CONNECTION_FILE=str(package_files[key]), ODBCPP_REDSHIFT_PACKAGE_INSTALLED_DRIVER=str(DRIVER), ODBCPP_REDSHIFT_PACKAGE_EXPECTED_HOST=config['host'], ODBCPP_REDSHIFT_PACKAGE_EXPECTED_CA_FILE=config['ca'], ODBCPP_REDSHIFT_PACKAGE_EXPECTED_DATABASE=config['database'], ODBCPP_REDSHIFT_PACKAGE_EXPECTED_PRINCIPAL=config['test_user'])
             else:
                 need(kind == 'CORE_ENV', 'own_supported_input_kind')
-                connection = factory.build_profile_connection(config, profile)
+                connection = factory.build_profile_connection(config, profile, registered_driver=selector)
                 connection = connection.rstrip(';') + ';' + ''.join((k + '=' + v + ';' for k, v in LOGGING.items()))
             variables.update({name: connection for name in profile['connection_environment']})
         if private['password_rejection']:
-            invalid = factory.build_profile_connection(config, profile, password_rejection=True)
+            invalid = factory.build_profile_connection(config, profile, password_rejection=True,
+                                                       registered_driver=selector)
             invalid = invalid.rstrip(';') + ';' + ''.join((key + '=' + value + ';' for key, value in LOGGING.items()))
             variables.update(ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION=invalid, ODBCPP_REDSHIFT_AUTH_EXPECTED_USER=config['test_user'])
         need(all((re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', key) is not None and type(value) is str and (not any((c in value for c in '\x00\r\n'))) and ('$<' not in value) for key, value in variables.items())), 'literal_native_environment')

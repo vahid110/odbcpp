@@ -65,9 +65,49 @@ class DriverManagerProfileTests(unittest.TestCase):
             self.assertTrue(invalid.startswith('DRIVER=' + str(self.driver) + ';'))
             self.assertNotIn('PWD={invented-test}', invalid)
 
+    def test_windows_manager_selects_the_registered_description_only(self):
+        direct = factory.build_profile_connection(self.config, self.profile('CORE_ENV', None))
+        profile = self.profile('CORE_ENV', 'Windows')
+        profile['private_input']['password_rejection'] = True
+        value = factory.build_profile_connection(self.config, profile,
+                                                 registered_driver='ODBCPP Redshift')
+        self.assertEqual(value, 'DRIVER={ODBCPP Redshift};' + direct)
+        self.assertNotIn(str(self.driver), value)
+        invalid = factory.build_profile_connection(self.config, profile, password_rejection=True,
+                                                   registered_driver='ODBCPP Redshift')
+        self.assertTrue(invalid.startswith('DRIVER={ODBCPP Redshift};'))
+        self.assertNotIn('PWD={invented-test}', invalid)
+        # Without the verified description the POSIX path form is refused.
+        with self.assertRaisesRegex(factory.FactoryRefused, 'registered_driver_selector'):
+            factory.build_profile_connection(self.config, profile)
+        for selector in ('', 'a;b', 'x}', 'a=b', '{x}', 'x' * 129):
+            with self.assertRaisesRegex(factory.FactoryRefused, 'registered_driver_description'):
+                factory.build_profile_connection(self.config, profile, registered_driver=selector)
+        # Direct and POSIX manager profiles never take a description.
+        for manager in (None, 'iODBC', 'unixODBC'):
+            with self.assertRaisesRegex(factory.FactoryRefused, 'registered_driver_selector'):
+                factory.build_profile_connection(self.config, self.profile('CORE_ENV', manager),
+                                                 registered_driver='ODBCPP Redshift')
+
+    def test_posix_stager_refuses_a_windows_manager_profile(self):
+        manifest = {'pins': {str(self.driver): pin(self.driver)['sha256']}}
+        with self.assertRaises(profile_inputs.ProfileInputBlocked) as failure:
+            profile_inputs.prepare_profile_inputs(
+                self.root / 'profiles', self.config, factory,
+                {'windows': self.profile('CORE_ENV', 'Windows')}, manifest)
+        refusal = failure.exception.__context__
+        self.assertIsInstance(refusal, factory.FactoryRefused)
+        self.assertEqual(str(refusal), 'registered_driver_selector')
+        # Refused before any private connection file was written.
+        self.assertEqual(failure.exception.residue['profiles']['windows']['files'], [])
+        profile_inputs.close_profile_inputs(failure.exception.residue)
+        self.assertFalse((self.root / 'profiles').exists())
+
     def test_manager_profiles_refuse_mismatched_width_kind_and_unpinned_driver(self):
         cases = [self.profile('CORE_ENV', 'iODBC', wchar_bytes=2),
                  self.profile('CORE_ENV', 'unixODBC', wchar_bytes=4),
+                 self.profile('CORE_ENV', 'Windows', wchar_bytes=4),
+                 self.profile('OWN_DSN', 'Windows', wchar_bytes=4),
                  self.profile('CORE_ENV', 'Other')]
         package = self.profile('OWN_DSN', 'iODBC')
         package.update(uses_private_dsn=False, connection_environment=[], variables={})
