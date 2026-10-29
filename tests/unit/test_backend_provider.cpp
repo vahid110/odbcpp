@@ -19,10 +19,11 @@ TEST(BackendProviderTest, CompiledProductOwnsIdentityAndDefaults) {
   const auto& identity = provider.identity();
   const auto& defaults = provider.connection_defaults();
 
+  const bool redshift = DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift;
   EXPECT_EQ("localhost", defaults.host);
-  EXPECT_EQ(5432, defaults.port);
+  EXPECT_EQ(redshift ? 5439 : 5432, defaults.port);
   ASSERT_TRUE(defaults.database.has_value());
-  EXPECT_EQ("postgres", *defaults.database);
+  EXPECT_EQ(redshift ? "dev" : "postgres", *defaults.database);
   EXPECT_TRUE(defaults.use_ssl);
 
   if (DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift) {

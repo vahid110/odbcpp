@@ -12562,6 +12562,13 @@ TEST_F(LoginTimeoutOptionsTest, FailedConnectAndSetupNeverPublishAndExplicitRefi
   EXPECT_EQ(std::optional<std::string>{std::string("\1\xff\\", 3)}, seen->parameters[0].value);
 }
 
+// Native IdP keywords are parsed by the driver, so they must not be reported
+// as unrecognized connection keywords (01S00).
+TEST_F(BackendContractTest, NativeIdpKeywordsAreRecognized) {
+  connect_with("SERVER=fake;SSL=0;PluginName=IdpTokenAuthPlugin;ProviderName=p;"
+               "TokenType=ACCESS_TOKEN;IdentityNamespace=n;Token=t");
+}
+
 TEST_F(LoginTimeoutOptionsTest, RecognizedKeysKeepUnknownWarningAndTruncationAfterSuccessfulPublication) {
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login("SERVER=fake;SSL=0;LT=2;UnrelatedUnknown=1"));
   EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
