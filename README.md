@@ -141,6 +141,7 @@ Settings that choose a log file or record query text (`LogFile`,
 connection string that sets them is refused. On macOS and Linux, log files
 are created owner-only (0600), must be regular files owned by the driver's
 user, and are never opened through a symbolic link, including after rotation.
+The log directory must not be writable by other users.
 Windows log files keep the default ACLs of their directory.
 
 ```ini
