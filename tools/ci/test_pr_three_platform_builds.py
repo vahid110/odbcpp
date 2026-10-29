@@ -11,7 +11,10 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-PR_JOBS = ('pr-ubuntu-build', 'pr-windows-build')
+PR_BUILD_JOBS = ('pr-ubuntu-build', 'pr-windows-build')
+# Both PR build jobs cover POSTGRESQL and REDSHIFT; the sanitizer job runs the
+# unit suite under ASan/UBSan for both products.
+PR_JOBS = PR_BUILD_JOBS + ('pr-ubuntu-sanitizers',)
 FULL_JOBS = ('build-and-test', 'redshift-build', 'windows-live', 'windows-package',
              'linux-sanitizers', 'linux-openssl-static', 'awslc-adapter-proof',
              'iodbc-unicode')
@@ -54,10 +57,11 @@ def unrestricted_pr_trigger(text):
 
 
 def build_contract(block, platform):
-    required = ["if: github.event_name == 'pull_request'", 'timeout-minutes: 30',
+    required = ["if: github.event_name == 'pull_request'", 'timeout-minutes: 60',
+                'product: [POSTGRESQL, REDSHIFT]', 'fail-fast: false',
                 'ref: ${{ github.sha }}', 'persist-credentials: false',
                 'git log -1 --format="%H %T"', '-DBUILD_TESTING=ON',
-                '-DBUILD_EXAMPLES=OFF', '-DTARGET_DATABASE=POSTGRESQL',
+                '-DBUILD_EXAMPLES=OFF', '-DTARGET_DATABASE=${{ matrix.product }}',
                 '-DODBCPP_CRYPTO_PROVIDER=OPENSSL', '-DODBCPP_CRYPTO_PROFILE_LIVE_TESTS=OFF',
                 '-DODBCPP_CRYPTO_TLS_PROOF=OFF', '-DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2',
                 '-DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2']
@@ -77,17 +81,29 @@ def build_contract(block, platform):
         raise ValueError('build must not be conditional on draft/path/status')
     for step in re.split(r'(?m)^      - ', block)[1:]:
         if re.search(r'(?m)^        if:', step):
-            if (not step.startswith(('name: Verify actual offline execution\n',
-                                     'name: Retain offline Driver Manager evidence\n')) or
-                    re.findall(r'(?m)^        if: (.*)$', step) != ['always()']):
-                raise ValueError('only evidence collection may have an always condition')
+            condition = re.findall(r'(?m)^        if: (.*)$', step)
+            if step.startswith(('name: Verify actual offline execution\n',
+                                'name: Retain offline Driver Manager evidence\n')):
+                allowed = ['always()']
+            elif step.startswith(('name: Run tooling unit tests offline\n',
+                                  'name: Run Windows tooling unit tests offline\n')):
+                allowed = ["matrix.product == 'POSTGRESQL'"]
+            elif step.startswith('name: Run offline Driver Manager subset\n'):
+                allowed = ["${{ !cancelled() && steps.build.outcome == 'success' }}"]
+            else:
+                allowed = None
+            if condition != allowed:
+                raise ValueError('only evidence, tooling-once and post-build DM steps may be conditional')
     build = 'build-pr-ubuntu' if platform == 'Ubuntu' else 'build-pr-windows'
     config = '' if platform == 'Ubuntu' else ' -C Release'
-    expected_ctest = (f"ctest --test-dir {build}{config} -L '^dm-offline$' "
-                      '--no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml')
+    expected_ctest = [
+        f"run: ctest --test-dir {build}{config} -L '^unit$' "
+        '--no-tests=error --output-on-failure --output-junit unit/ctest.xml',
+        f"ctest --test-dir {build}{config} -L '^dm-offline$' "
+        '--no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml']
     ctest_lines = [line.strip() for line in block.splitlines() if 'ctest --' in line]
-    if ctest_lines != [expected_ctest]:
-        raise ValueError('exact offline CTest subset required; no connected runtime')
+    if ctest_lines != expected_ctest:
+        raise ValueError('exact unit and offline CTest subsets required; no connected runtime')
     validator_config = '' if platform == 'Ubuntu' else ' --config Release'
     required_evidence = [f'check_dm_offline_evidence.py --build {build}{validator_config} '
                          f'--ctest-exit-file {build}/dm-offline/ctest-exit.txt',
@@ -206,9 +222,9 @@ class ThreePlatformScheduling(unittest.TestCase):
     def test_full_dispatch_keeps_ten_mandatory_and_seven_skipped(self):
         active = {n for n,b in self.blocks.items() if enabled(b,'workflow_dispatch',{})}
         self.assertEqual(active, set(FULL_JOBS))
-        self.assertEqual(len(self.blocks), 15)
+        self.assertEqual(len(self.blocks), 16)
         self.assertEqual(sum(2 if n in ['awslc-adapter-proof','iodbc-unicode'] else 1 for n in active), 10)
-        self.assertEqual(len(self.blocks)-len(active), 7)
+        self.assertEqual(len(self.blocks)-len(active), 8)
 
     def test_manual_focused_mode_truth_table_preserved(self):
         for bits in itertools.product([False, True], repeat=len(FLAGS)):
@@ -285,7 +301,7 @@ class ThreePlatformScheduling(unittest.TestCase):
         self.assertIn('name: dm-offline-macos-iodbc-ucs4', block)
 
     def test_two_build_profiles_are_cold_default_ALL_with_offline_runtime(self):
-        for name, platform in zip(PR_JOBS, ['Ubuntu','Windows']):
+        for name, platform in zip(PR_BUILD_JOBS, ['Ubuntu','Windows']):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
 
@@ -315,11 +331,11 @@ class ThreePlatformScheduling(unittest.TestCase):
             enabled('    if: __import__("os").system("false")\n', 'pull_request', {})
 
     def test_each_profile_guard_rejects_meaningful_negative_mutations(self):
-        for name, platform in zip(PR_JOBS, ['Ubuntu','Windows']):
+        for name, platform in zip(PR_BUILD_JOBS, ['Ubuntu','Windows']):
             base = self.blocks[name]
             mutations = [base.replace('--parallel 2','--parallel 4'),
                          base.replace('--parallel 2','--target test_backend_contract --parallel 2'),
-                         base.replace('timeout-minutes: 30','timeout-minutes: 90'),
+                         base.replace('timeout-minutes: 60','timeout-minutes: 90'),
                          base.replace('-DBUILD_TESTING=ON','-DBUILD_TESTING=OFF'),
                          base.replace('ref: ${{ github.sha }}','ref: main'),
                          base.replace('-DODBCPP_CRYPTO_TLS_PROOF=OFF','-DODBCPP_CRYPTO_TLS_PROOF=ON'),
