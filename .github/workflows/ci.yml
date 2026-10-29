@@ -105,10 +105,14 @@ concurrency:
 
 jobs:
   pr-ubuntu-build:
-    name: PR Ubuntu build and offline DM tests
+    name: PR Ubuntu ${{ matrix.product }} build, unit and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [POSTGRESQL, REDSHIFT]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,6 +126,7 @@ jobs:
       # Windows-only tests run in the Windows PR job; test_spdlog_fmt_patch needs
       # build inputs and runs under CTest.
       - name: Run tooling unit tests offline
+        if: matrix.product == 'POSTGRESQL'
         run: |
           set -o pipefail
           status=0
@@ -140,12 +145,12 @@ jobs:
             /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
-      - name: Configure PostgreSQL Release build
+      - name: Configure ${{ matrix.product }} Release build
         run: >-
           cmake -S . -B build-pr-ubuntu
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
-          -DTARGET_DATABASE=POSTGRESQL
+          -DTARGET_DATABASE=${{ matrix.product }}
           -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED
@@ -157,8 +162,12 @@ jobs:
       # Default ALL builds the driver, core, SDK isolation/consumer and test images.
       # Building test executables does not execute their test bodies.
       - name: Build default ALL j2
+        id: build
         run: cmake --build build-pr-ubuntu --parallel 2
+      - name: Run unit tests
+        run: ctest --test-dir build-pr-ubuntu -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
       - name: Run offline Driver Manager subset
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set +e
           ctest --test-dir build-pr-ubuntu -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
@@ -172,18 +181,23 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: dm-offline-ubuntu
+          name: dm-offline-ubuntu-${{ matrix.product }}
           path: |
             build-pr-ubuntu/dm-offline/
+            build-pr-ubuntu/unit/
             build-pr-ubuntu/Testing/Temporary/
             build-pr-ubuntu/CMakeCache.txt
           if-no-files-found: error
 
   pr-windows-build:
-    name: PR Windows build and offline DM tests
+    name: PR Windows ${{ matrix.product }} build, unit and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [POSTGRESQL, REDSHIFT]
     defaults:
       run:
         shell: pwsh
@@ -197,6 +211,7 @@ jobs:
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
       - name: Run Windows tooling unit tests offline
+        if: matrix.product == 'POSTGRESQL'
         run: |
           $env:PYTHONPATH = $PWD.Path
           # The Windows package-input reader must run here, never skip.
@@ -219,12 +234,12 @@ jobs:
           if ($failed.Count) { throw "Windows tooling unit tests failed: $($failed -join ', ')" }
       - name: Verify existing runner OpenSSL
         run: openssl version
-      - name: Configure PostgreSQL x64 MSVC build
+      - name: Configure ${{ matrix.product }} x64 MSVC build
         run: >-
           cmake -S . -B build-pr-windows -A x64
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
-          -DTARGET_DATABASE=POSTGRESQL
+          -DTARGET_DATABASE=${{ matrix.product }}
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=BUNDLED_SHARED
           -DODBCPP_CRYPTO_PROFILE_LIVE_TESTS=OFF
@@ -233,8 +248,12 @@ jobs:
           -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
           -DODBCPP_CRYPTO_ROOT="C:/Program Files/OpenSSL"
       - name: Build default ALL Release j2
+        id: build
         run: cmake --build build-pr-windows --config Release --parallel 2
+      - name: Run unit tests
+        run: ctest --test-dir build-pr-windows -C Release -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
       - name: Run offline Driver Manager subset
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           ctest --test-dir build-pr-windows -C Release -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
           $result = $LASTEXITCODE
@@ -247,12 +266,66 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: dm-offline-windows
+          name: dm-offline-windows-${{ matrix.product }}
           path: |
             build-pr-windows/dm-offline/
+            build-pr-windows/unit/
             build-pr-windows/Testing/Temporary/
             build-pr-windows/CMakeCache.txt
           if-no-files-found: error
+
+  pr-ubuntu-sanitizers:
+    name: PR Ubuntu ${{ matrix.product }} ASan/UBSan unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [POSTGRESQL, REDSHIFT]
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install existing build dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+      # Same flags as the linux-sanitizers profile (tools/ci/sanitizer_evidence.py).
+      - name: Configure ${{ matrix.product }} sanitizer build
+        run: >-
+          cmake -S . -B build-pr-sanitize
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=${{ matrix.product }}
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_CRYPTO_PROVIDER=OPENSSL
+          -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+          -DCMAKE_BUILD_TYPE=Debug
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+          -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined
+      - name: Build j2
+        run: cmake --build build-pr-sanitize --parallel 2
+      - name: Run unit tests under ASan/UBSan
+        run: ctest --test-dir build-pr-sanitize -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
+      - name: Retain sanitizer unit results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sanitizer-unit-${{ matrix.product }}
+          path: |
+            build-pr-sanitize/unit/
+            build-pr-sanitize/Testing/Temporary/
+          if-no-files-found: warn
 
   sanitizer-only:
     # Arbitrary product CMake/tests must receive no cache token authority.
