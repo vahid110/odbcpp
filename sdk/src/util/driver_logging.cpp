@@ -165,6 +165,18 @@ void apply(LoggingOptions& options,
 // owner-only; otherwise it is redirected to /dev/null and the open fails, so a
 // path swapped between the two steps never receives log text.
 void prepare_log_file(const spdlog::filename_t& path) {
+  // Rotation renames the file away and re-creates the name, and spdlog's
+  // truncating reopen follows a symbolic link before after_open can inspect
+  // it. Another user who can write to the directory could plant such a link,
+  // so the directory must be writable by its owner only.
+  const auto separator = path.find_last_of('/');
+  const auto directory = separator == spdlog::filename_t::npos ? spdlog::filename_t(".")
+      : separator == 0 ? spdlog::filename_t("/") : path.substr(0, separator);
+  struct stat parent {};
+  if (::stat(directory.c_str(), &parent) != 0)
+    throw std::runtime_error("LogFile directory cannot be inspected: " + std::string(std::strerror(errno)));
+  if ((parent.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+    throw std::runtime_error("LogFile directory must not be writable by other users");
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC,
                         0600);
   if (fd < 0) throw std::runtime_error("LogFile cannot be opened: " + std::string(std::strerror(errno)));

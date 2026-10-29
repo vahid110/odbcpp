@@ -200,7 +200,7 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
   std::filesystem::create_symlink(target, link);
   const auto linked = LoggingOptions::resolve(
       {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", link.string()}}, {}, {});
-  EXPECT_ANY_THROW(DriverLogger::create(linked, 1));
+  EXPECT_THROW(DriverLogger::create(linked, 1), std::runtime_error);
   EXPECT_EQ("keep", read_file(target));
   // A new file is owner-only, and an existing broader file is tightened.
   const auto fresh = directory / "fresh.log";
@@ -234,6 +234,15 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
   ASSERT_TRUE(std::filesystem::exists(directory / "rotating.1.log"));
   ASSERT_EQ(0, ::stat(rotating.c_str(), &info));
   EXPECT_EQ(0600, info.st_mode & 0777);
+  // A directory other users can write to (where a link could be planted
+  // before rotation re-creates the file) is refused.
+  const auto shared = directory / "shared";
+  std::filesystem::create_directories(shared);
+  ASSERT_EQ(0, ::chmod(shared.c_str(), 0777));
+  const auto exposed = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", (shared / "driver.log").string()}}, {}, {});
+  EXPECT_THROW(DriverLogger::create(exposed, 1), std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(shared / "driver.log"));
   std::filesystem::remove_all(directory);
 }
 #endif
