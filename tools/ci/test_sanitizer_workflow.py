@@ -62,7 +62,8 @@ class SchedulingSafety(unittest.TestCase):
                 actual = {n for n,b in new.items() if enabled(b,event,flags)}
                 if event == 'pull_request':
                     # Human-approved PR builds replace the former PR full graph.
-                    self.assertEqual(actual, {'pr-ubuntu-build', 'pr-windows-build'}, (event, flags))
+                    self.assertEqual(actual, {'pr-ubuntu-build', 'pr-windows-build',
+                                              'pr-ubuntu-sanitizers'}, (event, flags))
                 else:
                     # Every legacy manual mode retains its original selection.
                     self.assertEqual({n for n,b in old.items() if enabled(b,event,flags)},
