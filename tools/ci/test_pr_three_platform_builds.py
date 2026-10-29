@@ -305,6 +305,12 @@ class ThreePlatformScheduling(unittest.TestCase):
             with self.subTest(platform=platform):
                 build_contract(self.blocks[name], platform)
 
+    def test_every_PR_job_records_its_exact_source(self):
+        for name in PR_JOBS:
+            with self.subTest(job=name):
+                self.assertIn('ref: ${{ github.sha }}', self.blocks[name])
+                self.assertIn('run: git log -1 --format="%H %T"', self.blocks[name])
+
     def test_primary_PR_and_explicit_checkpoint_without_duplicate_push(self):
         unrestricted_pr_trigger(self.primary)
         triggers = self.primary.split('\npermissions:', 1)[0]
