@@ -17,7 +17,7 @@ class ScopedDriverConfig {
   ScopedDriverConfig(const std::filesystem::path& directory, std::string driver,
                      const std::map<std::string, std::string>& keys)
       : driver_(std::move(driver)), path_(directory / "odbcinst.ini") {
-    if (const char* previous = std::getenv("ODBCINSTINI")) previous_ = previous;
+    previous_ = current();
     std::ofstream file(path_);
     file << "[" << driver_ << "]\n";
     for (const auto& [key, value] : keys) file << key << "=" << value << "\n";
@@ -37,6 +37,20 @@ class ScopedDriverConfig {
   std::string connection_prefix() const { return "DRIVER=" + driver_ + ";"; }
 
  private:
+  static std::optional<std::string> current() {
+#ifdef _WIN32
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, "ODBCINSTINI") != 0 || value == nullptr) return std::nullopt;
+    std::string result(value);
+    std::free(value);
+    return result;
+#else
+    const char* value = std::getenv("ODBCINSTINI");
+    if (value == nullptr) return std::nullopt;
+    return std::string(value);
+#endif
+  }
   static void set(const std::string& value) {
 #ifdef _WIN32
     _putenv_s("ODBCINSTINI", value.c_str());

@@ -235,10 +235,10 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
   ASSERT_EQ(0, ::stat(rotating.c_str(), &info));
   EXPECT_EQ(0600, info.st_mode & 0777);
   // A directory other users can write to (where a link could be planted
-  // before rotation re-creates the file) is refused.
+  // before rotation re-creates the file) is refused; group write suffices.
   const auto shared = directory / "shared";
   std::filesystem::create_directories(shared);
-  ASSERT_EQ(0, ::chmod(shared.c_str(), 0777));
+  ASSERT_EQ(0, ::chmod(shared.c_str(), 0770));
   const auto exposed = LoggingOptions::resolve(
       {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", (shared / "driver.log").string()}}, {}, {});
   EXPECT_THROW(DriverLogger::create(exposed, 1), std::runtime_error);
