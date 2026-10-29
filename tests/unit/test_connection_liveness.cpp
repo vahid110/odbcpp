@@ -4829,7 +4829,7 @@ class QueryDeadlineWire final : public rs::core::transport::ITransport {
   void arm(bool prepared, Late late = Late::None, bool error = false,
            bool deferred = false) {
     input_.clear(); offset_ = 0; reads.clear(); writes.clear(); sent.clear();
-    late_ = late; armed_ = true; error_end_ = 0; first_body_byte_ = prepared ? 16u : 6u;
+    late_ = late; injected = Late::None; armed_ = true; error_end_ = 0; first_body_byte_ = prepared ? 16u : 6u;
     if (prepared) { frame('1', {}); frame('2', {}); }
     if (!error || deferred) {
       // One text column v, OID25, unknown typmod, text format; one owning cell x.
@@ -4852,7 +4852,10 @@ class QueryDeadlineWire final : public rs::core::transport::ITransport {
       std::span<const std::byte> bytes, rs::util::Deadline deadline) override {
     if (armed_) {
       writes.push_back(deadline); sent.push_back(bytes.front());
-      if (late_ == Late::Write && writes.size() == 1) OriginalDeadlineWire::exhaust(deadline);
+      if (late_ == Late::Write && writes.size() == 1) {
+        injected = late_;
+        OriginalDeadlineWire::exhaust(deadline);
+      }
     }
     return rs::core::transport::IOResult{armed_ ? 1u : bytes.size(), false};
   }
@@ -4866,6 +4869,7 @@ class QueryDeadlineWire final : public rs::core::transport::ITransport {
           (late_ == Late::Body && offset_ == first_body_byte_) ||
           (late_ == Late::Ready && offset_ == input_.size()) ||
           (late_ == Late::ErrorBoundary && offset_ == error_end_)) {
+        injected = late_;
         OriginalDeadlineWire::exhaust(deadline);
       }
     }
@@ -4875,6 +4879,7 @@ class QueryDeadlineWire final : public rs::core::transport::ITransport {
   std::vector<rs::util::Deadline> reads, writes;
   std::vector<std::byte> sent;
   unsigned closes{};
+  Late injected{Late::None};
  private:
   void frame(char tag, std::initializer_list<unsigned char> payload) {
     input_.push_back(std::byte(static_cast<unsigned char>(tag)));
@@ -5162,22 +5167,42 @@ TEST(BufferedWireOwnershipTest, DeferredErrorOrderAndTransactionSnapshotRemainOw
 }
 TEST(BufferedWireOwnershipTest, ResourceAndLateReadyRetireWithoutPartialPublication) {
   using namespace rs::core::database;
-  for(bool resource:{false,true}) {
-    SCOPED_TRACE(resource);
-    auto parser=std::make_unique<BufferedPayloadOwnershipParser>();auto* observed=parser.get();
-    auto transport=std::make_unique<QueryDeadlineWire>();auto* wire=transport.get();
-    GenericDatabaseConnection connection(std::move(parser),std::move(transport));
-    auto settings=pg_fixture_settings();settings.use_ssl=false;if(resource)settings.response_limits.max_messages=3;
-    ASSERT_TRUE(connection.connect(settings));observed->observing=true;
-    wire->arm(false,resource?QueryDeadlineWire::Late::None:QueryDeadlineWire::Late::Ready);
-    const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{20});auto result=execute_deadline_query(connection,false,deadline);ASSERT_FALSE(result);
-    EXPECT_EQ(resource?BackendErrorClass::ResourceLimit:BackendErrorClass::Timeout,result.backend_error().error_class);
-    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected,SessionDisposition::Retire}),result.session_snapshot());
-    // The completed late response is owning-decoded before publication refusal;
-    // an exceeded message budget instead refuses before extraction.
-    EXPECT_EQ(resource?0u:1u,observed->extract_calls);EXPECT_GT(wire->closes,0u);expect_query_deadline(*wire,deadline);
-    const auto sends=wire->writes.size(),reads=wire->reads.size();
-    EXPECT_FALSE(execute_deadline_query(connection,false,deadline));EXPECT_EQ(sends,wire->writes.size());EXPECT_EQ(reads,wire->reads.size());
+  using Late = QueryDeadlineWire::Late;
+  for (unsigned scenario = 0; scenario != 3; ++scenario) {
+    const bool resource = scenario == 1;
+    const bool early_write = scenario == 2;
+    const auto injection = resource ? Late::None : early_write ? Late::Write : Late::Ready;
+    SCOPED_TRACE(resource ? "resource budget" : early_write ? "early write timeout" : "late Ready timeout");
+    auto parser = std::make_unique<BufferedPayloadOwnershipParser>();
+    auto* observed = parser.get();
+    auto transport = std::make_unique<QueryDeadlineWire>();
+    auto* wire = transport.get();
+    GenericDatabaseConnection connection(std::move(parser), std::move(transport));
+    auto settings = pg_fixture_settings();
+    settings.use_ssl = false;
+    if (resource) settings.response_limits.max_messages = 3;
+    ASSERT_TRUE(connection.connect(settings));
+    observed->observing = true;
+    wire->arm(false, injection);
+    // Match the ordinary fake-exchange window above. The 20ms window formerly
+    // allowed host scheduling to expire before Ready, exercising the wrong path.
+    // The early-write control deliberately proves that distinct refusal path.
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = execute_deadline_query(connection, false, deadline);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(injection, wire->injected);
+    EXPECT_EQ(resource ? BackendErrorClass::ResourceLimit : BackendErrorClass::Timeout,
+        result.backend_error().error_class);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    // A complete late response must owning-decode exactly once before refusing
+    // publication. Resource exhaustion and an earlier timeout must not extract.
+    EXPECT_EQ(resource || early_write ? 0u : 1u, observed->extract_calls);
+    EXPECT_GT(wire->closes, 0u);
+    expect_query_deadline(*wire, deadline);
+    const auto sends = wire->writes.size(), reads = wire->reads.size();
+    EXPECT_FALSE(execute_deadline_query(connection, false, deadline));
+    EXPECT_EQ(sends, wire->writes.size());
+    EXPECT_EQ(reads, wire->reads.size());
   }
 }
 

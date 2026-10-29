@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <thread>
+#include <limits>
 namespace rs::core::auth::aws::provisioned_native::detail {
 NamedFdReadCursor::NamedFdReadCursor(int credentials,int config):credentials_(credentials),config_(config) {
  if(credentials<3||config<3||credentials==config){failed_=true;return;}
@@ -153,52 +154,41 @@ struct WorkerCancellationBridge final : public rs::core::auth::Cancellation {
 std::optional<FrozenNamedSource> NamedSourceAcquisitionOwner::resolve(
     const ProtectedNamedSourceSpec& spec, const Context& context, const Request& request,
     std::shared_ptr<WorkerCancellation> cancel,
-    std::optional<std::chrono::microseconds> utc_uncertainty,
-    std::optional<std::chrono::microseconds> drift_error,
-    std::optional<std::chrono::microseconds> suspend_error) {
+    TrustedUtcSource* clock) {
   // Reuse the protected stage's fd-validated read for the role resolution.
   auto stage = ProtectedNamedStage::create(spec, context, request);
   if (!stage->assumes_role()) return std::nullopt;
   // Rewind the validated fds before the STS loader reads /dev/fd aliases.
   if (!stage->rewind_for_cache()) throw Refused{};
-  // The trusted clock-quality bounds must come from an explicitly trusted
-  // sampler; this adapter has none and Aws::Utils::DateTime::Now() is not a
-  // trusted UTC source. Propagate unavailable quality as refusal before any
-  // STS send rather than declaring unsupported bounds.
-  if (!utc_uncertainty || !drift_error || !suspend_error) throw Refused{};
-  // Bracketed trusted-clock sample around the STS acquisition so the checked
-  // conversion can bound the UTC/monotonic skew rather than extending validity.
-  const auto before = rs::util::Clock::now();
-  const auto utc_ms = Aws::Utils::DateTime::Now().Millis();
+  if (!clock || !cancel) throw Refused{};
+  const TemporaryTimePolicy policy{std::chrono::seconds{10}, std::chrono::seconds{10},
+      std::chrono::seconds{10}, std::chrono::seconds{3600}};
+  auto sampled = sample_trusted_clock(*clock, policy);
+  auto* selected = std::get_if<TrustedClockSample>(&sampled);
+  if (!selected || rs::util::Clock::now() >= request.deadline() || cancel->cancelled())
+    throw Refused{};
+  TemporaryClockSample sample = selected->time;
   auto assumed = profile_role::resolve_assumed_role_credentials(
       stage->credentials_path(), stage->profile(), context.region,
       context.source_identity, 900, request.deadline(), cancel);
   if (!assumed || !stage->unchanged()) throw Refused{};
   if (!assumed.value().expiration_utc) throw Refused{};
-  const auto after = rs::util::Clock::now();
-  const auto now = rs::util::Clock::now();
-  // Reuse the existing temporary-validity conversion with an explicit
-  // quality/error/horizon policy. Refuses unavailable quality, overflow, stale
-  // samples, rollback, expiry and unsupported horizons; preserves the exclusive
-  // expiry contract and the admitted monotonic validity.
-  TemporaryClockSample sample;
-  sample.utc = UtcInstant{utc_ms * 1000};
-  sample.before = before;
-  sample.after = after;
-  sample.acquisition_completed = after;
-  sample.now = now;
-  sample.utc_uncertainty = utc_uncertainty;
-  sample.drift_error = drift_error;
-  sample.suspend_error = suspend_error;
-  const TemporaryTimePolicy policy{std::chrono::seconds{10}, std::chrono::seconds{10},
-      std::chrono::seconds{10}, std::chrono::seconds{3600}};
+  // The source's future rate guarantee covers the raw UTC horizon, not just
+  // the error-subtracted remainder accepted by the arithmetic converter.
+  if (sample.utc.microseconds_since_epoch > std::numeric_limits<std::int64_t>::max() - policy.max_horizon.count() ||
+      assumed.value().expiration_utc->microseconds_since_epoch > sample.utc.microseconds_since_epoch + policy.max_horizon.count())
+    throw Refused{};
+  sample.acquisition_completed = rs::util::Clock::now();
+  sample.now = rs::util::Clock::now();
   WorkerCancellationBridge bridge{cancel};
   auto time = convert_temporary_validity(request.deadline(), request.headroom(),
       *assumed.value().expiration_utc, sample, policy, &bridge);
   if (!time) throw Refused{};
   const auto expires_mono = time.value().expires_at;
+  auto guard = retain_trusted_clock(*selected, expires_mono);
+  if (!guard) throw Refused{};
   Aws::Auth::AWSCredentials creds{role_sdk_string(assumed.value().access_key_id),
       role_sdk_string(assumed.value().secret_access_key), role_sdk_string(assumed.value().session_token)};
-  return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation, expires_mono};
+  return FrozenNamedSource{std::move(creds), context.source_identity, context.source_generation, expires_mono, std::move(guard)};
 }
 } // namespace
