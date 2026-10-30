@@ -48,7 +48,8 @@ replace hand-made evidence and custom ceremony.
    reviewers review again, until every reviewer approves. Approval covers one
    commit: any new push needs a new review. Agents merge their own PRs once
    the reviewers have approved the head commit and the required checks are
-   green; routine PRs never wait for the owner (amended 2026-10-30).
+   green; only changes to the gate files of decision 10 wait for the owner
+   (amended 2026-10-30).
 5. **Evidence is CI.** Required checks on every PR (exactly, as of
    2026-10-30): Ubuntu and Windows build + unit + offline Driver Manager tests
    for POSTGRESQL and REDSHIFT; Ubuntu ASan/UBSan unit tests for both
@@ -97,13 +98,15 @@ replace hand-made evidence and custom ceremony.
    interactive desktop, and elevated System DSN checks clean up their exact
    fixtures.
 10. **Enforcement** (amended 2026-10-30). Agents act on GitHub as the
-    `odbcpp-agent` GitHub App, not the owner's account. Branch protection on
-    `main` requires the CI checks (up to date, applied to administrators) and
-    an `independent-review` check that only the reviewer's identity can set,
-    on the PR's head commit. No general human approval is required. The owner
+    `odbcpp-agent` GitHub App, not the owner's account; reviewers post as a
+    separate `odbcpp-reviewer` App. Branch protection on `main` requires the
+    CI checks (up to date, applied to administrators) and an
+    `independent-review` check pinned to the reviewer App, on the PR's head
+    commit. No general human approval is required. The owner
     approves, through CODEOWNERS, only changes to what defines the gates:
     `.github/` (CI, CODEOWNERS), `AGENTS.md`, `docs/adr/`, `.agents/`,
-    `tools/ci/`, `tools/development/` and `tools/release/`. Release tags
+    `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
+    `DEVELOPMENT_WORKFLOW.md` while its live rules apply. Release tags
     (`v*`) can be created only by the owner, so nothing reaches users without
     the owner. The reviewer, not the author, assigns the high-risk labels.
 
@@ -112,11 +115,11 @@ replace hand-made evidence and custom ceremony.
 No safety mechanism is removed before its replacement works.
 
 1. The owner merges this ADR and the new `AGENTS.md`. Branch protection with
-   the required checks is already on (2026-10-30); add up-to-date (strict)
-   checks and apply protection to administrators, which do not depend on
-   agent identity; add a required check that fails when a PR touches the
-   high-risk paths (auth, protocol, security, transactions, `.github/`,
-   `AGENTS.md`, `docs/adr/`) without the matching label.
+   the required checks, up-to-date checks and enforcement for administrators
+   is on (done 2026-10-30). Still to add: a required check that fails when a
+   PR touches the high-risk paths (auth, protocol, security, transactions)
+   without the matching label, and one that fails when the number of tests in
+   a required run drops without an explanation in the PR.
 1a. Give agents their own GitHub identity (done 2026-10-30: `odbcpp-agent`),
    add the CODEOWNERS file, the required `independent-review` check and the
    `v*` tag rule (decision 10). Required before step 2.
@@ -137,6 +140,11 @@ Estimated effort: 1–1.5 person-weeks, mostly steps 2 and 3.
 
 - Status and history are visible in the repository and on GitHub.
 - Reviews stay independent, and CI becomes the single source of evidence.
+- Product code, including auth and protocol, reaches `main` without human
+  review; the agent reviewers, CI and owner-only release tags are the
+  safeguards. Test registration in `cmake/` is not owner-owned, so a dropped
+  test is caught by review (and later by the test-count check), not by
+  CODEOWNERS.
 - Live runs need no manual admission, which removes friction but places
   trust in the AWS-side guards; step 2 must prove them before switching.
 - Some institutional detail in the old plans is archived rather than kept

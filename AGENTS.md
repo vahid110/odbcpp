@@ -50,8 +50,10 @@ correctness and edge cases; placement against the architecture; security
 change (red before green, no weakened assertions); compatibility and
 documentation; and that every claim is backed by the evidence (an unsupported
 claim is a finding). Findings are ranked blocking / should-fix / nit with
-`file:line` and a concrete failure scenario. Fixes get a focused follow-up
-review from the reviewer that raised them.
+`file:line` and a concrete failure scenario. A change that removes a test
+from a required run (dropping its `unit` label, `WILL_FAIL`, `DISABLED`, a
+new skip, or a no-op sanitizer option) is blocking unless the PR explains
+it.
 
 The reviewer, not the author, assigns the high-risk labels. PRs labelled
 `security`, `auth`, `protocol`, `transactions` or `process` also get a second,
@@ -65,8 +67,11 @@ covers one commit. Merge when the reviewers have approved the head commit and
 the required checks are green; only changes to the files in `.github/CODEOWNERS`
 wait for the owner.
 
-Agents act on GitHub only as `odbcpp-agent[bot]`
-(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`), never with the owner's login.
+Authors act on GitHub only as `odbcpp-agent[bot]`
+(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`); reviewers post their verdict
+and the `independent-review` check as `odbcpp-reviewer[bot]`. Never use the
+owner's login. The owner does not author or push to PRs that touch owned
+files (they could not be approved); the owner comments and an agent pushes.
 
 ## Evidence
 
