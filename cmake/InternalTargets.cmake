@@ -12,7 +12,7 @@ function(odbcpp_partition_driver_sources prefix root)
     file(RELATIVE_PATH _relative "${root}" "${_source}")
     if(NOT _relative MATCHES "\\.cpp$")
       message(FATAL_ERROR "Unsupported internal source: ${_relative}")
-    elseif(_relative MATCHES "^sdk/src/(transport|security|util)/")
+    elseif(_relative MATCHES "^sdk/src/(transport|security)/")
       list(APPEND _runtime "${_source}")
     elseif(_relative STREQUAL "core/database/generic_database_connection.cpp" OR
            _relative MATCHES "^core/database/(postgres|mysql|sqlserver)/")
