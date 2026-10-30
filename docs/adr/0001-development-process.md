@@ -43,9 +43,12 @@ replace hand-made evidence and custom ceremony.
    the code and the evidence but does not build or run anything, and treats an
    unsupported claim as a finding. PRs labelled `security`, `auth`, `protocol`,
    `transactions` or `process` also get a second, independent red-team
-   reviewer that tries to break the change and does not see the first review,
-   and need the owner's approval. Fixes get a focused follow-up review from the
-   reviewer that raised them.
+   reviewer that tries to break the change and does not see the first review.
+   Findings are posted on the PR; the author fixes and pushes, and the
+   reviewers review again, until every reviewer approves. Approval covers one
+   commit: any new push needs a new review. Agents merge their own PRs once
+   the reviewers have approved the head commit and the required checks are
+   green; routine PRs never wait for the owner (amended 2026-10-30).
 5. **Evidence is CI.** Required checks on every PR (exactly, as of
    2026-10-30): Ubuntu and Windows build + unit + offline Driver Manager tests
    for POSTGRESQL and REDSHIFT; Ubuntu ASan/UBSan unit tests for both
@@ -78,8 +81,8 @@ replace hand-made evidence and custom ceremony.
      alarm), proven on a deliberate failing run.
    - Labels never trigger a live run.
    - Prerequisite: agents have their own GitHub identity (decision 10), the
-     live workflow files are owned by the owner through CODEOWNERS, and an
-     approval of the `live` environment by an agent identity does not count.
+     live workflow files are owned by the owner through CODEOWNERS, and only
+     the owner can approve the `live` environment.
 8. **Cost and safety rules are unchanged**: USD 100 compute / USD 150 total /
    USD 50 other, human-only billing, the cluster paused between runs and at
    the end, no credentials in the repository or reports. Resuming cloud
@@ -93,16 +96,16 @@ replace hand-made evidence and custom ceremony.
    cleanup after live or fixture work; Windows GUI checks run on a real
    interactive desktop, and elevated System DSN checks clean up their exact
    fixtures.
-10. **Enforcement.** Agents act through the owner's GitHub account, so GitHub
-    cannot tell an agent's PR from the owner's: required approving reviews or
-    CODEOWNERS would block every merge, and labels an agent can add it can also
-    omit. Therefore: the reviewer, not the author, assigns the high-risk labels;
-    and agents move to their own GitHub identity (a machine user or GitHub App)
-    so that branch protection can require the owner's approval via CODEOWNERS
-    on the auth, protocol, security, transaction, `.github/`, `AGENTS.md` and
-    `docs/adr/` paths, dismiss stale approvals, require up-to-date checks and
-    apply to administrators. Until then, owner approval for high-risk PRs is a
-    rule, not an enforced check.
+10. **Enforcement** (amended 2026-10-30). Agents act on GitHub as the
+    `odbcpp-agent` GitHub App, not the owner's account. Branch protection on
+    `main` requires the CI checks (up to date, applied to administrators) and
+    an `independent-review` check that only the reviewer's identity can set,
+    on the PR's head commit. No general human approval is required. The owner
+    approves, through CODEOWNERS, only changes to what defines the gates:
+    `.github/` (CI, CODEOWNERS), `AGENTS.md`, `docs/adr/`, `.agents/`,
+    `tools/ci/`, `tools/development/` and `tools/release/`. Release tags
+    (`v*`) can be created only by the owner, so nothing reaches users without
+    the owner. The reviewer, not the author, assigns the high-risk labels.
 
 ## Migration
 
@@ -114,8 +117,9 @@ No safety mechanism is removed before its replacement works.
    agent identity; add a required check that fails when a PR touches the
    high-risk paths (auth, protocol, security, transactions, `.github/`,
    `AGENTS.md`, `docs/adr/`) without the matching label.
-1a. Give agents their own GitHub identity and enable CODEOWNERS-required owner
-   approval (decision 10). Required before step 2.
+1a. Give agents their own GitHub identity (done 2026-10-30: `odbcpp-agent`),
+   add the CODEOWNERS file, the required `independent-review` check and the
+   `v*` tag rule (decision 10). Required before step 2.
 2. Build the nightly workflow and the live-test workflow; prove
    pause-on-failure and the budget guard on a deliberate failing run. Only
    then retire the admission, custody and operator-session tooling under

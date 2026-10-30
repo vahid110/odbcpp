@@ -57,8 +57,16 @@ The reviewer, not the author, assigns the high-risk labels. PRs labelled
 `security`, `auth`, `protocol`, `transactions` or `process` also get a second,
 independent red-team reviewer: it tries to break the change
 (hostile input, misuse, races, downgrade, resource exhaustion, bypassing the
-new checks), does not see the first review, and reports the same way. These
-PRs also need the owner's approval.
+new checks), does not see the first review, and reports the same way.
+
+Reviews are posted on the PR. The author fixes and pushes; the reviewers
+review the new head again; repeat until every reviewer approves. Approval
+covers one commit. Merge when the reviewers have approved the head commit and
+the required checks are green; only changes to the files in `.github/CODEOWNERS`
+wait for the owner.
+
+Agents act on GitHub only as `odbcpp-agent[bot]`
+(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`), never with the owner's login.
 
 ## Evidence
 
