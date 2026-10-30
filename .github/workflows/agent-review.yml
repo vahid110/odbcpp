@@ -1,0 +1,137 @@
+name: agent review
+
+# Independent agent review of every pull request (ADR 0001, decision 4).
+# Runs on pull_request_target so the workflow, the review instructions in
+# .github/review/ and the secrets always come from the base branch; the PR
+# head is checked out read-only into pr-head/ and is never built or run.
+# Verdicts are posted as odbcpp-reviewer[bot]; the reviewing model never
+# holds the reviewer App's key.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+permissions: {}
+
+jobs:
+  review:
+    name: agent review (${{ matrix.role }})
+    # Same-repository, non-draft PRs only: forks never reach the secrets.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [correctness, red-team]
+    concurrency:
+      group: agent-review-${{ github.event.pull_request.number }}-${{ matrix.role }}
+      cancel-in-progress: true
+    env:
+      ROLE: ${{ matrix.role }}
+      EVENT_ACTION: ${{ github.event.action }}
+      ADDED_LABEL: ${{ github.event.label.name }}
+      PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Decide whether this role reviews this event
+        id: plan
+        shell: bash
+        run: |
+          high_risk='^(security|auth|protocol|transactions|process)$'
+          has_high_risk=false
+          IFS=, read -ra labels <<< "$PR_LABELS"
+          for label in "${labels[@]}"; do
+            [[ "$label" =~ $high_risk ]] && has_high_risk=true
+          done
+          run=false
+          if [[ "$EVENT_ACTION" == labeled ]]; then
+            # A high-risk label added later starts only the red-team review.
+            [[ "$ROLE" == red-team && "$ADDED_LABEL" =~ $high_risk ]] && run=true
+          elif [[ "$ROLE" == correctness || "$has_high_risk" == true ]]; then
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the base branch
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the PR head for reading only
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr-head
+          persist-credentials: false
+
+      - name: Review
+        id: review
+        if: steps.plan.outputs.run == 'true'
+        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Agents push as odbcpp-agent; labels come from odbcpp-reviewer.
+          allowed_bots: odbcpp-agent,odbcpp-reviewer
+          display_report: 'false'
+          prompt: |
+            Read .github/review/${{ matrix.role }}.md and follow it.
+            Repository: ${{ github.repository }}
+            Pull request: #${{ github.event.pull_request.number }}
+            Head commit under review: ${{ github.event.pull_request.head.sha }}
+          claude_args: >-
+            --model claude-opus-5-5
+            --max-turns 80
+            --add-dir pr-head
+            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*)"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","body","labels"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string","enum":["security","auth","protocol","transactions","process"]}}}}'
+
+      - name: Get the reviewer identity
+        id: reviewer
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: 5545952
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Post the verdict as odbcpp-reviewer[bot]
+        if: steps.plan.outputs.run == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          RESULT: ${{ steps.review.outputs.structured_output }}
+          REPO: ${{ github.repository }}
+        run: |
+          current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [[ "$current" != "$HEAD_SHA" ]]; then
+            echo "PR moved from $HEAD_SHA to $current; the newer run reviews it."
+            exit 0
+          fi
+          python3 -I - <<'EOF' > review.json
+          import json, os
+          result = json.loads(os.environ["RESULT"])
+          event = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES"}[result["verdict"]]
+          tag = "[correctness reviewer]" if os.environ["ROLE"] == "correctness" else "[red-team reviewer]"
+          body = f"**{tag} {result['verdict'].replace('_', ' ')} at {os.environ['HEAD_SHA'][:7]}**\n\n{result['body']}"
+          print(json.dumps({"commit_id": os.environ["HEAD_SHA"], "event": event, "body": body}))
+          EOF
+          gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null
+          # The correctness reviewer, not the author, assigns high-risk labels;
+          # adding one starts the red-team review.
+          if [[ "$ROLE" == correctness ]]; then
+            jq -c '{labels: .labels}' <<< "$RESULT" > labels.json
+            if [[ "$(jq '.labels | length' labels.json)" != 0 ]]; then
+              gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" --input labels.json > /dev/null
+            fi
+          fi
