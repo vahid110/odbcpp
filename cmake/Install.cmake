@@ -4,6 +4,7 @@ include(CMakePackageConfigHelpers)
 
 # Install the library
 install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver odbcpp_auth_core
+  odbcpp_base odbcpp_logging
   EXPORT ${PROJECT_NAME}Targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
