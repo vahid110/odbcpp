@@ -123,6 +123,7 @@ odbcpp_add_internal_objects(${PROJECT_NAME}_core)
 odbcpp_add_internal_objects(${PROJECT_NAME}_driver)
 set(ODBCPP_WRAPPER_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/wrapper-include")
 odbcpp_stage_wrapper_includes("${CMAKE_CURRENT_SOURCE_DIR}" "${ODBCPP_WRAPPER_INCLUDE}")
+include(cmake/Libraries.cmake)
 include(cmake/AuthCore.cmake)
 # Private authentication archive closes both product artifact link graphs.
 if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")

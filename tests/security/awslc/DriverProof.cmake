@@ -15,6 +15,11 @@ include("${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.cmake")
 find_path(PROOF_ODBC_INCLUDE sql.h REQUIRED)
 find_library(PROOF_ODBC_LIBRARY odbc REQUIRED)
 odbcpp_collect_driver_sources(_driver_sources POSTGRESQL)
+# Library sources the product links as separate libraries (ADR 0002).
+foreach(_library IN ITEMS odbcpp_base odbcpp_logging)
+  odbcpp_library_sources(${_library} _library_sources)
+  list(APPEND _driver_sources ${_library_sources})
+endforeach()
 # Pg.connect consumes the private ordinary authentication module. Stage only
 # its backend closure; the adapter/wrapper include surface remains unchanged.
 set(_proof_auth_manifest "${ODBCPP_SOURCE}/cmake/internal-headers/backend-auth.txt")
