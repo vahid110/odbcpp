@@ -70,8 +70,9 @@ wait for the owner.
 Agents (authors and reviewers) act on GitHub only as `odbcpp-agent[bot]`
 (`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`), never with the owner's login.
 Reviewers post their verdict as a PR comment; GitHub does not enforce it, so
-never merge without an approving verdict on the head commit. The owner does not author PRs that touch owned
-files, because GitHub does not let an author approve their own PR.
+never merge without an approving verdict on the head commit. The owner does
+not author PRs that touch owned files, because GitHub does not let an author
+approve their own PR.
 
 ## Evidence
 
