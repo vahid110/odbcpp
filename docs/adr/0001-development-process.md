@@ -1,6 +1,7 @@
 # ADR 0001: Development process
 
-Status: Accepted by the owner (2026-10-30). Supersedes `DEVELOPMENT_WORKFLOW.md`,
+Status: Approved by the owner in conversation on 2026-10-30; takes effect when
+the owner merges this change personally (an agent merge does not count). Supersedes `DEVELOPMENT_WORKFLOW.md`,
 `PARALLEL_WORKFLOW.md`, `ORCHESTRATION_PLAN.md`, `DEVELOPMENT_HANDOFF.md`,
 `.agents/skills/odbcpp-development-batch` and the long-form rules in
 `AGENTS.md`, except that the live-test rules of `DEVELOPMENT_WORKFLOW.md` stay
@@ -55,10 +56,11 @@ replace hand-made evidence and custom ceremony.
    TSan and performance. CI artifacts (JUnit, sanitizer logs) are the
    evidence; no hand-assembled evidence packages, custody ledgers or binding
    files. Evidence cites CI runs whose head commit equals the PR head.
-6. **Nightly and release.** Full profile matrix, TSan, longer fuzzing and the
-   connected Driver Manager suites run nightly on `main`; a red nightly is a
-   blocking issue. A release is tagged only on a commit with green nightly and
-   live runs.
+6. **Nightly and release.** A nightly workflow on `main` (full profile matrix,
+   TSan, longer fuzzing, connected Driver Manager suites) is still to be built
+   (migration step 2); once it exists, a red nightly is a blocking issue. A
+   release is tagged only on a commit with green nightly and live runs, so no
+   release can be tagged until both workflows exist.
 7. **Live tests.** One workflow runs the registered live CTest set against
    AWS with short-lived OIDC credentials (no stored keys). Acceptance
    criteria, all required before it replaces the current live tooling:
@@ -74,6 +76,10 @@ replace hand-made evidence and custom ceremony.
      independent scheduled pause.
    - An AWS Budgets action that stops the workgroup at the limit (not only an
      alarm), proven on a deliberate failing run.
+   - Labels never trigger a live run.
+   - Prerequisite: agents have their own GitHub identity (decision 10), the
+     live workflow files are owned by the owner through CODEOWNERS, and an
+     approval of the `live` environment by an agent identity does not count.
 8. **Cost and safety rules are unchanged**: USD 100 compute / USD 150 total /
    USD 50 other, human-only billing, the cluster paused between runs and at
    the end, no credentials in the repository or reports. Resuming cloud
@@ -102,11 +108,18 @@ replace hand-made evidence and custom ceremony.
 
 No safety mechanism is removed before its replacement works.
 
-1. Accept this ADR and the new `AGENTS.md`; enable branch protection with the
-   required checks (after the per-PR unit and sanitizer jobs are green).
-2. Build the live-test workflow and prove pause-on-failure and the budget
-   guard on a deliberate failing run. Only then retire the admission,
-   custody and operator-session tooling under `tools/development`.
+1. The owner merges this ADR and the new `AGENTS.md`. Branch protection with
+   the required checks is already on (2026-10-30); add up-to-date (strict)
+   checks and apply protection to administrators, which do not depend on
+   agent identity; add a required check that fails when a PR touches the
+   high-risk paths (auth, protocol, security, transactions, `.github/`,
+   `AGENTS.md`, `docs/adr/`) without the matching label.
+1a. Give agents their own GitHub identity and enable CODEOWNERS-required owner
+   approval (decision 10). Required before step 2.
+2. Build the nightly workflow and the live-test workflow; prove
+   pause-on-failure and the budget guard on a deliberate failing run. Only
+   then retire the admission, custody and operator-session tooling under
+   `tools/development`.
 3. Move plans and journals to `docs/history/`; open issues for every open
    item they contain; write `ARCHITECTURE.md` from the 2026-10-28 review.
 4. Prune `tools/` to the load-bearing set (versioning, packaging, TLS
