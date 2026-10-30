@@ -97,10 +97,10 @@ replace hand-made evidence and custom ceremony.
    cleanup after live or fixture work; Windows GUI checks run on a real
    interactive desktop, and elevated System DSN checks clean up their exact
    fixtures.
-10. **Enforcement** (amended 2026-10-30). Agents act on GitHub as the
+10. **Enforcement** (amended 2026-10-30). Authors act on GitHub as the
     `odbcpp-agent` GitHub App, not the owner's account; reviewers post their
-    verdict as PR reviews by the separate `odbcpp-reviewer` App. Branch protection on
-    `main` requires the CI checks (up to date, applied to administrators)
+    verdict as PR reviews by the separate `odbcpp-reviewer` App. Branch
+    protection on `main` requires the CI checks (up to date, applied to administrators)
     and code-owner review, with stale approvals dismissed and no general
     approval count. The review rule of decision 4, and the reviewer assigning
     the high-risk labels, are followed by agents, not enforced by GitHub; a
@@ -123,8 +123,9 @@ No safety mechanism is removed before its replacement works.
    PR touches the high-risk paths (auth, protocol, security, transactions)
    without the matching label, and one that fails when the number of tests in
    a required run drops without an explanation in the PR.
-1a. Give agents their own GitHub identity (done 2026-10-30: `odbcpp-agent`),
-   add the CODEOWNERS file and the `v*` tag rule (decision 10). Required before step 2.
+1a. Give agents their own GitHub identities, add the CODEOWNERS file and the
+   `v*` tag rule (decision 10); done 2026-10-30 (`odbcpp-agent`,
+   `odbcpp-reviewer`). Required before step 2.
 2. Build the nightly workflow and the live-test workflow; prove
    pause-on-failure and the budget guard on a deliberate failing run. Only
    then retire the admission, custody and operator-session tooling under
