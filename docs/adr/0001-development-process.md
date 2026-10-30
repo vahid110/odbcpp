@@ -35,10 +35,14 @@ replace hand-made evidence and custom ceremony.
 3. **Coordination.** A coordinator agent per phase assigns issues to
    implementer sessions. One branch and one PR per issue, with a short
    description: what, why, change, tests, review, open debt.
-4. **Independent review.** Every PR gets a reviewer agent that did not write
-   it, using the checklist in `AGENTS.md`, with findings as PR comments. Fixes
-   get a focused follow-up review. PRs labelled `security`, `auth`,
-   `protocol`, `transactions` or `process` also need the owner's approval.
+4. **Independent review.** The author attaches the evidence to the PR (see
+   `AGENTS.md`). Every PR gets a reviewer agent that did not write it; it reads
+   the code and the evidence but does not build or run anything, and treats an
+   unsupported claim as a finding. PRs labelled `security`, `auth`, `protocol`,
+   `transactions` or `process` also get a second, independent red-team
+   reviewer that tries to break the change and does not see the first review,
+   and need the owner's approval. Fixes get a focused follow-up review from the
+   reviewer that raised them.
 5. **Evidence is CI.** Required checks on every PR: build and unit tests on
    macOS, Linux and Windows for every product, the offline Driver Manager
    tests, ASan/UBSan, and CodeQL. CI artifacts (JUnit, sanitizer logs) are the
