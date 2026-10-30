@@ -69,9 +69,10 @@ wait for the owner.
 
 Authors act on GitHub only as `odbcpp-agent[bot]`
 (`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`); reviewers post their verdict
-and the `independent-review` check as `odbcpp-reviewer[bot]`. Never use the
-owner's login. The owner does not author or push to PRs that touch owned
-files (they could not be approved); the owner comments and an agent pushes.
+and the `independent-review` check as `odbcpp-reviewer[bot]` (until that App
+exists, reviewers post as `odbcpp-agent[bot]` and the check is not enforced).
+Never use the owner's login. The owner does not author PRs that touch owned
+files, because GitHub does not let an author approve their own PR.
 
 ## Evidence
 
