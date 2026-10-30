@@ -71,11 +71,12 @@ Authors act on GitHub only as `odbcpp-agent[bot]`
 (`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`). Reviewers post their verdict
 as a PR review (approve or request changes) by `odbcpp-reviewer[bot]`
 (`GH_TOKEN=$(~/.config/odbcpp-reviewer/token.sh)`), and use that identity for
-nothing else. Never use the owner's login. GitHub does not enforce the
-verdict, so never merge without an approving `odbcpp-reviewer[bot]` review of
-the head commit. The owner does
-not author PRs that touch owned files, because GitHub does not let an author
-approve their own PR.
+nothing else. Each review starts with its role (`[correctness reviewer]` or
+`[red-team reviewer]`). Never use the owner's login. GitHub does not enforce
+the verdict and shows only the latest review per identity, so never merge
+unless every reviewer's latest review of the head commit approves. The owner
+does not author PRs that touch owned files, because GitHub does not let an
+author approve their own PR.
 
 ## Evidence
 
