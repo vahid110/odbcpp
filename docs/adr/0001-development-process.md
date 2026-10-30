@@ -99,13 +99,13 @@ replace hand-made evidence and custom ceremony.
    fixtures.
 10. **Enforcement** (amended 2026-10-30). Agents act on GitHub as the
     `odbcpp-agent` GitHub App, not the owner's account; reviewers post their
-    verdict as PR comments under the same identity. Branch protection on
+    verdict as PR reviews by the separate `odbcpp-reviewer` App. Branch protection on
     `main` requires the CI checks (up to date, applied to administrators)
     and code-owner review, with stale approvals dismissed and no general
     approval count. The review rule of decision 4, and the reviewer assigning
     the high-risk labels, are followed by agents, not enforced by GitHub; a
-    separate reviewer App with a required check can enforce them later if they
-    are ever skipped. The owner approves, through CODEOWNERS, only changes to
+    required check set by the reviewer App can enforce them later if they are
+    ever skipped. The owner approves, through CODEOWNERS, only changes to
     what defines the gates:
     `.github/` (CI, CODEOWNERS), `AGENTS.md`, `docs/adr/`, `.agents/`,
     `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
