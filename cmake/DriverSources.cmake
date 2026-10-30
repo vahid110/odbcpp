@@ -76,3 +76,18 @@ endif()
 
   set(${output} "${CORE_SOURCES}" PARENT_SCOPE)
 endfunction()
+
+# Sources of each product library (ADR 0002), shared by cmake/Libraries.cmake and
+# drivers built outside the main graph (tests/security/awslc/DriverProof.cmake).
+function(odbcpp_library_sources library output)
+  get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+  if(library STREQUAL "odbcpp_base")
+    set(_sources "${_root}/sdk/src/util/base64.cpp" "${_root}/sdk/src/util/scaled_decimal.cpp"
+      "${_root}/sdk/src/util/utf8.cpp")
+  elseif(library STREQUAL "odbcpp_logging")
+    set(_sources "${_root}/sdk/src/util/driver_logging.cpp")
+  else()
+    message(FATAL_ERROR "Unknown product library: ${library}")
+  endif()
+  set(${output} "${_sources}" PARENT_SCOPE)
+endfunction()
