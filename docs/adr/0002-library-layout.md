@@ -105,5 +105,5 @@ Estimated effort: 6–9 person-weeks.
 - `auth` and `db` are consumable by other drivers without ODBC.
 - Large one-time churn (file moves). Moves are kept separate from logic changes
   so history and review stay legible.
-- Packaging and CI change once in step 7; until then the current product
+- Packaging and CI change once in step 8; until then the current product
   matrix keeps working.
