@@ -67,11 +67,10 @@ covers one commit. Merge when the reviewers have approved the head commit and
 the required checks are green; only changes to the files in `.github/CODEOWNERS`
 wait for the owner.
 
-Authors act on GitHub only as `odbcpp-agent[bot]`
-(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`); reviewers post their verdict
-and the `independent-review` check as `odbcpp-reviewer[bot]` (until that App
-exists, reviewers post as `odbcpp-agent[bot]` and the check is not enforced).
-Never use the owner's login. The owner does not author PRs that touch owned
+Agents (authors and reviewers) act on GitHub only as `odbcpp-agent[bot]`
+(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`), never with the owner's login.
+Reviewers post their verdict as a PR comment; GitHub does not enforce it, so
+never merge without an approving verdict on the head commit. The owner does not author PRs that touch owned
 files, because GitHub does not let an author approve their own PR.
 
 ## Evidence
