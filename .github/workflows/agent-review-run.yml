@@ -61,8 +61,10 @@ jobs:
           # the PR must not configure the reviewer.
           echo "Links removed from pr-head: $(find pr-head -type l | wc -l)"
           find pr-head -type l -delete
-          rm -rf pr-head/.git pr-head/.claude pr-head/.claude.json pr-head/.mcp.json \
-                 pr-head/CLAUDE.md pr-head/CLAUDE.local.md
+          # Claude Code loads these at any depth, so remove them everywhere.
+          rm -rf pr-head/.git
+          find pr-head \( -name .claude -o -name .claude.json -o -name .mcp.json \
+                          -o -name CLAUDE.md -o -name CLAUDE.local.md \) -prune -print -exec rm -rf {} +
           mkdir review-context
           gh api "repos/$REPO/pulls/$PR_NUMBER" > pr-raw.json
           if [[ "$(jq -r .head.sha pr-raw.json)" != "$HEAD_SHA" ]]; then
@@ -86,6 +88,13 @@ jobs:
                       | {commit: .commit_id, state, body}" > review-context/previous-reviews.jsonl
           ls -l review-context
 
+      - name: Load the reviewer's tool rules
+        id: args
+        if: steps.prep.outputs.skip != 'true'
+        shell: bash
+        # Shared with agent-review-canary.yml, which proves these rules hold.
+        run: echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)" >> "$GITHUB_OUTPUT"
+
       - name: Review
         id: review
         if: steps.prep.outputs.skip != 'true'
@@ -103,10 +112,7 @@ jobs:
             Pull request #${{ github.event.pull_request.number }} of ${{ github.repository }},
             head commit ${{ github.event.pull_request.head.sha }}.
           claude_args: >-
-            --model claude-opus-5-5
-            --max-turns 80
-            --allowedTools "Read(./**),Glob,Grep"
-            --disallowedTools "Bash,WebFetch,WebSearch,Skill,Task,Write,Edit,NotebookEdit,Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//home/**),Read(//root/**),Read(//tmp/**),Read(//run/**),Read(~/**)"
+            ${{ steps.args.outputs.args }}
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","body","labels"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string","enum":["security","auth","protocol","transactions","process"]}}}}'
 
       - name: Get the reviewer identity
@@ -127,6 +133,11 @@ jobs:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
           RESULT: ${{ steps.review.outputs.structured_output }}
         run: |
+          current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [[ "$current" != "$HEAD_SHA" ]]; then
+            echo "PR moved from $HEAD_SHA to $current; the newer run reviews it."
+            exit 0
+          fi
           python3 -I - <<'EOF'
           import json, os, re
           result = json.loads(os.environ["RESULT"])
