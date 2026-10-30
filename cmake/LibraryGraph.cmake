@@ -40,8 +40,9 @@ function(odbcpp_library_graph_problem graph out)
 endfunction()
 
 # Sets <out> to the first disallowed product-library dependency among <links>
-# (a target's LINK_LIBRARIES), or to "". Any link item naming an odbcpp target
-# or namespace counts, including generator-expression wrappers.
+# (a target's LINK_LIBRARIES and INTERFACE_LINK_LIBRARIES), or to "". Every
+# odbcpp target or namespace name counts, wherever it appears in a link item,
+# including inside any generator expression.
 function(odbcpp_library_link_problem graph library links out)
   odbcpp_library_allowed("${graph}" "${library}" _allowed)
   if(_allowed STREQUAL "UNKNOWN")
@@ -49,11 +50,13 @@ function(odbcpp_library_link_problem graph library links out)
     return()
   endif()
   foreach(_link IN LISTS links)
-    string(REGEX REPLACE "^\\$<LINK_ONLY:(.*)>$" "\\1" _name "${_link}")
-    if(_name MATCHES "^odbcpp(_|::)" AND NOT _name IN_LIST _allowed)
-      set(${out} "Library ${library} may not depend on ${_name}" PARENT_SCOPE)
-      return()
-    endif()
+    string(REGEX MATCHALL "odbcpp(_[A-Za-z0-9_]+|::[A-Za-z0-9_]+)" _names "${_link}")
+    foreach(_name IN LISTS _names)
+      if(NOT _name IN_LIST _allowed)
+        set(${out} "Library ${library} may not depend on ${_name}" PARENT_SCOPE)
+        return()
+      endif()
+    endforeach()
   endforeach()
   set(${out} "" PARENT_SCOPE)
 endfunction()
