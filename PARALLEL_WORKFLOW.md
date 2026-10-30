@@ -1,3 +1,6 @@
+> **Superseded** on 2026-10-30 by [ADR 0001](docs/adr/0001-development-process.md)
+> and [AGENTS.md](AGENTS.md). Kept for history.
+
 # Optional delegation
 
 [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) is the sole canonical workflow.

@@ -1,8 +1,10 @@
 # ADR 0001: Development process
 
-Status: Proposed (2026-10-29). Replaces `DEVELOPMENT_WORKFLOW.md`,
-`PARALLEL_WORKFLOW.md`, `ORCHESTRATION_PLAN.md`, `DEVELOPMENT_HANDOFF.md` and
-the long-form rules in `AGENTS.md` once accepted.
+Status: Accepted by the owner (2026-10-30). Supersedes `DEVELOPMENT_WORKFLOW.md`,
+`PARALLEL_WORKFLOW.md`, `ORCHESTRATION_PLAN.md`, `DEVELOPMENT_HANDOFF.md`,
+`.agents/skills/odbcpp-development-batch` and the long-form rules in
+`AGENTS.md`, except that the live-test rules of `DEVELOPMENT_WORKFLOW.md` stay
+in force until migration step 2 is complete.
 
 ## Context
 
@@ -43,22 +45,58 @@ replace hand-made evidence and custom ceremony.
    reviewer that tries to break the change and does not see the first review,
    and need the owner's approval. Fixes get a focused follow-up review from the
    reviewer that raised them.
-5. **Evidence is CI.** Required checks on every PR: build and unit tests on
-   macOS, Linux and Windows for every product, the offline Driver Manager
-   tests, ASan/UBSan, and CodeQL. CI artifacts (JUnit, sanitizer logs) are the
+5. **Evidence is CI.** Required checks on every PR (exactly, as of
+   2026-10-30): Ubuntu and Windows build + unit + offline Driver Manager tests
+   for POSTGRESQL and REDSHIFT; Ubuntu ASan/UBSan unit tests for both
+   products; macOS build + unit + offline Driver Manager tests for
+   POSTGRESQL (iODBC UCS4) only; and CodeQL. Not covered by required checks
+   and therefore open: macOS REDSHIFT, sanitizers beyond unit tests, live
+   behaviour, installers, the Windows GUI, connected Driver Manager suites,
+   TSan and performance. CI artifacts (JUnit, sanitizer logs) are the
    evidence; no hand-assembled evidence packages, custody ledgers or binding
-   files. `main` is protected and requires these checks.
-6. **Nightly.** Full profile matrix, TSan, longer fuzzing and the connected
-   Driver Manager suites run nightly on `main`.
+   files. Evidence cites CI runs whose head commit equals the PR head.
+6. **Nightly and release.** Full profile matrix, TSan, longer fuzzing and the
+   connected Driver Manager suites run nightly on `main`; a red nightly is a
+   blocking issue. A release is tagged only on a commit with green nightly and
+   live runs.
 7. **Live tests.** One workflow runs the registered live CTest set against
-   AWS, triggered by a `run-live` label or nightly when `main` changed. It
-   uses short-lived OIDC credentials (no stored keys), resumes the workgroup,
-   runs the tests, and always pauses it afterwards, including on failure or
-   cancellation. Costs are enforced in AWS (budget alarm, maximum run time,
-   automatic pause), not by in-repo admission files.
+   AWS with short-lived OIDC credentials (no stored keys). Acceptance
+   criteria, all required before it replaces the current live tooling:
+   - Runs only on commits of this repository whose exact head already passed
+     the required checks; never on fork code, never with
+     `pull_request_target` checking out PR code, never from `workflow_run`.
+   - Uses a protected `live` environment that requires the owner's approval
+     (or a schedule on `main`); the OIDC trust is pinned to that repository
+     and environment, and the IAM role can only resume, pause and connect to
+     the one pilot workgroup.
+   - One concurrency group, at most one scheduled run per day, a hard job
+     timeout, a pause step that runs even on failure or cancellation, and an
+     independent scheduled pause.
+   - An AWS Budgets action that stops the workgroup at the limit (not only an
+     alarm), proven on a deliberate failing run.
 8. **Cost and safety rules are unchanged**: USD 100 compute / USD 150 total /
    USD 50 other, human-only billing, the cluster paused between runs and at
-   the end, no credentials in the repository or reports.
+   the end, no credentials in the repository or reports. Resuming cloud
+   resources outside the workflow needs the owner's standing or explicit
+   authorization.
+9. **Kept from the previous process**: run full suites through failures (no
+   stop-on-failure) and report from CTest/JUnit, never from a process exit
+   code alone; distinguish product defects from fixture, input and
+   environment defects; keep original failures and protected inputs; check who
+   reads an artifact before deleting it; stop private PostgreSQL and verify
+   cleanup after live or fixture work; Windows GUI checks run on a real
+   interactive desktop, and elevated System DSN checks clean up their exact
+   fixtures.
+10. **Enforcement.** Agents act through the owner's GitHub account, so GitHub
+    cannot tell an agent's PR from the owner's: required approving reviews or
+    CODEOWNERS would block every merge, and labels an agent can add it can also
+    omit. Therefore: the reviewer, not the author, assigns the high-risk labels;
+    and agents move to their own GitHub identity (a machine user or GitHub App)
+    so that branch protection can require the owner's approval via CODEOWNERS
+    on the auth, protocol, security, transaction, `.github/`, `AGENTS.md` and
+    `docs/adr/` paths, dismiss stale approvals, require up-to-date checks and
+    apply to administrators. Until then, owner approval for high-risk PRs is a
+    rule, not an enforced check.
 
 ## Migration
 
@@ -72,8 +110,9 @@ No safety mechanism is removed before its replacement works.
 3. Move plans and journals to `docs/history/`; open issues for every open
    item they contain; write `ARCHITECTURE.md` from the 2026-10-28 review.
 4. Prune `tools/` to the load-bearing set (versioning, packaging, TLS
-   fixtures, the test fixture factory, export and SQLWCHAR checks) and delete
-   checks that only verify evidence formatting.
+   fixtures, the test fixture factory, export and SQLWCHAR checks, and
+   `check_dm_offline_evidence.py`, which required jobs use) and delete checks
+   that only verify evidence formatting.
 
 Estimated effort: 1–1.5 person-weeks, mostly steps 2 and 3.
 

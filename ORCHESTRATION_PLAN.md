@@ -1,3 +1,6 @@
+> **Superseded** on 2026-10-30 by [ADR 0001](docs/adr/0001-development-process.md)
+> and [AGENTS.md](AGENTS.md). Kept for history.
+
 # ODBCPP agent and timer operating plan
 
 Current reusable operating guidance is in [AGENTS.md](AGENTS.md) and the

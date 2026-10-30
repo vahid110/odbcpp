@@ -1,3 +1,6 @@
+> **Superseded** on 2026-10-30 by [ADR 0001](docs/adr/0001-development-process.md)
+> and [AGENTS.md](AGENTS.md). Kept for history.
+
 # ODBCPP development handoff
 
 Start here, then inspect `git status --short` and `git log -3 --oneline`.
