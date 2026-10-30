@@ -98,11 +98,12 @@ replace hand-made evidence and custom ceremony.
    interactive desktop, and elevated System DSN checks clean up their exact
    fixtures.
 10. **Enforcement** (amended 2026-10-30). Agents act on GitHub as the
-    `odbcpp-agent` GitHub App, not the owner's account; reviewers post as a
-    separate `odbcpp-reviewer` App. Branch protection on `main` requires the
-    CI checks (up to date, applied to administrators) and an
-    `independent-review` check pinned to the reviewer App, on the PR's head
-    commit. No general human approval is required. The owner
+    `odbcpp-agent` GitHub App, not the owner's account; reviewers post their
+    verdict as PR comments under the same identity. Branch protection on
+    `main` requires the CI checks (up to date, applied to administrators).
+    The review rule of decision 4 is followed by agents, not enforced by
+    GitHub; a separate reviewer App with a required check can enforce it
+    later if it is ever skipped. No general human approval is required. The owner
     approves, through CODEOWNERS, only changes to what defines the gates:
     `.github/` (CI, CODEOWNERS), `AGENTS.md`, `docs/adr/`, `.agents/`,
     `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
@@ -121,8 +122,7 @@ No safety mechanism is removed before its replacement works.
    without the matching label, and one that fails when the number of tests in
    a required run drops without an explanation in the PR.
 1a. Give agents their own GitHub identity (done 2026-10-30: `odbcpp-agent`),
-   add the CODEOWNERS file, the required `independent-review` check and the
-   `v*` tag rule (decision 10). Required before step 2.
+   add the CODEOWNERS file and the `v*` tag rule (decision 10). Required before step 2.
 2. Build the nightly workflow and the live-test workflow; prove
    pause-on-failure and the budget guard on a deliberate failing run. Only
    then retire the admission, custody and operator-session tooling under
