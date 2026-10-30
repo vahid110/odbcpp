@@ -1,0 +1,35 @@
+# High-risk paths need the owner's approval (ADR 0001, decision 10).
+# Branch protection requires a code-owner review; agents act as
+# odbcpp-agent[bot] and cannot approve their own pull requests.
+# Update these paths when Phase 1 moves files to libs/ (ADR 0002 step 7).
+
+# Process, CI and policy
+/.github/                         @vahid110
+/AGENTS.md                        @vahid110
+/docs/adr/                        @vahid110
+/SECURITY.md                      @vahid110
+/SECURITY_MODEL.md                @vahid110
+
+# Authentication and credentials
+/sdk/src/auth/                    @vahid110
+/sdk/internal/odbcpp/auth/        @vahid110
+/sdk/src/adapters/                @vahid110
+/sdk/src/session/                 @vahid110
+
+# TLS, crypto and transport
+/sdk/src/security/                @vahid110
+/sdk/internal/odbcpp/security/    @vahid110
+/sdk/src/transport/               @vahid110
+/sdk/internal/odbcpp/transport/   @vahid110
+/sdk/include/odbcpp/transport/    @vahid110
+/cmake/dependencies/              @vahid110
+/tests/security/                  @vahid110
+
+# Wire protocols and transactions
+/core/database/postgres/          @vahid110
+/core/database/mysql/             @vahid110
+/core/database/i_protocol_parser.h @vahid110
+/core/database/session_cancellation_wire.h @vahid110
+/sdk/include/odbcpp/database/transaction.h @vahid110
+/sdk/include/odbcpp/database/transaction_session.h @vahid110
+/odbc/transaction_metadata.h      @vahid110
