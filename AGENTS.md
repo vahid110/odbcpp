@@ -53,26 +53,28 @@ claim is a finding). Findings are ranked blocking / should-fix / nit with
 `file:line` and a concrete failure scenario. Fixes get a focused follow-up
 review from the reviewer that raised them.
 
-PRs labelled `security`, `auth`, `protocol`, `transactions` or `process` also
-get a second, independent red-team reviewer: it tries to break the change
+The reviewer, not the author, assigns the high-risk labels. PRs labelled
+`security`, `auth`, `protocol`, `transactions` or `process` also get a second,
+independent red-team reviewer: it tries to break the change
 (hostile input, misuse, races, downgrade, resource exhaustion, bypassing the
 new checks), does not see the first review, and reports the same way. These
 PRs also need the owner's approval.
 
 ## Evidence
 
-CI is the evidence: required PR checks build and unit-test every product on
-macOS, Linux and Windows, run the offline Driver Manager tests, ASan/UBSan and
-CodeQL. Local runs are for development. Never present an interrupted run or a
-different binary's result as a pass.
+CI is the evidence. The required checks and what they do not cover are listed
+in ADR 0001 (decision 5); state anything not covered as open. Cite CI runs
+whose head commit equals the PR head. Local runs are for development. Never
+present an interrupted run, a process exit code alone, or a different commit's
+or binary's result as a pass. Keep the safeguards in ADR 0001 decision 9.
 
 ## Live tests and money
 
-- Live AWS tests run only through the live-test workflow (OIDC credentials,
-  automatic pause, AWS-side budget guard). Until it is proven, the existing
-  live tooling and its admission rules remain in force.
+- Live AWS tests run only through the live-test workflow once it meets ADR
+  0001 decision 7. Until then the live-test rules of `DEVELOPMENT_WORKFLOW.md`
+  and the existing live tooling remain in force.
 - Limits are unchanged: USD 100 compute, USD 150 total, USD 50 other; billing
   is human-only. Keep the cluster paused between runs and at the end. Never
   put credentials in the repository, logs or reports.
-- Check free disk space before heavy builds (keep at least 5 GiB) and delete
-  only artifacts you created and no longer need.
+- Check free disk space before heavy builds (keep at least 5 GiB). Delete
+  only artifacts you created, after checking nothing still reads them.
