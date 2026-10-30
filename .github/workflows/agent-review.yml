@@ -15,7 +15,9 @@ permissions: {}
 jobs:
   plan:
     # Same-repository, non-draft PRs only: forks never reach the secrets.
+    # Off until the owner sets AGENT_REVIEW_ENABLED after a passing canary.
     if: >-
+      vars.AGENT_REVIEW_ENABLED == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft
     runs-on: ubuntu-24.04
@@ -46,6 +48,7 @@ jobs:
             --jq '.[] | select(.user.login == "odbcpp-reviewer[bot]")
                       | select(.commit_id == env.HEAD_SHA)
                       | select(.body | startswith("**[red-team reviewer]"))
+                      | select(.body | contains("verdict withheld") | not)
                       | .id' > red-team-done.txt
           python3 -I - <<'EOF'
           import os, re
@@ -57,9 +60,12 @@ jobs:
               "protocol": r"^(core/database/(postgres|mysql)/|core/database/i_protocol_parser\.h$|core/database/session_cancellation_wire\.h$)",
               "transactions": r"transaction",
           }
-          files = open("files.txt").read().split()
+          files = open("files.txt").read().splitlines()
           present = set(filter(None, os.environ["PR_LABELS"].split(",")))
           wanted = {label for label, rx in rules.items() if any(re.search(rx, f) for f in files)}
+          if len(files) >= 3000:
+              # The API lists at most 3000 files; treat the rest as high risk.
+              wanted.add("process")
           add = sorted(wanted - present)
           high_risk = set(rules)
           already = open("red-team-done.txt").read().strip() != ""
