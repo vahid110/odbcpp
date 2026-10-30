@@ -98,7 +98,7 @@ jobs:
               ("Glob", "pr-head/", True),
               ("Read", f"{temp}/canary.txt", False),
               ("Grep", temp, False),
-              ("Read", "_temp/canary.txt", False),
+              ("Read", "../_temp/canary.txt", False),
               ("Read", "/tmp/canary.txt", False),
               ("Grep", "/tmp", False),
               ("Read", ".canary/canary.txt", False),
@@ -136,7 +136,9 @@ jobs:
               if allowed:
                   ok = any(not err and ("control.txt" in text or inside in text) for err, text in outcomes)
               else:
-                  ok = all(err for err, _ in outcomes)
+                  # A refusal, not a missing file (which would prove nothing).
+                  missing = ("does not exist", "no such file", "not found", "enoent")
+                  ok = all(err and not any(w in text.lower() for w in missing) for err, text in outcomes)
               print(f"{'pass' if ok else 'FAIL'}: {label} ({'allowed' if allowed else 'denied'} expected)")
               if not ok:
                   failures.append(label)
