@@ -6,6 +6,7 @@
 /AGENTS.md                        @vahid110
 /docs/adr/                        @vahid110
 /.agents/                         @vahid110
-/tools/ci/                        @vahid110
-/tools/development/               @vahid110
-/tools/release/                   @vahid110
+/tools/                           @vahid110
+/tests/security/                  @vahid110
+/cmake/LiveSuite.cmake            @vahid110
+/DEVELOPMENT_WORKFLOW.md          @vahid110
