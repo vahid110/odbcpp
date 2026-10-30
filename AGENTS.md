@@ -33,15 +33,31 @@ authority beyond them.
 - On changes that touch architecture, review the surrounding design and
   report shortcomings with proposals instead of patching around them.
 
-## Review checklist (independent reviewer agent)
+## Evidence the author attaches to every PR
 
-Correctness and edge cases; placement against the architecture; security
-(secrets, input validation, file and network effects); tests prove the change
-(red before green, no weakened assertions); compatibility and documentation;
-the platforms and products actually built. Findings are ranked blocking /
-should-fix / nit with `file:line` and a concrete failure scenario. Fixes get a
-focused follow-up review. PRs labelled `security`, `auth`, `protocol`,
-`transactions` or `process` also need the owner's approval.
+Exact local test results per product (passed / skipped / failed, with the
+names of anything skipped or failed and whether it also fails on `main`); for
+a bug fix, the new test failing before the fix and passing after; paths to the
+logs and JUnit files; and the CI results once they exist. Anything not run
+(platforms, live tests, manual jobs) is listed as open, not implied.
+
+## Review
+
+Every PR gets one independent reviewer agent that did not write it. It reads
+the code and the evidence; it does not build or run anything. It checks:
+correctness and edge cases; placement against the architecture; security
+(secrets, input validation, file and network effects); that the tests prove the
+change (red before green, no weakened assertions); compatibility and
+documentation; and that every claim is backed by the evidence (an unsupported
+claim is a finding). Findings are ranked blocking / should-fix / nit with
+`file:line` and a concrete failure scenario. Fixes get a focused follow-up
+review from the reviewer that raised them.
+
+PRs labelled `security`, `auth`, `protocol`, `transactions` or `process` also
+get a second, independent red-team reviewer: it tries to break the change
+(hostile input, misuse, races, downgrade, resource exhaustion, bypassing the
+new checks), does not see the first review, and reports the same way. These
+PRs also need the owner's approval.
 
 ## Evidence
 
