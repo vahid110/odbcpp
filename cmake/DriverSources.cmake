@@ -17,7 +17,6 @@ file(GLOB CORE_BASE_SOURCES
   "${_root}/sdk/src/security/*.cpp"
   "${_root}/sdk/internal/odbcpp/security/*.h"
   "${_root}/sdk/internal/odbcpp/util/*.h"
-  "${_root}/sdk/src/util/*.cpp"
 )
 
 set(CORE_SOURCES ${CORE_BASE_SOURCES})
