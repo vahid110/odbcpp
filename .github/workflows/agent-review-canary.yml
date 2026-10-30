@@ -132,7 +132,10 @@ jobs:
               if not matching:
                   failures.append(f"not attempted: {label}")
                   continue
-              outcomes = [results.get(c.get("id"), (True, "")) for c in matching]
+              if any(c.get("id") not in results for c in matching):
+                  failures.append(f"no recorded result: {label}")
+                  continue
+              outcomes = [results[c.get("id")] for c in matching]
               if allowed:
                   ok = any(not err and ("control.txt" in text or inside in text) for err, text in outcomes)
               else:
