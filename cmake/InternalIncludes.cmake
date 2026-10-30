@@ -162,7 +162,7 @@ endfunction()
 # continue to use their individual private partition allowlists above.
 function(odbcpp_stage_wrapper_includes root destination)
   set(_headers "")
-  foreach(_part IN ITEMS runtime backend composition odbc prototype)
+  foreach(_part IN ITEMS runtime backend composition odbc)
     set(_manifest "${root}/cmake/internal-headers/${_part}.txt")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_manifest}")
     odbcpp_check_internal_includes("${root}" "${_manifest}")
