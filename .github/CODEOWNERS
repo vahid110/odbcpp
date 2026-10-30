@@ -3,18 +3,37 @@
 # odbcpp-agent[bot] and cannot approve their own pull requests.
 # Update these paths when Phase 1 moves files to libs/ (ADR 0002 step 7).
 
-# Process, CI and policy
+# Process, CI and policy (required checks run scripts under tools/)
 /.github/                         @vahid110
 /AGENTS.md                        @vahid110
 /docs/adr/                        @vahid110
 /SECURITY.md                      @vahid110
 /SECURITY_MODEL.md                @vahid110
+/DEVELOPMENT_WORKFLOW.md          @vahid110
+/.agents/                         @vahid110
+/tools/ci/                        @vahid110
+/tools/development/               @vahid110
+/tools/release/                   @vahid110
+/packaging/windows/               @vahid110
+/odbc/odbcpp.exports              @vahid110
 
-# Authentication and credentials
+# Authentication, credentials and secret redaction
 /sdk/src/auth/                    @vahid110
 /sdk/internal/odbcpp/auth/        @vahid110
 /sdk/src/adapters/                @vahid110
 /sdk/src/session/                 @vahid110
+/sdk/internal/odbcpp/session/     @vahid110
+/odbc/connection_string.cpp       @vahid110
+/odbc/connection_string.h         @vahid110
+/odbc/odbc_trace.cpp              @vahid110
+/odbc/odbc_api.cpp                @vahid110
+/sdk/src/util/driver_logging.cpp  @vahid110
+/cmake/AuthCore.cmake             @vahid110
+/cmake/NativeProvisionedAuth.cmake @vahid110
+/cmake/NativeIdcTokenAuth.cmake   @vahid110
+/cmake/PgAuthConsumer.cmake       @vahid110
+/cmake/internal-headers/          @vahid110
+/sdk/internal/odbcpp/database/session_cancellation.h @vahid110
 
 # TLS, crypto and transport
 /sdk/src/security/                @vahid110
@@ -23,7 +42,24 @@
 /sdk/internal/odbcpp/transport/   @vahid110
 /sdk/include/odbcpp/transport/    @vahid110
 /cmake/dependencies/              @vahid110
+/cmake/CryptoProfile.cmake        @vahid110
+/cmake/GenerateCryptoManifest.cmake @vahid110
+/cmake/VerifyCryptoIdentity.cmake @vahid110
+/cmake/InspectCryptoArtifact.cmake @vahid110
 /tests/security/                  @vahid110
+/root.crt                         @vahid110
+
+# Tests that guard the paths above
+/tests/**/*tls*                   @vahid110
+/tests/**/*auth*                  @vahid110
+/tests/**/*crypto*                @vahid110
+/tests/**/*credential*            @vahid110
+/tests/**/*jwt*                   @vahid110
+/tests/**/*idc*                   @vahid110
+/tests/**/*scram*                 @vahid110
+/tests/**/*trust*                 @vahid110
+/tests/**/*secret*                @vahid110
+/tests/**/*redact*                @vahid110
 
 # Wire protocols and transactions
 /core/database/postgres/          @vahid110
