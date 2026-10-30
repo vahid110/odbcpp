@@ -91,11 +91,11 @@ A/W coverage applies wherever exported. G6 will revisit backend semantics for Re
 | `SQLProcedureColumns` | G5/G8 | Advertised catalog shapes/filtering and selected-user visibility; review known precision gaps | Extra precision/statistics/result-set discovery T4 only if unpromised by chosen workflow | it_metadata_real, test_metadata_functions, it_driver_manager |
 | `SQLSpecialColumns` | G5/G8 | Advertised catalog shapes/filtering and selected-user visibility; review known precision gaps | Extra precision/statistics/result-set discovery T4 only if unpromised by chosen workflow | it_metadata_real, test_metadata_functions, it_driver_manager |
 | `SQLGetDiagField` | G4/G5 | Supported header/record provenance, fields and buffer contracts | Array row/column diagnostics T1 | test_diagnostics_apis, it_diagnostics |
-| `SQLGetDescField` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, test_thread_safety, it_driver_manager |
-| `SQLGetDescRec` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, test_thread_safety, it_driver_manager |
-| `SQLSetDescField` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, test_thread_safety, it_driver_manager |
-| `SQLSetDescRec` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, test_thread_safety, it_driver_manager |
-| `SQLCopyDesc` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, test_thread_safety, it_driver_manager |
+| `SQLGetDescField` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, it_driver_manager |
+| `SQLGetDescRec` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, it_driver_manager |
+| `SQLSetDescField` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, it_driver_manager |
+| `SQLSetDescRec` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, it_driver_manager |
+| `SQLCopyDesc` | G3/G5 | Association, mutability, core fields, atomic updates and copy consistency | Bookmarks/arrays T1; intervals T3; optional origin fields T4 | test_descriptor_apis, it_driver_manager |
 
 ## Candidate test manifest PG-BETA-1
 
@@ -104,10 +104,9 @@ not a cap on new tests required by code changes. In G0 add exact selected
 application/server/OS/Driver Manager versions and case-level evidence for the
 surfaces above; until then this is not a frozen release profile.
 
-`test_connection_pool` and `it_connection_pool` below retain quarantined prototype
-regression coverage; they do not prove production Driver Manager pooling. SDK
-lease and backend reset tests likewise qualify only their own contracts. The
-separate [pooling acceptance matrix](CONNECTION_POOLING.md#qualification-and-remaining-gaps)
+The prototype connection pool and its tests were removed (2026-10-30); SDK
+lease and backend reset tests qualify only their own contracts. The separate
+[pooling acceptance matrix](CONNECTION_POOLING.md#qualification-and-remaining-gaps)
 requires real DM reuse, observable reset boundaries, thread handoff and state/
 security isolation for each advertised profile. Its #101/#102 follow-ups remain
 open; an optional SDK pool is not a beta prerequisite for ordinary DM pooling.
@@ -118,7 +117,6 @@ open; an optional SDK pool is not a beta prerequisite for ordinary DM pooling.
 - `test_attribute_apis`
 - `test_c_api_guard`
 - `test_connection_liveness`
-- `test_connection_pool`
 - `test_connection_string`
 - `test_datarow`
 - `test_descriptor_apis`
@@ -134,7 +132,6 @@ open; an optional SDK pool is not a beta prerequisite for ordinary DM pooling.
 - `test_redshift_data_conversion`
 - `test_scram_sha256`
 - `test_sql_escape`
-- `test_thread_safety`
 - `test_transport_deadlines`
 - `test_session_reset`
 - `test_session_owner`
@@ -142,7 +139,6 @@ open; an optional SDK pool is not a beta prerequisite for ordinary DM pooling.
 - `test_transport_options`
 - `test_unicode`
 - `it_bind_col_real`
-- `it_connection_pool`
 - `it_diagnostics`
 - `it_get_info`
 - `it_handle_lifecycle`

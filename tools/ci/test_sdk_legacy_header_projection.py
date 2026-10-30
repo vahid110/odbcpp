@@ -10,7 +10,7 @@ spec.loader.exec_module(p)
 
 Q6_ADDITIONS = ('core/database/mysql/datetime_parameter_descriptor.h', 'core/database/mysql/datetime_parameter_wire.h')
 ORIGINAL_MEMBERS = ('core/database/backend_capabilities.h', 'core/database/backend_provider.h', 'core/database/backend_result.h', 'core/database/catalog_execution.h', 'core/database/catalog_queries.h', 'core/database/catalog_request.h', 'core/database/database_factory.h', 'core/database/error_policy.h', 'core/database/generic_database_connection.h', 'core/database/i_database_connection.h', 'core/database/i_protocol_parser.h', 'core/database/mysql/authentication.h', 'core/database/mysql/connection_security.h', 'core/database/mysql/date_parameter_descriptor.h', 'core/database/mysql/date_parameter_wire.h', 'core/database/mysql/date_wire.h', 'core/database/mysql/datetime_wire.h', 'core/database/mysql/decimal_wire.h', 'core/database/mysql/error_wire.h', 'core/database/mysql/handshake_wire.h', 'core/database/mysql/mysql_protocol_parser.h', 'core/database/mysql/mysql_session.h', 'core/database/mysql/parameter_receipt_shape.h', 'core/database/mysql/prepared_wire.h', 'core/database/mysql/query_wire.h', 'core/database/mysql/time_wire.h', 'core/database/mysql/tls_negotiation.h', 'core/database/native_type_info.h', 'core/database/native_type_resolution.h', 'core/database/parsed_query_result.h', 'core/database/postgres/pg_backend_provider.h', 'core/database/postgres/pg_catalog_profile.h', 'core/database/postgres/pg_command.h', 'core/database/postgres/pg_database_connection.h', 'core/database/postgres/pg_messages.h', 'core/database/postgres/pg_protocol_parser.h', 'core/database/postgres/pg_sql_dialect.h', 'core/database/postgres/pg_value.h', 'core/database/postgres/redshift_catalog_query.h', 'core/database/postgres/redshift_foreign_key_contract.h', 'core/database/postgres/redshift_primary_key_contract.h', 'core/database/postgres/scram_sha256.h', 'core/database/query_parameter.h', 'core/database/query_result.h', 'core/database/result_validation.h', 'core/database/session_health.h', 'core/database/session_reset.h', 'core/database/sql_dialect.h', 'core/database/sql_translation.h', 'core/database/statement_description.h', 'core/database/statement_kind.h', 'core/database/transaction.h', 'core/database/transaction_session.h', 'core/database/type_definition.h', 'core/transport/async_tls_transport.h', 'core/transport/async_transport.h', 'core/transport/deadline_model.h', 'core/transport/epoll_transport.h', 'core/transport/i_transport.h', 'core/transport/iocp_transport.h', 'core/transport/socket_transport.h', 'core/transport/socket_wait.h', 'core/transport/start_tls_transport.h', 'core/transport/thread_pool_transport.h', 'core/transport/tls_configurable_transport.h', 'core/transport/tls_transport.h', 'core/transport/transport_factory.h', 'core/transport/transport_options.h', 'core/util/base64.h', 'core/util/deadline.h', 'core/util/driver_logging.h', 'core/util/errors.h', 'core/util/exception_adapter.h', 'core/util/hex.h', 'core/util/platform.h', 'core/util/result.h', 'core/util/utf8.h')
-ORIGINAL_EXCLUSIONS = ('core/auth/auth_core.h', 'core/auth/aws_db_json_response.h', 'core/auth/aws_db_response_fields.h', 'core/auth/aws_db_xml_response.h', 'core/auth/bounded_response_stream.h', 'core/auth/checked_aws_db_json_response.h', 'core/auth/checked_aws_db_xml_response.h', 'core/auth/checked_response_boundary.h', 'core/auth/checked_response_stream.h', 'core/auth/detail/aws_db_json_parser.h', 'core/auth/detail/aws_db_xml_parser.h', 'core/auth/issuer_timestamp.h', 'core/auth/redshift_provisioned_response.h', 'core/auth/redshift_serverless_response.h', 'core/auth/redshift_withiam_response.h', 'core/auth/response_operation.h', 'core/auth/temporary_db_validity.h', 'core/database/connection_pool.h', 'core/database/credential_context.h', 'core/database/session_owner.h', 'core/security/crypto.h', 'core/security/tls_client.h')
+ORIGINAL_EXCLUSIONS = ('core/auth/auth_core.h', 'core/auth/aws_db_json_response.h', 'core/auth/aws_db_response_fields.h', 'core/auth/aws_db_xml_response.h', 'core/auth/bounded_response_stream.h', 'core/auth/checked_aws_db_json_response.h', 'core/auth/checked_aws_db_xml_response.h', 'core/auth/checked_response_boundary.h', 'core/auth/checked_response_stream.h', 'core/auth/detail/aws_db_json_parser.h', 'core/auth/detail/aws_db_xml_parser.h', 'core/auth/issuer_timestamp.h', 'core/auth/redshift_provisioned_response.h', 'core/auth/redshift_serverless_response.h', 'core/auth/redshift_withiam_response.h', 'core/auth/response_operation.h', 'core/auth/temporary_db_validity.h', 'core/database/credential_context.h', 'core/database/session_owner.h', 'core/security/crypto.h', 'core/security/tls_client.h')
 
 CANCELLATION_ADDITIONS = ('core/database/session_cancellation.h', 'core/database/session_cancellation_wire.h', 'core/transport/cancellation_wait.h')
 
@@ -18,13 +18,13 @@ class ProjectionTests(unittest.TestCase):
     def sources(self):
         return {x: b'#pragma once\n' for x in p.OWNERS.values()}
 
-    def test_exact_82_members_original_77_and_22_exclusions_and_missing_crypto_edge(self):
+    def test_exact_82_members_original_77_and_21_exclusions_and_missing_crypto_edge(self):
         sources = self.sources()
         sources[p.OWNERS['core/database/mysql/connection_security.h']] = b'#include "odbcpp/security/crypto.h"\n'
         result = p.project(sources)
         self.assertEqual(len(result), 82)
         self.assertEqual(len(set(result) - set(Q6_ADDITIONS) - set(CANCELLATION_ADDITIONS)), 77)
-        self.assertEqual(len(set(p.OWNERS) - set(result) - set(p.PRIVATE_DECLARATION_DEPENDENCIES)), 22)
+        self.assertEqual(len(set(p.OWNERS) - set(result) - set(p.PRIVATE_DECLARATION_DEPENDENCIES)), 21)
         self.assertNotIn('core/security/crypto.h', result)
         self.assertEqual(result['core/database/mysql/connection_security.h'], b'#include "core/security/crypto.h"\n')
 
@@ -199,11 +199,11 @@ class ProjectionQ6MembershipTests(unittest.TestCase):
 
     def test_exact_selected_additions_and_original_subsets(self):
         result = p.project(self.sources())
-        self.assertEqual(len(p.OWNERS) - len(p.PRIVATE_DECLARATION_DEPENDENCIES), 104)
+        self.assertEqual(len(p.OWNERS) - len(p.PRIVATE_DECLARATION_DEPENDENCIES), 103)
         self.assertEqual(tuple(sorted(result)), tuple(sorted(ORIGINAL_MEMBERS + Q6_ADDITIONS + CANCELLATION_ADDITIONS)))
         self.assertEqual(tuple(member for member in p.MEMBERS if member not in Q6_ADDITIONS and member not in CANCELLATION_ADDITIONS), ORIGINAL_MEMBERS)
         self.assertEqual(tuple(sorted(set(p.OWNERS) - set(result) - set(p.PRIVATE_DECLARATION_DEPENDENCIES))), ORIGINAL_EXCLUSIONS)
-        self.assertEqual(len(ORIGINAL_EXCLUSIONS), 22)
+        self.assertEqual(len(ORIGINAL_EXCLUSIONS), 21)
         for member in Q6_ADDITIONS:
             self.assertEqual(p.OWNERS[member], member)
         self.assertNotIn('core/security/crypto.h', result)

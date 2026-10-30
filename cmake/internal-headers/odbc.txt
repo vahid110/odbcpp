@@ -36,8 +36,6 @@ odbc/odbc_api.h
 odbc/odbc_handles.h
 odbc/odbc_trace.h
 odbc/odbc_types.h
-odbc/redshift/redshift_data_converter.h
-odbc/redshift/redshift_types.h
 odbc/resource_limits.h
 odbc/result_types.h
 odbc/setup_model.h
