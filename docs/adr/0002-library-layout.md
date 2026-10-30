@@ -71,18 +71,25 @@ Phase 2a redesign removes it.
 
 ## Migration
 
-Leaves first, one library per PR, every step green on the required checks:
+Leaves first, one library per PR, every step green on the required checks.
+Libraries first become CMake targets in place; files move once, at the end, so
+the tools and checks that hard-code source paths change only once.
 
-1. `base` and `logging` (and the CMake architecture test).
+1. `base` and `logging` as targets, with the configure-time graph check and its
+   script test.
 2. `tls`, then `transport`.
 3. `db` (contracts and session).
-4. `auth`, `auth_aws`, `auth_bridge_pg` (moves only; redesign is Phase 2a).
+4. `auth`, `auth_aws`, `auth_bridge_pg` (targets only; redesign is Phase 2a).
 5. `backend_pg` and `backend_mysql`.
-6. `odbc` and `odbc_setup`; delete the partition and manifest machinery.
-7. Products: one configure builds both drivers; update presets, packaging and
+6. `odbc` and `odbc_setup`; then delete the partition, manifest, header
+   staging and projection machinery. Until then, library sources still pass
+   the existing internal-include check.
+7. Move files to `libs/<name>/{include,src}` with the new include spelling, as
+   one scripted pure move.
+8. Products: one configure builds every driver; update presets, packaging and
    CI (the per-product CI matrix collapses to one build per platform).
-8. Installable packages and the out-of-tree sample consumer.
-9. Namespace rename.
+9. Installable packages and the out-of-tree sample consumer.
+10. Namespace rename (separate mechanical step, as above).
 
 Also in Phase 1, separately from the moves: clang-format and clang-tidy (one
 formatting commit), `-Wconversion`, compiler hardening flags, fuzz harnesses
