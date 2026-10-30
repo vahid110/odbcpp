@@ -15,14 +15,13 @@ permissions: {}
 jobs:
   plan:
     # Same-repository, non-draft PRs only: forks never reach the secrets.
-    # Off until the owner sets AGENT_REVIEW_ENABLED after a passing canary.
     if: >-
-      vars.AGENT_REVIEW_ENABLED == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       correctness: ${{ steps.plan.outputs.correctness }}
@@ -36,11 +35,26 @@ jobs:
       PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      ENABLED_FOR: ${{ vars.AGENT_REVIEW_ENABLED }}
     steps:
+      - name: Check out the review configuration from the base branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+
       - name: Decide which reviews run
         id: plan
         shell: bash
         run: |
+          # The review runs only for the configuration the canary proved:
+          # AGENT_REVIEW_ENABLED must equal the current fingerprint.
+          fingerprint=$(.github/review/fingerprint.sh)
+          if [[ "$ENABLED_FOR" != "$fingerprint" ]]; then
+            echo "::notice::Agent review is off: AGENT_REVIEW_ENABLED does not match fingerprint $fingerprint; run the agent review canary."
+            echo "add_labels=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
           # Red-team reviews already posted for this exact commit.
