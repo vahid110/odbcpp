@@ -153,7 +153,7 @@ jobs:
         run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" package
       - name: Retain small source-only owning qualification evidence
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ubuntu-product-${{ inputs.product_head }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: product/ubuntu-pilot-evidence/
@@ -218,7 +218,7 @@ jobs:
         run: python3 tools/ci/ubuntu_development_pilot.py package
       - name: Retain small source-only evidence (no final binaries/build graph)
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ubuntu-pilot-cold-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ubuntu-pilot-evidence/
@@ -297,7 +297,7 @@ jobs:
         run: python3 tools/ci/ubuntu_development_pilot.py package
       - name: Retain small source-only evidence (no final binaries/build graph)
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ubuntu-pilot-warm-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ubuntu-pilot-evidence/
@@ -407,7 +407,7 @@ jobs:
         run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" package
       - name: Retain bounded source-only evidence, no executables or graph
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ubuntu-real-change-${{ env.PILOT_MODE }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: product/ubuntu-pilot-evidence/

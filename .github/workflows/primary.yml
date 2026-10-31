@@ -133,7 +133,7 @@ jobs:
         run: python3 -B tools/development/check_dm_offline_evidence.py --build build-iodbc --ctest-exit-file build-iodbc/dm-offline/ctest-exit.txt
       - name: Retain offline Driver Manager evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dm-offline-macos-iodbc-ucs4
           path: |
@@ -144,7 +144,7 @@ jobs:
 
       - name: Retain macOS TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-openssl-UCS4-tls-proof
           path: |
