@@ -179,7 +179,7 @@ jobs:
         run: python3 -B tools/development/check_dm_offline_evidence.py --build build-pr-ubuntu --ctest-exit-file build-pr-ubuntu/dm-offline/ctest-exit.txt
       - name: Retain offline Driver Manager evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dm-offline-ubuntu-${{ matrix.product }}
           path: |
@@ -264,7 +264,7 @@ jobs:
         run: python -B tools/development/check_dm_offline_evidence.py --build build-pr-windows --config Release --ctest-exit-file build-pr-windows/dm-offline/ctest-exit.txt
       - name: Retain offline Driver Manager evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dm-offline-windows-${{ matrix.product }}
           path: |
@@ -321,7 +321,7 @@ jobs:
         run: ctest --test-dir build-pr-sanitize -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
       - name: Retain sanitizer unit results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sanitizer-unit-${{ matrix.product }}
           path: |
@@ -405,7 +405,7 @@ jobs:
         run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" package
       - name: Preserve original sanitizer-only evidence
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sanitizer-only-${{ inputs.product_head }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: sanitizer-evidence/
@@ -573,7 +573,7 @@ jobs:
 
       - name: Preserve MySQL authentication evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mysql-auth-live
           path: |
@@ -641,7 +641,7 @@ jobs:
 
       - name: Retain system-shared TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openssl-system-shared-tls-proof
           path: |
@@ -807,7 +807,7 @@ jobs:
           Copy-Item build-windows/tests/Release/it_driver_manager.exe,build-windows/tests/Release/it_setup.exe,build-windows/tests/Release/it_package_load.exe build-windows/package-acceptance
 
       - name: Preserve beta installer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: odbcpp-postgresql-beta-x64
           path: |
@@ -827,7 +827,7 @@ jobs:
           if-no-files-found: error
 
       - name: Pass packages to fresh-runner acceptance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-package-acceptance-inputs
           path: build-windows/package-acceptance
@@ -840,7 +840,7 @@ jobs:
 
       - name: Preserve Windows test evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-live-test-evidence
           path: |
@@ -888,7 +888,7 @@ jobs:
           ./tools/ci/windows-package.ps1
       - name: Preserve package acceptance evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-package-evidence
           path: |
@@ -923,7 +923,7 @@ jobs:
         run: ./tools/ci/windows-linked-server.ps1
       - name: Preserve linked-server evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-linked-server-evidence
           path: |
@@ -1215,7 +1215,7 @@ jobs:
 
       - name: Preserve static-profile evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-openssl-static-evidence
           path: |
@@ -1297,7 +1297,7 @@ jobs:
           ctest --test-dir build-awslc-proof --output-on-failure
           --timeout 90 --no-tests=error --output-junit adapter-results.xml
       - name: Preserve bounded proof evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: awslc-adapter-shared-${{ matrix.shared }}
           path: |
@@ -1433,7 +1433,7 @@ jobs:
 
       - name: Retain macOS TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-openssl-${{ matrix.driver_unicode_type }}-tls-proof
           path: |
