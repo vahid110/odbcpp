@@ -8,12 +8,19 @@ on:
   schedule:
     - cron: '41 5 * * 6'
   workflow_dispatch:
+    inputs:
+      fresh_run:
+        description: 'Force a completely clean scan from scratch?'
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: codeql-${{ github.ref }}
+  # If fresh_run is true, append the run_id to bypass any prior concurrency or history grouping
+  group: codeql-${{ github.ref }}-${{ inputs.fresh_run == true && github.run_id || 'standard' }}
   cancel-in-progress: false
   queue: max
 
