@@ -41,7 +41,7 @@ and eventual method parity are detailed in
 | A4 | A static backend provider is separate from a live session | Product identity/defaults/options/static capabilities do not require constructing a fake disconnected session |
 | A5 | Results and errors cross the SDK boundary in normalized, owning forms | PostgreSQL OIDs/tags/format codes and MySQL type/flag/packet fields remain private |
 | A6 | Product composition owns compile-time backend registration | G12 requires one documented registration point, not runtime plugins or a stable ABI |
-| A7 | The current `ConnectionPool` is prototype code and will not define the SDK pool contract | Replace its shared-pointer/manual-release model before any reuse claim; keep it internal and unadvertised meanwhile |
+| A7 | The prototype `ConnectionPool` did not define the SDK pool contract | Deleted 2026-10-30; any pool follows [CONNECTION_POOLING.md](CONNECTION_POOLING.md) on the session layer |
 | A8 | ODBC is the client adapter; internal batch seams do not schedule a separate ODBCPP ADBC adapter | Arrow ADBC fork is the current route; ODBCPP ADBC/Arrow work is deferred to a new product decision; no Arrow or ADBC dependency enters G12 |
 | A9 | Secure transport/authentication, resource budgets and extension trust are architecture concerns | The mandatory rules are in [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 | A10 | Cryptography provider and linkage are explicit build-time product profiles behind private adapters | DSNs cannot select libraries; provider types do not enter SDK/backend contracts; see [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) |
@@ -895,20 +895,11 @@ contract; concrete probing SQL stays inside the PostgreSQL backend.
 
 ## S2 prototype pool quarantine — 2026-10-01
 
-The legacy copyable/manual-release pool is removed from both production source
-inventory and object-target partitioning, including the shared inventory used by
-provider proofs. Only the private `odbcpp_prototype_pool` test/example target builds
-it. Production composition no longer sees its header; a compiler probe rejects
-that include. Source, partition and target guards reject accidental reinsertion.
-Neither its target nor header nor example source is installed/exported. Existing
-internal pool fixtures remain available, so quarantine does not remove tests.
-
-Prototype `ThreadSafeConnection` now serializes direct and prepared exchanges with
-exclusive locks. The coordinated concurrency regression holds a first operation
-while a second attempts entry and checks all direct/prepared pairings. Its bounded
-scheduling observation is not a mathematical proof of all thread schedules.
-Copyable ownership, manual release and missing reset remain unsafe; the prototype
-is not the SDK reuse implementation or public SDK API.
+The legacy copyable/manual-release prototype pool, its `ThreadSafeConnection`
+wrapper and their tests were deleted on 2026-10-30. The pooling contract stays in
+[CONNECTION_POOLING.md](CONNECTION_POOLING.md).
+Connection reuse will be designed on the session layer rather than revived from
+the prototype.
 
 Acceptance includes full private-prefix installation checks and artifact inspection:
 Unix checks static archive and full DLL/shared-library symbols; Windows checks the

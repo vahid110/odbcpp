@@ -27,10 +27,8 @@ probe(backend_provider "${INCLUDE_ROOT}/backend" core/database/postgres/pg_backe
 probe(composition_provider "${INCLUDE_ROOT}/composition" core/database/postgres/pg_backend_provider.h TRUE)
 probe(runtime_session "${INCLUDE_ROOT}/runtime" odbcpp/database/i_database_connection.h FALSE)
 probe(odbc_parser "${INCLUDE_ROOT}/odbc" core/database/postgres/pg_protocol_parser.h FALSE)
-probe(odbc_pool "${INCLUDE_ROOT}/odbc" core/database/connection_pool.h FALSE)
 probe(backend_odbc "${INCLUDE_ROOT}/backend" odbc/odbc_types.h FALSE)
 probe(composition_parser "${INCLUDE_ROOT}/composition" core/database/i_protocol_parser.h FALSE)
-probe(composition_pool "${INCLUDE_ROOT}/composition" core/database/connection_pool.h FALSE)
 
 probe(composition_session_owner "${INCLUDE_ROOT}/composition" odbcpp/session/session_owner.h TRUE)
 probe(backend_session_owner "${INCLUDE_ROOT}/backend" odbcpp/session/session_owner.h FALSE)

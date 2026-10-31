@@ -53,7 +53,6 @@ if(BUILD_EXAMPLES)
   install(DIRECTORY examples/
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples
       FILES_MATCHING PATTERN "*.cpp"
-    PATTERN "connection_pool_example.cpp" EXCLUDE
   )
 endif()
 
