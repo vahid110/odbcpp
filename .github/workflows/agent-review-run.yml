@@ -1,0 +1,186 @@
+name: agent review run
+
+# One review of one pull request head, called by agent-review.yml.
+# The model gets no shell and no network tools: everything it needs about
+# the PR is written to review-context/ first, the PR head is checked out
+# read-only into pr-head/ with links and agent configuration removed, and
+# reads are limited to the workspace. The verdict is posted by a later step
+# as odbcpp-reviewer[bot]; the model never holds that key.
+
+on:
+  workflow_call:
+    inputs:
+      role:
+        description: correctness or red-team
+        required: true
+        type: string
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      ODBCPP_REVIEWER_PRIVATE_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  review:
+    name: agent review (${{ inputs.role }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    env:
+      ROLE: ${{ inputs.role }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out the base branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the PR head for reading only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr-head
+          persist-credentials: false
+
+      - name: Prepare the review context
+        id: prep
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Links could point outside the workspace; agent configuration in
+          # the PR must not configure the reviewer.
+          echo "Links removed from pr-head: $(find pr-head -type l | wc -l)"
+          find pr-head -type l -delete
+          # Claude Code loads these at any depth, so remove them everywhere.
+          rm -rf pr-head/.git
+          find pr-head \( -name .claude -o -name .claude.json -o -name .mcp.json \
+                          -o -name CLAUDE.md -o -name CLAUDE.local.md \) -prune -print -exec rm -rf {} +
+          mkdir review-context
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > pr-raw.json
+          if [[ "$(jq -r .head.sha pr-raw.json)" != "$HEAD_SHA" ]]; then
+            echo "PR moved past $HEAD_SHA; the newer run reviews it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jq '{number, title, body, user: .user.login, labels: [.labels[].name],
+               base: .base.ref, head_sha: .head.sha}' pr-raw.json > review-context/pr.json
+          # The exact diff of the reviewed commit against its merge base.
+          gh api -H "Accept: application/vnd.github.diff" \
+            "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" > review-context/pr.diff
+          gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+            --jq '.check_runs[] | {name, status, conclusion}' > review-context/checks.jsonl
+          # This role's own earlier reviews, so fixes can be checked; the
+          # other role's reviews stay hidden (independent reviews).
+          tag="[$ROLE reviewer]"
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            --jq ".[] | select(.user.login == \"odbcpp-reviewer[bot]\")
+                      | select(.body | startswith(\"**$tag\"))
+                      | {commit: .commit_id, state, body}" > review-context/previous-reviews.jsonl
+          ls -l review-context
+
+      - name: Load the reviewer's tool rules
+        id: args
+        if: steps.prep.outputs.skip != 'true'
+        shell: bash
+        # Shared with agent-review-canary.yml, which proves these rules hold.
+        run: echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Review
+        id: review
+        if: steps.prep.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          # Agents push as odbcpp-agent; labels come from odbcpp-reviewer.
+          allowed_bots: odbcpp-agent,odbcpp-reviewer
+          display_report: 'false'
+          prompt: |
+            Read .github/review/${{ inputs.role }}.md and follow it.
+            Pull request #${{ github.event.pull_request.number }} of ${{ github.repository }},
+            head commit ${{ github.event.pull_request.head.sha }}.
+          claude_args: >-
+            ${{ steps.args.outputs.args }}
+            --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","body","labels"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string","enum":["security","auth","protocol","transactions","process"]}}}}'
+
+      - name: Get the reviewer identity
+        id: reviewer
+        if: ${{ !cancelled() && steps.prep.outputs.skip != 'true' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liLzexEhszs2AHlm
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      - name: Post the verdict as odbcpp-reviewer[bot]
+        if: steps.prep.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          RESULT: ${{ steps.review.outputs.structured_output }}
+        run: |
+          current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [[ "$current" != "$HEAD_SHA" ]]; then
+            echo "PR moved from $HEAD_SHA to $current; the newer run reviews it."
+            exit 0
+          fi
+          python3 -I - <<'EOF'
+          import json, os, re
+          result = json.loads(os.environ["RESULT"])
+          text = json.dumps(result)
+          # Never publish anything that looks like a credential.
+          secret = re.compile(
+              r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|sk-ant-|eyJ[A-Za-z0-9_-]{10,}\.|"
+              r"-----BEGIN [A-Z ]*KEY|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN|"
+              r"CLAUDE_CODE_OAUTH_TOKEN\s*[=:]")
+          suspicious = bool(secret.search(text))
+          tag = f"[{os.environ['ROLE']} reviewer]"
+          short = os.environ["HEAD_SHA"][:7]
+          if suspicious:
+              review = {"event": "REQUEST_CHANGES",
+                        "body": f"**{tag} verdict withheld at {short}**\n\nThe review "
+                                "output matched a credential pattern and was not published. "
+                                f"See {os.environ['RUN_URL']}."}
+          else:
+              event = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES"}[result["verdict"]]
+              review = {"event": event,
+                        "body": f"**{tag} {result['verdict'].replace('_', ' ')} at {short}**\n\n{result['body']}"}
+          review["commit_id"] = os.environ["HEAD_SHA"]
+          json.dump(review, open("review.json", "w"))
+          labels = result.get("labels", []) if os.environ["ROLE"] == "correctness" and not suspicious else []
+          json.dump({"labels": labels}, open("labels.json", "w"))
+          open("withheld", "w").write("1" if suspicious else "")
+          EOF
+          gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null
+          # The reviewer, not the author, adds high-risk labels; a new one
+          # starts the red-team review.
+          if [[ "$(jq '.labels | length' labels.json)" != 0 ]]; then
+            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" --input labels.json > /dev/null
+          fi
+          if [[ -s withheld ]]; then
+            echo "::error::Review output matched a credential pattern and was withheld."
+            exit 1
+          fi
+
+      - name: Report a failed review on the PR
+        if: ${{ failure() && steps.reviewer.outputs.token != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+        run: |
+          jq -n --arg b "**[$ROLE reviewer] review failed at ${HEAD_SHA:0:7}**, so there is no verdict. See $RUN_URL." \
+            '{body: $b}' | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - > /dev/null
