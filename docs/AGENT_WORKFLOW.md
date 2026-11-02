@@ -116,20 +116,47 @@ actor=$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.
 
 *(For reviewer validation, verify prefix `ghs_5545952_*` and expected actor `odbcpp-reviewer[bot]`).*
 
-### Git Push via Credential Helper
+### Git Push via Credential Helper & Fail-Closed Transport Defense
 > [!IMPORTANT]
-> Never embed tokens into remote URLs or pass them as command-line arguments (e.g. `http.extraheader`). Process arguments are visible in process tables (`ps`). Instead, use Git's built-in credential helper powered by `gh auth git-credential`:
+> Never embed tokens into remote URLs or pass them as command-line arguments (e.g. `http.extraheader`), which are visible in process tables (`ps`). Instead, use Git's built-in credential helper powered by `gh auth git-credential`.
+>
+> **SSH Transport Guard:** Git's credential helpers only intercept HTTP/HTTPS transports. If a clone has an SSH `origin`, an SSH `pushurl`, or a Git `url.<base>.insteadOf` rewrite configured, Git bypasses `credential.helper` and attempts authentication via local SSH keys (risking personal identity leaks). Bot pushes must therefore:
+> 1. Bind to the explicit canonical HTTPS URL (`https://github.com/vahid110/odbcpp.git`).
+> 2. Verify that the effective resolved push URL is HTTPS (detecting and failing closed on SSH rewrites).
+> 3. Pass `-c core.sshCommand="false"` to fail closed if Git attempts any SSH invocation under any configuration.
+>
+> Offline contracts proving this protection are tested in `tools/development/test_safe_bot_push.py`.
 
 #### POSIX Shell (macOS, Linux, WSL):
 ```bash
+# 1. Verify target repository resolves to HTTPS (detects SSH rewrites / non-HTTPS remotes)
+TARGET_REPO="https://github.com/vahid110/odbcpp.git"
+EFFECTIVE_URL=$(git ls-remote --get-url "$TARGET_REPO")
+case "$EFFECTIVE_URL" in
+  https://github.com/vahid110/odbcpp* | https://*.github.com/vahid110/odbcpp*) ;;
+  *) echo "Error: Push target resolved to non-HTTPS ($EFFECTIVE_URL). Prohibited for bot push." >&2; exit 1 ;;
+esac
+
+# 2. Push over verified HTTPS with fail-closed SSH guard and ephemeral credential helper
 git -c credential.helper= -c credential.helper='!gh auth git-credential' \
-  push origin codex/<branch-name>
+    -c core.sshCommand="false" \
+    push "$TARGET_REPO" codex/<branch-name>
 ```
 
 #### Windows Native (PowerShell):
 ```powershell
+# 1. Verify target repository resolves to HTTPS (detects SSH rewrites / non-HTTPS remotes)
+$TargetRepo = "https://github.com/vahid110/odbcpp.git"
+$EffectiveUrl = (git ls-remote --get-url $TargetRepo).Trim()
+if ($EffectiveUrl -notlike "https://github.com/vahid110/odbcpp*") {
+    Write-Error "Error: Push target resolved to non-HTTPS ($EffectiveUrl). Prohibited for bot push."
+    exit 1
+}
+
+# 2. Push over verified HTTPS with fail-closed SSH guard and ephemeral credential helper
 git -c credential.helper= -c credential.helper="!gh auth git-credential" `
-  push origin codex/<branch-name>
+    -c core.sshCommand="false" `
+    push $TargetRepo codex/<branch-name>
 ```
 
 `gh auth git-credential` automatically reads `GH_TOKEN` from the process environment and supplies it over standard input/output without command-line exposure.
