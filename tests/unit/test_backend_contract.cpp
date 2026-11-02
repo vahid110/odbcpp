@@ -10527,6 +10527,119 @@ TEST_F(PreparedSelectArrayTest, IncrementalOwningMaskedResultsIdleCancelAndDirec
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
   ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
 }
+
+// SQL transaction control under autocommit is outside ODBC's transaction model.
+// Array dispatch must follow the same ownership rule as scalar execution.
+class AutocommitArrayTransactionTest : public PreparedSelectArrayTest,
+    public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+ protected:
+  void transaction_sql(const char* sql) {
+    if (!recovery_sibling) {
+      ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &recovery_sibling));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(recovery_sibling, (SQLCHAR*)sql, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(recovery_sibling, SQL_CLOSE));
+  }
+  void disconnect_without_odbc_transaction() {
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_COMMIT));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+    EXPECT_TRUE(seen->transaction_calls.empty());
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+    stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, recovery_sibling));
+    recovery_sibling = nullptr;
+    const auto disconnected = SQLDisconnect(dbc);
+    EXPECT_EQ(SQL_SUCCESS, disconnected);
+    // Preserve the original failure while allowing cleanup on an unfixed driver.
+    if (disconnected != SQL_SUCCESS) {
+      EXPECT_EQ("25000", state(SQL_HANDLE_DBC, dbc));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+          (SQLPOINTER)SQL_AUTOCOMMIT_OFF, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+      ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    }
+  }
+};
+
+TEST_P(AutocommitArrayTransactionTest, SqlOpenedTransactionNeverBecomesOdbcOwned) {
+  const auto [select, failure, sql_rollback] = GetParam();
+  seen->advertised_transactions = true;
+  seen->isolation_mode = 1;
+  if (select) {
+    ASSERT_NO_FATAL_FAILURE(select_ready());
+  } else {
+    ASSERT_NO_FATAL_FAILURE(ready());
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_NO_FATAL_FAILURE(transaction_sql("BEGIN"));
+  ASSERT_EQ(SessionState::Transaction, seen->transaction_state);
+  const SessionSnapshot open{SessionState::Transaction, SessionDisposition::ResetRequired};
+  if (select) {
+    QueryResult first;
+    first.columns = seen->select_description->columns;
+    first.rows = {{"11"}};
+    first.execution_result_shape = ExecutionResultShape::ResultSet;
+    auto second = first;
+    second.rows = {{"22"}};
+    seen->command_outcomes = {BackendResult<QueryResult>{first, open},
+                             BackendResult<QueryResult>{second, open}};
+  } else {
+    seen->command_outcomes = {command(1, open), command(2, open)};
+  }
+  if (failure) {
+    BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "array transaction failure"};
+    error.operation = BackendOperation::ExecutePrepared;
+    error.native_state = "42501";
+    error.session_state = SessionState::FailedTransaction;
+    error.disposition = SessionDisposition::ResetRequired;
+    seen->command_outcomes[1] = error;
+  }
+  ASSERT_EQ(!select && failure ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS, SQLExecute(stmt));
+  if (select) {
+    ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+  } else {
+    SQLLEN count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count));
+    EXPECT_EQ(1, count);
+  }
+  ASSERT_EQ(failure ? SQL_ERROR : SQL_SUCCESS, SQLMoreResults(stmt));
+  if (failure) {
+    EXPECT_EQ("42501", state());
+    SQLLEN ordinal = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1,
+        SQL_DIAG_ROW_NUMBER, &ordinal, 0, nullptr));
+    EXPECT_EQ(2, ordinal);
+  }
+  if (!failure && select) {
+    ASSERT_NO_FATAL_FAILURE(fetch_literal(22));
+  }
+  if (!failure && !select) {
+    SQLLEN count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count));
+    EXPECT_EQ(2, count);
+  }
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+  EXPECT_EQ(2u, processed);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]);
+  EXPECT_EQ(failure ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status[1]);
+  EXPECT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(failure ? SessionState::FailedTransaction : SessionState::Transaction,
+            seen->transaction_state);
+  if (sql_rollback) {
+    ASSERT_NO_FATAL_FAILURE(transaction_sql("ROLLBACK"));
+    EXPECT_EQ(SessionState::Idle, seen->transaction_state);
+  }
+  ASSERT_NO_FATAL_FAILURE(disconnect_without_odbc_transaction());
+}
+
+INSTANTIATE_TEST_SUITE_P(SelectAndCommand, AutocommitArrayTransactionTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Bool(), ::testing::Bool()),
+    ([](const ::testing::TestParamInfo<AutocommitArrayTransactionTest::ParamType>& info) {
+      const auto [select, failure, rollback] = info.param;
+      return std::string(select ? "Select" : "Command") + (failure ? "Failure" : "Success") +
+          (rollback ? "WithSqlRollback" : "WithoutSqlRollback");
+    }));
+
 TEST_F(PreparedSelectArrayTest, ZeroFieldEmptyResultReplacementPrebufferAndAllIgnoredNoEffects) {
   ASSERT_NO_FATAL_FAILURE(select_ready(false));
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); SQLSMALLINT columns = -1;
