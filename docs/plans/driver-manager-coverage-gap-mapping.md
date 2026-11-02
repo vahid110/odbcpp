@@ -5,9 +5,9 @@ issue asks for first: a case/profile mapping of existing coverage against genuin
 gaps, plus a bounded implementation sequence. It changes no product or test
 behavior, records no new cloud operations, and expands no feature authority.
 
-Baseline: `main` `2cc55803d3b97a0ee48c3e9b2c1ba0ddbeac0cdd` (post PR #98, #99,
-#125, #126). Coverage facts below refer to that head; #117 evidence is cited as
-in-flight and is not restated as completed.
+Baseline: `main` `6085c36996029165b15ce6f2edfbc5c752388e5d` (post PR #98, #99,
+#125, #126, #129, #158, #160, #164, #165, #166). Coverage facts below refer to that
+head; #117 evidence is cited as in-flight and is not restated as completed.
 
 ## 1. What exists today
 
@@ -25,7 +25,7 @@ in-flight and is not restated as completed.
 | Platform | Manager (observed identity) | App/driver SQLWCHAR | Executed evidence |
 |---|---|---|---|
 | Windows x64 | odbc32, `SQL_DM_VER=03.81.26100.0000` | 2/2 | dm-offline 4 entries / 8 cases at PR #98 head `7277f4c`; seven shared suites through the manager: 373 cases collected, 346 PASS / 27 FAIL, all classified W1–W10 in `tests/test_dm_expectations.h` (`docs/plans/driver-manager-windows-results.md`). PR #126 added manager host checks and `dm_it_*` image execution through the Windows DM. |
-| Windows x64 | as above | 2/2 | #117 in flight (separate owner): 487 prepared DM live cases / 53 exclusions, fresh 137 offline PASS. The owner reported a network timeout before CTest on 2026-10-28: its current public IP no longer matches the pilot SG rule. This is a blocked planned run, not active execution or a pass; see [the owner receipt](https://github.com/vahid110/odbcpp/issues/117). |
+| Windows x64 | as above | 2/2 | #117 in flight (separate owner): 487 prepared DM live cases / 53 exclusions, fresh 137 offline PASS. The owner reported a network timeout before CTest on 2026-10-28: its current public IP no longer matches the pilot SG rule. This is a blocked planned run, not active execution or a pass; see the owner receipt in [#117 issue comment](https://github.com/vahid110/odbcpp/issues/117#issuecomment-6464618640). |
 | Ubuntu | unixODBC 2.3.14 (qualified receipt) | 2/2 | dm-offline CI at `7277f4c`; complete native/live checkpoint through unixODBC pending (#117). |
 | macOS | iODBC 3.52.16 | 4/4 | dm-offline CI; first live run `dm-live-macos-9c79c86-a`: 487 cases collected, 338 PASS / 149 FAIL (mostly W2-masked braced `DRIVER=`); the fifth checkpoint at `4010fe8` then passed all 485 iODBC cases. Combined historical checkpoint: 1,495 PASS / 0 FAIL / 0 SKIP (524 direct, 485 iODBC, 486 unixODBC), with 36 manager early stops and 104 unrun boundary instances explicitly retained in `driver-manager-live-macos.md`. Current-source #117 qualification remains separate and pending. |
 | macOS | unixODBC 2.3.14 (qualified receipt) | 2/2 | First live run: 488 cases collected, 451 PASS / 37 FAIL; deviation buckets D1–D4 and R1–R17 recorded in `tests/test_dm_expectations.h`; the fifth checkpoint at `4010fe8` passed all 486 unixODBC cases. These historical passes do not establish current-source #117 acceptance. |
@@ -60,20 +60,25 @@ Width mechanisms, verified against the local headers and `odbc/odbc_types.h`:
   bound `SQL_C_WCHAR` buffers, across ABI widths (comment in `odbc_types.h`).
 
 Qualified pairs today: Windows 2/2, Ubuntu unixODBC 2/2, macOS unixODBC 2/2,
-macOS iODBC 4/4. **No recorded mixed-pair (2/4 or 4/2) qualification results
-exist.** A mixed build path does exist but has no recorded execution: the
-`iodbc-unicode` workflow_dispatch job in `.github/workflows/ci.yml` builds the
-driver against either unixodbc (2-byte) or libiodbc (4-byte) headers while the
-manager-linked tests compile against libiodbc headers at 4 bytes, registers the
-driver via `odbcinst.ini` `DriverUnicodeType`, and runs against a disposable
-PostgreSQL server. It is dispatch-only, its results are not recorded in any
-plan document, and it never builds a 2-byte application. The mixed-width guard
-`kManagerConvertsNonBmpCharacterCounts` in `it_driver_manager_unicode.cpp` is
-written for that driver-2/app-4 pairing and has never produced recorded results.
-The reverse pairing — 4-byte driver under a 2-byte application — has no
-representation on macOS/Linux: iODBC headers outside WIN32 are 4-byte only and
-unixODBC requires a matched driver ABI, so that boundary must be recorded as
-explicitly unsupported rather than qualified.
+macOS iODBC 4/4. PR #129 (`37a13bd`) split `qualified_manager_version` in
+`tests/test_dm_expectations.h` into `qualified_manager_identity` plus the
+historical matched-pair clause, allowing pre-driver manager deviations
+(specifically bucket J: `SQLGetConnectAttr(SQL_ATTR_LOGIN_TIMEOUT)` on an
+unconnected handle) to qualify across driver widths on identity alone. However,
+**no recorded mixed-pair (2/4 or 4/2) connected qualification results exist.**
+A mixed build path does exist but has no recorded execution: the `iodbc-unicode`
+workflow_dispatch job in `.github/workflows/ci.yml` builds the driver against
+either unixodbc (2-byte) or libiodbc (4-byte) headers while the manager-linked
+tests compile against libiodbc headers at 4 bytes, registers the driver via
+`odbcinst.ini` `DriverUnicodeType`, and runs against a disposable PostgreSQL server.
+It is dispatch-only, its results are not recorded in any plan document, and it
+never builds a 2-byte application. The mixed-width guard
+`kManagerConvertsNonBmpCharacterCounts` in `it_driver_manager_unicode.cpp` remains
+a skip under mixed driver-2/app-4 iODBC until Unit D converts it into an asserted
+deviation with recorded evidence. The reverse pairing — 4-byte driver under a 2-byte
+application — has no representation on macOS/Linux: iODBC headers outside WIN32 are
+4-byte only and unixODBC requires a matched driver ABI, so that boundary must be
+recorded as explicitly unsupported rather than qualified.
 
 ## 3. ODBC 2 compatibility surface
 
@@ -117,9 +122,11 @@ application profile has ever been executed through any manager.
   (manager-linked `it_redshift_real`, 157 case definitions) and the seven
   `dm_*` suites; the Windows PR job built them at `7277f4c`.
 - #117 owns the current Windows DM live checkpoint (487 prepared cases, runner
-  and registration exercised; the latest owner receipt reports a network timeout before CTest). #118 must not
-  duplicate or replace it: the remaining item-1 work is the *distinct* generic
-  Redshift inventory execution through the DM with retained manager identity,
+  and registration exercised; the latest owner receipt reports a network timeout
+  before CTest due to host IP change vs security group rules: see
+  [#117 issue comment](https://github.com/vahid110/odbcpp/issues/117#issuecomment-6464618640)).
+  #118 must not duplicate or replace it: the remaining item-1 work is the *distinct*
+  generic Redshift inventory execution through the DM with retained manager identity,
   filling only runner gaps #117 leaves, and reporting it separately from
   direct-driver Redshift results.
 
@@ -127,10 +134,10 @@ application profile has ever been executed through any manager.
 
 | ID | Item | Concrete missing evidence | First step | Blocked by |
 |---|---|---|---|---|
-| G5.1 | 1 | Windows DM execution of the applicable existing Redshift inventory, reported separately from direct-driver results | Record #117 outcome; fill runner gaps | #117 resource release |
+| G5.1 | 1 | Windows DM execution of the applicable existing Redshift inventory, reported separately from direct-driver results | Record #117 outcome (blocked by SG rule, see [#117 issue comment](https://github.com/vahid110/odbcpp/issues/117#issuecomment-6464618640)); fill runner gaps | #117 resource release |
 | G2.1 | 2 | Recorded mixed-pair qualification; the driver-2/app-4 build path exists (dispatch-only `iodbc-unicode` CI job) but has no recorded results; app-2/driver-4 must be recorded as explicitly unsupported | Reproduce the existing path locally with recorded identities, then qualify | none |
 | G2.2 | 2 | Mixed-width buffer/indicator/diagnostic boundary cases (truncation, non-BMP counts, unit-vs-byte lengths, bound-buffer limits) | Extend `it_driver_manager_unicode` and `test_dm_expectations.h` entries | G2.1 |
-| G2.3 | 2 | Per-profile expectations for mixed pairs; the existing `kManagerConvertsNonBmpCharacterCounts` skip converted to an asserted deviation | Assert the known iODBC non-BMP count behavior with evidence | G2.2 |
+| G2.3 | 2 | Per-profile expectations for mixed pairs; the existing `kManagerConvertsNonBmpCharacterCounts` skip converted to an asserted deviation (following PR #129 bucket J widening) | Assert the known iODBC non-BMP count behavior with evidence | G2.2 |
 | G3.1 | 3 | Checked-in definition of the supported ODBC 2 surface (native support vs manager remapping vs unsupported) | Write the surface definition doc | none |
 | G3.2 | 3 | ODBC2-declared application profiles through Windows DM, unixODBC and iODBC: SQLSTATE remapping, `SQLGetFunctions(SQL_API_ODBC2_ALL_FUNCTIONS)`, legacy aliases arriving as attribute calls, `SQLError` semantics | Add ODBC2 profile cases; offline where pre/post-connect, loopback PostgreSQL for connected paths | G3.1 |
 | G4.1 | 4 | Assessment of which manager-level behaviors current coverage (dm-offline + loopback suites) cannot exercise, and whether a test-only fake closes a real hole | Analysis only; propose specific scenarios or conclude none | none |
@@ -147,7 +154,7 @@ one actual macOS, Ubuntu and Windows build; full cross-platform tests stay
 checkpoint-scope.
 
 - **Unit A (this document):** case/profile mapping and sequence. Stop condition:
-  independent review of the facts against main `2cc5580`.
+  independent review of the facts against main `6085c36996029165b15ce6f2edfbc5c752388e5d`.
 - **Unit B:** ODBC 2 surface definition + driver-side qualification (G3.1,
   driver half of G3.2 where no manager is needed: version matrix, `SQLError`,
   recorded remapping behavior). Source + existing offline tests only.
