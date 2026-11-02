@@ -2880,9 +2880,6 @@ SQLRETURN ODBCDescriptor::get_field(
               "Invalid descriptor record number");
     return SQL_ERROR;
   }
-  if (static_cast<std::size_t>(record_number) > records_.size()) {
-    return SQL_NO_DATA;
-  }
   const bool is_origin = (field_identifier == SQL_DESC_BASE_COLUMN_NAME ||
                           field_identifier == SQL_DESC_BASE_TABLE_NAME ||
                           field_identifier == SQL_DESC_CATALOG_NAME ||
@@ -2893,6 +2890,9 @@ SQLRETURN ODBCDescriptor::get_field(
     if (origin_result != SQL_SUCCESS && origin_result != SQL_SUCCESS_WITH_INFO) {
       return origin_result;
     }
+  }
+  if (static_cast<std::size_t>(record_number) > records_.size()) {
+    return SQL_NO_DATA;
   }
   const auto& record = *numbered_record(record_number);
   const std::string* text = nullptr;
@@ -8408,9 +8408,9 @@ SQLRETURN ODBCStatement::ensure_result_metadata() {
 
 SQLRETURN ODBCStatement::ensure_column_origins() {
   if (origins_resolved_) return SQL_SUCCESS;
-  origins_resolved_ = true;
   const auto meta_res = ensure_result_metadata();
   if (meta_res != SQL_SUCCESS && meta_res != SQL_SUCCESS_WITH_INFO) return meta_res;
+  origins_resolved_ = true;
   if (!current_result_id_ || !conn_->is_connected()) return SQL_SUCCESS;
 
   const auto deadline = rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
@@ -8427,7 +8427,8 @@ SQLRETURN ODBCStatement::ensure_column_origins() {
 
   const auto row_desc = descriptor(imp_row_descriptor_);
   if (!row_desc) return SQL_SUCCESS;
-  for (std::size_t i = 0; i < origins->size() && i < row_desc->record_count(); ++i) {
+  for (std::size_t i = 0; i < origins->size() && i < row_desc->record_count() &&
+                          i < static_cast<std::size_t>((std::numeric_limits<SQLSMALLINT>::max)()); ++i) {
     auto* rec = row_desc->numbered_record(static_cast<SQLSMALLINT>(i + 1));
     if (!rec) continue;
     rec->catalog_name = std::move((*origins)[i].catalog_name);

@@ -1866,7 +1866,7 @@ BackendResult<std::vector<ResultColumnOrigin>> PgDatabaseConnection::resolve_col
       "a.attnum, a.attname::text "
       "FROM pg_catalog.pg_class c "
       "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
-      "LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 "
+      "LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
       "WHERE c.oid IN (";
   for (std::size_t i = 0; i < distinct_table_oids.size(); ++i) {
     if (i != 0) {
