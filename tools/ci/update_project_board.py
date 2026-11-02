@@ -10,9 +10,7 @@ import os
 import re
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
-from pathlib import Path
 
 REPOSITORY = "vahid110/odbcpp"
 REPOSITORY_ID = 1044817180
@@ -28,6 +26,11 @@ STATUSES = {
     "done": "Done",
 }
 COMMAND = re.compile(r"/project (backlog|ready|working|review|ci-merge|blocked|done)\s*")
+API_PATH = re.compile(
+    r"/(?:graphql|users/(?:vahid110|odbcpp-agent%5Bbot%5D)|"
+    r"repos/vahid110/odbcpp/issues/(?:comments/[1-9][0-9]*|"
+    r"[1-9][0-9]*(?:/comments\?per_page=100&page=[1-9][0-9]*)?))"
+)
 
 
 class BoardError(Exception):
@@ -46,7 +49,7 @@ class API:
         self.token = token
 
     def request(self, path, payload=None):
-        if not path.startswith("/") or path.startswith("//"):
+        if not API_PATH.fullmatch(path):
             raise BoardError("Invalid GitHub API path")
         request = urllib.request.Request(
             "https://api.github.com" + path,
@@ -96,7 +99,9 @@ def validate_request(event, env, api):
     triggering = env.get("GITHUB_TRIGGERING_ACTOR", "")
     if triggering not in ACTORS:
         raise BoardError("Rerun actor is not authorized")
-    triggering_user = api.request("/users/" + urllib.parse.quote(triggering, safe=""))
+    # Choose literal endpoints; never incorporate environment text into a URL.
+    actor_path = "/users/vahid110" if triggering == "vahid110" else "/users/odbcpp-agent%5Bbot%5D"
+    triggering_user = api.request(actor_path)
     authorize(triggering_user)
     if triggering_user.get("login") != triggering:
         raise BoardError("Rerun actor lookup disagrees with workflow identity")
@@ -123,6 +128,8 @@ def validate_request(event, env, api):
             raise BoardError("Use exactly /project followed by one documented status")
         status = match.group(1)
         number = event.get("issue", {}).get("number")
+        if type(number) is not int or number <= 0:
+            raise BoardError("Invalid issue number")
         if current.get("issue_url") != f"https://api.github.com/repos/{REPOSITORY}/issues/{number}":
             raise BoardError("Comment does not belong to this issue")
         # Queues/re-runs must not apply an older command over a newer request.
@@ -140,8 +147,6 @@ def validate_request(event, env, api):
             raise BoardError("Issue comment pagination exceeded bounded limit")
     else:
         raise BoardError("Unsupported workflow event")
-    if type(number) is not int or number <= 0:
-        raise BoardError("Invalid issue number")
     issue = api.request(f"/repos/{REPOSITORY}/issues/{number}")
     if (issue.get("number") != number or "pull_request" in issue or
             issue.get("repository_url") != f"https://api.github.com/repos/{REPOSITORY}"):
@@ -237,7 +242,8 @@ def main():
     try:
         if sys.argv[1:] not in (["validate"], ["apply"]):
             raise BoardError("Expected validate or apply")
-        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        # The workflow supplies GitHub's event JSON on stdin; no file path input.
+        event = json.load(sys.stdin)
         issue, status = validate_request(event, os.environ, API(os.environ.get("GH_READ_TOKEN")))
         if sys.argv[1] == "validate":
             print(f"Authorized issue #{issue['number']} board request")

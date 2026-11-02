@@ -36,10 +36,10 @@ jobs:
       - name: Validate request without the project credential
         env:
           GH_READ_TOKEN: ${{ github.token }}
-        run: python3 -B tools/ci/update_project_board.py validate
+        run: python3 -B tools/ci/update_project_board.py validate < "$GITHUB_EVENT_PATH"
       - name: Apply the validated request
         env:
           GH_READ_TOKEN: ${{ github.token }}
           PROJECT_BOARD_TOKEN: ${{ secrets.PROJECT_BOARD_TOKEN }}
         # Revalidates current issue/comment and triggering actor before any mutation.
-        run: python3 -B tools/ci/update_project_board.py apply
+        run: python3 -B tools/ci/update_project_board.py apply < "$GITHUB_EVENT_PATH"

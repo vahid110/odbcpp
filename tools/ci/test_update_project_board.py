@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import urllib.error
 
 import update_project_board as board
@@ -156,6 +156,13 @@ class AuthorizationTests(unittest.TestCase):
             with self.assertRaises(board.BoardError):
                 board.validate_request(event, env, api)
 
+    def test_invalid_issue_number_rejected_before_any_issue_api_call(self):
+        event, env, api = fixture()
+        event["issue"]["number"] = "174/../../other"
+        api.comment["issue_url"] = "https://api.github.com/repos/vahid110/odbcpp/issues/174/../../other"
+        with self.assertRaisesRegex(board.BoardError, "Invalid issue number"):
+            board.validate_request(event, env, api)
+
 
 def connection(nodes, next_cursor=None):
     return {"nodes": nodes, "pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor}}
@@ -238,6 +245,26 @@ class ProjectTests(unittest.TestCase):
     def test_redirects_never_forward_credentials(self):
         with self.assertRaises(board.BoardError):
             board.NoRedirect().redirect_request(None, None, 302, "", {}, "https://evil.example")
+
+    def test_api_path_restricts_repository_endpoint_and_query(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{}'
+        for path in ["/repos/other/repo/issues/1", "/repos/vahid110/odbcpp/issues/1/../../secrets",
+                     "/users/attacker", "/users/vahid110?token=bad", "/graphql#bad",
+                     "//evil.example", "/repos/vahid110/odbcpp/issues/%2f..",
+                     "/repos/vahid110/odbcpp/issues/1/comments?per_page=100&page=1&other=1"]:
+            with self.subTest(path=path), patch.object(board.urllib.request.OpenerDirector, "open", return_value=response) as opened:
+                with self.assertRaises(board.BoardError):
+                    board.API("SECRET").request(path)
+                opened.assert_not_called()
+
+    def test_main_reads_event_stream_without_opening_environment_path(self):
+        event, env, api = fixture()
+        env.update(GH_READ_TOKEN="TEST", GITHUB_EVENT_PATH="/arbitrary/private/file")
+        with patch.dict(os.environ, env, clear=True), patch.object(board.sys, "argv", ["helper", "validate"]), \
+                patch.object(board.sys, "stdin", io.StringIO(json.dumps(event))), \
+                patch.object(board, "API", return_value=api), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(board.main(), 0)
 
     def test_workflow_never_checkouts_pr_code_or_interpolates_comments(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/project-board.yml").read_text()
