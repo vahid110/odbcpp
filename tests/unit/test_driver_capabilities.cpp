@@ -85,4 +85,14 @@ TEST(DriverCapabilitiesTest, AdvertisesExactlyItsBaseExports) {
             get_functions(SQL_NULL_HDBC, SQL_API_SQLCONNECT, &supported));
 }
 
+TEST(DriverCapabilitiesTest, DoesNotExportDeprecatedOdbc2EntryPoints) {
+  DynamicLibrary driver(ODBCPP_DRIVER_LIBRARY_PATH);
+  ASSERT_TRUE(driver.valid()) << ODBCPP_DRIVER_LIBRARY_PATH;
+
+  for (const auto* name : odbcpp::test::unexported_legacy_odbc2_functions) {
+    EXPECT_EQ(nullptr, driver.symbol(name))
+        << "Legacy ODBC 2 entry point should not be exported by driver: " << name;
+  }
+}
+
 }  // namespace
