@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace rs::core::database::postgres {
 namespace {
@@ -239,6 +240,122 @@ std::optional<std::size_t> skip_trivia(std::string_view value, std::size_t posit
     }
   }
   return position;
+}
+
+// Split only the outer call. Preserve raw expression slices, including the
+// newline ending a line comment, and leave expression typing to the server.
+template <std::size_t Count>
+std::optional<std::array<std::string_view, Count>> call_arguments(
+    std::string_view function, std::size_t name_end) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(') return std::nullopt;
+  std::array<std::string_view, Count> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::vector<char> closers{')'};
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> end;
+    bool lexical_body = false;
+    if (function[i] == '\'' || function[i] == '"') {
+      lexical_body = true;
+      end = quoted_end(function, i);
+    } else if (function.substr(i, 2) == "--" || function.substr(i, 2) == "/*") {
+      lexical_body = true;
+      end = comment_end(function, i);
+    } else if (function[i] == '$' && dollar_tag_at(function, i)) {
+      lexical_body = true;
+      end = dollar_end(function, i);
+    }
+    if (lexical_body) {
+      if (!end) return std::nullopt;
+      i = *end;
+      continue;
+    }
+    const auto ch = function[i];
+    if (ch == '(' || ch == '[') {
+      closers.push_back(ch == '(' ? ')' : ']');
+      ++i;
+      continue;
+    }
+    const bool close = ch == ')' && closers.size() == 1;
+    if ((ch == ',' && closers.size() == 1) || close) {
+      const auto argument = function.substr(begin, i - begin);
+      const auto first = skip_trivia(argument, 0);
+      if (!first || *first == argument.size() || count == Count) return std::nullopt;
+      arguments[count++] = argument;
+      if (close) {
+        const auto trailing = skip_trivia(function, i + 1);
+        if (!trailing || *trailing != function.size() || count != Count) return std::nullopt;
+        return arguments;
+      }
+      begin = ++i;
+      continue;
+    }
+    if (ch == ')' || ch == ']') {
+      if (closers.back() != ch) return std::nullopt;
+      closers.pop_back();
+    }
+    ++i;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string_view> keyword_argument(std::string_view value) {
+  const auto start = skip_trivia(value, 0);
+  if (!start || *start == value.size()) return std::nullopt;
+  auto end = *start;
+  while (end < value.size() &&
+         ((value[end] >= 'A' && value[end] <= 'Z') ||
+          (value[end] >= 'a' && value[end] <= 'z') || value[end] == '_')) ++end;
+  if (end == *start) return std::nullopt;
+  const auto trailing = skip_trivia(value, end);
+  if (!trailing || *trailing != value.size()) return std::nullopt;
+  return value.substr(*start, end - *start);
+}
+
+SqlTranslationResult translate_convert(std::string_view function, std::size_t name_end,
+                                       SqlDialectProfile profile) {
+  const auto arguments = call_arguments<2>(function, name_end);
+  if (!arguments) return failure(SqlTranslationError::InvalidSyntax, "CONVERT requires two arguments");
+  const auto target = keyword_argument((*arguments)[1]);
+  if (!target) return failure(SqlTranslationError::InvalidSyntax, "CONVERT requires one type keyword");
+  struct Target { std::string_view keyword, postgres, redshift; };
+  constexpr std::array targets{
+      Target{"SQL_SMALLINT", "SMALLINT", "SMALLINT"},
+      Target{"SQL_INTEGER", "INTEGER", "INTEGER"},
+      Target{"SQL_BIGINT", "BIGINT", "BIGINT"},
+      Target{"SQL_REAL", "REAL", "REAL"},
+      Target{"SQL_FLOAT", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_DOUBLE", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_NUMERIC", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_DECIMAL", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_BIT", "BOOLEAN", "BOOLEAN"},
+      Target{"SQL_DATE", "DATE", "DATE"},
+      Target{"SQL_TIME", "TIME", "TIME"},
+      Target{"SQL_TIMESTAMP", "TIMESTAMP", "TIMESTAMP"},
+      Target{"SQL_CHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_VARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_LONGVARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_WCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_WVARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_WLONGVARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_BINARY", "BYTEA", "VARBYTE"},
+      Target{"SQL_VARBINARY", "BYTEA", "VARBYTE"},
+      Target{"SQL_LONGVARBINARY", "BYTEA", "VARBYTE"},
+      Target{"SQL_GUID", "UUID", ""}};
+  for (const auto& type : targets) {
+    if (ascii_word_equal(*target, type.keyword)) {
+      const auto native = profile == SqlDialectProfile::PostgreSql ? type.postgres : type.redshift;
+      if (native.empty()) break;
+      std::string result{"CAST("};
+      result.append((*arguments)[0]);
+      result += " AS ";
+      result.append(native);
+      result += ')';
+      return {std::move(result), SqlTranslationError::None, {}};
+    }
+  }
+  return failure(SqlTranslationError::Unsupported, "CONVERT target is not supported by this profile");
 }
 
 // Extract only the outer call's argument slices. Expressions remain native
@@ -577,6 +694,15 @@ SqlTranslationResult translate_escape(std::string_view body, SqlDialectProfile p
     auto translated = translate_fragment(trim(body.substr(2)), profile);
     if (!translated) return translated;
     auto function = trim(translated.sql);
+    const auto first = skip_trivia(function, 0);
+    if (first) {
+      auto name_end = *first;
+      while (name_end < function.size() && identifier_continue(
+          static_cast<unsigned char>(function[name_end]))) ++name_end;
+      if (ascii_word_equal(function.substr(*first, name_end - *first), "CONVERT")) {
+        return translate_convert(function, name_end, profile);
+      }
+    }
     if (profile == SqlDialectProfile::Redshift) {
       const auto start = skip_trivia(function, 0);
       if (start) {
