@@ -82,6 +82,12 @@ constexpr ArgSpec kGetStmtAttr[]{
     {"StringLengthPtr", R::OutLength}};
 constexpr ArgSpec kFreeStmt[]{
     {"StatementHandle", R::Handle}, {"Option", R::Integer}};
+constexpr ArgSpec kGetCursorName[]{
+    {"StatementHandle", R::Handle}, {"CursorName", R::OutText, 2},
+    {"BufferLength", R::Integer}, {"NameLengthPtr", R::OutLength}};
+constexpr ArgSpec kSetCursorName[]{
+    {"StatementHandle", R::Handle}, {"CursorName", R::Text, 2},
+    {"NameLength", R::Length}};
 constexpr ArgSpec kGetDiagRec[]{
     {"HandleType", R::HandleType}, {"Handle", R::Handle},
     {"RecNumber", R::Integer}, {"SQLState", R::OutSqlState},
@@ -252,6 +258,10 @@ constexpr ApiSpec kApis[]{
     {"SQLGetStmtAttrW", kGetStmtAttr},
     {"SQLCloseCursor", kStatement},
     {"SQLFreeStmt", kFreeStmt},
+    {"SQLGetCursorName", kGetCursorName},
+    {"SQLGetCursorNameW", kGetCursorName},
+    {"SQLSetCursorName", kSetCursorName},
+    {"SQLSetCursorNameW", kSetCursorName},
     {"SQLGetDiagRec", kGetDiagRec},
     {"SQLGetDiagRecW", kGetDiagRec},
     {"SQLGetDiagField", kGetDiagField},
