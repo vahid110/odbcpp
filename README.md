@@ -138,11 +138,16 @@ transport settings: connection string, DSN, driver section, then defaults.
 Settings that choose a log file or record query text (`LogFile`,
 `LogMaxSize`, `LogMaxFiles`, `LogSink` including `File`, and
 `LogQueries=true`) are accepted only from the DSN or driver section; a
-connection string that sets them is refused. On macOS and Linux, log files
+connection string that sets them is refused (as are application-supplied FILEDSN
+settings configuring log file paths or rotation). On macOS and Linux, log files
 are created owner-only (0600), must be regular files owned by the driver's
 user, and are never opened through a symbolic link, including after rotation.
-The log directory must not be writable by other users.
-Windows log files keep the default ACLs of their directory.
+The immediate log directory must be owned by the driver's user and must not be
+writable by other users; ancestor directories must be owned by the user, sticky,
+or not writable by others. Because of this, logging directly to shared paths such
+as `/tmp/odbcpp.log` is refused unless `/tmp` is owned by the driver's user.
+Windows log files keep the default ACLs of their directory (Windows ACL and
+reparse-point hardening is separate from POSIX ownership validation).
 
 ```ini
 [ODBCPP PostgreSQL]
