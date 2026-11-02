@@ -1899,8 +1899,9 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   EXPECT_EQ(0u, default_name2.rfind("SQL_CUR", 0));
   EXPECT_NE(default_name, default_name2);
 
-  // Invalid cursor names
-  for (const char* invalid : {"", "1starts_with_digit", "has space", "has-hyphen", "has.dot"}) {
+  // Invalid cursor names (including reserved prefixes SQLCUR and SQL_CUR)
+  for (const char* invalid : {"", "1starts_with_digit", "has space", "has-hyphen", "has.dot",
+                              "SQLCUR1", "sqlcur2", "SQL_CUR1", "sql_cur2"}) {
     EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(invalid)), SQL_NTS));
     EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement_));
   }
@@ -1914,6 +1915,11 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen("my_custom_cursor")), name_length);
   EXPECT_STREQ("my_custom_cursor", reinterpret_cast<const char*>(name_buf));
 
+  // Setting again on the same statement is refused with 24000
+  SQLCHAR another_name[] = "another_cursor";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, another_name, SQL_NTS));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
   // Duplicate name check across sibling statements on same connection (case-insensitive)
   SQLCHAR duplicate_name[] = "MY_CUSTOM_CURSOR";
   EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement2, duplicate_name, SQL_NTS));
@@ -1923,17 +1929,20 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   SQLCHAR sibling_name[] = "sibling_cursor";
   ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, sibling_name, SQL_NTS));
 
-  // Wide variant round-trip
+  // Wide variant round-trip on a fresh statement
+  SQLHSTMT statement3 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement3);
+
   SQLWCHAR wide_input[32]{};
   const std::string custom_wide = "wide_cursor_name";
   for (std::size_t i = 0; i < custom_wide.size(); ++i) {
     wide_input[i] = static_cast<SQLWCHAR>(custom_wide[i]);
   }
-  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorNameW(statement_, wide_input, static_cast<SQLSMALLINT>(custom_wide.size())));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorNameW(statement3, wide_input, static_cast<SQLSMALLINT>(custom_wide.size())));
 
   SQLWCHAR wide_out[32]{};
   SQLSMALLINT wide_length = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, wide_out, sizeof(wide_out) / sizeof(SQLWCHAR), &wide_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement3, wide_out, sizeof(wide_out) / sizeof(SQLWCHAR), &wide_length));
   EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), wide_length);
   std::string wide_readback;
   for (SQLSMALLINT i = 0; i < wide_length; ++i) {
@@ -1944,20 +1953,21 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   // Truncation on narrow SQLGetCursorName
   SQLCHAR truncated[5]{};
   name_length = 0;
-  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, truncated, 5, &name_length));
-  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement3, truncated, 5, &name_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement3));
   EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
   EXPECT_STREQ("wide", reinterpret_cast<const char*>(truncated));
 
   // Query length with null pointer
   name_length = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, &name_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement3, nullptr, 0, &name_length));
   EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
 
   // Negative buffer length
-  EXPECT_EQ(SQL_ERROR, SQLGetCursorName(statement_, name_buf, -1, &name_length));
-  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorName(statement3, name_buf, -1, &name_length));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement3));
 
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement3));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement2));
 }
 

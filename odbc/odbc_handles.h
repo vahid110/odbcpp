@@ -719,7 +719,7 @@ private:
   SQLRETURN advance_parameter_result(bool initial);
   std::string prepared_sql_;
   std::string cursor_name_;   // empty = use default SQL_CUR<id>
-  std::uint64_t statement_id_{0};  // per-connection numeric ID for default name
+  std::uint64_t statement_id_{0};  // process-wide atomic sequence for default name
   size_t current_row_ = 0;
   bool row_positioned_ = false;
   // True when the most recent fetch attempt could not fetch its requested

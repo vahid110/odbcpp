@@ -12383,6 +12383,10 @@ TEST_F(ConnectedMetadataTimeoutTest, NeedDataAdmissionAndCountOnlyDescriptorCall
   SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(0,seen->descriptions);
   char token[8]{};SQLLEN indicator=SQL_DATA_AT_EXEC;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,token,sizeof(token),&indicator));ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
   EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HY010",state());EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(77,type);
+  SQLCHAR cursor_buf[32]{};SQLSMALLINT cursor_len = 0;
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorName(stmt, cursor_buf, sizeof(cursor_buf), &cursor_len));EXPECT_EQ("HY010", state());
+  SQLCHAR new_cur[] = "my_cur";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(stmt, new_cur, SQL_NTS));EXPECT_EQ("HY010", state());
   ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));indicator=3;std::memcpy(token,"abc",4);ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(std::optional<std::string>{"abc"},seen->parameters[0].value);
 }
 
@@ -16037,6 +16041,11 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterIgnoresAnsiCapacityAndRe
 TEST_F(BackendContractTest, ColumnAttributeNameFieldsReturnEmptyStringsAndAgreeWithGetDescField) {
   ASSERT_NO_FATAL_FAILURE(connect());
   ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+
+  // Executed statement cannot set cursor name (ODBC spec: SQLSTATE 24000)
+  SQLCHAR new_cursor[] = "executed_cursor";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(stmt, new_cursor, SQL_NTS));
+  EXPECT_EQ("24000", state());
 
   SQLHDESC ird{nullptr};
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, SQL_IS_POINTER, nullptr));

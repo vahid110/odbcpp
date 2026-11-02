@@ -1988,9 +1988,18 @@ std::string ODBCStatement::get_cursor_name() const {
 namespace {
 // ODBC 3.14.2: cursor name characters must be valid identifier characters.
 // The permitted set is [A-Za-z0-9_] and the name must start with a letter or
-// underscore. Length must be 1..128 characters (SQL_MAX_DSN_LENGTH proxy).
+// underscore. Length must be 1..128 characters. Cursor names must not begin
+// with "SQLCUR" or "SQL_CUR" (case-insensitive), which are reserved for driver use.
 bool is_valid_cursor_name(const std::string& name) {
   if (name.empty() || name.size() > 128) return false;
+  std::string upper;
+  upper.reserve(name.size());
+  for (const char c : name) {
+    upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+  }
+  if (upper.starts_with("SQLCUR") || upper.starts_with("SQL_CUR")) {
+    return false;
+  }
   const char first = name[0];
   if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
     return false;
@@ -2007,7 +2016,17 @@ bool is_valid_cursor_name(const std::string& name) {
 SQLRETURN ODBCStatement::set_cursor_name(const std::string& name) {
   if (!is_valid_cursor_name(name)) {
     set_error(SQLSTATE_INVALID_CURSOR_NAME,
-              "Cursor name contains invalid characters or is empty/too long");
+              "Cursor name contains invalid characters, reserved prefix, or is empty/too long");
+    return SQL_ERROR;
+  }
+  if (executed_) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cursor name cannot be set while the statement is in an executed or cursor-positioned state");
+    return SQL_ERROR;
+  }
+  if (!cursor_name_.empty()) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cursor name has already been set on this statement");
     return SQL_ERROR;
   }
   const auto this_handle = reinterpret_cast<SQLHANDLE>(this);
@@ -9217,6 +9236,7 @@ bool HandleRegistry::admit_need_data(std::initializer_list<SQLHANDLE> handles,
       "SQLDescribeColW","SQLDescribeParam","SQLExecDirect","SQLExecDirectW","SQLExecute",
       "SQLFetch","SQLFetchScroll","SQLFreeStmt","SQLGetData","SQLGetStmtAttr","SQLGetStmtAttrW",
       "SQLGetStmtOption","SQLGetTypeInfo","SQLMoreResults","SQLNumParams","SQLNumResultCols","SQLRowCount",
+      "SQLGetCursorName","SQLGetCursorNameW","SQLSetCursorName","SQLSetCursorNameW",
       "SQLPrepare","SQLPrepareW","SQLPrimaryKeys","SQLPrimaryKeysW","SQLForeignKeys","SQLForeignKeysW","SQLProcedures",
       "SQLProceduresW","SQLProcedureColumns","SQLProcedureColumnsW","SQLSetPos",
       "SQLSpecialColumns","SQLSpecialColumnsW","SQLStatistics","SQLStatisticsW"};
