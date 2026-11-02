@@ -434,6 +434,21 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
             SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
                               sizeof(dead), nullptr));
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+
+  SQLUINTEGER dead_w = SQL_CD_TRUE;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttrW(connection_, SQL_ATTR_CONNECTION_DEAD, &dead_w,
+                               sizeof(dead_w), nullptr));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_CD_TRUE, dead_w);
+
+  SQLINTEGER dead_len = -73;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, nullptr,
+                              0, &dead_len));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(-73, dead_len);
 
   EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
@@ -460,6 +475,10 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ(SQL_ERROR,
             SQLSetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD,
                               integer_value(SQL_CD_FALSE), 0));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttrW(connection_, SQL_ATTR_CONNECTION_DEAD,
+                               integer_value(SQL_CD_FALSE), 0));
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
