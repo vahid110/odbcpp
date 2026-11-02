@@ -13,10 +13,15 @@ head; #117 evidence is cited as in-flight and is not restated as completed.
 
 ### 1.1 Direct layer (diagnostic baseline)
 
-- 3,132 GoogleTest case definitions are classified in
-  `docs/plans/driver-manager-test-inventory.csv` (generator
+- The 3,132 GoogleTest case definitions classified in
+  `docs/plans/driver-manager-test-inventory.csv` reflect the historical
+  inventory snapshot generated at `43eddd3` (generator
   `tools/development/dm_test_inventory.py`): 302 public-only, 101 fake-backend,
-  871 needs-internals, 1,858 no-odbc-entry.
+  871 needs-internals, 1,858 no-odbc-entry. Subsequent additions on `main` up to
+  `6085c369` (including `AutocommitArrayTransactionTest.SqlOpenedTransactionNeverBecomesOdbcOwned`
+  added by #168/`448034c` and `AttributeApisTest.UnsupportedCursorAttributeValuesSubstituteWith01S02`
+  added by #166/`6085c369`) expand the direct suite without invalidating these
+  proportional buckets.
 - The direct layer remains the diagnostic baseline and is not replaced by any
   manager run.
 
@@ -149,9 +154,12 @@ Each unit is independently reviewable and preserves valid assertions. Units
 A–F use local source, offline tests or a disposable loopback database and need
 no cloud admission. Unit G requires separately coordinated Redshift live
 authority and must reuse or follow #117 without duplicating its resource ownership.
-Platform rule from `AGENTS.md`: every product PR carries
-one actual macOS, Ubuntu and Windows build; full cross-platform tests stay
-checkpoint-scope.
+Required PR test gate: as defined in ADR 0001 (decision 5) and `AGENTS.md`,
+every PR requires Ubuntu and Windows build plus unit and offline DM tests for
+both products (`POSTGRESQL` and `REDSHIFT`), Ubuntu ASan/UBSan unit tests,
+macOS PostgreSQL iODBC UCS4 build/unit/offline DM tests, and the specified
+CodeQL checks. Mandatory offline and build suites must pass on each PR;
+full connected/full-profile/live qualification remains checkpoint-scope.
 
 - **Unit A (this document):** case/profile mapping and sequence. Stop condition:
   independent review of the facts against main `6085c36996029165b15ce6f2edfbc5c752388e5d`.
