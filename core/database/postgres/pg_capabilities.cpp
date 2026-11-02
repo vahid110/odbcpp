@@ -147,7 +147,7 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   result.sql = common_sql_capabilities();
   result.sql.scalar_day = true;
   result.sql.scalar_hour = true;
-  result.sql.scalar_locate = true;
+  result.sql.scalar_locate_two_arguments = true;
   result.sql.scalar_log10 = true;
   result.sql.scalar_minute = true;
   result.sql.scalar_month = true;

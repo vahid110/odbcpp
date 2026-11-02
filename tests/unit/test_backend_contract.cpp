@@ -11899,7 +11899,7 @@ TEST_F(LocateEscapeApiTest, LocalRefusalKeepsRequiredOutputsSiblingSnapshotAndCa
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-9},after{83};} output;SQLLEN length=-1;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output.value,sizeof(output.value),&length));
   EXPECT_EQ(3,output.value);EXPECT_EQ(17,output.before);EXPECT_EQ(83,output.after);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE | SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE),functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE | SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2),functions);
   ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT {fn LOCATE('x','x')}")),SQL_NTS));
   EXPECT_EQ("SELECT POSITION('x' IN 'x')",seen->sql);EXPECT_EQ(3,output.value);
 }
@@ -11953,7 +11953,7 @@ TEST_F(LengthEscapeApiTest, LocalErrorPreservesRequiredOutputsSiblingAndConserva
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&n));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,n);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER result=-91;SQLLEN length=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&result,sizeof(result),&length));EXPECT_EQ(3,result);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE | SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE),functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE | SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2),functions);
   std::string good="SELECT {fn LENGTH('cat')}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(3,result);
 }
 }
@@ -16992,7 +16992,7 @@ class SqlCapabilityMaskTest : public BackendContractTest {
         {SQL_AGGREGATE_FUNCTIONS, SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
             SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL},
         {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE | SQL_FN_STR_LCASE |
-            (redshift ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE : 0)},
+            (redshift ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2 : 0)},
         {SQL_NUMERIC_FUNCTIONS, redshift ? SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10 : 0},
         {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
             (redshift ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
@@ -17088,5 +17088,30 @@ TEST_F(BackendContractTest, SelectArraysAlsoAuthorizeMultipleResultsWithoutExpli
   EXPECT_EQ(0u, mask);
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_PARAM_ARRAY_SELECTS, &mask, sizeof(mask), nullptr));
   EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PAS_BATCH), mask);
+}
+}  // namespace
+
+
+namespace {
+TEST_F(LocateEscapeApiTest, AdvertisesOnlyTwoArgumentLocateAndRefusesStartPosition) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLUINTEGER mask = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_STRING_FUNCTIONS, &mask, sizeof(mask), nullptr));
+  // SQLGetInfo defines LOCATE_2 for two arguments and LOCATE for the optional
+  // start-position form. The latter is deliberately refused by this dialect.
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_LOCATE_2), mask & SQL_FN_STR_LOCATE_2);
+  EXPECT_EQ(0u, mask & SQL_FN_STR_LOCATE);
+  std::string sql = "SELECT {fn LOCATE('a','cat',2)}";
+  std::array<SQLCHAR, 128> output{};
+  SQLINTEGER length = 0;
+  const auto calls = seen->queries;
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, reinterpret_cast<SQLCHAR*>(sql.data()),
+      SQL_NTS, output.data(), static_cast<SQLINTEGER>(output.size()), &length));
+  EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(calls, seen->queries);
+  sql = "SELECT {fn LOCATE('a','cat')}";
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc, reinterpret_cast<SQLCHAR*>(sql.data()),
+      SQL_NTS, output.data(), static_cast<SQLINTEGER>(output.size()), &length));
+  EXPECT_STREQ("SELECT POSITION('a' IN 'cat')", reinterpret_cast<const char*>(output.data()));
 }
 }  // namespace

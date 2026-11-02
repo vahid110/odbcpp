@@ -931,7 +931,7 @@ TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
         {SQL_AGGREGATE_FUNCTIONS, SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
             SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL},
         {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE | SQL_FN_STR_LCASE |
-            (redshift_profile_ ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE : 0)},
+            (redshift_profile_ ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2 : 0)},
         {SQL_NUMERIC_FUNCTIONS, redshift_profile_ ? SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10 : 0},
         {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
             (redshift_profile_ ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |

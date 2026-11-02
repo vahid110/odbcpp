@@ -1806,7 +1806,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
           (backend.sql.scalar_upper ? SQL_FN_STR_UCASE : 0) |
           (backend.sql.scalar_lower ? SQL_FN_STR_LCASE : 0) |
           (backend.sql.scalar_trimmed_length ? SQL_FN_STR_LENGTH : 0) |
-          (backend.sql.scalar_locate ? SQL_FN_STR_LOCATE : 0));
+          (backend.sql.scalar_locate_two_arguments ? SQL_FN_STR_LOCATE_2 : 0));
     case SQL_NUMERIC_FUNCTIONS:
       return write_uinteger(
           (backend.sql.scalar_natural_log ? SQL_FN_NUM_LOG : 0) |

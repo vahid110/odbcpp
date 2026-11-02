@@ -413,7 +413,7 @@ TEST(SqlCapabilityEscapeProof, EveryAdvertisedScalarHasAnExactProfileTranslation
       {&SqlCapabilities::scalar_current_time, "{fn CURTIME()}", "CURRENT_TIME", "CAST(GETDATE() AS TIME)"},
       {&SqlCapabilities::scalar_current_timestamp, "{fn NOW()}", "CURRENT_TIMESTAMP", "GETDATE()"},
       {&SqlCapabilities::scalar_trimmed_length, "{fn LENGTH('cat   ')}", nullptr, "LENGTH(RTRIM('cat   ', ' '))"},
-      {&SqlCapabilities::scalar_locate, "{fn LOCATE('at','cat')}", nullptr, "POSITION('at' IN 'cat')"},
+      {&SqlCapabilities::scalar_locate_two_arguments, "{fn LOCATE('at','cat')}", nullptr, "POSITION('at' IN 'cat')"},
       {&SqlCapabilities::scalar_natural_log, "{fn LOG(100)}", nullptr, "LN(100)"},
       {&SqlCapabilities::scalar_log10, "{fn LOG10(100)}", nullptr, "LOG(100)"},
       {&SqlCapabilities::scalar_year, "{fn YEAR(?)}", nullptr, "CAST(DATE_PART(year, ?) AS INTEGER)"},

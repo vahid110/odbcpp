@@ -34,7 +34,7 @@ struct SqlCapabilities {
   bool scalar_upper{false};
   bool scalar_lower{false};
   bool scalar_trimmed_length{false};
-  bool scalar_locate{false};
+  bool scalar_locate_two_arguments{false};
   // Scalar numeric escapes.
   bool scalar_natural_log{false};
   bool scalar_log10{false};
