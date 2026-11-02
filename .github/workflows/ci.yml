@@ -105,10 +105,14 @@ concurrency:
 
 jobs:
   pr-ubuntu-build:
-    name: PR Ubuntu build and offline DM tests
+    name: PR Ubuntu ${{ matrix.product }} build, unit and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [POSTGRESQL, REDSHIFT]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,6 +126,7 @@ jobs:
       # Windows-only tests run in the Windows PR job; test_spdlog_fmt_patch needs
       # build inputs and runs under CTest.
       - name: Run tooling unit tests offline
+        if: matrix.product == 'POSTGRESQL'
         run: |
           set -o pipefail
           status=0
@@ -140,12 +145,12 @@ jobs:
             /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
-      - name: Configure PostgreSQL Release build
+      - name: Configure ${{ matrix.product }} Release build
         run: >-
           cmake -S . -B build-pr-ubuntu
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
-          -DTARGET_DATABASE=POSTGRESQL
+          -DTARGET_DATABASE=${{ matrix.product }}
           -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED
@@ -157,8 +162,12 @@ jobs:
       # Default ALL builds the driver, core, SDK isolation/consumer and test images.
       # Building test executables does not execute their test bodies.
       - name: Build default ALL j2
+        id: build
         run: cmake --build build-pr-ubuntu --parallel 2
+      - name: Run unit tests
+        run: ctest --test-dir build-pr-ubuntu -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
       - name: Run offline Driver Manager subset
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set +e
           ctest --test-dir build-pr-ubuntu -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
@@ -170,20 +179,25 @@ jobs:
         run: python3 -B tools/development/check_dm_offline_evidence.py --build build-pr-ubuntu --ctest-exit-file build-pr-ubuntu/dm-offline/ctest-exit.txt
       - name: Retain offline Driver Manager evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dm-offline-ubuntu
+          name: dm-offline-ubuntu-${{ matrix.product }}
           path: |
             build-pr-ubuntu/dm-offline/
+            build-pr-ubuntu/unit/
             build-pr-ubuntu/Testing/Temporary/
             build-pr-ubuntu/CMakeCache.txt
           if-no-files-found: error
 
   pr-windows-build:
-    name: PR Windows build and offline DM tests
+    name: PR Windows ${{ matrix.product }} build, unit and offline DM tests
     if: github.event_name == 'pull_request'
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [POSTGRESQL, REDSHIFT]
     defaults:
       run:
         shell: pwsh
@@ -197,13 +211,17 @@ jobs:
       - name: Record exact checkout source and tree
         run: git log -1 --format="%H %T"
       - name: Run Windows tooling unit tests offline
+        if: matrix.product == 'POSTGRESQL'
         run: |
           $env:PYTHONPATH = $PWD.Path
+          # The Windows package-input reader must run here, never skip.
+          $env:ODBCPP_REQUIRE_PWSH = '1'
           $failed = @()
           # Owner-model checks need a non-admin account that owns its files by
           # default; they qualify the coordinator host, not the hosted runner.
           $hostOnly = 'test_windows_live_backend.py', 'test_windows_powerbi_applicability.py', 'test_windows_powerbi_publication.py'
-          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { $_ -match '/test_windows_[^/]*\.py$' -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
+          # Release controls also exercise native Windows filesystem semantics.
+          foreach ($test in @(git ls-files 'tools/*.py' | Where-Object { ($_ -match '/test_windows_[^/]*\.py$' -or $_ -match '^tools/release/test_[^/]*\.py$') -and (Split-Path $_ -Leaf) -notin $hostOnly })) {
             Write-Host "::group::$test"
             $output = @(python -B $test 2>&1 | ForEach-Object { "$_" })
             $code = $LASTEXITCODE
@@ -216,12 +234,12 @@ jobs:
           if ($failed.Count) { throw "Windows tooling unit tests failed: $($failed -join ', ')" }
       - name: Verify existing runner OpenSSL
         run: openssl version
-      - name: Configure PostgreSQL x64 MSVC build
+      - name: Configure ${{ matrix.product }} x64 MSVC build
         run: >-
           cmake -S . -B build-pr-windows -A x64
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
-          -DTARGET_DATABASE=POSTGRESQL
+          -DTARGET_DATABASE=${{ matrix.product }}
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=BUNDLED_SHARED
           -DODBCPP_CRYPTO_PROFILE_LIVE_TESTS=OFF
@@ -230,8 +248,12 @@ jobs:
           -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
           -DODBCPP_CRYPTO_ROOT="C:/Program Files/OpenSSL"
       - name: Build default ALL Release j2
+        id: build
         run: cmake --build build-pr-windows --config Release --parallel 2
+      - name: Run unit tests
+        run: ctest --test-dir build-pr-windows -C Release -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
       - name: Run offline Driver Manager subset
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           ctest --test-dir build-pr-windows -C Release -L '^dm-offline$' --no-tests=error --output-on-failure --output-junit dm-offline/ctest.xml
           $result = $LASTEXITCODE
@@ -242,14 +264,70 @@ jobs:
         run: python -B tools/development/check_dm_offline_evidence.py --build build-pr-windows --config Release --ctest-exit-file build-pr-windows/dm-offline/ctest-exit.txt
       - name: Retain offline Driver Manager evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dm-offline-windows
+          name: dm-offline-windows-${{ matrix.product }}
           path: |
             build-pr-windows/dm-offline/
+            build-pr-windows/unit/
             build-pr-windows/Testing/Temporary/
             build-pr-windows/CMakeCache.txt
           if-no-files-found: error
+
+  pr-ubuntu-sanitizers:
+    name: PR Ubuntu ${{ matrix.product }} ASan/UBSan unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [POSTGRESQL, REDSHIFT]
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout source and tree
+        run: git log -1 --format="%H %T"
+      - name: Install existing build dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+      # Same flags as the linux-sanitizers profile (tools/ci/sanitizer_evidence.py).
+      - name: Configure ${{ matrix.product }} sanitizer build
+        run: >-
+          cmake -S . -B build-pr-sanitize
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=${{ matrix.product }}
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_CRYPTO_PROVIDER=OPENSSL
+          -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+          -DCMAKE_BUILD_TYPE=Debug
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+          -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined
+      - name: Build j2
+        run: cmake --build build-pr-sanitize --parallel 2
+      - name: Run unit tests under ASan/UBSan
+        run: ctest --test-dir build-pr-sanitize -L '^unit$' --no-tests=error --output-on-failure --output-junit unit/ctest.xml
+      - name: Retain sanitizer unit results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sanitizer-unit-${{ matrix.product }}
+          path: |
+            build-pr-sanitize/unit/
+            build-pr-sanitize/Testing/Temporary/
+          if-no-files-found: warn
 
   sanitizer-only:
     # Arbitrary product CMake/tests must receive no cache token authority.
@@ -327,7 +405,7 @@ jobs:
         run: python3 -B "$SANITIZER_WORKFLOW_ROOT/tools/ci/sanitizer_evidence.py" package
       - name: Preserve original sanitizer-only evidence
         if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sanitizer-only-${{ inputs.product_head }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: sanitizer-evidence/
@@ -495,7 +573,7 @@ jobs:
 
       - name: Preserve MySQL authentication evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mysql-auth-live
           path: |
@@ -563,7 +641,7 @@ jobs:
 
       - name: Retain system-shared TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openssl-system-shared-tls-proof
           path: |
@@ -721,15 +799,15 @@ jobs:
         shell: pwsh
         run: |
           ./packaging/windows/test-inputs.ps1
-          ./packaging/windows/build.ps1 -Version 1.0.0
-          ./packaging/windows/build.ps1 -Version 1.0.1
-          ./packaging/windows/build.ps1 -Version 1.0.2 -FailureFixture
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.0
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.1
+          ./packaging/windows/build.ps1 -LifecycleFixture -Version 1.0.2 -FailureFixture
           New-Item build-windows/package-acceptance -ItemType Directory | Out-Null
           Copy-Item build-windows/package/*.msi build-windows/package-acceptance
           Copy-Item build-windows/tests/Release/it_driver_manager.exe,build-windows/tests/Release/it_setup.exe,build-windows/tests/Release/it_package_load.exe build-windows/package-acceptance
 
       - name: Preserve beta installer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: odbcpp-postgresql-beta-x64
           path: |
@@ -749,7 +827,7 @@ jobs:
           if-no-files-found: error
 
       - name: Pass packages to fresh-runner acceptance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-package-acceptance-inputs
           path: build-windows/package-acceptance
@@ -762,7 +840,7 @@ jobs:
 
       - name: Preserve Windows test evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-live-test-evidence
           path: |
@@ -795,7 +873,7 @@ jobs:
       PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-package-acceptance-inputs
           path: package-artifacts
@@ -810,7 +888,7 @@ jobs:
           ./tools/ci/windows-package.ps1
       - name: Preserve package acceptance evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-package-evidence
           path: |
@@ -836,7 +914,7 @@ jobs:
       PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: odbcpp-postgresql-beta-x64
           path: beta-artifact
@@ -845,7 +923,7 @@ jobs:
         run: ./tools/ci/windows-linked-server.ps1
       - name: Preserve linked-server evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-linked-server-evidence
           path: |
@@ -1137,7 +1215,7 @@ jobs:
 
       - name: Preserve static-profile evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-openssl-static-evidence
           path: |
@@ -1219,7 +1297,7 @@ jobs:
           ctest --test-dir build-awslc-proof --output-on-failure
           --timeout 90 --no-tests=error --output-junit adapter-results.xml
       - name: Preserve bounded proof evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: awslc-adapter-shared-${{ matrix.shared }}
           path: |
@@ -1355,7 +1433,7 @@ jobs:
 
       - name: Retain macOS TLS qualification inputs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-openssl-${{ matrix.driver_unicode_type }}-tls-proof
           path: |

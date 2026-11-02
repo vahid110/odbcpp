@@ -58,11 +58,8 @@ if(BUILD_EXAMPLES)
 endif()
 
 # Create and install package config files
-write_basic_package_version_file(
-  "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-  VERSION ${PROJECT_VERSION}
-  COMPATIBILITY AnyNewerVersion
-)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/VersionCompatibility.cmake")
+odbcpp_write_package_version("${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake")
 
 configure_package_config_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${PROJECT_NAME}Config.cmake.in"
@@ -92,3 +89,17 @@ install(EXPORT ${PROJECT_NAME}Targets
 if(WIN32)
   install(TARGETS odbcpp_setup RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
+
+# End-user runtime packages include their own license and exact build identity.
+foreach(_component IN ITEMS Unspecified ODBCPPDriverRuntime)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.json"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
+    COMPONENT ${_component})
+  install(FILES "${spdlog_SOURCE_DIR}/LICENSE"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
+    RENAME spdlog-LICENSE.txt COMPONENT ${_component})
+  install(FILES "${SPDLOG_INCLUDE_DIR}/spdlog/fmt/bundled/fmt.license.rst"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
+    RENAME fmt-LICENSE.txt COMPONENT ${_component})
+endforeach()

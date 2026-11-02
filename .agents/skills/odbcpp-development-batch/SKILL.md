@@ -3,6 +3,9 @@ name: odbcpp-development-batch
 description: Complete a bounded ODBCPP implementation, qualification or integration task using the canonical workflow and one substantive independent review.
 ---
 
+> **Superseded** on 2026-10-30: follow AGENTS.md and docs/adr/0001-development-process.md instead.
+
+
 # ODBCPP bounded task
 
 Read `AGENTS.md`, the compact current private handoff and

@@ -1,7 +1,8 @@
 param(
     [string]$BuildDirectory = 'build-windows',
     [string]$OutputDirectory = '',
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.0',
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '',
+    [switch]$LifecycleFixture,
     [string]$OpenSslRoot = 'C:/Program Files/OpenSSL',
     [ValidateSet('AUTO', 'POSTGRESQL', 'REDSHIFT')][string]$TargetDatabase = 'AUTO',
     [switch]$FailureFixture
@@ -41,8 +42,16 @@ Assert ($LASTEXITCODE -eq 0 -and $sourceRevision -cmatch '^[0-9a-f]{40}$') 'The 
 $sourceStatus = & git -C $configuredSource status --porcelain --untracked-files=no
 Assert ($LASTEXITCODE -eq 0 -and !$sourceStatus) 'Package the immutable tracked source; local tracked changes must be recorded first'
 $packagingRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
+$versionPath = Join-Path $build 'version/odbcpp-version.json'
+$versionInfo = Get-Content -LiteralPath $versionPath -Raw | ConvertFrom-Json
+Assert ($versionInfo.sourceProvenance -ceq 'git' -and $versionInfo.sourceRevision -ceq $sourceRevision -and $versionInfo.trackedSourceClean -eq $true) 'Reconfigure the clean exact source before packaging; version provenance is stale'
+Assert (!$Version -or $LifecycleFixture) 'Version overrides are reserved for explicit non-release LifecycleFixture packages'
+Assert (!$FailureFixture -or $LifecycleFixture) 'Rollback fixtures cannot be release packages'
+Assert ($LifecycleFixture -or $versionInfo.prerelease -cin @('beta', 'rc')) 'This recipe is for prerelease candidates only'
+if (!$Version) { $Version = [string]$versionInfo.msi }
+$packageLabel = if ($LifecycleFixture) { $Version } else { [string]$versionInfo.semver }
 $packagingRevision = & git -C $packagingRoot rev-parse HEAD
-Assert ($LASTEXITCODE -eq 0 -and $packagingRevision -cmatch '^[0-9a-f]{40}$') 'The packaging source revision is unavailable'
+Assert ($LASTEXITCODE -eq 0 -and $packagingRevision -ceq $sourceRevision) 'Packaging and configured source revisions must match'
 $manifestPath = Join-Path $build 'odbcpp-crypto-manifest.json'
 if (!(Test-Path $manifestPath)) { throw 'The generated crypto manifest is required for packaging' }
 try { $cryptoManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json }
@@ -91,6 +100,8 @@ $runtimeDependencies = @($artifactEvidence.runtimeDependencies)
 Assert ($runtimeDependencies.Count -eq 2) 'Crypto artifact evidence must identify exactly two runtime dependencies'
 Assert (@($runtimeDependencies | Where-Object role -eq 'ssl').Count -eq 1) 'Crypto artifact evidence must identify one SSL runtime'
 Assert (@($runtimeDependencies | Where-Object role -eq 'crypto').Count -eq 1) 'Crypto artifact evidence must identify one Crypto runtime'
+. (Join-Path $PSScriptRoot 'logging-inputs.ps1')
+$loggingInputs = Read-LoggingPackageInputs $build
 New-Item $OutputDirectory -ItemType Directory -Force | Out-Null
 $output = (Resolve-Path $OutputDirectory).Path
 $stage = Join-Path $output "payload-$Version"
@@ -99,6 +110,7 @@ New-Item $stage -ItemType Directory | Out-Null
 foreach ($file in @('odbcpp.dll','odbcpp_setup.dll')) {
     $source = Join-Path $build "Release/$file"
     Assert-X64 $source
+    Assert ((Get-Item -LiteralPath $source).VersionInfo.FileVersion -ceq [string]$versionInfo.windows) 'DLL version differs from authoritative build version'
     Copy-Item $source $stage
 }
 # Only the runtime libraries imported by our OpenSSL 3 build; never copy tools,
@@ -136,25 +148,27 @@ Get-ChildItem $crt.FullName -Filter *.dll | ForEach-Object { Assert-X64 $_.FullN
 $license = @(Get-ChildItem $OpenSslRoot -Recurse -File | Where-Object { $_.Name -match '^(LICENSE|LICENSE\.txt|LICENSE\.md|LICENSE\.html)$' })
 if (!$license) { throw 'OpenSSL license file is required for packaging' }
 Copy-Item $license[0].FullName (Join-Path $stage 'OpenSSL-LICENSE.txt')
-Copy-Item "$build/_deps/spdlog-src/LICENSE" (Join-Path $stage 'spdlog-LICENSE.txt')
-Copy-Item "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/fmt.license.rst" (Join-Path $stage 'fmt-LICENSE.txt')
+foreach ($notice in @(
+    @{ member = 'LICENSE'; destination = 'spdlog-LICENSE.txt' },
+    @{ member = 'include/spdlog/fmt/bundled/fmt.license.rst'; destination = 'fmt-LICENSE.txt' }
+)) {
+    $destination = Join-Path $stage $notice.destination
+    Copy-Item -LiteralPath (Join-Path $loggingInputs.sourceDirectory $notice.member) -Destination $destination
+    Assert ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ieq
+        $loggingInputs.evidence.files.($notice.member)) 'Staged logging license differs from its configured input'
+}
+Copy-Item (Join-Path $configuredSource 'LICENSE') (Join-Path $stage 'LICENSE')
+Copy-Item $versionPath (Join-Path $stage 'odbcpp-version.json')
 Copy-Item "$PSScriptRoot/README.md" (Join-Path $stage 'README.txt')
 Copy-Item $manifestPath (Join-Path $stage 'odbcpp-crypto-manifest.json')
 Copy-Item $artifactEvidencePath (Join-Path $stage 'odbcpp-crypto-artifact-evidence.json')
-function Macro([string]$Path, [string]$Name) {
-    $match = [regex]::Match((Get-Content $Path -Raw), '(?m)^#define ' + [regex]::Escape($Name) + '\s+(\d+)\s*$')
-    if (!$match.Success) { throw "Missing dependency version macro $Name" }
-    return [int]$match.Groups[1].Value
-}
-$spdlogVersion = (@('MAJOR','MINOR','PATCH') | ForEach-Object { Macro "$build/_deps/spdlog-src/include/spdlog/version.h" "SPDLOG_VER_$_" }) -join '.'
-$fmtNumber = Macro "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/base.h" 'FMT_VERSION'
-$fmtVersion = '{0}.{1}.{2}' -f [math]::Floor($fmtNumber / 10000), [math]::Floor(($fmtNumber % 10000) / 100), ($fmtNumber % 100)
 $inventory = @(Get-ChildItem $stage -Filter *.dll | Sort-Object Name | ForEach-Object {
     @{ file = $_.Name; version = $_.VersionInfo.FileVersion; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
 })
 $cryptoEvidence = Get-Item (Join-Path $stage 'odbcpp-crypto-manifest.json')
 $artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evidence.json')
 @{
+    semanticVersion = $versionInfo.semver; lifecycleFixture = [bool]$LifecycleFixture; signed = $false
     packageVersion = $Version; architecture = 'x64'; wixVersion = '6.0.2'
     sourceRevision = $sourceRevision; files = $inventory
     trackedSourceClean = $true
@@ -163,7 +177,9 @@ $artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evide
     packagingRecipeSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
     installerRecipeSha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'Product.wxs') -Algorithm SHA256).Hash
     buildCacheSha256 = (Get-FileHash -LiteralPath (Join-Path $build 'CMakeCache.txt') -Algorithm SHA256).Hash
-    headerOnlyDependencies = @{ spdlog = $spdlogVersion; fmt = $fmtVersion }
+    headerOnlyDependencies = $loggingInputs.versions
+    headerOnlyDependencyInputs = $loggingInputs.evidence
+    loggingInputRecipeSha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'logging-inputs.ps1') -Algorithm SHA256).Hash
     runnerImageVersion = $env:ImageVersion
     cryptoManifest = @{
         file = $cryptoEvidence.Name
@@ -182,7 +198,7 @@ $artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evide
     licenses = @{
         OpenSSL = 'OpenSSL-LICENSE.txt'; spdlog = 'spdlog-LICENSE.txt'; fmt = 'fmt-LICENSE.txt'
         MSVC = 'https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution'
-        ODBCPP = 'Project license not yet declared; this is an internal beta validation artifact.'
+        ODBCPP = 'LICENSE'
     }
 } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $stage 'inventory.json') -Encoding utf8
 $toolDirectory = Join-Path $output 'tools'
@@ -200,7 +216,7 @@ foreach ($file in (Get-ChildItem $stage -File | Sort-Object Name)) {
 [void]$components.AppendLine('</ComponentGroup></Fragment></Wix>')
 $payload = Join-Path $output "payload-$Version.wxs"
 [IO.File]::WriteAllText($payload, $components.ToString())
-$msi = Join-Path $output "odbcpp-$($product.slug)-$Version-x64.msi"
+$msi = Join-Path $output "odbcpp-$($product.slug)-$packageLabel-x64.msi"
 $failure = if ($FailureFixture) { '1' } else { '0' }
 & $wix build -arch x64 -d "Version=$Version" -d "FailureFixture=$failure" `
     -d "ProductName=$($product.name)" -d "UpgradeCode=$($product.upgradeCode)" `

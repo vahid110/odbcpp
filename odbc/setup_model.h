@@ -95,6 +95,12 @@ inline std::vector<Property> properties() {
     result.push_back({L"DATABASEMETADATACURRENTDBONLY", L"Current database metadata only", L"Restrict catalog metadata to the current database.", Kind::Boolean});
   if (support.catalog_mode)
     result.push_back({L"REDSHIFTCATALOGMODE", L"Catalog mode", L"Select the backend catalog discovery implementation.", Kind::Choice, 0, {L"SHOW", L"LEGACY"}});
+  if (support.native_idp) {
+    result.push_back({L"PLUGINNAME", L"Native IdP plugin", L"Native Identity Center token login method.", Kind::Choice, 0, {L"IdpTokenAuthPlugin", L"BrowserIdcAuthPlugin"}});
+    result.push_back({L"PROVIDERNAME", L"IdP provider name", L"The CREATE IDENTITY PROVIDER name for native IdP login.", Kind::Text});
+    result.push_back({L"TOKENTYPE", L"Token type", L"Native IdP token type carried to the server.", Kind::Choice, 0, {L"ACCESS_TOKEN", L"EXT_JWT"}});
+    result.push_back({L"IDENTITYNAMESPACE", L"Identity namespace", L"Native IdP identity namespace carried to the server.", Kind::Text});
+  }
   return result;
 }
 inline std::wstring uppercase(std::wstring value) {
@@ -121,7 +127,7 @@ inline bool safe_key(const std::wstring& key) {
 }
 inline bool routing_or_credentials(const std::wstring& key) {
   return key == L"DSN" || key == L"DRIVER" || key == L"FILEDSN" || key == L"SAVEFILE" ||
-      key == L"PWD" || key == L"PASSWORD";
+      key == L"PWD" || key == L"PASSWORD" || key == L"TOKEN";
 }
 inline bool basic_key(const std::wstring& key) {
   return key == L"SERVER" || key == L"PORT" || key == L"DATABASE" || key == L"UID" || key == L"SSL";
@@ -129,7 +135,9 @@ inline bool basic_key(const std::wstring& key) {
 inline bool backend_property(const std::wstring& key) {
   return key == L"READONLY" || key == L"MAXVARCHARSIZE" || key == L"MAXLONGVARCHARSIZE" ||
       key == L"BOOLSASCHAR" || key == L"ENABLETABLETYPES" ||
-      key == L"DATABASEMETADATACURRENTDBONLY" || key == L"REDSHIFTCATALOGMODE";
+      key == L"DATABASEMETADATACURRENTDBONLY" || key == L"REDSHIFTCATALOGMODE" ||
+      key == L"PLUGINNAME" || key == L"PROVIDERNAME" || key == L"TOKENTYPE" ||
+      key == L"IDENTITYNAMESPACE";
 }
 inline bool supported_property(const std::wstring& key) {
   const auto canonical = canonical_key(key);

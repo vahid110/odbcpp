@@ -11,6 +11,7 @@ These notes describe development changes, not a published release. For exact
 source history, see [main commits](https://github.com/vahid110/odbcpp/commits/main).
 
 ### Added
+- Unified build, ODBC, DLL and package version metadata, with an explicit beta-to-MSI upgrade mapping and a build-once Windows draft-prerelease workflow. New customer MSI lifecycle and live qualification remain pending.
 - Operating-system TLS trust stores: Windows CryptoAPI chain policy, macOS Security framework evaluation and Linux/Unix distribution CA bundles, selected by default or with `UseSystemTrustStore=1`; custom `SSLCAFILE`/`SSLCADIR` trust fails closed on missing, empty or malformed input and never falls back. The Windows DSN Security page distinguishes inherited driver defaults from an explicit operating-system trust-store selection.
 - Indicator-only and row-wise result bindings, checked row and single-set parameter-binding offsets, and SQL_ATTR_RETRIEVE_DATA suppression with reset/rebind recovery
 - Expanded SQLGetInfo/SQLGetInfoW identity, naming, catalog, schema, cursor, and SQLGetData capability reporting
@@ -67,6 +68,7 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Development roadmap and changelog
 
 ### Changed
+- Redshift connections without `PORT` or `DATABASE` now default to port 5439 and database `dev` (previously the PostgreSQL defaults 5432 and `postgres`). PostgreSQL defaults are unchanged.
 - Verified TLS without `SSLCAFILE`/`SSLCADIR` now uses the operating-system trust store instead of the crypto provider's compiled default verify paths
 - Installation now includes the shared ODBC driver library
 - ODBC login and query timeouts now drive transport deadlines and report HYT01/HYT00
@@ -81,6 +83,7 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Improved test matrix with descriptor API coverage
 
 ### Fixed
+- Native IdP connection keywords (`PluginName`, `ProviderName`, `TokenType`, `IdentityNamespace`, `Token`) no longer produce a spurious unrecognized-keyword warning (01S00).
 - Security tooling now rejects input/output file aliases before destructive cleanup in the MySQL test helpers; original failure evidence is retained.
 - Dependency downloads pin the GoogleTest archive digest. CI action references and candidate cache permissions are being hardened as part of the security baseline.
 - The declared POSTGRESQL build target no longer depends on missing database-specific converter files

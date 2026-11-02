@@ -46,6 +46,10 @@ public:
   bool selects_catalog_request(const CatalogRequest& request) const noexcept override;
   BackendResult<QueryResult> execute_catalog(
       const CatalogRequest& request, rs::util::Deadline deadline) override;
+  // Catalog literal escaping assumes the UTF-8 client encoding requested at
+  // startup. False when the server reports another encoding; an unreported
+  // encoding (no ParameterStatus yet) keeps the startup request.
+  bool catalog_encoding_is_utf8() const;
 
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;

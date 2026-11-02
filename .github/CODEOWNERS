@@ -1,0 +1,12 @@
+# Files that define the gates need the owner's approval (ADR 0001,
+# decision 10). Product code, including auth and protocol, is gated by the
+# required CI checks and the agent reviews instead.
+
+/.github/                         @vahid110
+/AGENTS.md                        @vahid110
+/docs/adr/                        @vahid110
+/.agents/                         @vahid110
+/tools/                           @vahid110
+/tests/security/                  @vahid110
+/cmake/LiveSuite.cmake            @vahid110
+/DEVELOPMENT_WORKFLOW.md          @vahid110

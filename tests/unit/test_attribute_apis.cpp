@@ -1033,10 +1033,10 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_TYPE, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLSetStmtAttr(
       statement_, SQL_ATTR_CONCURRENCY,
       integer_value(SQL_CONCUR_VALUES), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CONCURRENCY, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
@@ -1097,12 +1097,12 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_ENABLE_AUTO_IPD, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLSetStmtAttr(
       statement_, SQL_ATTR_KEYSET_SIZE, integer_value(1), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLSetStmtAttr(
       statement_, SQL_ATTR_MAX_LENGTH, integer_value(1), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
 TEST_F(AttributeApisTest, StoresApplicationDescriptorBindOffsetPointers) {
@@ -1183,14 +1183,16 @@ TEST_F(AttributeApisTest, StoresBookmarkAndOperationPointers) {
 }
 
 TEST_F(AttributeApisTest, ClassifiesRecognizedUnsupportedStatementAttributes) {
+#ifdef SQL_ATTR_ASYNC_STMT_EVENT
   SQLULEN value = 77;
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
-      statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(0), 0));
+      statement_, SQL_ATTR_ASYNC_STMT_EVENT, integer_value(0), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
-      statement_, SQL_ATTR_SIMULATE_CURSOR, &value, sizeof(value), nullptr));
+      statement_, SQL_ATTR_ASYNC_STMT_EVENT, &value, sizeof(value), nullptr));
   EXPECT_EQ(77u, value);
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+#endif
 }
 
 TEST_F(AttributeApisTest, StoresEscapeScanningMode) {
@@ -1631,7 +1633,7 @@ TEST_F(AttributeApisTest, DriverFilenameErrorsPreserveOutputsAndOtherIdentityFie
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_NAME,narrow,sizeof(narrow),&length));EXPECT_STREQ(ODBCPP_EXPECT_DRIVER_FILENAME,reinterpret_cast<char*>(narrow));
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_NAME,narrow,sizeof(narrow),&length));EXPECT_STREQ("MetadataDB",reinterpret_cast<char*>(narrow));
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("08.00.0002",reinterpret_cast<char*>(narrow));
-  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("01.00.0000",reinterpret_cast<char*>(narrow));EXPECT_EQ(0u,metadata_queries_);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ(ODBCPP_DRIVER_VERSION,reinterpret_cast<char*>(narrow));EXPECT_EQ(0u,metadata_queries_);
 }
 
 // A provider without stable shape authority must retain the scalar contract.
@@ -1685,8 +1687,8 @@ TEST_F(AttributeApisTest, StaticCursorExplicitCouplingAndRefusalsPreserveClosedT
   }
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_STATIC),0));
   for (SQLULEN type : {static_cast<SQLULEN>(SQL_CURSOR_DYNAMIC),static_cast<SQLULEN>(SQL_CURSOR_KEYSET_DRIVEN)}) {
-    EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(type),0));
-    EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_)); expect_tuple(SQL_CURSOR_STATIC);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(type),0));
+    EXPECT_EQ("01S02",diagnostic_state(SQL_HANDLE_STMT,statement_)); expect_tuple(SQL_CURSOR_STATIC);
   }
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,integer_value(SQL_NONSCROLLABLE),0));
   expect_tuple(SQL_CURSOR_FORWARD_ONLY);
@@ -1880,4 +1882,100 @@ TEST_F(AttributeApisTest, QueryTimeoutIsOnlyAStatementAttributeAndZeroOverrideSt
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(statement_, SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr));
   EXPECT_EQ(0u, value);
+}
+
+TEST_F(AttributeApisTest, UnsupportedCursorAttributeValuesSubstituteWith01S02) {
+  // 1. SQL_ATTR_CURSOR_TYPE: KEYSET/DYNAMIC -> STATIC with 01S02
+  for (const auto unsupported_type : {SQL_CURSOR_KEYSET_DRIVEN, SQL_CURSOR_DYNAMIC}) {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE, integer_value(unsupported_type), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_CURSOR_STATIC), readback);
+  }
+
+  // 2. SQL_ATTR_CONCURRENCY: LOCK/ROWVER/VALUES -> READ_ONLY with 01S02
+  for (const auto unsupported_concur : {SQL_CONCUR_LOCK, SQL_CONCUR_ROWVER, SQL_CONCUR_VALUES}) {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CONCURRENCY, integer_value(unsupported_concur), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_CONCURRENCY, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_CONCUR_READ_ONLY), readback);
+  }
+
+  // 3. SQL_ATTR_CURSOR_SENSITIVITY: SENSITIVE -> INSENSITIVE with 01S02
+  {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(SQL_SENSITIVE), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_CURSOR_SENSITIVITY, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_INSENSITIVE), readback);
+  }
+
+  // 4. SQL_ATTR_KEYSET_SIZE: any != 0 -> 0 with 01S02
+  {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_KEYSET_SIZE, integer_value(100), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 99;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_KEYSET_SIZE, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(0u, readback);
+  }
+
+  // 5. SQL_ATTR_MAX_LENGTH: any != 0 -> 0 with 01S02
+  {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_MAX_LENGTH, integer_value(512), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 99;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_MAX_LENGTH, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(0u, readback);
+  }
+
+  // 6. SQL_ATTR_SIMULATE_CURSOR: TRY_UNIQUE/UNIQUE -> SQL_SC_NON_UNIQUE with 01S02; NON_UNIQUE is SQL_SUCCESS
+  {
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLSetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(SQL_SC_NON_UNIQUE), 0));
+    SQLULEN readback = 99;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_SC_NON_UNIQUE), readback);
+
+    for (const auto unsupported_sim : {SQL_SC_TRY_UNIQUE, SQL_SC_UNIQUE}) {
+      EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+                SQLSetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(unsupported_sim), 0));
+      EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+      readback = 99;
+      EXPECT_EQ(SQL_SUCCESS,
+                SQLGetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, &readback, sizeof(readback), nullptr));
+      EXPECT_EQ(static_cast<SQLULEN>(SQL_SC_NON_UNIQUE), readback);
+    }
+  }
+
+  // 7. Invalid values return HY024
+  {
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CONCURRENCY, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  }
 }

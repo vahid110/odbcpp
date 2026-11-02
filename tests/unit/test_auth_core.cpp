@@ -285,6 +285,71 @@ TEST(AuthCoreMaterialTest, OrdinaryPasswordIsNotTemporaryMaterialOrIssuerProof) 
   auto receipt = std::move(admitted).value();
   ASSERT_TRUE(authority->take(std::move(receipt)));
 }
+TEST(AuthCoreNativeIdpTest, AttributesAreAllOrNothingAndRoundTrip) {
+  const NativeIdpAttributes attrs{"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc", "IdpTokenAuthPlugin"};
+  const NativeIdpAttributes same{"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc", "IdpTokenAuthPlugin"};
+  EXPECT_FALSE(attrs.empty());
+  EXPECT_EQ(attrs, same);
+  const NativeIdpAttributes partial{"AwsIdc", "", "", "", ""};
+  EXPECT_FALSE(partial.empty());
+  const NativeIdpAttributes plugin_only{"", "", "", "", "BrowserIdcAuthPlugin"};
+  EXPECT_FALSE(plugin_only.empty());
+  const NativeIdpAttributes none;
+  EXPECT_TRUE(none.empty());
+}
+NativeIdpAttributes native_attrs() {
+  return {"AwsIdc", "odbcpp_idc", "ACCESS_TOKEN", "awsidc", "IdpTokenAuthPlugin"};
+}
+Binding native_binding() {
+  auto r = Binding::create(target(), {SourceKind::ExternalNativeIdpToken, "source-1", "generation-1"},
+                           Method::NativeIdpToken);
+  if (!r) throw std::runtime_error("invalid native-IdP test binding");
+  return std::move(r).value();
+}
+TEST(AuthCoreNativeIdpTest, MaterialRequiresValidAttributesForNativeIdpToken) {
+  auto b = native_binding();
+  auto ok = Material::create(b, MaterialKind::NativeIdpToken, "exact_user", secret("jwt-token"),
+                             Validity::ordinary(), native_attrs());
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(MaterialKind::NativeIdpToken, ok.value().kind());
+  EXPECT_EQ(native_attrs(), ok.value().native_idp_attributes());
+  bool secret_ok = false;
+  ok.value().with_secret([&](auto bytes) { secret_ok = bytes.size() == 9; });
+  EXPECT_TRUE(secret_ok);
+  // Missing attributes rejected for the native kind.
+  denied(Material::create(b, MaterialKind::NativeIdpToken, "exact_user", secret("jwt-token"),
+                          Validity::ordinary(), {}), Reason::InvalidMaterial);
+  // Attributes on a non-native kind rejected.
+  auto ordinary = binding(false);
+  denied(Material::create(ordinary, MaterialKind::OrdinaryPassword, "exact_user", secret(),
+                          Validity::ordinary(), native_attrs()), Reason::InvalidMaterial);
+  // Malformed attribute text rejected.
+  auto bad = native_attrs(); bad.idp_type = std::string("Aws\0Idc", 7);
+  denied(Material::create(b, MaterialKind::NativeIdpToken, "exact_user", secret("jwt-token"),
+                          Validity::ordinary(), bad), Reason::InvalidMaterial);
+}
+TEST(AuthCoreNativeIdpTest, NativeIdpBindingIsRedshiftOnlyAndSourceKindBound) {
+  denied(Binding::create(target(Service::Rds), {SourceKind::ExternalNativeIdpToken, "s", "g"},
+                         Method::NativeIdpToken), Reason::UnsupportedMethod);
+  denied(Binding::create(target(Service::PostgreSql), {SourceKind::ExternalNativeIdpToken, "s", "g"},
+                         Method::NativeIdpToken), Reason::UnsupportedMethod);
+  denied(Binding::create(target(), source(false), Method::NativeIdpToken), Reason::UnsupportedMethod);
+  denied(Binding::create(target(), source(true), Method::NativeIdpToken), Reason::UnsupportedMethod);
+}
+TEST(AuthCoreNativeIdpTest, NativeIdpTokenAdmissionFlowsThroughAuthority) {
+  class NativeIssuer final : public TrustedIssuer {
+   public:
+    Outcome<Material> acquire(const Request& r, const Cancellation*) override {
+      return Material::create(r.binding(), MaterialKind::NativeIdpToken, "exact_user", secret("jwt"),
+                              Validity::ordinary(), native_attrs());
+    }
+  } issuer;
+  auto b = native_binding(); FakeClock clock; auto authority = authority_for(b, issuer, clock);
+  auto admitted = authority->acquire(request(b)); ASSERT_TRUE(admitted);
+  auto receipt = std::move(admitted).value();
+  auto taken = authority->take(std::move(receipt)); ASSERT_TRUE(taken);
+  EXPECT_EQ(native_attrs(), taken.value().native_idp_attributes());
+}
 TEST(AuthCoreTimeTest, ExclusiveHeadroomAndCredentialExpiry) {
   auto b = binding(); FakeClock clock;
   for (long long expiry : {21, 22, 23}) {

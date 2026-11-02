@@ -2,6 +2,16 @@
 include("${ODBCPP_SOURCE}/cmake/DriverSources.cmake")
 include("${ODBCPP_SOURCE}/cmake/FindLogging.cmake")
 include("${ODBCPP_SOURCE}/cmake/CompilerSettings.cmake")
+# The driver reports the product's numeric ODBC version from the one authority.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${ODBCPP_SOURCE}/version.json" "${ODBCPP_SOURCE}/tools/release/version.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -B "${ODBCPP_SOURCE}/tools/release/version.py"
+  --source "${ODBCPP_SOURCE}" --output "${CMAKE_CURRENT_BINARY_DIR}/version"
+  RESULT_VARIABLE _proof_version_result)
+if(NOT _proof_version_result EQUAL 0)
+  message(FATAL_ERROR "Cannot derive product version for the proof driver")
+endif()
+include("${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.cmake")
 find_path(PROOF_ODBC_INCLUDE sql.h REQUIRED)
 find_library(PROOF_ODBC_LIBRARY odbc REQUIRED)
 odbcpp_collect_driver_sources(_driver_sources POSTGRESQL)
@@ -36,6 +46,7 @@ target_include_directories(awslc_odbc_driver PRIVATE "${ODBCPP_SOURCE}" "${ODBCP
 target_include_directories(awslc_odbc_driver SYSTEM PRIVATE "${SPDLOG_INCLUDE_DIR}")
 target_compile_definitions(awslc_odbc_driver PRIVATE
   ODBCPP_ENABLE_POSTGRESQL=1 ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+  ODBCPP_DRIVER_VERSION="${ODBCPP_VERSION_ODBC}"
   ODBCPP_DRIVER_FILENAME="$<TARGET_FILE_NAME:awslc_odbc_driver>")
 target_link_libraries(awslc_odbc_driver PRIVATE ssl crypto Threads::Threads)
 apply_compiler_settings(awslc_odbc_driver)

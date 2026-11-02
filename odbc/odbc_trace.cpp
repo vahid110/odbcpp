@@ -725,7 +725,9 @@ TraceOptions TraceOptions::resolve(
   }
 
   TraceOptions options;
-  options.logging = rs::core::logging::LoggingOptions::resolve({}, {}, logging);
+  // Trace keys come only from the driver section or environment, so they are
+  // resolved as the trusted driver layer.
+  options.logging = rs::core::logging::LoggingOptions::resolve(logging, {}, {});
   options.logging.log_sensitive = enabled && sensitive &&
       rs::core::logging::parse_flag("ODBCTraceSensitive", *sensitive);
   return options;

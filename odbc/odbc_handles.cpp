@@ -830,9 +830,6 @@ bool is_recognized_unsupported_connection_attribute(SQLINTEGER attribute) {
 }
 
 bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
-  if (attribute == SQL_ATTR_SIMULATE_CURSOR) {
-    return true;
-  }
 #ifdef SQL_ATTR_ASYNC_STMT_EVENT
   if (attribute == SQL_ATTR_ASYNC_STMT_EVENT) return true;
 #endif
@@ -2065,6 +2062,11 @@ SQLRETURN ODBCConnection::connect(
           params.at("USESYSTEMTRUSTSTORE"), "UseSystemTrustStore");
     }
     if (params.count("REDSHIFTCATALOGMODE")) options.redshift_catalog_mode = params.at("REDSHIFTCATALOGMODE");
+    if (params.count("PLUGINNAME")) options.plugin_name = params.at("PLUGINNAME");
+    if (params.count("TOKEN")) options.token = params.at("TOKEN");
+    if (params.count("TOKENTYPE")) options.token_type = params.at("TOKENTYPE");
+    if (params.count("PROVIDERNAME")) options.provider_name = params.at("PROVIDERNAME");
+    if (params.count("IDENTITYNAMESPACE")) options.identity_namespace = params.at("IDENTITYNAMESPACE");
     // Parse only the effective choice; an explicit application value, including
     // zero, must not evaluate a shadowed malformed keyword.
     const auto selected_login_timeout = [&]() -> SQLUINTEGER {
@@ -2610,6 +2612,20 @@ rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_nee
   }
   transaction_active_ = true;
   return result;
+}
+
+void ODBCConnection::reconcile_transaction_state(
+    rs::core::database::SessionSnapshot snapshot) noexcept {
+  using rs::core::database::SessionState;
+  // Autocommit leaves transactions outside ODBC's model: SQLEndTran is a
+  // no-op there, so a SQL BEGIN must not make the driver own a transaction.
+  if (autocommit_ == SQL_AUTOCOMMIT_ON) return;
+  if (snapshot.state == SessionState::Transaction ||
+      snapshot.state == SessionState::FailedTransaction) {
+    transaction_active_ = true;
+  } else if (snapshot.state == SessionState::Idle) {
+    transaction_active_ = false;
+  }
 }
 
 SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
@@ -3904,6 +3920,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
       return SQL_ERROR;
     }
     auto result = conn_->backend_query(*native_sql, deadline);
+    conn_->reconcile_transaction_state(result.session_snapshot());
     const auto cancellation_outcome = cancellation.finish();
     if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
       set_error("HY008", "Statement cancelled");
@@ -4023,38 +4040,57 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_CURSOR_SENSITIVITY: {
       if (!cursor_attribute_settable()) return SQL_ERROR;
       bool supported = false;
-      bool known = false;
+      bool substitute = false;
+      const char* change_msg = nullptr;
       SQLULEN next_type = cursor_type_;
       switch (attribute) {
         case SQL_ATTR_CURSOR_TYPE:
-          supported = numeric == SQL_CURSOR_FORWARD_ONLY || numeric == SQL_CURSOR_STATIC;
-          known = supported || numeric == SQL_CURSOR_KEYSET_DRIVEN || numeric == SQL_CURSOR_DYNAMIC;
-          next_type = numeric;
+          if (numeric == SQL_CURSOR_FORWARD_ONLY || numeric == SQL_CURSOR_STATIC) {
+            supported = true;
+            next_type = numeric;
+          } else if (numeric == SQL_CURSOR_KEYSET_DRIVEN || numeric == SQL_CURSOR_DYNAMIC) {
+            substitute = true;
+            next_type = SQL_CURSOR_STATIC;
+            change_msg = "Cursor type changed to static";
+          }
           break;
         case SQL_ATTR_CONCURRENCY:
-          supported = numeric == SQL_CONCUR_READ_ONLY;
-          known = supported || numeric == SQL_CONCUR_LOCK || numeric == SQL_CONCUR_ROWVER || numeric == SQL_CONCUR_VALUES;
-          // Explicit read-only selects the documented insensitive/static tuple;
-          // untouched read-only defaults remain forward-only/unspecified.
-          next_type = SQL_CURSOR_STATIC;
+          if (numeric == SQL_CONCUR_READ_ONLY) {
+            supported = true;
+            next_type = SQL_CURSOR_STATIC;
+          } else if (numeric == SQL_CONCUR_LOCK || numeric == SQL_CONCUR_ROWVER || numeric == SQL_CONCUR_VALUES) {
+            substitute = true;
+            next_type = SQL_CURSOR_STATIC;
+            change_msg = "Concurrency changed to read-only";
+          }
           break;
         case SQL_ATTR_CURSOR_SCROLLABLE:
-          supported = numeric == SQL_NONSCROLLABLE || numeric == SQL_SCROLLABLE;
-          known = supported;
-          next_type = numeric == SQL_SCROLLABLE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          if (numeric == SQL_NONSCROLLABLE || numeric == SQL_SCROLLABLE) {
+            supported = true;
+            next_type = numeric == SQL_SCROLLABLE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          }
           break;
         default:
-          supported = numeric == SQL_UNSPECIFIED || numeric == SQL_INSENSITIVE;
-          known = supported || numeric == SQL_SENSITIVE;
-          next_type = numeric == SQL_INSENSITIVE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          if (numeric == SQL_UNSPECIFIED || numeric == SQL_INSENSITIVE) {
+            supported = true;
+            next_type = numeric == SQL_INSENSITIVE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          } else if (numeric == SQL_SENSITIVE) {
+            substitute = true;
+            next_type = SQL_CURSOR_STATIC;
+            change_msg = "Cursor sensitivity changed to insensitive";
+          }
           break;
       }
-      if (!supported) {
-        set_error(known ? SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED : SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+      if (!supported && !substitute) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Requested cursor policy is not supported");
         return SQL_ERROR;
       }
       cursor_type_ = next_type; // All coupled readbacks derive from this closed tuple.
+      if (substitute) {
+        set_error(SQLSTATE_OPTION_VALUE_CHANGED, change_msg);
+        return SQL_SUCCESS_WITH_INFO;
+      }
       return SQL_SUCCESS;
     }
     case SQL_ATTR_ENABLE_AUTO_IPD:
@@ -4076,10 +4112,21 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       return SQL_SUCCESS;
     case SQL_ATTR_KEYSET_SIZE:
       if (numeric == 0) return SQL_SUCCESS;
-      break;
+      set_error(SQLSTATE_OPTION_VALUE_CHANGED, "Keyset size changed to 0");
+      return SQL_SUCCESS_WITH_INFO;
     case SQL_ATTR_MAX_LENGTH:
       if (numeric == 0) return SQL_SUCCESS;
-      break;
+      set_error(SQLSTATE_OPTION_VALUE_CHANGED, "Max length changed to 0");
+      return SQL_SUCCESS_WITH_INFO;
+    case SQL_ATTR_SIMULATE_CURSOR:
+      if (!cursor_attribute_settable()) return SQL_ERROR;
+      if (numeric == SQL_SC_NON_UNIQUE) return SQL_SUCCESS;
+      if (numeric == SQL_SC_TRY_UNIQUE || numeric == SQL_SC_UNIQUE) {
+        set_error(SQLSTATE_OPTION_VALUE_CHANGED, "Simulate cursor changed to non-unique");
+        return SQL_SUCCESS_WITH_INFO;
+      }
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Invalid simulate cursor value");
+      return SQL_ERROR;
     case SQL_ATTR_ROW_ARRAY_SIZE:
       if (numeric_signed <= 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -4288,6 +4335,8 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_KEYSET_SIZE:
     case SQL_ATTR_MAX_LENGTH:
       write_ulen(0); break;
+    case SQL_ATTR_SIMULATE_CURSOR:
+      write_ulen(SQL_SC_NON_UNIQUE); break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
       write_ulen(descriptor(app_row_descriptor_)->array_size()); break;
     case SQL_ATTR_ROW_BIND_TYPE:
@@ -6736,8 +6785,7 @@ SQLRETURN ODBCStatement::advance_parameter_result(bool initial) {
         snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected;
     // Reconcile before provider mapping or diagnostic allocation, even on throw.
     if (terminal) conn_->close_connection();
-    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-        snapshot.state == SessionState::FailedTransaction;
+    else conn_->reconcile_transaction_state(snapshot);
     if (!step) {
       result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
       set_error(query_failure_sqlstate(conn_->backend_provider(), step.backend_error(),
@@ -6947,7 +6995,7 @@ std::optional<SQLRETURN> ODBCStatement::start_pending_array(std::uintptr_t offse
       const auto snapshot = authority.session_snapshot();
       if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
           snapshot.state == SessionState::Disconnected) conn_->close_connection();
-      else conn_->transaction_active_ = snapshot.state == SessionState::Transaction || snapshot.state == SessionState::FailedTransaction;
+      else conn_->reconcile_transaction_state(snapshot);
       set_error(query_failure_sqlstate(conn_->backend_provider(),authority.backend_error(),
           SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),authority.error_message());
       return SQL_ERROR;
@@ -7018,7 +7066,7 @@ SQLRETURN ODBCStatement::publish_deferred_result(rs::core::database::PreparedCom
         const auto snapshot = sequence.session_snapshot();
         if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
             snapshot.state == SessionState::Disconnected) conn_->close_connection();
-        else conn_->transaction_active_ = snapshot.state == SessionState::Transaction || snapshot.state == SessionState::FailedTransaction;
+        else conn_->reconcile_transaction_state(snapshot);
         set_error(query_failure_sqlstate(conn_->backend_provider(),sequence.backend_error(),
             SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),sequence.error_message());
       }
@@ -7113,8 +7161,7 @@ SQLRETURN ODBCStatement::publish_command_batch(rs::core::database::PreparedComma
     // Reconcile before any provider mapper/diagnostic can throw. Error and
     // completion records remain owned by batch even after closing the lease.
     if (terminal) conn_->close_connection();
-    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-        snapshot.state == SessionState::FailedTransaction;
+    else conn_->reconcile_transaction_state(snapshot);
     if (batch.has_error()) {
       clear_current_result(); pending_results_.clear();
       set_error(query_failure_sqlstate(conn_->backend_provider(), batch.backend_error(),
@@ -7300,8 +7347,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
       if (snapshot.disposition == SessionDisposition::Retire ||
           snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected)
         conn_->close_connection();
-      else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-          snapshot.state == SessionState::FailedTransaction;
+      else conn_->reconcile_transaction_state(snapshot);
       set_error(query_failure_sqlstate(conn_->backend_provider(), plan.backend_error(),
           SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), plan.error_message());
       return SQL_ERROR;
@@ -7321,8 +7367,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
         if (snapshot.disposition == SessionDisposition::Retire ||
             snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected)
           conn_->close_connection();
-        else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-            snapshot.state == SessionState::FailedTransaction;
+        else conn_->reconcile_transaction_state(snapshot);
         set_error(query_failure_sqlstate(conn_->backend_provider(), sequence.backend_error(),
             SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), sequence.error_message());
         return SQL_ERROR;
@@ -7644,6 +7689,7 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
       return complete_parameter_set(SQL_ERROR,input);
     }
     auto result = conn_->backend_prepared(prepared_sql_, param_values, deadline);
+    conn_->reconcile_transaction_state(result.session_snapshot());
     const auto cancellation_outcome = cancellation.finish();
     if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
       set_error("HY008", "Statement cancelled");

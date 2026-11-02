@@ -21,7 +21,7 @@ public:
 };
 
 struct AuthenticationRequest {
-  enum class Type { None, Cleartext, MD5, SASL, SASLContinue, SASLFinal }
+  enum class Type { None, Cleartext, MD5, SASL, SASLContinue, SASLFinal, Idp }
       type = Type::None;
   std::vector<std::byte> challenge_data;
 };

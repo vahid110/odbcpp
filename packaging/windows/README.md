@@ -12,7 +12,12 @@ identity. The configured `TARGET_DATABASE` selects the product; an optional
     pwsh packaging/windows/build.ps1 -BuildDirectory build-windows-redshift -TargetDatabase REDSHIFT -OpenSslRoot 'C:/absolute/OpenSSL3'
 
 Output defaults to `<BuildDirectory>/package`. The packages are named
-`odbcpp-postgresql-<version>-x64.msi` and `odbcpp-redshift-<version>-x64.msi`.
+`odbcpp-postgresql-<semver>-x64.msi` and `odbcpp-redshift-<semver>-x64.msi`.
+The authoritative `version.json` generates the MSI numeric version, DLL resources
+and installed `odbcpp-version.json`; see [release policy](../../docs/RELEASING.md)
+for prerelease ordering and exact-source requirements. Ordinary packaging does
+not accept an independent version override. Explicit `-LifecycleFixture -Version`
+is reserved for the historical non-release installer tests.
 They have separate upgrade/component identities, driver registrations
 (`ODBCPP PostgreSQL` / `ODBCPP Redshift`) and install directories under
 `Program Files/ODBCPP`. Installing or upgrading one must preserve the other.
@@ -24,6 +29,16 @@ revision and actual recipe hashes. Payload hashes identify the runtime images;
 packaging an older artifact does not become a new compilation result. The
 tracked-source guard alone does not prove which source compiled a cached image;
 retain its actual source/image/build/CI evidence separately.
+
+On Windows, configure also records the resolved spdlog source directory and
+hashes of its license/version inputs in `odbcpp-logging-package-inputs.json`.
+This honors `FETCHCONTENT_SOURCE_DIR_SPDLOG` and a custom FetchContent base
+directory. Packaging takes both spdlog and its bundled fmt notices and versions
+from that single source; it refuses missing metadata or changed inputs instead
+of falling back to another dependency copy. Reconfigure and rebuild the exact
+clean source after dependency changes. The package inventory includes versions
+and input hashes, not the local dependency path. These are configure-time facts;
+they do not establish that an older cached binary used the recorded headers.
 
 The build pins WiX 6.0.2, rejects non-x64 PE payloads, stages only runtime files
 and notices, and emits an MSI, SHA-256 checksum and per-file dependency inventory.
@@ -65,7 +80,7 @@ and removal refuse a conflicting or externally repointed registration; restore
 that registration deliberately before retrying. Do not delete registry trees as
 a workaround. Use verbose MSI logging to diagnose failures:
 
-    msiexec /i odbcpp-postgresql-1.0.0-x64.msi /l*v install.log
+    msiexec /i odbcpp-postgresql-1.1.0-beta.1-x64.msi /l*v install.log
 
 The PostgreSQL CI uses a separate fresh Windows runner for package acceptance, excluding build
 paths from PATH, adding hostile same-name PATH decoys, checking actual loaded

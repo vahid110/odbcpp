@@ -22,4 +22,19 @@ namespace rs::core::auth {
 rs::core::database::BackendResult<void> connect_bound_ordinary_password_until(
     rs::core::database::postgres::PgDatabaseConnection&,
     const rs::core::database::ConnectionSettings&, const Request&, const Material&);
+
+// Binding principal for native IdP login. The database user is optional (the
+// token carries the identity, as in the AWS drivers), but a Binding requires a
+// principal; an empty user binds this fixed label and the startup omits `user`.
+inline std::string native_idp_binding_principal(const std::string& user) {
+  return user.empty() ? std::string{"native-idp-token-identity"} : user;
+}
+
+// Native IdP token material handoff (Redshift only). The token is copied into
+// ConnectionSettings::native_idp together with its backend-owned attributes; the
+// password stays empty. Binding/TLS consistency is checked exactly like the
+// ordinary/temporary consumers. This validates local binding, not issuer proof.
+rs::core::database::BackendResult<void> connect_bound_native_idp_until(
+    rs::core::database::postgres::PgDatabaseConnection&,
+    const rs::core::database::ConnectionSettings&, const Request&, const Material&);
 } // namespace rs::core::auth

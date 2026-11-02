@@ -137,6 +137,39 @@ TEST(PgProtocolParserTest, Md5AuthenticationRequiresExactlyFourSaltBytes) {
   }
 }
 
+TEST(PgProtocolParserTest, IdpAuthRequestAndTokenResponseRequireVerifiedTls) {
+  using namespace rs::core::database;
+  PgProtocolParser parser;
+  std::vector<std::byte> payload{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{14}};
+  const auto parsed = parser.parse_auth_request(payload);
+  ASSERT_EQ(parsed.type, AuthenticationRequest::Type::Idp);
+  EXPECT_TRUE(parsed.challenge_data.empty());
+
+  EXPECT_THROW(parser.create_auth_response(parsed, "idc-token", "user", false),
+               std::runtime_error);
+
+  const auto response =
+      parser.create_auth_response(parsed, "idc-token", "user", true);
+  ASSERT_EQ(response.size(), 1u + 4u + std::string_view("idc-token").size() + 1u);
+  EXPECT_EQ(response[0], std::byte{'i'});
+  EXPECT_EQ(response[4], std::byte{static_cast<unsigned char>(
+                             4u + std::string_view("idc-token").size() + 1u)});
+  EXPECT_EQ(response.back(), std::byte{0});
+  const std::string serialized(
+      reinterpret_cast<const char*>(response.data() + 5),
+      response.size() - 6);
+  EXPECT_EQ(serialized, "idc-token");
+
+  const auto limit = response.size() - 1;
+  EXPECT_THROW(
+      parser.create_auth_response(parsed, "idc-token", "user", true, limit),
+      RequestWireLimitExceeded);
+
+  payload[3] = std::byte{13};
+  EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
+}
+
 TEST(PgProtocolParserTest, ScramRequiresServerFinalAndRejectsDowngrade) {
   PgProtocolParser parser;
   std::vector<std::byte> offer{

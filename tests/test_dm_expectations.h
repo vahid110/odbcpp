@@ -172,7 +172,7 @@ inline constexpr const char* kIodbc35216 = "03.52.1623.0502";
 inline constexpr const char* kUnixodbc2314 = "03.52.0002.0003";
 inline constexpr const char* kWindows38126100 = "03.81.26100.0000";
 
-inline bool qualified_manager_version(std::string_view candidate) {
+inline bool qualified_manager_identity(std::string_view candidate) {
   const auto& profile = manager_odbc_profile();
   if (profile.version != candidate || profile.odbc_version != SQL_OV_ODBC3 ||
       sizeof(void*) != 8) {
@@ -196,11 +196,38 @@ inline bool qualified_manager_version(std::string_view candidate) {
          static_cast<unsigned>(profile.odbc_version)});
   }
   if (candidate == kIodbc35216) {
-    return sizeof(SQLWCHAR) == 4 && ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 4;
+    return sizeof(SQLWCHAR) == 4;
   }
 #ifdef _WIN32
   if (candidate == kWindows38126100) {
-    return sizeof(SQLWCHAR) == 2 && ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 2;
+    return sizeof(SQLWCHAR) == 2;
+  }
+#endif
+  return false;
+#endif
+}
+
+// The historical entry qualification: manager identity plus the matched
+// application/driver SQLWCHAR pair. Entries that describe manager behavior
+// before any driver load apply across driver widths (see Entry below) and use
+// qualified_manager_identity instead.
+inline bool qualified_manager_version(std::string_view candidate) {
+  if (!qualified_manager_identity(candidate)) {
+    return false;
+  }
+#ifndef ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE
+  return false;
+#else
+  if (candidate == kUnixodbc2314) {
+    // The qualified receipt already pins a 2-byte driver.
+    return ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 2;
+  }
+  if (candidate == kIodbc35216) {
+    return ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 4;
+  }
+#ifdef _WIN32
+  if (candidate == kWindows38126100) {
+    return ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 2;
   }
 #endif
   return false;
@@ -212,6 +239,9 @@ struct Entry {
   const char* manager_version;
   const char* value;  // when the expected value is the manager's own
   const char* evidence;
+  // Manager-side behavior observed before any driver load: the entry applies
+  // to every configured driver SQLWCHAR width, not only the matched pair.
+  bool applies_before_driver_load{false};
 };
 
 inline constexpr Entry kEntries[] = {
@@ -255,7 +285,10 @@ inline constexpr Entry kEntries[] = {
     {Deviation::GetDataBeforeExecuteIsSequenceError, kIodbc35216, nullptr, "bucket M"},
     {Deviation::GetDataBeforeExecuteIsSequenceError, kUnixodbc2314, nullptr, "bucket M"},
     {Deviation::Odbc2FunctionsReported, kUnixodbc2314, nullptr, "bucket N"},
-    {Deviation::LoginTimeoutWritesEightBytes, kIodbc35216, nullptr, "bucket J"},
+    // iODBC answers SQLGetConnectAttr(SQL_ATTR_LOGIN_TIMEOUT) on an unconnected
+    // handle before any driver load; the 8-byte write is the manager's own,
+    // so the deviation applies to every configured driver SQLWCHAR width.
+    {Deviation::LoginTimeoutWritesEightBytes, kIodbc35216, nullptr, "bucket J", true},
     {Deviation::ColumnCountWrittenOnError, kIodbc35216, nullptr, "bucket S"},
     {Deviation::FailedCallForgetsOpenCursor, kUnixodbc2314, nullptr, "bucket O"},
     {Deviation::ManagerWideXopenCliYear, kUnixodbc2314, "1994", "bucket T"},
@@ -306,7 +339,13 @@ inline constexpr Entry kEntries[] = {
 
 inline const Entry* entry(Deviation deviation) {
   for (const auto& candidate : kEntries) {
-    if (candidate.deviation == deviation && qualified_manager_version(candidate.manager_version)) {
+    if (candidate.deviation != deviation) {
+      continue;
+    }
+    const bool qualified = candidate.applies_before_driver_load
+        ? qualified_manager_identity(candidate.manager_version)
+        : qualified_manager_version(candidate.manager_version);
+    if (qualified) {
       return &candidate;
     }
   }

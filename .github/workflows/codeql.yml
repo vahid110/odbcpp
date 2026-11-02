@@ -8,12 +8,19 @@ on:
   schedule:
     - cron: '41 5 * * 6'
   workflow_dispatch:
+    inputs:
+      fresh_run:
+        description: 'Force a completely clean scan from scratch?'
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: codeql-${{ github.ref }}
+  # If fresh_run is true, append the run_id to bypass any prior concurrency or history grouping
+  group: codeql-${{ github.ref }}-${{ inputs.fresh_run == true && github.run_id || 'standard' }}
   cancel-in-progress: false
   queue: max
 
@@ -121,6 +128,7 @@ jobs:
         run: |
           cmake --build build-codeql --parallel 2 --verbose --target all \
             it_redshift_routine_schema_patterns it_redshift_columns_omitted_table \
+            it_redshift_native_idp_live \
             2>&1 | tee codeql-evidence/build.log
 
       - name: Compile the original standalone C# helper as a library without executing it
@@ -170,7 +178,7 @@ jobs:
 
       - name: Preserve raw SARIF and extraction evidence, including failures
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codeql-${{ matrix.profile }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -180,3 +188,24 @@ jobs:
             build-codeql/CMakeCache.txt
           retention-days: 7
           if-no-files-found: warn
+
+  execution-gate:
+    name: CodeQL execution gate
+    needs: analyze
+    # A skipped/neutral Code Scanning summary satisfies branch protection.
+    # This job instead requires successful execution of the analysis matrix.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Require successful analysis execution
+        shell: bash
+        env:
+          ANALYSIS_RESULT: ${{ needs.analyze.result }}
+        run: |
+          if [[ "$ANALYSIS_RESULT" != "success" ]]; then
+            printf '::error::CodeQL analysis did not succeed (result: %s)\n' "$ANALYSIS_RESULT"
+            exit 1
+          fi
+          printf 'All CodeQL analysis jobs succeeded.\n'

@@ -6,6 +6,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:RUNNER_TEMP ('odbcpp-invalid-package-'+[guid]::NewGuid().ToString('N'))
 New-Item "$root/Release" -ItemType Directory -Force | Out-Null
+New-Item "$root/version" -ItemType Directory | Out-Null
+Copy-Item "$BuildDirectory/version/odbcpp-version.json" "$root/version"
 Copy-Item "$BuildDirectory/CMakeCache.txt" $root
 Copy-Item "$BuildDirectory/odbcpp-crypto-manifest.json" $root
 $bytes = [IO.File]::ReadAllBytes((Resolve-Path "$BuildDirectory/Release/odbcpp.dll"))

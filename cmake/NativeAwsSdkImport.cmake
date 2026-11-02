@@ -1,16 +1,18 @@
-# Reviewed pinned AWS SDK C++ import (redshift, redshift-serverless, sts). Built
-# separately with BUILD_ONLY=redshift;redshift-serverless;sts, USE_CRT_HTTP_CLIENT=ON,
-# USE_CRT_HTTP_CLIENT_ASYNC_IO=OFF, USE_OPENSSL=ON, BUILD_SHARED_LIBS=OFF at version
-# 1.11.906. This file is git-pinned; the SDK install prefix is a separate reviewed
-# external dependency supplied via ODBCPP_AWS_SDK_INSTALL (not ambient discovery).
-set(ODBCPP_AWS_SDK_INSTALL "" CACHE PATH "Reviewed AWS SDK install prefix (redshift, redshift-serverless, sts)")
+# Reviewed pinned AWS SDK C++ import (redshift, redshift-serverless, sts,
+# sso-oidc). Built separately with BUILD_ONLY=redshift;redshift-serverless;sts;sso-oidc,
+# USE_CRT_HTTP_CLIENT=ON, USE_CRT_HTTP_CLIENT_ASYNC_IO=OFF, USE_OPENSSL=ON,
+# BUILD_SHARED_LIBS=OFF at version 1.11.906. This file is git-pinned; the SDK
+# install prefix is a separate reviewed external dependency supplied via
+# ODBCPP_AWS_SDK_INSTALL (not ambient discovery).
+set(ODBCPP_AWS_SDK_INSTALL "" CACHE PATH "Reviewed AWS SDK install prefix (redshift, redshift-serverless, sts, sso-oidc)")
 set(_odbcpp_aws_config "${ODBCPP_AWS_SDK_INSTALL}/lib/cmake/AWSSDK/AWSSDKConfig.cmake")
 if(NOT IS_ABSOLUTE "${ODBCPP_AWS_SDK_INSTALL}"
    OR NOT EXISTS "${_odbcpp_aws_config}"
    OR NOT EXISTS "${ODBCPP_AWS_SDK_INSTALL}/include/aws/sts/STSClient.h"
    OR NOT EXISTS "${ODBCPP_AWS_SDK_INSTALL}/include/aws/redshift/RedshiftClient.h"
-   OR NOT EXISTS "${ODBCPP_AWS_SDK_INSTALL}/include/aws/redshift-serverless/RedshiftServerlessClient.h")
-  message(FATAL_ERROR "Native provisioned auth requires an explicit existing ODBCPP_AWS_SDK_INSTALL with redshift+redshift-serverless+sts")
+   OR NOT EXISTS "${ODBCPP_AWS_SDK_INSTALL}/include/aws/redshift-serverless/RedshiftServerlessClient.h"
+   OR NOT EXISTS "${ODBCPP_AWS_SDK_INSTALL}/include/aws/sso-oidc/SSOOIDCClient.h")
+  message(FATAL_ERROR "Native provisioned auth requires an explicit existing ODBCPP_AWS_SDK_INSTALL with redshift+redshift-serverless+sts+sso-oidc")
 endif()
 
 # Pin config-mode discovery to exactly the selected prefix. A cached/ambient
@@ -29,7 +31,7 @@ list(PREPEND CMAKE_PREFIX_PATH "${ODBCPP_AWS_SDK_INSTALL}")
 find_package(ZLIB REQUIRED)
 # Exact reviewed version. Never fall back to an ambient or unrelated config:
 # AWSSDK_DIR selects the selected prefix's config directly.
-find_package(AWSSDK 1.11.906 EXACT CONFIG REQUIRED COMPONENTS redshift redshift-serverless sts)
+find_package(AWSSDK 1.11.906 EXACT CONFIG REQUIRED COMPONENTS redshift redshift-serverless sts sso-oidc)
 
 if(NOT DEFINED AWSSDK_VERSION OR NOT AWSSDK_VERSION VERSION_EQUAL "1.11.906")
   message(FATAL_ERROR "Native provisioned auth requires reviewed AWS SDK 1.11.906 (found ${AWSSDK_VERSION})")
@@ -87,7 +89,7 @@ function(_odbcpp_validate_imported _target _required)
 endfunction()
 file(REAL_PATH "${ODBCPP_AWS_SDK_INSTALL}" _odbcpp_aws_prefix_real)
 foreach(_target IN ITEMS aws-cpp-sdk-redshift aws-cpp-sdk-redshift-serverless aws-cpp-sdk-sts
-    aws-cpp-sdk-core AWS::aws-crt-cpp)
+    aws-cpp-sdk-sso-oidc aws-cpp-sdk-core AWS::aws-crt-cpp)
   _odbcpp_validate_imported(${_target} TRUE)
 endforeach()
 foreach(_target IN ITEMS AWS::aws-c-http AWS::aws-c-io AWS::aws-c-auth AWS::aws-c-cal
