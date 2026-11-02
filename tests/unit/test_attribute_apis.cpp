@@ -1973,6 +1973,15 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   }
   EXPECT_EQ(custom_wide, wide_readback);
 
+  // Truncation on narrow SQLGetCursorName with intermediate capacity 5
+  SQLCHAR truncated[5]{};
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetCursorName(statement3, truncated, 5, &name_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement3));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
+  EXPECT_STREQ("wide", reinterpret_cast<const char*>(truncated));
+
   // Negative buffer length returns HY090
   EXPECT_EQ(SQL_ERROR, SQLGetCursorName(statement3, name_buf, -1, &name_length));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement3));
@@ -2105,6 +2114,15 @@ TEST_F(AttributeApisTest, CursorNameZeroCapacityAndSentinelBufferTests) {
   EXPECT_EQ('\0', narrow_buf[0]);
   EXPECT_EQ(0xAA, narrow_buf[1]);
 
+  // Intermediate capacity (e.g. 5): fits first 4 chars ("test") + null terminator, tail untouched
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 5, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_STREQ("test", reinterpret_cast<const char*>(narrow_buf.data()));
+  EXPECT_EQ(0xAA, narrow_buf[5]);
+
   // Sufficient capacity: returns SQL_SUCCESS, full string null-terminated, beyond untouched
   std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
   narrow_len = -1;
@@ -2135,6 +2153,20 @@ TEST_F(AttributeApisTest, CursorNameZeroCapacityAndSentinelBufferTests) {
   EXPECT_EQ(expected_len, wide_len);
   EXPECT_EQ(SQLWCHAR(0), wide_buf[0]);
   EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[1]);
+
+  // Intermediate capacity (e.g. 5): fits first 4 wide chars ("test") + null terminator, tail untouched
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 5, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  std::string partial_wide_str;
+  for (std::size_t i = 0; i < 4; ++i) {
+    partial_wide_str.push_back(static_cast<char>(wide_buf[i]));
+  }
+  EXPECT_EQ("test", partial_wide_str);
+  EXPECT_EQ(SQLWCHAR(0), wide_buf[4]);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[5]);
 
   // Sufficient capacity
   std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
