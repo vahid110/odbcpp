@@ -6785,8 +6785,7 @@ SQLRETURN ODBCStatement::advance_parameter_result(bool initial) {
         snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected;
     // Reconcile before provider mapping or diagnostic allocation, even on throw.
     if (terminal) conn_->close_connection();
-    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-        snapshot.state == SessionState::FailedTransaction;
+    else conn_->reconcile_transaction_state(snapshot);
     if (!step) {
       result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
       set_error(query_failure_sqlstate(conn_->backend_provider(), step.backend_error(),
@@ -6996,7 +6995,7 @@ std::optional<SQLRETURN> ODBCStatement::start_pending_array(std::uintptr_t offse
       const auto snapshot = authority.session_snapshot();
       if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
           snapshot.state == SessionState::Disconnected) conn_->close_connection();
-      else conn_->transaction_active_ = snapshot.state == SessionState::Transaction || snapshot.state == SessionState::FailedTransaction;
+      else conn_->reconcile_transaction_state(snapshot);
       set_error(query_failure_sqlstate(conn_->backend_provider(),authority.backend_error(),
           SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),authority.error_message());
       return SQL_ERROR;
@@ -7067,7 +7066,7 @@ SQLRETURN ODBCStatement::publish_deferred_result(rs::core::database::PreparedCom
         const auto snapshot = sequence.session_snapshot();
         if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
             snapshot.state == SessionState::Disconnected) conn_->close_connection();
-        else conn_->transaction_active_ = snapshot.state == SessionState::Transaction || snapshot.state == SessionState::FailedTransaction;
+        else conn_->reconcile_transaction_state(snapshot);
         set_error(query_failure_sqlstate(conn_->backend_provider(),sequence.backend_error(),
             SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),sequence.error_message());
       }
@@ -7162,8 +7161,7 @@ SQLRETURN ODBCStatement::publish_command_batch(rs::core::database::PreparedComma
     // Reconcile before any provider mapper/diagnostic can throw. Error and
     // completion records remain owned by batch even after closing the lease.
     if (terminal) conn_->close_connection();
-    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-        snapshot.state == SessionState::FailedTransaction;
+    else conn_->reconcile_transaction_state(snapshot);
     if (batch.has_error()) {
       clear_current_result(); pending_results_.clear();
       set_error(query_failure_sqlstate(conn_->backend_provider(), batch.backend_error(),
@@ -7349,8 +7347,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
       if (snapshot.disposition == SessionDisposition::Retire ||
           snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected)
         conn_->close_connection();
-      else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-          snapshot.state == SessionState::FailedTransaction;
+      else conn_->reconcile_transaction_state(snapshot);
       set_error(query_failure_sqlstate(conn_->backend_provider(), plan.backend_error(),
           SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), plan.error_message());
       return SQL_ERROR;
@@ -7370,8 +7367,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
         if (snapshot.disposition == SessionDisposition::Retire ||
             snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected)
           conn_->close_connection();
-        else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-            snapshot.state == SessionState::FailedTransaction;
+        else conn_->reconcile_transaction_state(snapshot);
         set_error(query_failure_sqlstate(conn_->backend_provider(), sequence.backend_error(),
             SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), sequence.error_message());
         return SQL_ERROR;
