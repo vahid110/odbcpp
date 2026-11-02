@@ -97,7 +97,7 @@ Local token scripts use local private keys to generate short-lived (1-hour) GitH
 - `~/.config/odbcpp-reviewer/token.sh` (`app_id="5545952"`)
 
 ### Token Validation
-Strictly verify tokens before use to prevent silent fallback to personal user accounts:
+Strictly verify tokens before use to prevent silent fallback to personal user accounts, validating both token spelling and server-verified actor identity:
 
 ```bash
 export GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)
@@ -109,11 +109,12 @@ case "$GH_TOKEN" in
   *) echo "Error: GH_TOKEN does not match odbcpp-agent App ID 5540186" >&2; exit 1 ;;
 esac
 
-# Verify installation repository access
-gh api /installation/repositories --jq '.total_count' >/dev/null
+# Server-verified actor check: ensures GitHub recognizes the token as the intended bot identity
+actor=$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login')
+[ "$actor" = "odbcpp-agent[bot]" ] || { echo "Error: Expected odbcpp-agent[bot], got $actor" >&2; exit 1; }
 ```
 
-*(For reviewer validation, verify prefix `ghs_5545952_*` instead).*
+*(For reviewer validation, verify prefix `ghs_5545952_*` and expected actor `odbcpp-reviewer[bot]`).*
 
 ### Git Push via Credential Helper
 > [!IMPORTANT]
@@ -138,7 +139,7 @@ git -c credential.helper= -c credential.helper="!gh auth git-credential" `
 ## 6. Development, Worktrees, and Testing
 
 1. **Isolated Worktrees:**
-   Always create an isolated worktree from latest `origin/main`:
+   For **new tasks**, create a fresh isolated worktree from latest `origin/main`:
    ```bash
    git fetch origin main
    git worktree add -b codex/issue<number>-<slug> ../worktrees/issue<number> origin/main
@@ -146,6 +147,7 @@ git -c credential.helper= -c credential.helper="!gh auth git-credential" `
    git config user.name "odbcpp-agent[bot]"
    git config user.email "350232297+odbcpp-agent[bot]@users.noreply.github.com"
    ```
+   When **continuing an explicit handoff** or coordinator recovery, resume and preserve the existing agreed `codex/` branch and worktree, rather than restarting from main.
 2. **Test-Driven Changes & Control Flow:**
    - For bug fixes, write a failing GoogleTest first.
    - If changing C++ control flow bodies containing GoogleTest macros, enclose all bodies in braces and verify with `python3 tools/development/check_changed_gtest_control_flow.py --base origin/main`.

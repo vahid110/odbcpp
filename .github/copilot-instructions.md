@@ -6,7 +6,7 @@ This repository enforces a canonical development process for all agents and cont
 - [docs/adr/0001-development-process.md](../docs/adr/0001-development-process.md)
 
 ## Core Guidelines
-- Operate on dedicated `codex/` branches in isolated worktrees created from latest `main`.
+- Operate on dedicated `codex/` branches in isolated worktrees (created from latest `main` for new tasks, or resuming existing agreed branch for handoffs).
 - Adhere to the canonical worker identity tuple: `copilot/<host>/<session>`.
 - Use prescribed GitHub App bot tokens (`odbcpp-agent[bot]`), never personal credentials.
 - Preserve existing tests and assertions.

@@ -8,7 +8,7 @@ This repository follows the canonical development process defined in:
 All sessions must:
 1. Review AGENTS.md and docs/AGENT_WORKFLOW.md before taking action.
 2. Identify using the worker identity tuple: cursor/<host>/<session>.
-3. Work exclusively in isolated worktrees on codex/ branches based on current main.
+3. Work exclusively in isolated worktrees on codex/ branches (created from latest main for new tasks, or resuming existing agreed branch for handoffs).
 4. Use odbcpp-agent[bot] credentials for git and GitHub actions. Never use or commit personal credentials.
 5. Follow TDD (failing test first for bug fixes) and brace-checked GoogleTest control flow.
 6. Submit PRs for independent review; gate-defining files require repository owner approval.
