@@ -251,6 +251,17 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("${{ github.event.comment.body", workflow)
         self.assertLess(workflow.index("Validate request without"), workflow.index("${{ secrets.PROJECT_BOARD_TOKEN }}"))
 
+    def test_only_admitted_job_enters_concurrency_queue(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/project-board.yml").read_text()
+        self.assertNotIn("\nconcurrency:", workflow)
+        self.assertEqual(workflow.count("    concurrency:"), 1)
+        self.assertLess(workflow.index("    if:"), workflow.index("    concurrency:"))
+        condition = workflow[workflow.index("    if:"):workflow.index("    concurrency:")]
+        self.assertIn("github.actor_id == '350232297'", condition)
+        self.assertIn("github.actor_id == '5770674'", condition)
+        self.assertIn("!github.event.issue.pull_request", condition)
+        self.assertIn("startsWith(github.event.comment.body, '/project ')", condition)
+
 
 if __name__ == "__main__":
     unittest.main()
