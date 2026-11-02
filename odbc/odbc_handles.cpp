@@ -839,9 +839,6 @@ bool is_recognized_unsupported_connection_attribute(SQLINTEGER attribute) {
 }
 
 bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
-  if (attribute == SQL_ATTR_SIMULATE_CURSOR) {
-    return true;
-  }
 #ifdef SQL_ATTR_ASYNC_STMT_EVENT
   if (attribute == SQL_ATTR_ASYNC_STMT_EVENT) return true;
 #endif
@@ -4052,38 +4049,57 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_CURSOR_SENSITIVITY: {
       if (!cursor_attribute_settable()) return SQL_ERROR;
       bool supported = false;
-      bool known = false;
+      bool substitute = false;
+      const char* change_msg = nullptr;
       SQLULEN next_type = cursor_type_;
       switch (attribute) {
         case SQL_ATTR_CURSOR_TYPE:
-          supported = numeric == SQL_CURSOR_FORWARD_ONLY || numeric == SQL_CURSOR_STATIC;
-          known = supported || numeric == SQL_CURSOR_KEYSET_DRIVEN || numeric == SQL_CURSOR_DYNAMIC;
-          next_type = numeric;
+          if (numeric == SQL_CURSOR_FORWARD_ONLY || numeric == SQL_CURSOR_STATIC) {
+            supported = true;
+            next_type = numeric;
+          } else if (numeric == SQL_CURSOR_KEYSET_DRIVEN || numeric == SQL_CURSOR_DYNAMIC) {
+            substitute = true;
+            next_type = SQL_CURSOR_STATIC;
+            change_msg = "Cursor type changed to static";
+          }
           break;
         case SQL_ATTR_CONCURRENCY:
-          supported = numeric == SQL_CONCUR_READ_ONLY;
-          known = supported || numeric == SQL_CONCUR_LOCK || numeric == SQL_CONCUR_ROWVER || numeric == SQL_CONCUR_VALUES;
-          // Explicit read-only selects the documented insensitive/static tuple;
-          // untouched read-only defaults remain forward-only/unspecified.
-          next_type = SQL_CURSOR_STATIC;
+          if (numeric == SQL_CONCUR_READ_ONLY) {
+            supported = true;
+            next_type = SQL_CURSOR_STATIC;
+          } else if (numeric == SQL_CONCUR_LOCK || numeric == SQL_CONCUR_ROWVER || numeric == SQL_CONCUR_VALUES) {
+            substitute = true;
+            next_type = SQL_CURSOR_STATIC;
+            change_msg = "Concurrency changed to read-only";
+          }
           break;
         case SQL_ATTR_CURSOR_SCROLLABLE:
-          supported = numeric == SQL_NONSCROLLABLE || numeric == SQL_SCROLLABLE;
-          known = supported;
-          next_type = numeric == SQL_SCROLLABLE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          if (numeric == SQL_NONSCROLLABLE || numeric == SQL_SCROLLABLE) {
+            supported = true;
+            next_type = numeric == SQL_SCROLLABLE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          }
           break;
         default:
-          supported = numeric == SQL_UNSPECIFIED || numeric == SQL_INSENSITIVE;
-          known = supported || numeric == SQL_SENSITIVE;
-          next_type = numeric == SQL_INSENSITIVE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          if (numeric == SQL_UNSPECIFIED || numeric == SQL_INSENSITIVE) {
+            supported = true;
+            next_type = numeric == SQL_INSENSITIVE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          } else if (numeric == SQL_SENSITIVE) {
+            substitute = true;
+            next_type = SQL_CURSOR_STATIC;
+            change_msg = "Cursor sensitivity changed to insensitive";
+          }
           break;
       }
-      if (!supported) {
-        set_error(known ? SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED : SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+      if (!supported && !substitute) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Requested cursor policy is not supported");
         return SQL_ERROR;
       }
       cursor_type_ = next_type; // All coupled readbacks derive from this closed tuple.
+      if (substitute) {
+        set_error(SQLSTATE_OPTION_VALUE_CHANGED, change_msg);
+        return SQL_SUCCESS_WITH_INFO;
+      }
       return SQL_SUCCESS;
     }
     case SQL_ATTR_ENABLE_AUTO_IPD:
@@ -4105,10 +4121,21 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       return SQL_SUCCESS;
     case SQL_ATTR_KEYSET_SIZE:
       if (numeric == 0) return SQL_SUCCESS;
-      break;
+      set_error(SQLSTATE_OPTION_VALUE_CHANGED, "Keyset size changed to 0");
+      return SQL_SUCCESS_WITH_INFO;
     case SQL_ATTR_MAX_LENGTH:
       if (numeric == 0) return SQL_SUCCESS;
-      break;
+      set_error(SQLSTATE_OPTION_VALUE_CHANGED, "Max length changed to 0");
+      return SQL_SUCCESS_WITH_INFO;
+    case SQL_ATTR_SIMULATE_CURSOR:
+      if (!cursor_attribute_settable()) return SQL_ERROR;
+      if (numeric == SQL_SC_NON_UNIQUE) return SQL_SUCCESS;
+      if (numeric == SQL_SC_TRY_UNIQUE || numeric == SQL_SC_UNIQUE) {
+        set_error(SQLSTATE_OPTION_VALUE_CHANGED, "Simulate cursor changed to non-unique");
+        return SQL_SUCCESS_WITH_INFO;
+      }
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Invalid simulate cursor value");
+      return SQL_ERROR;
     case SQL_ROWSET_SIZE:
     case SQL_ATTR_ROW_ARRAY_SIZE:
       if (numeric_signed <= 0) {
@@ -4318,6 +4345,8 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_KEYSET_SIZE:
     case SQL_ATTR_MAX_LENGTH:
       write_ulen(0); break;
+    case SQL_ATTR_SIMULATE_CURSOR:
+      write_ulen(SQL_SC_NON_UNIQUE); break;
     case SQL_ROWSET_SIZE:
     case SQL_ATTR_ROW_ARRAY_SIZE:
       write_ulen(descriptor(app_row_descriptor_)->array_size()); break;
