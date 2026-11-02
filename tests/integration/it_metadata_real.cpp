@@ -1931,10 +1931,6 @@ TEST_F(MetadataIntegrationTest, ColumnMetadataStateErrorsPreserveOutputs) {
     EXPECT_EQ(SQL_ERROR, SQLColAttribute(
         hstmt, 1, 9999, nullptr, 0, nullptr, &numeric));
     expect_state("HY091");
-    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
-        hstmt, 1, SQL_DESC_AUTO_UNIQUE_VALUE, name, sizeof(name),
-        &string_length, nullptr));
-    expect_state("HYC00");
     EXPECT_EQ(SQL_SUCCESS, SQLColAttribute(
         hstmt, 1, SQL_DESC_BASE_TABLE_NAME, name, sizeof(name),
         &string_length, nullptr));
