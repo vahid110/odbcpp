@@ -46,6 +46,8 @@ namespace {
 std::atomic<std::uint64_t> next_connection_id{1};
 // ODBC opaque identity only: never an address/backend key/security capability.
 std::atomic<std::uint64_t> next_bookmark_statement_id{1};
+// Statement serial counter for default cursor name SQL_CUR<n>.
+std::atomic<std::uint64_t> next_statement_id{0};
 DescriptorRecord bookmark_metadata() {
   DescriptorRecord record;
   record.type = record.concise_type = SQL_BINARY;
@@ -1767,6 +1769,9 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
   static constexpr auto attributes = std::to_array<SQLUSMALLINT>({
       SQL_DESC_COUNT, SQL_COLUMN_COUNT,
       SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
+      SQL_DESC_BASE_COLUMN_NAME,
+      SQL_DESC_BASE_TABLE_NAME,
+      SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
       SQL_DESC_CASE_SENSITIVE, SQL_COLUMN_CASE_SENSITIVE,
       SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
       SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
@@ -1776,6 +1781,8 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
       SQL_DESC_LOCAL_TYPE_NAME,
       SQL_DESC_NUM_PREC_RADIX, SQL_DESC_OCTET_LENGTH,
       SQL_DESC_SEARCHABLE, SQL_COLUMN_SEARCHABLE,
+      SQL_DESC_SCHEMA_NAME, SQL_COLUMN_OWNER_NAME,
+      SQL_DESC_TABLE_NAME, SQL_COLUMN_TABLE_NAME,
       SQL_DESC_TYPE,
       SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
       SQL_DESC_TYPE_NAME, SQL_COLUMN_TYPE_NAME,
@@ -1906,6 +1913,7 @@ bool ODBCConnection::logging_enabled(
 
 ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
+  statement_id_ = next_statement_id.fetch_add(1, std::memory_order_relaxed);
   metadata_id_ = conn_->metadata_identifiers_default();
   query_timeout_seconds_ = conn_->query_timeout_default();
   try {
@@ -1965,6 +1973,89 @@ ODBCStatement::~ODBCStatement() {
            imp_row_descriptor_, imp_param_descriptor_}) {
     if (descriptor) HandleRegistry::instance().unregister_handle(descriptor);
   }
+}
+
+// --- Cursor name ---
+
+std::string ODBCStatement::get_cursor_name() const {
+  if (!cursor_name_.empty()) return cursor_name_;
+  return "SQL_CUR" + std::to_string(statement_id_);
+}
+
+namespace {
+// ODBC 3.14.2: cursor name characters must be valid identifier characters.
+// The permitted set is [A-Za-z0-9_] and the name must start with a letter or
+// underscore. Length must be 1..128 characters. Cursor names must not begin
+// with "SQLCUR" or "SQL_CUR" (case-insensitive), which are reserved for driver use.
+bool is_valid_cursor_name(const std::string& name) {
+  if (name.empty() || name.size() > 128) return false;
+  std::string upper;
+  upper.reserve(name.size());
+  for (const char c : name) {
+    upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+  }
+  if (upper.starts_with("SQLCUR") || upper.starts_with("SQL_CUR")) {
+    return false;
+  }
+  const char first = name[0];
+  if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
+    return false;
+  }
+  for (const char c : name) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
+
+SQLRETURN ODBCStatement::set_cursor_name(const std::string& name) {
+  if (!is_valid_cursor_name(name)) {
+    set_error(SQLSTATE_INVALID_CURSOR_NAME,
+              "Cursor name contains invalid characters, reserved prefix, or is empty/too long");
+    return SQL_ERROR;
+  }
+  if (executed_) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cursor name cannot be set while the statement is in an executed or cursor-positioned state");
+    return SQL_ERROR;
+  }
+  if (!cursor_name_.empty()) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cursor name has already been set on this statement");
+    return SQL_ERROR;
+  }
+  const auto this_handle = reinterpret_cast<SQLHANDLE>(this);
+  const auto connection_handle = reinterpret_cast<SQLHANDLE>(conn_.get());
+  // Case-insensitive duplicate check across sibling statements (per connection).
+  auto siblings = HandleRegistry::instance().child_handles(
+      connection_handle, HandleType::Statement);
+  for (const auto sibling_handle : siblings) {
+    if (sibling_handle == this_handle) continue;
+    auto sibling = HandleRegistry::instance().get_handle_as<ODBCStatement>(
+        sibling_handle);
+    if (!sibling) continue;
+    // Compare case-insensitively; cursor names are case-insensitive identifiers.
+    const auto existing = sibling->get_cursor_name();
+    if (existing.size() == name.size()) {
+      bool eq = true;
+      for (std::size_t i = 0; i < name.size(); ++i) {
+        if (std::toupper(static_cast<unsigned char>(name[i])) !=
+            std::toupper(static_cast<unsigned char>(existing[i]))) {
+          eq = false;
+          break;
+        }
+      }
+      if (eq) {
+        set_error(SQLSTATE_DUPLICATE_CURSOR_NAME,
+                  "Cursor name is already in use by another statement");
+        return SQL_ERROR;
+      }
+    }
+  }
+  cursor_name_ = name;
+  return SQL_SUCCESS;
 }
 
 SQLHDESC ODBCStatement::create_implicit_descriptor(DescriptorKind kind) {
@@ -8857,6 +8948,19 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
     text = &record->literal_prefix;
   } else if (field_identifier == SQL_DESC_LITERAL_SUFFIX) {
     text = &record->literal_suffix;
+  } else if (field_identifier == SQL_DESC_BASE_COLUMN_NAME) {
+    text = &record->base_column_name;
+  } else if (field_identifier == SQL_DESC_BASE_TABLE_NAME) {
+    text = &record->base_table_name;
+  } else if (field_identifier == SQL_DESC_CATALOG_NAME ||
+             field_identifier == SQL_COLUMN_QUALIFIER_NAME) {
+    text = &record->catalog_name;
+  } else if (field_identifier == SQL_DESC_SCHEMA_NAME ||
+             field_identifier == SQL_COLUMN_OWNER_NAME) {
+    text = &record->schema_name;
+  } else if (field_identifier == SQL_DESC_TABLE_NAME ||
+             field_identifier == SQL_COLUMN_TABLE_NAME) {
+    text = &record->table_name;
   }
   if (text) {
     if (character_attribute && buffer_length > 0) {
@@ -9157,6 +9261,7 @@ bool HandleRegistry::admit_need_data(std::initializer_list<SQLHANDLE> handles,
       "SQLDescribeColW","SQLDescribeParam","SQLExecDirect","SQLExecDirectW","SQLExecute",
       "SQLFetch","SQLFetchScroll","SQLFreeStmt","SQLGetData","SQLGetStmtAttr","SQLGetStmtAttrW",
       "SQLGetStmtOption","SQLGetTypeInfo","SQLMoreResults","SQLNumParams","SQLNumResultCols","SQLRowCount",
+      "SQLGetCursorName","SQLGetCursorNameW","SQLSetCursorName","SQLSetCursorNameW",
       "SQLPrepare","SQLPrepareW","SQLPrimaryKeys","SQLPrimaryKeysW","SQLForeignKeys","SQLForeignKeysW","SQLProcedures",
       "SQLProceduresW","SQLProcedureColumns","SQLProcedureColumnsW","SQLSetPos",
       "SQLSpecialColumns","SQLSpecialColumnsW","SQLStatistics","SQLStatisticsW"};

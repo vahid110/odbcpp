@@ -80,3 +80,7 @@ SQLParamData
 SQLPutData
 SQLBulkOperations
 SQLCancelHandle
+SQLGetCursorName
+SQLGetCursorNameW
+SQLSetCursorName
+SQLSetCursorNameW
