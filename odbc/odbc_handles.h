@@ -563,6 +563,10 @@ public:
   SQLRETURN bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
                      SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
   
+  // Cursor name functions (SQLGetCursorName / SQLSetCursorName)
+  std::string get_cursor_name() const;
+  SQLRETURN set_cursor_name(const std::string& name);
+
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
   SQLRETURN get_type_info(SQLSMALLINT data_type);
@@ -714,6 +718,8 @@ private:
   bool parameter_result_cursor_{false};
   SQLRETURN advance_parameter_result(bool initial);
   std::string prepared_sql_;
+  std::string cursor_name_;   // empty = use default SQL_CUR<id>
+  std::uint64_t statement_id_{0};  // per-connection numeric ID for default name
   size_t current_row_ = 0;
   bool row_positioned_ = false;
   // True when the most recent fetch attempt could not fetch its requested

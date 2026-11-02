@@ -16034,6 +16034,69 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterIgnoresAnsiCapacityAndRe
   EXPECT_EQ(descriptions, seen->descriptions);
 }
 
+TEST_F(BackendContractTest, ColumnAttributeNameFieldsReturnEmptyStringsAndAgreeWithGetDescField) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+
+  SQLHDESC ird{nullptr};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, SQL_IS_POINTER, nullptr));
+  ASSERT_NE(nullptr, ird);
+
+  const struct FieldPair {
+    SQLUSMALLINT col_attr;
+    SQLSMALLINT desc_field;
+  } fields[] = {
+      {SQL_DESC_BASE_COLUMN_NAME, SQL_DESC_BASE_COLUMN_NAME},
+      {SQL_DESC_BASE_TABLE_NAME, SQL_DESC_BASE_TABLE_NAME},
+      {SQL_DESC_CATALOG_NAME, SQL_DESC_CATALOG_NAME},
+      {SQL_COLUMN_QUALIFIER_NAME, SQL_DESC_CATALOG_NAME},
+      {SQL_DESC_SCHEMA_NAME, SQL_DESC_SCHEMA_NAME},
+      {SQL_COLUMN_OWNER_NAME, SQL_DESC_SCHEMA_NAME},
+      {SQL_DESC_TABLE_NAME, SQL_DESC_TABLE_NAME},
+      {SQL_COLUMN_TABLE_NAME, SQL_DESC_TABLE_NAME},
+  };
+
+  for (const auto& pair : fields) {
+    SCOPED_TRACE(pair.col_attr);
+
+    // Narrow SQLColAttribute
+    char narrow[32]{};
+    narrow[0] = 'X';
+    SQLSMALLINT narrow_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        stmt, 1, pair.col_attr, narrow, sizeof(narrow), &narrow_len, nullptr));
+    EXPECT_EQ(0, narrow_len);
+    EXPECT_STREQ("", narrow);
+
+    // Wide SQLColAttributeW
+    SQLWCHAR wide[32]{};
+    wide[0] = static_cast<SQLWCHAR>('X');
+    SQLSMALLINT wide_bytes = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(
+        stmt, 1, pair.col_attr, wide, sizeof(wide), &wide_bytes, nullptr));
+    EXPECT_EQ(0, wide_bytes);
+    EXPECT_EQ(SQLWCHAR{0}, wide[0]);
+
+    // Narrow SQLGetDescField
+    char desc_narrow[32]{};
+    desc_narrow[0] = 'X';
+    SQLINTEGER desc_narrow_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        ird, 1, pair.desc_field, desc_narrow, sizeof(desc_narrow), &desc_narrow_len));
+    EXPECT_EQ(0, desc_narrow_len);
+    EXPECT_STREQ("", desc_narrow);
+
+    // Wide SQLGetDescFieldW
+    SQLWCHAR desc_wide[32]{};
+    desc_wide[0] = static_cast<SQLWCHAR>('X');
+    SQLINTEGER desc_wide_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescFieldW(
+        ird, 1, pair.desc_field, desc_wide, sizeof(desc_wide), &desc_wide_len));
+    EXPECT_EQ(0, desc_wide_len);
+    EXPECT_EQ(SQLWCHAR{0}, desc_wide[0]);
+  }
+}
+
 TEST_F(BackendContractTest, ColumnAttributeNullCharacterKeepsWideByteUnits) {
   ASSERT_NO_FATAL_FAILURE(connect());
   for (const int name_kind : {8, 9}) {
@@ -16201,13 +16264,13 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNu
     }
     EXPECT_EQ(SQL_ERROR, attribute(1, 65535, nullptr, -1, &length, &unused_numeric));
     EXPECT_EQ("HY091", state());
-    EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_BASE_TABLE_NAME, nullptr, -1, &length, &unused_numeric));
-    EXPECT_EQ("HYC00", state());
-    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_SUCCESS, attribute(1, SQL_DESC_BASE_TABLE_NAME, nullptr, -1, &length, &unused_numeric));
+    EXPECT_EQ(0, length);
     EXPECT_EQ(79, unused_numeric);
     alignas(SQLWCHAR) std::array<unsigned char, 9 * sizeof(SQLWCHAR)> output{};
     output.fill(0xa5);
     const auto before = output;
+    length = -73;
     EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_NAME, output.data(), -1, &length, &unused_numeric));
     EXPECT_EQ("HY090", state());
     EXPECT_EQ(-73, length);

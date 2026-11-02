@@ -1881,3 +1881,109 @@ TEST_F(AttributeApisTest, QueryTimeoutIsOnlyAStatementAttributeAndZeroOverrideSt
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(statement_, SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr));
   EXPECT_EQ(0u, value);
 }
+
+TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
+  SQLCHAR name_buf[64]{};
+  SQLSMALLINT name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_GT(name_length, 7);
+  std::string default_name(reinterpret_cast<const char*>(name_buf), name_length);
+  EXPECT_EQ(0u, default_name.rfind("SQL_CUR", 0));
+
+  SQLHSTMT statement2 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement2);
+  SQLCHAR name_buf2[64]{};
+  SQLSMALLINT name_length2 = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement2, name_buf2, sizeof(name_buf2), &name_length2));
+  std::string default_name2(reinterpret_cast<const char*>(name_buf2), name_length2);
+  EXPECT_EQ(0u, default_name2.rfind("SQL_CUR", 0));
+  EXPECT_NE(default_name, default_name2);
+
+  // Invalid cursor names
+  for (const char* invalid : {"", "1starts_with_digit", "has space", "has-hyphen", "has.dot"}) {
+    EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(invalid)), SQL_NTS));
+    EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  }
+
+  // Set and get valid cursor name
+  SQLCHAR valid_name[] = "my_custom_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, valid_name, SQL_NTS));
+  std::memset(name_buf, 0, sizeof(name_buf));
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen("my_custom_cursor")), name_length);
+  EXPECT_STREQ("my_custom_cursor", reinterpret_cast<const char*>(name_buf));
+
+  // Duplicate name check across sibling statements on same connection (case-insensitive)
+  SQLCHAR duplicate_name[] = "MY_CUSTOM_CURSOR";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement2, duplicate_name, SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement2));
+
+  // Setting distinct name on statement2 succeeds
+  SQLCHAR sibling_name[] = "sibling_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, sibling_name, SQL_NTS));
+
+  // Wide variant round-trip
+  SQLWCHAR wide_input[32]{};
+  const std::string custom_wide = "wide_cursor_name";
+  for (std::size_t i = 0; i < custom_wide.size(); ++i) {
+    wide_input[i] = static_cast<SQLWCHAR>(custom_wide[i]);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorNameW(statement_, wide_input, static_cast<SQLSMALLINT>(custom_wide.size())));
+
+  SQLWCHAR wide_out[32]{};
+  SQLSMALLINT wide_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, wide_out, sizeof(wide_out) / sizeof(SQLWCHAR), &wide_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), wide_length);
+  std::string wide_readback;
+  for (SQLSMALLINT i = 0; i < wide_length; ++i) {
+    wide_readback.push_back(static_cast<char>(wide_out[i]));
+  }
+  EXPECT_EQ(custom_wide, wide_readback);
+
+  // Truncation on narrow SQLGetCursorName
+  SQLCHAR truncated[5]{};
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, truncated, 5, &name_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
+  EXPECT_STREQ("wide", reinterpret_cast<const char*>(truncated));
+
+  // Query length with null pointer
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, &name_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
+
+  // Negative buffer length
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorName(statement_, name_buf, -1, &name_length));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement2));
+}
+
+TEST_F(AttributeApisTest, GetFunctionsReportsCursorNameAndCancelHandle) {
+  SQLUSMALLINT flag = 73;
+  EXPECT_EQ(SQL_ERROR, SQLGetFunctions(connection_, SQL_API_SQLCANCELHANDLE, &flag));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(73, flag);
+
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+
+  for (const auto id : std::array<SQLUSMALLINT, 3>{
+           SQL_API_SQLCANCELHANDLE, SQL_API_SQLGETCURSORNAME, SQL_API_SQLSETCURSORNAME}) {
+    flag = SQL_FALSE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(connection_, id, &flag));
+    EXPECT_EQ(SQL_TRUE, flag) << "Failed for function id: " << id;
+  }
+
+  SQLUSMALLINT all[100]{}, bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(connection_, SQL_API_ALL_FUNCTIONS, all));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(connection_, SQL_API_ODBC3_ALL_FUNCTIONS, bitmap));
+
+  EXPECT_EQ(SQL_TRUE, all[SQL_API_SQLGETCURSORNAME]);
+  EXPECT_EQ(SQL_TRUE, all[SQL_API_SQLSETCURSORNAME]);
+
+  EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap, SQL_API_SQLCANCELHANDLE));
+  EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap, SQL_API_SQLGETCURSORNAME));
+  EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap, SQL_API_SQLSETCURSORNAME));
+}
