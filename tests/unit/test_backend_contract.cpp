@@ -17035,7 +17035,7 @@ class SqlCapabilityMaskTest : public BackendContractTest {
         EXPECT_EQ(83u, out.after);
       }
     }
-    for (const auto type : {SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
+    for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
       SQLCHAR value[2]{};
       ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
       EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
@@ -17058,7 +17058,7 @@ TEST_F(SqlCapabilityMaskTest, RedshiftExactMasksAndConsistency) {
 namespace {
 TEST_F(BackendContractTest, UnknownProviderDeclaresNoSqlFeaturesOrMultipleResults) {
   ASSERT_NO_FATAL_FAILURE(connect());
-  for (const auto type : {SQL_OJ_CAPABILITIES, SQL_AGGREGATE_FUNCTIONS,
+  for (const auto type : std::array<SQLUSMALLINT, 17>{SQL_OJ_CAPABILITIES, SQL_AGGREGATE_FUNCTIONS,
       SQL_STRING_FUNCTIONS, SQL_NUMERIC_FUNCTIONS, SQL_TIMEDATE_FUNCTIONS,
       SQL_SYSTEM_FUNCTIONS, SQL_DATETIME_LITERALS, SQL_SUBQUERIES,
       SQL_SQL92_PREDICATES, SQL_SQL92_VALUE_EXPRESSIONS, SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
@@ -17070,7 +17070,7 @@ TEST_F(BackendContractTest, UnknownProviderDeclaresNoSqlFeaturesOrMultipleResult
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
     EXPECT_EQ(0u, mask);
   }
-  for (const auto type : {SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
+  for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
     SQLCHAR value[2]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
     EXPECT_STREQ("N", reinterpret_cast<const char*>(value));
