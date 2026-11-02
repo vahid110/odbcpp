@@ -27,9 +27,15 @@ replace hand-made evidence and custom ceremony.
 ## Decision
 
 1. **Work tracking.** Each task is a GitHub issue with acceptance criteria.
-   Milestones group phases; a project board shows status. Private handoffs
-   and journals are retired. Decisions with lasting consequences are short
-   ADRs in `docs/adr/`.
+   A GitHub Project board shows status with Kanban stages: `Ready`, `Working`,
+   `Review`, `CI / Merge`, `Blocked`, `Done`. Work is tracked across tools and
+   platforms via canonical worker identity (`<tool>/<host>/<session>`), linked
+   PRs, and update timestamps. GitHub is the sole shared source of truth; local
+   files are not coordination mechanisms, and stale activity is never
+   permission to take over. Operational workflow is defined in
+   `docs/AGENT_WORKFLOW.md`. Milestones group phases; private handoffs and
+   journals are retired. Decisions with lasting consequences are short ADRs in
+   `docs/adr/`.
 2. **Documentation.** Root documents: `README.md`, `ARCHITECTURE.md`,
    `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, plus `AGENTS.md` (about
    one page). User documentation (including the connection-keyword
