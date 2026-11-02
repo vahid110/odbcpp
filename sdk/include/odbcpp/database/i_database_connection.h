@@ -162,6 +162,14 @@ inline bool valid_resource_limits(const ConnectionSettings& settings) noexcept {
       input.max_startup_wire_bytes <= 1024 * 1024 * 1024 && input.max_auth_wire_bytes <= 1024 * 1024 * 1024;
 }
 
+// Optional session-owned facet for lazy column origin resolution.
+class IColumnOriginResolver {
+ public:
+  virtual ~IColumnOriginResolver() = default;
+  virtual BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins(
+      std::uint64_t result_id, rs::util::Deadline deadline) = 0;
+};
+
 // Synchronous internal interface, serialized by the ODBC handle layer. Backends
 // must not retain input views/spans after return. Returned QueryResult values own
 // their storage. Metadata views have the lifetimes documented on each method.
@@ -192,6 +200,9 @@ public:
 
   // Optional normalized catalog execution; no implicit SQL fallback.
   virtual ICatalogExecution* catalog_execution() noexcept { return nullptr; }
+
+  // Optional column origin resolution; absence never restricts execution.
+  virtual class IColumnOriginResolver* column_origin_resolver() noexcept { return nullptr; }
 
   // Optional transaction behavior; absence never advertises live support.
   // The borrowed facet remains owned by this session, never by the caller.

@@ -855,6 +855,16 @@ BackendResult<QueryResult> SessionLease::describe_statement(std::string_view sql
             BackendOperation::Describe, physical.session_state());
       });
 }
+
+BackendResult<std::vector<ResultColumnOrigin>> SessionLease::resolve_column_origins(
+    std::uint64_t result_id, rs::util::Deadline deadline) {
+  return invoke_borrowed<std::vector<ResultColumnOrigin>>(*this, physical_session(), BackendOperation::Describe,
+      [&](IDatabaseConnection& physical) -> BackendResult<std::vector<ResultColumnOrigin>> {
+        if (auto* facet = physical.column_origin_resolver()) return facet->resolve_column_origins(result_id, deadline);
+        return local_backend_error(LocalFailure::Unsupported, "Session column origin resolution facet unavailable",
+            BackendOperation::Describe, physical.session_state());
+      });
+}
 } // namespace rs::core::database
 
 namespace rs::core::database {

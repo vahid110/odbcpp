@@ -9,7 +9,7 @@
 namespace rs::core::database {
 namespace detail { struct ConnectionAuthenticationTestAccess; }
 
-class GenericDatabaseConnection : public IDatabaseConnection, public IStatementDescription {
+class GenericDatabaseConnection : public IDatabaseConnection, public IStatementDescription, public IColumnOriginResolver {
 public:
   ~GenericDatabaseConnection() override;
   GenericDatabaseConnection(
@@ -53,6 +53,10 @@ public:
       std::string_view sql,
       std::span<const QueryParameterType> parameter_types,
       rs::util::Deadline deadline) override;
+  
+  IColumnOriginResolver* column_origin_resolver() noexcept override { return this; }
+  BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins(
+      std::uint64_t result_id, rs::util::Deadline deadline) override;
   
   std::string server_version() const override { return get_parameter("server_version"); }
   // Private PostgreSQL ParameterStatus storage; not a portable SDK service.
@@ -103,9 +107,19 @@ protected:
   virtual BackendResult<QueryResult> execute_cleanup_query(std::string_view sql,
       std::string_view expected_completion, rs::util::Deadline deadline);
 
+  struct ParsedColumnProvenance {
+    std::uint32_t table_oid{0};
+    std::int16_t column_attribute_number{0};
+  };
+  virtual BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins_impl(
+      std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline deadline);
+
 private:
   friend struct detail::ConnectionAuthenticationTestAccess;
   void clear_authentication_state() noexcept;
+  void record_result_provenance(std::uint64_t result_id, std::vector<ParsedColumnProvenance> provenance);
+  std::uint64_t next_result_id_{1};
+  std::map<std::uint64_t, std::vector<ParsedColumnProvenance>> result_provenance_;
   BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;
   BackendResult<void> connect_impl(const ConnectionSettings& settings, rs::util::Deadline deadline);
   SessionState session_state_{SessionState::Disconnected};

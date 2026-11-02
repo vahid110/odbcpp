@@ -703,7 +703,7 @@ TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {
                             &column_attribute));
   EXPECT_EQ("HY091", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR,
-            SQLColAttribute(statement_, 1, SQL_DESC_BASE_TABLE_NAME,
+            SQLColAttribute(statement_, 1, SQL_DESC_DATETIME_INTERVAL_PRECISION,
                             buffer, sizeof(buffer), nullptr, nullptr));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
 

@@ -224,6 +224,8 @@ class SessionLease final {
   BackendResult<void> set_transaction_isolation(TransactionIsolation, rs::util::Deadline);
   BackendResult<QueryResult> describe_statement(std::string_view,
       std::span<const QueryParameterType>, rs::util::Deadline);
+  BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins(
+      std::uint64_t result_id, rs::util::Deadline deadline);
   // No I/O or mutation. Owned observations/SQL survive retirement. Successful
   // reads and local catalog errors preserve cache scopes; exceptions and passive
   // disconnection retire. Neither result grants health or return authority.

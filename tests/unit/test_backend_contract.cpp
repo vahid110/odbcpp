@@ -333,6 +333,9 @@ struct Observations {
   std::vector<TransactionAction> transaction_calls;
   std::vector<Deadline> transaction_deadlines;
   int invalid_cell_errors{}, invalid_result_structure{}, invalid_execution_shape{}, invalid_description_shape{};
+  int origin_calls{0};
+  int origin_error{0};
+  std::optional<std::vector<ResultColumnOrigin>> origin_results;
 };
 
 template <typename T>
@@ -386,11 +389,28 @@ static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
 
 // Deliberately implements only the database boundary: no PG parser or session.
-class FakeBackend final : public IDatabaseConnection, public IStatementDescription, public ITransactionSession, public ICatalogExecution, public ICatalogQueries {
+class FakeBackend final : public IDatabaseConnection, public IStatementDescription, public ITransactionSession, public ICatalogExecution, public ICatalogQueries, public IColumnOriginResolver {
  public:
   explicit FakeBackend(std::shared_ptr<Observations> seen)
       : seen_(std::move(seen)), absent_description_(seen_->absent_description) {}
   ~FakeBackend() override { ++seen_->destructions; }
+  IColumnOriginResolver* column_origin_resolver() noexcept override { return this; }
+  BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins(
+      std::uint64_t result_id, Deadline deadline) override {
+    ++seen_->origin_calls;
+    seen_->deadline = deadline;
+    if (seen_->origin_error) {
+      BackendError error{rs::util::make_error_code(seen_->origin_error == 2 ? DbErrorCode::Timeout : DbErrorCode::QueryFailed), "origin fixture"};
+      error.operation = BackendOperation::Describe;
+      error.session_state = seen_->origin_error == 2 ? SessionState::Disconnected : SessionState::Idle;
+      error.disposition = seen_->origin_error == 2 ? SessionDisposition::Retire : SessionDisposition::Reusable;
+      return error;
+    }
+    if (seen_->origin_results) {
+      return *seen_->origin_results;
+    }
+    return std::vector<ResultColumnOrigin>{};
+  }
   BackendResult<void> connect(const ConnectionSettings& settings) override {
     if (seen_->connect_exception == 1) throw std::bad_alloc{};
     if (seen_->connect_exception == 2) throw std::runtime_error("fixture connect exception");
@@ -481,7 +501,11 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   bool is_connected() const override { return connected_; }
   SessionState session_state() const override { return connected_ ? seen_->transaction_state.value_or(seen_->connect_exception == 6 ? SessionState::Transaction : seen_->connect_exception == 7 ? SessionState::Unknown : SessionState::Idle) : SessionState::Disconnected; }
   QueryResult rows() const {
-    if (seen_->date_result) return *seen_->date_result;
+    if (seen_->date_result) {
+      auto res = *seen_->date_result;
+      if (res.result_id == 0) res.result_id = 1;
+      return res;
+    }
     QueryResult result;
     result.columns = {{"binary", {}}, {"flag", {}}, {"text", {}}};
     result.columns[0].normalized_type = NativeTypeInfo{seen_->long_binary ? ScalarType::LongVarBinary : ScalarType::Binary,
@@ -526,6 +550,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       default: break;
     }
     result.statement_kind = StatementKind::SelectCursor;
+    if (result.result_id == 0) result.result_id = 1;
     return result;
   }
   BackendResult<QueryResult> execute_query(std::string_view sql, Deadline deadline) override {
@@ -5513,6 +5538,7 @@ TEST_F(BackendContractTest, ColumnsBuilderRouteOwnsEighteenMetadataFieldsAcrossA
          std::nullopt, std::nullopt, std::nullopt, "2", std::nullopt, std::nullopt, "0",
          std::nullopt, std::nullopt, "3", ""}};
     result.statement_kind = StatementKind::SelectCursor;
+    if (result.result_id == 0) result.result_id = 1;
     return result;
   };
   seen->catalog_builder = true;
@@ -9116,6 +9142,7 @@ class StaticBufferedScrollTest : public BackendContractTest {
     result.rows = {{"1","A\xf0\x9f\x98\x80Z"},{"2",std::nullopt},{"3","third"},
                    {"4","fourth"},{"5","fifth"},{"6","sixth"},{"7","last"}};
     result.statement_kind = StatementKind::SelectCursor;
+    if (result.result_id == 0) result.result_id = 1;
     return result;
   }
   void setting(SQLINTEGER attr, SQLULEN value) {
@@ -16466,7 +16493,7 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNu
     }
     EXPECT_EQ(SQL_ERROR, attribute(1, 65535, nullptr, -1, &length, &unused_numeric));
     EXPECT_EQ("HY091", state());
-    EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_BASE_TABLE_NAME, nullptr, -1, &length, &unused_numeric));
+    EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_DATETIME_INTERVAL_PRECISION, nullptr, -1, &length, &unused_numeric));
     EXPECT_EQ("HYC00", state());
     EXPECT_EQ(-73, length);
     EXPECT_EQ(79, unused_numeric);
@@ -16782,6 +16809,121 @@ TEST_F(BackendContractTest, DescriptorFieldNullTextPreservesDescriptorAndNumeric
     EXPECT_EQ(-73, length); // Typed fields do not publish a string length.
   }
 }
+
+TEST_F(BackendContractTest, ResultColumnOriginMetadataLazyResolutionAndExpressions) {
+  QueryResult result;
+  result.columns = {
+      {"name", NativeTypeInfo{ScalarType::VarChar, 64, 0, true}},
+      {"expr", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}
+  };
+  result.rows = {{"alice", "42"}};
+  seen->date_result = result;
+  seen->origin_results = std::vector<ResultColumnOrigin>{
+      {"mydb", "public", "users", "users", "name"},
+      {"", "", "", "", ""}
+  };
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT name, 42 AS expr FROM users"));
+
+  SQLHDESC ird = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  ASSERT_NE(nullptr, ird);
+
+  // Before requesting origin fields, zero origin resolution queries have been made.
+  EXPECT_EQ(0, seen->origin_calls);
+
+  // Querying standard attributes like SQL_DESC_NAME does not trigger origin resolution.
+  char col_name[64]{};
+  SQLSMALLINT col_name_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_NAME, col_name, sizeof(col_name), &col_name_len, nullptr));
+  EXPECT_STREQ("name", col_name);
+  EXPECT_EQ(0, seen->origin_calls);
+
+  // Requesting an origin field triggers lazy resolution exactly once.
+  char text[128]{};
+  SQLSMALLINT len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("users", text);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  // Subsequent origin attribute lookups use cached metadata (zero extra queries).
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_BASE_COLUMN_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("name", text);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("users", text);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_SCHEMA_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("public", text);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_CATALOG_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("mydb", text);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  // SQLGetDescField on IRD also reads the cached origin fields.
+  SQLINTEGER desc_len = -1;
+  char desc_text[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_BASE_TABLE_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("users", desc_text);
+  EXPECT_EQ(static_cast<SQLINTEGER>(std::strlen("users")), desc_len);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_BASE_COLUMN_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("name", desc_text);
+  EXPECT_EQ(static_cast<SQLINTEGER>(std::strlen("name")), desc_len);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_TABLE_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("users", desc_text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_SCHEMA_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("public", desc_text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_CATALOG_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("mydb", desc_text);
+  EXPECT_EQ(1, seen->origin_calls);
+
+  // Column 2 is an expression: all origin fields remain empty strings.
+  for (const auto field_id : {
+           SQL_DESC_BASE_TABLE_NAME,
+           SQL_DESC_BASE_COLUMN_NAME,
+           SQL_DESC_TABLE_NAME,
+           SQL_DESC_SCHEMA_NAME,
+           SQL_DESC_CATALOG_NAME}) {
+    std::memset(text, 'x', sizeof(text));
+    len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 2, field_id, text, sizeof(text), &len, nullptr));
+    EXPECT_EQ(0, len);
+    EXPECT_STREQ("", text);
+
+    std::memset(desc_text, 'x', sizeof(desc_text));
+    desc_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 2, field_id, desc_text, sizeof(desc_text), &desc_len));
+    EXPECT_EQ(0, desc_len);
+    EXPECT_STREQ("", desc_text);
+  }
+  EXPECT_EQ(1, seen->origin_calls);
+}
+
+TEST_F(BackendContractTest, ResultColumnOriginTimeoutReportsErrorAndDisconnects) {
+  QueryResult result;
+  result.columns = {{"col", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  result.rows = {{"1"}};
+  seen->date_result = result;
+  seen->origin_error = 2; // Timeout
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT col FROM t"));
+
+  char text[64]{};
+  SQLSMALLINT len = -1;
+  EXPECT_EQ(SQL_ERROR, SQLColAttribute(stmt, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_EQ("HYT00", state(SQL_HANDLE_STMT, stmt));
+  const auto connection_handle = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  EXPECT_FALSE(connection_handle->is_connected());
+}
+
 
 
 TEST_F(BackendContractTest, UnknownTransactionDefaultPreservesOutputsAndConnectDoesNotSetIsolation) {

@@ -1767,7 +1767,10 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
   static constexpr auto attributes = std::to_array<SQLUSMALLINT>({
       SQL_DESC_COUNT, SQL_COLUMN_COUNT,
       SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
+      SQL_DESC_BASE_COLUMN_NAME,
+      SQL_DESC_BASE_TABLE_NAME,
       SQL_DESC_CASE_SENSITIVE, SQL_COLUMN_CASE_SENSITIVE,
+      SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
       SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
       SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
       SQL_DESC_NAME, SQL_COLUMN_NAME,
@@ -1776,6 +1779,8 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
       SQL_DESC_LOCAL_TYPE_NAME,
       SQL_DESC_NUM_PREC_RADIX, SQL_DESC_OCTET_LENGTH,
       SQL_DESC_SEARCHABLE, SQL_COLUMN_SEARCHABLE,
+      SQL_DESC_SCHEMA_NAME, SQL_COLUMN_OWNER_NAME,
+      SQL_DESC_TABLE_NAME, SQL_COLUMN_TABLE_NAME,
       SQL_DESC_TYPE,
       SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
       SQL_DESC_TYPE_NAME, SQL_COLUMN_TYPE_NAME,
@@ -1790,7 +1795,7 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
 }
 
 bool is_known_column_attribute(SQLUSMALLINT field_identifier) {
-  static constexpr std::array<SQLUSMALLINT, 47> attributes{
+  static constexpr std::array<SQLUSMALLINT, 48> attributes{
       SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
       SQL_DESC_BASE_COLUMN_NAME,
       SQL_DESC_BASE_TABLE_NAME,
@@ -1798,6 +1803,7 @@ bool is_known_column_attribute(SQLUSMALLINT field_identifier) {
       SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
       SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
       SQL_DESC_COUNT, SQL_COLUMN_COUNT,
+      SQL_DESC_DATETIME_INTERVAL_PRECISION,
       SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
       SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
       SQL_DESC_LABEL, SQL_COLUMN_LABEL,
@@ -1917,6 +1923,7 @@ ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     app_param_descriptor_ = automatic_app_param_descriptor_;
     imp_row_descriptor_ = create_implicit_descriptor(
         DescriptorKind::ImplementationRow);
+    descriptor(imp_row_descriptor_)->set_statement(this);
     imp_param_descriptor_ = create_implicit_descriptor(
         DescriptorKind::ImplementationParameter);
   } catch (...) {
@@ -1960,6 +1967,11 @@ struct ODBCStatement::PendingInput {
 
 ODBCStatement::~ODBCStatement() {
   abandon_pending_input();
+  if (imp_row_descriptor_) {
+    if (auto desc = descriptor(imp_row_descriptor_)) {
+      desc->set_statement(nullptr);
+    }
+  }
   for (const auto descriptor : {
            automatic_app_row_descriptor_, automatic_app_param_descriptor_,
            imp_row_descriptor_, imp_param_descriptor_}) {
@@ -2513,6 +2525,13 @@ rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnectio
   return local_backend_error(LocalFailure::Unsupported, "Data source does not support statement description",
       BackendOperation::Describe, SessionState::Disconnected);
 }
+rs::core::database::BackendResult<std::vector<rs::core::database::ResultColumnOrigin>>
+ODBCConnection::backend_resolve_column_origins(std::uint64_t result_id, rs::util::Deadline deadline) {
+  using namespace rs::core::database;
+  if (backend_lease_) return backend_lease_->resolve_column_origins(result_id, deadline);
+  return local_backend_error(LocalFailure::Unsupported, "Column origin resolution is unavailable",
+      BackendOperation::Describe, SessionState::Disconnected);
+}
 rs::core::database::BackendResult<rs::core::database::PreparedCommandPlan>
 ODBCConnection::backend_prepare_command_batch(std::string_view sql,
     std::vector<rs::core::database::PreparedCommandSet> sets, rs::util::Deadline deadline) {
@@ -2777,6 +2796,17 @@ SQLRETURN ODBCDescriptor::get_field(
   }
   if (static_cast<std::size_t>(record_number) > records_.size()) {
     return SQL_NO_DATA;
+  }
+  const bool is_origin = (field_identifier == SQL_DESC_BASE_COLUMN_NAME ||
+                          field_identifier == SQL_DESC_BASE_TABLE_NAME ||
+                          field_identifier == SQL_DESC_CATALOG_NAME ||
+                          field_identifier == SQL_DESC_SCHEMA_NAME ||
+                          field_identifier == SQL_DESC_TABLE_NAME);
+  if (is_origin && statement_) {
+    const auto origin_result = statement_->ensure_column_origins();
+    if (origin_result != SQL_SUCCESS && origin_result != SQL_SUCCESS_WITH_INFO) {
+      return origin_result;
+    }
   }
   const auto& record = *numbered_record(record_number);
   const std::string* text = nullptr;
@@ -7969,6 +7999,8 @@ bool ODBCStatement::apply_result_metadata(
     bool include_parameter_metadata, bool parameter_result_publication,
     const MetadataRequestBudget* metadata_budget) {
 
+  current_result_id_ = result.result_id;
+  origins_resolved_ = false;
   require_normalized_columns(result);
   std::vector<ColumnInfo> staged_columns;
   staged_columns.reserve(result.columns.size());
@@ -8087,6 +8119,8 @@ void ODBCStatement::invalidate_eager_prepare() noexcept {
 }
 
 void ODBCStatement::clear_current_result() {
+  current_result_id_ = 0;
+  origins_resolved_ = false;
   parameter_result_cursor_ = false;
   active_bookmark_generation_ = 0;
   descriptor(imp_row_descriptor_)->bookmark_record_.reset();
@@ -8284,6 +8318,39 @@ SQLRETURN ODBCStatement::ensure_result_metadata() {
     return SQL_ERROR;
   }
   return describe_prepared_metadata();
+}
+
+SQLRETURN ODBCStatement::ensure_column_origins() {
+  if (origins_resolved_) return SQL_SUCCESS;
+  origins_resolved_ = true;
+  const auto meta_res = ensure_result_metadata();
+  if (meta_res != SQL_SUCCESS && meta_res != SQL_SUCCESS_WITH_INFO) return meta_res;
+  if (!current_result_id_ || !conn_->is_connected()) return SQL_SUCCESS;
+
+  const auto deadline = rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
+  auto origins = conn_->backend_resolve_column_origins(current_result_id_, deadline);
+  if (origins.has_error()) {
+    const auto timeout = is_timeout_error(origins.error());
+    set_error(query_failure_sqlstate(conn_->backend_provider(),
+                                     origins.backend_error(), SQLSTATE_GENERAL_ERROR,
+                                     SQL_DIAG_UNKNOWN_STATEMENT),
+              origins.error_message());
+    if (timeout) conn_->close_connection();
+    return SQL_ERROR;
+  }
+
+  const auto row_desc = descriptor(imp_row_descriptor_);
+  if (!row_desc) return SQL_SUCCESS;
+  for (std::size_t i = 0; i < origins->size() && i < row_desc->record_count(); ++i) {
+    auto* rec = row_desc->numbered_record(static_cast<SQLSMALLINT>(i + 1));
+    if (!rec) continue;
+    rec->catalog_name = std::move((*origins)[i].catalog_name);
+    rec->schema_name = std::move((*origins)[i].schema_name);
+    rec->table_name = std::move((*origins)[i].table_name);
+    rec->base_table_name = std::move((*origins)[i].base_table_name);
+    rec->base_column_name = std::move((*origins)[i].base_column_name);
+  }
+  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
@@ -8832,6 +8899,21 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
     return SQL_ERROR;
   }
   
+  const bool is_origin = (field_identifier == SQL_DESC_BASE_COLUMN_NAME ||
+                          field_identifier == SQL_DESC_BASE_TABLE_NAME ||
+                          field_identifier == SQL_DESC_TABLE_NAME ||
+                          field_identifier == SQL_COLUMN_TABLE_NAME ||
+                          field_identifier == SQL_DESC_SCHEMA_NAME ||
+                          field_identifier == SQL_COLUMN_OWNER_NAME ||
+                          field_identifier == SQL_DESC_CATALOG_NAME ||
+                          field_identifier == SQL_COLUMN_QUALIFIER_NAME);
+  if (is_origin) {
+    const auto origin_result = ensure_column_origins();
+    if (origin_result != SQL_SUCCESS && origin_result != SQL_SUCCESS_WITH_INFO) {
+      return origin_result;
+    }
+  }
+
   const ColumnInfo bookmark_column{"", SQL_BINARY, bookmark_bytes, 0, SQL_NO_NULLS};
   const auto& col = column_number == 0 ? bookmark_column : column_info_[column_number - 1];
   const auto row_descriptor = descriptor(imp_row_descriptor_);
@@ -8857,6 +8939,19 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
     text = &record->literal_prefix;
   } else if (field_identifier == SQL_DESC_LITERAL_SUFFIX) {
     text = &record->literal_suffix;
+  } else if (field_identifier == SQL_DESC_BASE_COLUMN_NAME) {
+    text = &record->base_column_name;
+  } else if (field_identifier == SQL_DESC_BASE_TABLE_NAME) {
+    text = &record->base_table_name;
+  } else if (field_identifier == SQL_DESC_TABLE_NAME ||
+             field_identifier == SQL_COLUMN_TABLE_NAME) {
+    text = &record->table_name;
+  } else if (field_identifier == SQL_DESC_SCHEMA_NAME ||
+             field_identifier == SQL_COLUMN_OWNER_NAME) {
+    text = &record->schema_name;
+  } else if (field_identifier == SQL_DESC_CATALOG_NAME ||
+             field_identifier == SQL_COLUMN_QUALIFIER_NAME) {
+    text = &record->catalog_name;
   }
   if (text) {
     if (character_attribute && buffer_length > 0) {

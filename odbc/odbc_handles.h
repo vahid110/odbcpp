@@ -317,6 +317,8 @@ private:
       std::string_view, std::span<const rs::core::database::QueryParameter>, rs::util::Deadline);
   rs::core::database::BackendResult<rs::core::database::QueryResult> backend_description(
       std::string_view, std::span<const rs::core::database::QueryParameterType>, rs::util::Deadline);
+  rs::core::database::BackendResult<std::vector<rs::core::database::ResultColumnOrigin>> backend_resolve_column_origins(
+      std::uint64_t result_id, rs::util::Deadline deadline);
   rs::core::database::BackendResult<rs::core::database::PreparedCommandPlan> backend_prepare_command_batch(
       std::string_view, std::vector<rs::core::database::PreparedCommandSet>, rs::util::Deadline);
   rs::core::database::BackendResult<rs::core::database::PreparedCommandBatchResult> backend_execute_command_batch(
@@ -447,6 +449,8 @@ enum class DescriptorKind {
   ImplementationParameter,
 };
 
+class ODBCStatement;
+
 class ODBCDescriptor : public ODBCHandle {
 public:
   explicit ODBCDescriptor(ODBCConnection* owner,
@@ -492,6 +496,8 @@ public:
                        SQLPOINTER data, SQLLEN* string_length,
                        SQLLEN* indicator);
   SQLRETURN copy_from(const ODBCDescriptor& source);
+  void set_statement(ODBCStatement* stmt) noexcept { statement_ = stmt; }
+  ODBCStatement* statement() const noexcept { return statement_; }
 
 private:
   friend class ODBCStatement;
@@ -501,6 +507,7 @@ private:
   }
 
   ODBCConnection* owner_;
+  ODBCStatement* statement_{nullptr};
   bool automatically_allocated_{false};
   DescriptorKind kind_{DescriptorKind::Application};
   // Record0 is the ODBC bookmark pseudo-column, outside DESC_COUNT/APD inputs.
@@ -624,6 +631,7 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
+  friend class ODBCDescriptor;
 #ifdef ODBCPP_ENABLE_TEST_HOOKS
   friend struct detail::ODBCBackendTestAccess;
 #endif
@@ -733,6 +741,8 @@ private:
   bool use_variable_bookmarks_{false};
   std::uint64_t bookmark_statement_id_{0}, bookmark_generation_{0};
   std::uint64_t active_bookmark_generation_{0};
+  std::uint64_t current_result_id_{0};
+  bool origins_resolved_{false};
   static constexpr std::size_t bookmark_bytes = 24;
   std::array<unsigned char, bookmark_bytes> bookmark_for(std::size_t row) const noexcept;
   SQLRETURN get_bookmark_data(SQLSMALLINT type, void* buffer, SQLLEN length, SQLLEN* indicator);
@@ -764,6 +774,7 @@ private:
       bool include_parameter_metadata, bool parameter_result_publication = false,
       const MetadataRequestBudget* metadata_budget = nullptr);
   SQLRETURN ensure_result_metadata();
+  SQLRETURN ensure_column_origins();
   SQLRETURN describe_prepared_metadata(
       std::optional<MetadataRequestBudget> original_budget = std::nullopt);
   void invalidate_eager_prepare() noexcept;
