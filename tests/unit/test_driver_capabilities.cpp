@@ -85,11 +85,27 @@ TEST(DriverCapabilitiesTest, AdvertisesExactlyItsBaseExports) {
             get_functions(SQL_NULL_HDBC, SQL_API_SQLCONNECT, &supported));
 }
 
+// Deprecated ODBC 2 entry points intentionally unexported by the driver library.
+// Driver Managers expose these to ODBC 2 applications and remap them to modern calls.
+inline constexpr std::array unexported_legacy_odbc2_functions{
+    "SQLAllocEnv",
+    "SQLAllocConnect",
+    "SQLAllocStmt",
+    "SQLFreeEnv",
+    "SQLFreeConnect",
+    "SQLSetConnectOption",
+    "SQLGetConnectOption",
+    "SQLSetStmtOption",
+    "SQLGetStmtOption",
+    "SQLTransact",
+    "SQLParamOptions",
+};
+
 TEST(DriverCapabilitiesTest, DoesNotExportDeprecatedOdbc2EntryPoints) {
   DynamicLibrary driver(ODBCPP_DRIVER_LIBRARY_PATH);
   ASSERT_TRUE(driver.valid()) << ODBCPP_DRIVER_LIBRARY_PATH;
 
-  for (const auto* name : odbcpp::test::unexported_legacy_odbc2_functions) {
+  for (const auto* name : unexported_legacy_odbc2_functions) {
     EXPECT_EQ(nullptr, driver.symbol(name))
         << "Legacy ODBC 2 entry point should not be exported by driver: " << name;
   }

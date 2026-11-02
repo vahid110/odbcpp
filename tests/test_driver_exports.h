@@ -90,22 +90,6 @@ inline constexpr std::array wide_exports{
 // Exported compatibility entries without advertised support.
 inline constexpr std::array<const char*, 0> partial_exports{};
 
-// Deprecated ODBC 2 entry points intentionally unexported by the driver library.
-// Driver Managers expose these to ODBC 2 applications and remap them to modern calls.
-inline constexpr std::array unexported_legacy_odbc2_functions{
-    "SQLAllocEnv",
-    "SQLAllocConnect",
-    "SQLAllocStmt",
-    "SQLFreeEnv",
-    "SQLFreeConnect",
-    "SQLSetConnectOption",
-    "SQLGetConnectOption",
-    "SQLSetStmtOption",
-    "SQLGetStmtOption",
-    "SQLTransact",
-    "SQLParamOptions",
-};
-
 inline bool expected_support(SQLUSMALLINT id) {
   return std::ranges::any_of(
       advertised_functions,
