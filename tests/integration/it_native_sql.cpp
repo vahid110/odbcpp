@@ -176,6 +176,25 @@ class NativeSqlIntegrationTest : public ::testing::Test {
     ASSERT_NO_FATAL_FAILURE(expect_fetched_scalar(expected));
   }
 
+  void expect_wide_scalar(const std::string& sql, std::string_view expected) {
+    auto input = odbcpp::test::text::utf8_to_wide(sql);
+    const auto expected_wide = odbcpp::test::text::utf8_to_wide(expected);
+    ASSERT_TRUE(input.has_value());
+    ASSERT_TRUE(expected_wide.has_value());
+    input->push_back(0);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirectW(statement_, input->data(), SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+    SQLWCHAR actual[256]{};
+    SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement_, 1, SQL_C_WCHAR, actual, sizeof(actual), &length));
+    ASSERT_EQ(static_cast<SQLLEN>(expected_wide->size() * sizeof(SQLWCHAR)), length);
+    ASSERT_LT(expected_wide->size(), std::size(actual));
+    EXPECT_EQ(*expected_wide, std::vector<SQLWCHAR>(actual, actual + expected_wide->size()));
+    EXPECT_EQ(0, actual[expected_wide->size()]);
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  }
+
   void expect_fetched_scalar(const char* expected) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
     SQLCHAR actual[256]{};
@@ -537,7 +556,7 @@ TEST_F(NativeSqlIntegrationTest, ConvertNumericEscapesPreserveValuesAndNulls) {
 
 TEST_F(NativeSqlIntegrationTest, ConvertCharacterBinaryAndTemporalEscapes) {
   for (const auto* target : {"SQL_CHAR", "SQL_VARCHAR", "SQL_LONGVARCHAR", "SQL_WCHAR", "SQL_WVARCHAR", "SQL_WLONGVARCHAR"}) {
-    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('Grüße'," + std::string(target) + ")}", "Grüße"));
+    ASSERT_NO_FATAL_FAILURE(expect_wide_scalar("SELECT {fn CONVERT('Grüße'," + std::string(target) + ")}", "Grüße"));
   }
   for (const auto* target : {"SQL_BINARY", "SQL_VARBINARY", "SQL_LONGVARBINARY"}) {
     const auto expression = "{fn CONVERT('ab'," + std::string(target) + ")}";
