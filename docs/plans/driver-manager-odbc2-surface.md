@@ -83,6 +83,7 @@ remaps legacy calls to the driver's modern entry points as follows:
 | `SQLGetConnectOption(hdbc, fOption, pvParam)` | `SQLGetConnectAttr(hdbc, fOption, pvParam, BufferLength, StringLengthPtr)` | Option IDs map to connection attribute IDs |
 | `SQLSetStmtOption(hstmt, fOption, vParam)` | `SQLSetStmtAttr(hstmt, fOption, vParam, StringLength)` | Option IDs map to statement attribute IDs (e.g. `SQL_QUERY_TIMEOUT`, `SQL_MAX_ROWS`) |
 | `SQLGetStmtOption(hstmt, fOption, pvParam)` | `SQLGetStmtAttr(hstmt, fOption, pvParam, BufferLength, StringLengthPtr)` | Option IDs map to statement attribute IDs |
+| `SQLParamOptions(hstmt, crow, pirow)` | `SQLSetStmtAttr(hstmt, SQL_ATTR_PARAMSET_SIZE, ...)` + `SQLSetStmtAttr(hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, ...)` | Driver Manager maps `crow` to `SQL_ATTR_PARAMSET_SIZE` and `pirow` to `SQL_ATTR_PARAMS_PROCESSED_PTR` |
 
 ## 4. Environment version selection (`SQL_ATTR_ODBC_VERSION`)
 
@@ -135,12 +136,19 @@ The driver's native implementation of `SQLError` / `SQLErrorW`:
 - Records are drained sequentially on successive calls; returns `SQL_NO_DATA` when all records have been consumed.
 - Parameter bounds: allows `Sqlstate`, `NativeError`, `MessageText`, and `TextLength` to be `nullptr` independently without crashing.
 
-## 6. Explicitly unsupported ODBC 2 features
+## 6. Implementation gaps and explicit boundaries
 
-The following legacy capabilities are explicitly **unsupported**:
-1. **`SQLParamOptions`**: Deprecated multi-row parameter binding from ODBC 1.0/2.0. Applications must use
-   the ODBC 3.x parameter array mechanism (`SQL_ATTR_PARAMSET_SIZE`, `SQL_ATTR_PARAMS_PROCESSED_PTR`, `SQL_ATTR_PARAM_STATUS_PTR`).
-2. **Dual-export driver library**: The driver does not provide exported stubs for legacy 2.x aliases. Any application
-   calling legacy aliases must link through a Driver Manager.
-3. **Legacy datetime format codes in catalog APIs**: Catalog and describe APIs use standard ODBC 3.x SQL data types
-   (`SQL_TYPE_DATE`, `SQL_TYPE_TIME`, `SQL_TYPE_TIMESTAMP`) rather than legacy 2.x representations (`SQL_DATE`, etc.).
+1. **Dual-export driver library**: The driver library does not provide exported stubs for legacy 2.x function aliases.
+   Applications calling legacy 2.x aliases must link through and be mediated by a Driver Manager.
+2. **`SQLParamOptions` symbol export**: The driver library does not directly export `SQLParamOptions`.
+   However, per Microsoft's mapping rules, the Driver Manager translates `SQLParamOptions` to `SQL_ATTR_PARAMSET_SIZE`
+   and `SQL_ATTR_PARAMS_PROCESSED_PTR`, which ODBCPP supports. End-to-end DM-mediated verification of
+   `SQLParamOptions` is tracked as an acceptance test in Unit C.
+3. **Version-dependent catalog datetime data types (genuine gap)**:
+   Per Microsoft ODBC Appendix G rules, an ODBC 3 driver operating with `SQL_ATTR_ODBC_VERSION = SQL_OV_ODBC2`
+   must return legacy datetime type codes (`SQL_DATE`, `SQL_TIME`, `SQL_TIMESTAMP`) in the `DATA_TYPE` column of
+   catalog result sets (such as `SQLColumns` and `SQLGetTypeInfo`), whereas under `SQL_OV_ODBC3` it returns modern
+   codes (`SQL_TYPE_DATE`, `SQL_TYPE_TIME`, `SQL_TYPE_TIMESTAMP`).
+   While the driver accepts `SQL_OV_ODBC2` on the environment handle, dynamic version-dependent catalog row value
+   remapping is not yet implemented natively in catalog queries. Because Driver Managers do not inspect or repair
+   catalog result row contents, this remains an explicit implementation and test gap tracked for Unit C follow-up.
