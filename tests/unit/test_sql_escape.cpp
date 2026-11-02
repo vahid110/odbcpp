@@ -1,10 +1,81 @@
 #include <gtest/gtest.h>
 
+#include <array>
+#include <string>
+#include <string_view>
+
 #include "core/database/postgres/pg_sql_dialect.h"
 #include "core/database/postgres/pg_backend_provider.h"
 
 using rs::core::database::SqlTranslationError;
 using rs::core::database::postgres::translate_odbc_sql;
+
+TEST(SqlConvertEscapeTest, NumericTemporalAndBooleanTargetsUseNativeCasts) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  struct Target { const char* odbc; const char* pg; const char* redshift; };
+  const std::array targets{
+      Target{"SQL_SMALLINT", "SMALLINT", "SMALLINT"},
+      Target{"SQL_INTEGER", "INTEGER", "INTEGER"},
+      Target{"SQL_BIGINT", "BIGINT", "BIGINT"},
+      Target{"SQL_REAL", "REAL", "REAL"},
+      Target{"SQL_FLOAT", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_DOUBLE", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_NUMERIC", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_DECIMAL", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_BIT", "BOOLEAN", "BOOLEAN"},
+      Target{"SQL_DATE", "DATE", "DATE"},
+      Target{"SQL_TIME", "TIME", "TIME"},
+      Target{"SQL_TIMESTAMP", "TIMESTAMP", "TIMESTAMP"}};
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto& target : targets) {
+      const auto sql = "SELECT {fn CONVERT(?, " + std::string(target.odbc) + ")}";
+      const auto result = translate_odbc_sql(sql, profile);
+      ASSERT_TRUE(result) << result.message << sql;
+      EXPECT_EQ("SELECT CAST(? AS " + std::string(
+          profile == SqlDialectProfile::PostgreSql ? target.pg : target.redshift) + ")", result.sql);
+      const auto null_result = translate_odbc_sql(
+          "SELECT {fn CONVERT(NULL, " + std::string(target.odbc) + ")}", profile);
+      ASSERT_TRUE(null_result) << null_result.message;
+      EXPECT_EQ("SELECT CAST(NULL AS " + std::string(
+          profile == SqlDialectProfile::PostgreSql ? target.pg : target.redshift) + ")", null_result.sql);
+    }
+  }
+}
+
+TEST(SqlConvertEscapeTest, NestedCallsAndLexicalBodiesPreserveEachExpressionOnce) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    EXPECT_EQ("SELECT CAST(COALESCE(?, CAST(? AS INTEGER))-- value\n AS BIGINT)",
+        translate_odbc_sql("SELECT {fn cOnVeRt /* call */ ({fn IFNULL(?, {fn CONVERT(?, SQL_INTEGER)})}-- value\n, /* type */ sql_bigint /* end */)}", profile).sql);
+    EXPECT_EQ("SELECT CAST(COALESCE($tag$a,b){}$tag$, E'a\\'b,c', \"name,comma\") AS INTEGER)",
+        translate_odbc_sql("SELECT {fn CONVERT(COALESCE($tag$a,b){}$tag$, E'a\\'b,c', \"name,comma\"), SQL_INTEGER)}", profile).sql);
+    EXPECT_EQ("SELECT CAST(next_value() AS BIGINT)",
+        translate_odbc_sql("SELECT {fn CONVERT(next_value(), SQL_BIGINT)}", profile).sql);
+  }
+}
+
+TEST(SqlConvertEscapeTest, MalformedCallsAndUnsupportedTargetsRefuseBeforeDispatch) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* sql : {"{fn CONVERT}", "{fn CONVERT()}", "{fn CONVERT(x)}",
+         "{fn CONVERT(,SQL_INTEGER)}", "{fn CONVERT(x,/* empty */)}",
+         "{fn CONVERT(x,SQL_INTEGER,1)}", "{fn CONVERT(x,SQL_INTEGER) + 1}",
+         "{fn CONVERT(x,SQL_INTEGER); SELECT 1}", "{fn CONVERT(x,SQL_INTEGER(2))}",
+         "{fn CONVERT(x,SQL_INTEGER -- no closer)}"}) {
+      const auto result = translate_odbc_sql(sql, profile);
+      EXPECT_EQ(SqlTranslationError::InvalidSyntax, result.error) << sql;
+      EXPECT_TRUE(result.sql.empty()) << sql;
+    }
+    for (const auto* target : {"SQL_TINYINT", "SQL_UNKNOWN", "SQL_INTEGER_EXTRA"}) {
+      const auto result = translate_odbc_sql("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", profile);
+      EXPECT_EQ(SqlTranslationError::Unsupported, result.error) << target;
+      EXPECT_TRUE(result.sql.empty());
+    }
+    EXPECT_EQ("SELECT CAST(1 AS INTEGER)", translate_odbc_sql("SELECT {fn CONVERT(1,SQL_INTEGER)}", profile).sql);
+    EXPECT_EQ("SELECT '{fn CONVERT(1,SQL_INTEGER)}', CONVERTX(1,SQL_INTEGER)",
+        translate_odbc_sql("SELECT '{fn CONVERT(1,SQL_INTEGER)}', {fn CONVERTX(1,SQL_INTEGER)}", profile).sql);
+  }
+}
 
 TEST(SqlEscapeTest, TranslatesDatetimeLiterals) {
   EXPECT_EQ("SELECT DATE '2024-02-29'",
