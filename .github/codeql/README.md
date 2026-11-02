@@ -21,6 +21,47 @@ All profiles run the default security queries plus `security-extended`. The audi
 this recurring workflow keeps the security expansion without that unrelated
 quality backlog. No source paths or security rules are filtered from SARIF.
 
+## Required merge checks
+
+The Code Scanning App's `CodeQL` summary can finish **neutral** while C++
+configurations are still missing. GitHub accepts neutral required checks, so
+that summary alone is not an execution gate (issue #158). Keep it for alert
+policy, and require these **GitHub Actions** checks in addition:
+
+- `CodeQL (cpp-redshift)`
+- `CodeQL (cpp-source)`
+- `CodeQL (python)`
+- `CodeQL (csharp)`
+- `CodeQL (actions)`
+- `CodeQL execution gate`
+
+The final job uses `always()` with `needs: analyze` and accepts only the
+matrix result `success`; it fails for failure, cancellation or skipping. It
+does not check out code, read artifacts or have token permissions. All five
+individual checks remain required: a removed or renamed matrix entry then
+leaves its required check missing. No job may mask errors with
+`continue-on-error`. The normal extraction/coverage verification still runs
+before SARIF publication in every profile. This gate proves successful
+execution under those controls, not absence of vulnerabilities or removal of
+the documented partial-translation-unit limitation.
+
+**Owner activation:** after reviewing this change and observing its checks
+on the PR, add all six contexts to `main`'s existing required-status-check
+list, with source **GitHub Actions** (App ID 15368). Preserve the seven
+build/unit/DM checks, the existing `CodeQL` summary (App ID 57789), strict
+up-to-date checks, administrator enforcement and CODEOWNERS review. Do not
+replace the required list with only the CodeQL checks. Settings are external
+to Git; merging this file does not activate protection. Until read-back
+confirms activation, #158 remains open.
+
+Verify that an unfinished profile keeps merging blocked, a failing coverage
+step fails its profile and the execution gate, and all five successful
+profiles plus the final gate satisfy these execution requirements. Other
+required checks and reviews must still pass. The offline control tests execute
+the gate's actual shell body with successful and unsuccessful dependency
+results and verify the expected matrix. These are local regression evidence,
+not proof of GitHub settings or a hosted failure scenario.
+
 The C++ build uses two workers and compiles, but never executes, tests. Two
 existing REDSHIFT `EXCLUDE_FROM_ALL` test targets are built explicitly so the
 actual compile-command inventory has no silent unbuilt targets. Their live-test
@@ -143,7 +184,7 @@ changing GitHub settings. This implementation does not change settings itself.
 2. Once the advanced workflow is ready for its first PR execution, the coordinator
    disables default setup and opens/updates the reviewed PR. Do not infer that
    adding this file disables default setup or makes custom uploads acceptable.
-3. Follow one exact-head hosted execution through all four profiles. Inspect
+3. Follow one exact-head hosted execution through all five profiles. Inspect
    actual compiler commands, zero manual extraction errors, file inventories,
    raw SARIF, successful coverage reports, upload processing and categories.
    Local offline tests do not establish hosted build/extraction acceptance.
