@@ -3238,9 +3238,10 @@ static SQLRETURN SQLGetCursorName_impl(
                     "Invalid output buffer length");
     return SQL_ERROR;
   }
-  if (name_length_ptr) {
-    *name_length_ptr = static_cast<SQLSMALLINT>(name.size());
-  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          name.size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
   if (!cursor_name) {
     return SQL_SUCCESS;
   }
@@ -3283,9 +3284,10 @@ static SQLRETURN SQLGetCursorNameW_impl(
                     "Invalid UTF-8 output text");
     return SQL_ERROR;
   }
-  if (name_length_ptr) {
-    *name_length_ptr = static_cast<SQLSMALLINT>(wide->size());
-  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          wide->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
   if (!cursor_name) {
     return SQL_SUCCESS;
   }

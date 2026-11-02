@@ -2149,6 +2149,53 @@ TEST_F(AttributeApisTest, CursorNameZeroCapacityAndSentinelBufferTests) {
   EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[expected_len + 1]);
 }
 
+TEST_F(AttributeApisTest, CursorNameLengthHandlesUnalignedOutput) {
+  SQLCHAR name[] = "unaligned_test_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, name, SQL_NTS));
+  const auto expected_len =
+      static_cast<SQLSMALLINT>(std::strlen("unaligned_test_cursor"));
+
+  // Narrow unaligned length
+  {
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+
+    std::vector<SQLCHAR> buf(64, 0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetCursorName(statement_, buf.data(),
+                               static_cast<SQLSMALLINT>(buf.size()), length));
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+  }
+
+  // Wide unaligned length
+  {
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+
+    std::vector<SQLWCHAR> buf(64, 0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetCursorNameW(statement_, buf.data(),
+                                static_cast<SQLSMALLINT>(buf.size()), length));
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+  }
+}
+
 TEST_F(AttributeApisTest, GetFunctionsReportsCursorNameAndCancelHandle) {
   SQLUSMALLINT flag = 73;
   EXPECT_EQ(SQL_ERROR, SQLGetFunctions(connection_, SQL_API_SQLCANCELHANDLE, &flag));
