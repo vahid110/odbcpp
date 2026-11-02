@@ -54,7 +54,19 @@ replace hand-made evidence and custom ceremony.
    2026-10-30): Ubuntu and Windows build + unit + offline Driver Manager tests
    for POSTGRESQL and REDSHIFT; Ubuntu ASan/UBSan unit tests for both
    products; macOS build + unit + offline Driver Manager tests for
-   POSTGRESQL (iODBC UCS4) only; and CodeQL. Not covered by required checks
+   POSTGRESQL (iODBC UCS4) only; and CodeQL. The CodeQL requirements are the
+   five GitHub Actions checks `CodeQL (cpp-redshift)`, `CodeQL (cpp-source)`,
+   `CodeQL (python)`, `CodeQL (csharp)`, `CodeQL (actions)`, plus
+   `CodeQL execution gate`, all pinned to the GitHub Actions App (15368).
+   Retain the Code Scanning App's `CodeQL` alert summary (57789) separately;
+   a neutral summary with missing configurations is not execution proof.
+   The execution gate runs after the analysis matrix even on failure and
+   fails unless its result is `success`. Individual required profile checks
+   also keep a removed/renamed profile pending instead of silently reducing
+   the required matrix. This amendment requires the owner to add all six
+   Actions contexts to branch protection; merging the workflow alone does
+   not change GitHub settings (see `.github/codeql/README.md`).
+   Not covered by required checks
    and therefore open: macOS REDSHIFT, sanitizers beyond unit tests, live
    behaviour, installers, the Windows GUI, connected Driver Manager suites,
    TSan and performance. CI artifacts (JUnit, sanitizer logs) are the
