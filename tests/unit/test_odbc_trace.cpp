@@ -103,6 +103,8 @@ const std::map<std::string, std::size_t>& exported_arities() {
       ODBCPP_EXPORT_ARITY(SQLTablesW), ODBCPP_EXPORT_ARITY(SQLCancel),
       ODBCPP_EXPORT_ARITY(SQLParamData), ODBCPP_EXPORT_ARITY(SQLPutData),
       ODBCPP_EXPORT_ARITY(SQLBulkOperations), ODBCPP_EXPORT_ARITY(SQLCancelHandle),
+      ODBCPP_EXPORT_ARITY(SQLGetCursorName), ODBCPP_EXPORT_ARITY(SQLGetCursorNameW),
+      ODBCPP_EXPORT_ARITY(SQLSetCursorName), ODBCPP_EXPORT_ARITY(SQLSetCursorNameW),
   };
   return arities;
 }

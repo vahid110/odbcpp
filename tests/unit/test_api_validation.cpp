@@ -705,7 +705,7 @@ TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {
   EXPECT_EQ(SQL_ERROR,
             SQLColAttribute(statement_, 1, SQL_DESC_DATETIME_INTERVAL_PRECISION,
                             buffer, sizeof(buffer), nullptr, nullptr));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
 
   SQLWCHAR wide_buffer[8]{};
   EXPECT_EQ(SQL_ERROR,
