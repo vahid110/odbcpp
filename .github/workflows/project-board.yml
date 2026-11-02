@@ -14,6 +14,7 @@ jobs:
       github.repository == 'vahid110/odbcpp' &&
       github.ref == 'refs/heads/main' &&
       (github.actor_id == '350232297' || github.actor_id == '5770674') &&
+      (github.triggering_actor == 'odbcpp-agent[bot]' || github.triggering_actor == 'vahid110') &&
       github.event_name == 'issue_comment' &&
       !github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/project ')

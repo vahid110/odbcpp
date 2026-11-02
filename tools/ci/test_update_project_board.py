@@ -259,6 +259,8 @@ class ProjectTests(unittest.TestCase):
         condition = workflow[workflow.index("    if:"):workflow.index("    concurrency:")]
         self.assertIn("github.actor_id == '350232297'", condition)
         self.assertIn("github.actor_id == '5770674'", condition)
+        self.assertIn("github.triggering_actor == 'odbcpp-agent[bot]'", condition)
+        self.assertIn("github.triggering_actor == 'vahid110'", condition)
         self.assertIn("!github.event.issue.pull_request", condition)
         self.assertIn("startsWith(github.event.comment.body, '/project ')", condition)
 
