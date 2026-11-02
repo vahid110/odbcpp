@@ -11899,7 +11899,7 @@ TEST_F(LocateEscapeApiTest, LocalRefusalKeepsRequiredOutputsSiblingSnapshotAndCa
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-9},after{83};} output;SQLLEN length=-1;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output.value,sizeof(output.value),&length));
   EXPECT_EQ(3,output.value);EXPECT_EQ(17,output.before);EXPECT_EQ(83,output.after);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE | SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE),functions);
   ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT {fn LOCATE('x','x')}")),SQL_NTS));
   EXPECT_EQ("SELECT POSITION('x' IN 'x')",seen->sql);EXPECT_EQ(3,output.value);
 }
@@ -11953,7 +11953,7 @@ TEST_F(LengthEscapeApiTest, LocalErrorPreservesRequiredOutputsSiblingAndConserva
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&n));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,n);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER result=-91;SQLLEN length=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&result,sizeof(result),&length));EXPECT_EQ(3,result);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE | SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE),functions);
   std::string good="SELECT {fn LENGTH('cat')}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(3,result);
 }
 }
@@ -12026,7 +12026,7 @@ TEST_F(CalendarEscapeApiTest, RequiredOutputsSiblingSnapshotAndDiscoveryClaimsSu
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER year=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&year,sizeof(year),&bytes));EXPECT_EQ(2024,year);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW | SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH | SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR | SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND),functions);
   std::string good="SELECT {fn YEAR({d '2000-01-01'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(2024,year);
 }
 }
@@ -12100,7 +12100,7 @@ TEST_F(ClockEscapeApiTest, LocalErrorPreservesOutputsSiblingSnapshotAndDiscovery
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
   SQLINTEGER second=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&second,sizeof(second),&bytes));EXPECT_EQ(59,second);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW | SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH | SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR | SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND),functions);
   std::string good="SELECT {fn SECOND({ts '2000-01-01 12:08:43.101000'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(59,second);
 }
 }
@@ -12286,7 +12286,7 @@ TEST_F(DayOrdinalEscapeApiTest, SiblingSnapshotAndCapabilityMasksSurviveLocalRef
   EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
-  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
+  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW | SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH | SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR | SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND),mask);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
@@ -12510,7 +12510,7 @@ TEST_F(LogarithmEscapeApiTest, LocalRefusalKeepsOwningSiblingAndNumericCapabilit
   EXPECT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
-  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_NUMERIC_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
+  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_NUMERIC_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10),mask);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
@@ -16962,3 +16962,131 @@ TEST_F(BackendContractTest, TransactionProfileConformanceUsesLiteralStandardClai
     ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   }
 }
+
+
+namespace {
+class SqlCapabilityMaskTest : public BackendContractTest {
+ protected:
+  void use_profile(bool redshift) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+    dbc = nullptr;
+    auto profile = std::make_shared<postgres::PgBackendProvider>(
+        BackendIdentity{"capability-test", "deliberately misleading", "test"},
+        BackendConnectionDefaults{"synthetic.invalid", 5432, "test", false},
+        std::nullopt, redshift ? postgres::PgCatalogProfile::Redshift
+                              : postgres::PgCatalogProfile::PostgreSQL);
+    auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+        nullptr, std::make_shared<FakeProvider>(seen, profile));
+    dbc = reinterpret_cast<SQLHDBC>(connection.get());
+    rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+    ASSERT_NO_FATAL_FAILURE(connect());
+  }
+
+  void exact_masks(bool redshift) {
+    const SQLUINTEGER outer = SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
+        SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER;
+    const SQLUINTEGER predicates = SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
+        SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON;
+    const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
+        {SQL_OJ_CAPABILITIES, outer},
+        {SQL_AGGREGATE_FUNCTIONS, SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
+            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL},
+        {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE | SQL_FN_STR_LCASE |
+            (redshift ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE : 0)},
+        {SQL_NUMERIC_FUNCTIONS, redshift ? SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10 : 0},
+        {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+            (redshift ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
+                SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR |
+                SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND : 0)},
+        {SQL_SYSTEM_FUNCTIONS, SQL_FN_SYS_IFNULL},
+        {SQL_DATETIME_LITERALS, SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP},
+        {SQL_SUBQUERIES, SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
+            (redshift ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES)},
+        {SQL_SQL92_PREDICATES, predicates |
+            (redshift ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON)},
+        {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF},
+        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, redshift ? 0 :
+            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY},
+        {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
+            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING},
+        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
+            SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
+            (redshift ? 0 : SQL_SNVF_BIT_LENGTH)},
+        {SQL_SQL92_DATETIME_FUNCTIONS, SQL_SDF_CURRENT_DATE |
+            (redshift ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP)},
+        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
+            SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
+            SQL_SRJO_RIGHT_OUTER_JOIN},
+        {SQL_BATCH_SUPPORT, SQL_BS_SELECT_EXPLICIT | SQL_BS_ROW_COUNT_EXPLICIT},
+        {SQL_BATCH_ROW_COUNT, SQL_BRC_EXPLICIT},
+    };
+    for (const auto& [type, mask] : expected) {
+      SCOPED_TRACE(type);
+      for (const bool wide : {false, true}) {
+        SCOPED_TRACE(wide);
+        struct { SQLUINTEGER before{17}, value{0xffffffff}, after{83}; } out;
+        SQLSMALLINT length = -1;
+        ASSERT_EQ(SQL_SUCCESS, wide
+            ? SQLGetInfoW(dbc, type, &out.value, sizeof(out.value), &length)
+            : SQLGetInfo(dbc, type, &out.value, sizeof(out.value), &length));
+        EXPECT_EQ(mask, out.value);
+        EXPECT_EQ(sizeof(out.value), static_cast<std::size_t>(length));
+        EXPECT_EQ(17u, out.before);
+        EXPECT_EQ(83u, out.after);
+      }
+    }
+    for (const auto type : {SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
+      SQLCHAR value[2]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
+      EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
+    }
+  }
+};
+
+TEST_F(SqlCapabilityMaskTest, PostgreSqlExactMasksAndConsistency) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(false));
+  ASSERT_NO_FATAL_FAILURE(exact_masks(false));
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftExactMasksAndConsistency) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  ASSERT_NO_FATAL_FAILURE(exact_masks(true));
+}
+}  // namespace
+
+
+namespace {
+TEST_F(BackendContractTest, UnknownProviderDeclaresNoSqlFeaturesOrMultipleResults) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  for (const auto type : {SQL_OJ_CAPABILITIES, SQL_AGGREGATE_FUNCTIONS,
+      SQL_STRING_FUNCTIONS, SQL_NUMERIC_FUNCTIONS, SQL_TIMEDATE_FUNCTIONS,
+      SQL_SYSTEM_FUNCTIONS, SQL_DATETIME_LITERALS, SQL_SUBQUERIES,
+      SQL_SQL92_PREDICATES, SQL_SQL92_VALUE_EXPRESSIONS, SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+      SQL_SQL92_STRING_FUNCTIONS, SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
+      SQL_SQL92_DATETIME_FUNCTIONS, SQL_SQL92_RELATIONAL_JOIN_OPERATORS,
+      SQL_BATCH_SUPPORT, SQL_BATCH_ROW_COUNT}) {
+    SCOPED_TRACE(type);
+    SQLUINTEGER mask = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(0u, mask);
+  }
+  for (const auto type : {SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
+    SQLCHAR value[2]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
+    EXPECT_STREQ("N", reinterpret_cast<const char*>(value));
+  }
+}
+
+TEST_F(BackendContractTest, SelectArraysAlsoAuthorizeMultipleResultsWithoutExplicitBatches) {
+  seen->select_array_authority = true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLCHAR value[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, value, sizeof(value), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
+  SQLUINTEGER mask = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(0u, mask);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_PARAM_ARRAY_SELECTS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PAS_BATCH), mask);
+}
+}  // namespace

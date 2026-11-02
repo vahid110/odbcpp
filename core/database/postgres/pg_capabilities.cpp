@@ -1,6 +1,66 @@
 #include "pg_backend_provider.h"
 
 namespace rs::core::database::postgres {
+namespace {
+SqlCapabilities common_sql_capabilities() noexcept {
+  SqlCapabilities result;
+  result.aggregate_all = true;
+  result.aggregate_average = true;
+  result.aggregate_count = true;
+  result.aggregate_distinct = true;
+  result.aggregate_maximum = true;
+  result.aggregate_minimum = true;
+  result.aggregate_sum = true;
+  result.batch_command = true;
+  result.batch_individual_counts = true;
+  result.batch_select = true;
+  result.date_literal = true;
+  result.datetime_current_date = true;
+  result.join_cross = true;
+  result.join_full = true;
+  result.join_inner = true;
+  result.join_inner_with_outer = true;
+  result.join_left = true;
+  result.join_natural = true;
+  result.join_nested = true;
+  result.join_right = true;
+  result.join_unordered_columns = true;
+  result.numeric_character_length = true;
+  result.numeric_extract = true;
+  result.numeric_octet_length = true;
+  result.numeric_position = true;
+  result.predicate_between = true;
+  result.predicate_comparison = true;
+  result.predicate_exists = true;
+  result.predicate_in = true;
+  result.predicate_like = true;
+  result.predicate_not_null = true;
+  result.predicate_null = true;
+  result.scalar_current_date = true;
+  result.scalar_current_time = true;
+  result.scalar_current_timestamp = true;
+  result.scalar_if_null = true;
+  result.scalar_lower = true;
+  result.scalar_upper = true;
+  result.string_lower = true;
+  result.string_substring = true;
+  result.string_trim_both = true;
+  result.string_trim_leading = true;
+  result.string_trim_trailing = true;
+  result.string_upper = true;
+  result.subquery_comparison = true;
+  result.subquery_exists = true;
+  result.subquery_in = true;
+  result.time_literal = true;
+  result.timestamp_literal = true;
+  result.value_case = true;
+  result.value_cast = true;
+  result.value_coalesce = true;
+  result.value_nullif = true;
+  return result;
+}
+}  // namespace
+
 BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexcept {
   BackendCapabilities result;
   result.dbms_name = display_name;
@@ -27,7 +87,7 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   result.catalog_names = result.column_aliases = result.describe_parameters = true;
   result.order_by_expressions = result.integrity = result.like_escape = true;
   result.order_by_requires_select = result.read_only = false;
-  result.outer_joins = result.procedures = result.non_nullable_columns = true;
+  result.procedures = result.non_nullable_columns = true;
   result.create_table = result.create_table_commit_preserve =
       result.create_table_commit_delete =
           result.create_table_column_collation = true;
@@ -41,6 +101,17 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   result.schema_in_dml = result.schema_in_procedures = true;
   result.schema_in_table_definitions = result.schema_in_index_definitions = true;
   result.schema_in_privileges = true;
+  result.sql = common_sql_capabilities();
+  result.sql.datetime_current_time = true;
+  result.sql.datetime_current_timestamp = true;
+  result.sql.numeric_bit_length = true;
+  result.sql.predicate_overlaps = true;
+  result.sql.predicate_quantified = true;
+  result.sql.row_null = true;
+  result.sql.row_subquery = true;
+  result.sql.row_value = true;
+  result.sql.subquery_correlated = true;
+  result.sql.subquery_quantified = true;
   return result;
 }
 
@@ -71,6 +142,21 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
+  // Start from the common table, not PostgreSQL-only claims. Native pass-through
+  // is not proof of a scalar escape; Redshift translations are declared below.
+  result.sql = common_sql_capabilities();
+  result.sql.scalar_day = true;
+  result.sql.scalar_hour = true;
+  result.sql.scalar_locate = true;
+  result.sql.scalar_log10 = true;
+  result.sql.scalar_minute = true;
+  result.sql.scalar_month = true;
+  result.sql.scalar_natural_log = true;
+  result.sql.scalar_second = true;
+  result.sql.scalar_trimmed_length = true;
+  result.sql.scalar_weekday = true;
+  result.sql.scalar_year = true;
+  result.sql.scalar_yearday = true;
   return result;
 }
 

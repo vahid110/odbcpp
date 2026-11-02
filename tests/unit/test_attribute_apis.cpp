@@ -1730,7 +1730,7 @@ TEST_F(AttributeApisTest, VariableBookmarksRequireStaticAndPreserveClosedSetting
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_STATIC_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_CA1_BOOKMARK);
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr)); EXPECT_EQ(0u,mask&SQL_CA1_BOOKMARK);
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_BOOKMARK_PERSISTENCE,&mask,sizeof(mask),nullptr)); EXPECT_EQ(SQL_BP_TRANSACTION,mask);
-  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_BATCH_SUPPORT,&mask,sizeof(mask),nullptr)); EXPECT_EQ(0u,mask);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_BATCH_SUPPORT,&mask,sizeof(mask),nullptr)); EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_BS_SELECT_EXPLICIT | SQL_BS_ROW_COUNT_EXPLICIT),mask);
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_FETCH_DIRECTION,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_FD_FETCH_BOOKMARK);
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_OFF),0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_FORWARD_ONLY),0));

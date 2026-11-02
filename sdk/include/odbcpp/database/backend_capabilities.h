@@ -10,6 +10,105 @@ enum class CorrelationNames { None, Different, Any };
 enum class GroupBySupport { None, EqualsSelect, ContainsSelect, Unrelated };
 enum class InfoSchemaSupport { None, Partial, Full };
 
+// Backend-declared SQL operations, independent of any client API bit numbering.
+// Scalar fields describe the dialect's escape forms, not similarly named native
+// functions. False is conservative: no claim, including for unknown providers.
+struct SqlCapabilities {
+  // Outer join forms.
+  bool join_left{false};
+  bool join_right{false};
+  bool join_full{false};
+  bool join_nested{false};
+  bool join_unordered_columns{false};
+  bool join_inner_with_outer{false};
+  bool join_all_comparisons{false};
+  // Aggregate operations.
+  bool aggregate_average{false};
+  bool aggregate_count{false};
+  bool aggregate_maximum{false};
+  bool aggregate_minimum{false};
+  bool aggregate_sum{false};
+  bool aggregate_distinct{false};
+  bool aggregate_all{false};
+  // Scalar string escapes.
+  bool scalar_upper{false};
+  bool scalar_lower{false};
+  bool scalar_trimmed_length{false};
+  bool scalar_locate{false};
+  // Scalar numeric escapes.
+  bool scalar_natural_log{false};
+  bool scalar_log10{false};
+  // Scalar datetime escapes.
+  bool scalar_current_date{false};
+  bool scalar_current_time{false};
+  bool scalar_current_timestamp{false};
+  bool scalar_year{false};
+  bool scalar_month{false};
+  bool scalar_day{false};
+  bool scalar_weekday{false};
+  bool scalar_yearday{false};
+  bool scalar_hour{false};
+  bool scalar_minute{false};
+  bool scalar_second{false};
+  // Scalar null handling.
+  bool scalar_if_null{false};
+  // Datetime literals.
+  bool date_literal{false};
+  bool time_literal{false};
+  bool timestamp_literal{false};
+  // Subqueries.
+  bool subquery_comparison{false};
+  bool subquery_exists{false};
+  bool subquery_in{false};
+  bool subquery_quantified{false};
+  bool subquery_correlated{false};
+  // Standard predicates.
+  bool predicate_exists{false};
+  bool predicate_not_null{false};
+  bool predicate_null{false};
+  bool predicate_like{false};
+  bool predicate_in{false};
+  bool predicate_between{false};
+  bool predicate_comparison{false};
+  bool predicate_overlaps{false};
+  bool predicate_quantified{false};
+  // Standard value expressions.
+  bool value_case{false};
+  bool value_cast{false};
+  bool value_coalesce{false};
+  bool value_nullif{false};
+  // Row constructors.
+  bool row_value{false};
+  bool row_null{false};
+  bool row_subquery{false};
+  // Standard string functions.
+  bool string_lower{false};
+  bool string_upper{false};
+  bool string_substring{false};
+  bool string_trim_both{false};
+  bool string_trim_leading{false};
+  bool string_trim_trailing{false};
+  // Standard numeric value functions.
+  bool numeric_character_length{false};
+  bool numeric_extract{false};
+  bool numeric_octet_length{false};
+  bool numeric_position{false};
+  bool numeric_bit_length{false};
+  // Standard datetime functions.
+  bool datetime_current_date{false};
+  bool datetime_current_time{false};
+  bool datetime_current_timestamp{false};
+  // Relational joins.
+  bool join_cross{false};
+  bool join_inner{false};
+  bool join_natural{false};
+  // Explicit batches.
+  bool batch_select{false};
+  bool batch_command{false};
+  // Per-statement batch counts.
+  bool batch_individual_counts{false};
+};
+
 // No ODBC identifiers or native protocol IDs. Zero limits mean unknown/no
 // declared limit. Strings must remain valid for the provider lifetime.
 // These describe the exposed backend profile, not every server feature.
@@ -41,7 +140,6 @@ struct BackendCapabilities {
   bool read_only{true};
   bool integrity{false};
   bool like_escape{false};
-  bool outer_joins{false};
   bool procedures{false};
   bool concat_null_yields_null{true};
   bool non_nullable_columns{false};
@@ -70,5 +168,6 @@ struct BackendCapabilities {
   bool schema_in_table_definitions{false};
   bool schema_in_index_definitions{false};
   bool schema_in_privileges{false};
+  SqlCapabilities sql{};
 };
 } // namespace rs::core::database
