@@ -116,14 +116,20 @@ The driver internally generates standard ODBC 3.x / ISO 9075 SQLSTATE strings (5
 - `01004` (Data truncated)
 - `08003` (Connection not open)
 
-The driver does not internally translate SQLSTATEs based on `SQL_OV_ODBC2`. Per the ODBC specification,
+The driver does not internally translate SQLSTATEs based on `SQL_OV_ODBC2`; it emits modern
+ODBC 3.x SQLSTATEs directly. When mediated by a Driver Manager, the Driver Manager performs
 SQLSTATE translation from ODBC 3.x classes (such as `HYxxx`) to legacy ODBC 2.x classes (such as `S1xxx`)
-is the responsibility of the Driver Manager when returning diagnostics to an ODBC 2.x application.
+when returning diagnostics to an ODBC 2.x application. Direct driver callers operating under `SQL_OV_ODBC2`
+receive modern 3.x SQLSTATEs; native driver-side translation under `SQL_OV_ODBC2` is driver debt tracked
+for Unit C qualification.
 
-Examples of Driver Manager SQLSTATE remappings:
+Standard Driver Manager SQLSTATE remappings (per Microsoft ODBC Appendix Y):
+- `HY000` -> `S1000` (General error)
 - `HY010` -> `S1010` (Function sequence error)
-- `HY024` -> `S1092` / `S1024` (Invalid attribute / option value)
-- `HY092` -> `S1092` (Invalid option number)
+- `HY024` -> `S1009` (Invalid argument value)
+- `HY092` -> `S1092` (Option type out of range)
+- `01004` -> `01004` (Data truncated)
+- `08003` -> `08003` (Connection not open)
 
 ### 5.2 Legacy `SQLError` and `SQLErrorW` semantics
 
