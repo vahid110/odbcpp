@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <string_view>
@@ -74,6 +75,96 @@ TEST(SqlConvertEscapeTest, MalformedCallsAndUnsupportedTargetsRefuseBeforeDispat
     EXPECT_EQ("SELECT CAST(1 AS INTEGER)", translate_odbc_sql("SELECT {fn CONVERT(1,SQL_INTEGER)}", profile).sql);
     EXPECT_EQ("SELECT '{fn CONVERT(1,SQL_INTEGER)}', CONVERTX(1,SQL_INTEGER)",
         translate_odbc_sql("SELECT '{fn CONVERT(1,SQL_INTEGER)}', {fn CONVERTX(1,SQL_INTEGER)}", profile).sql);
+  }
+}
+
+TEST(SqlConvertEscapeTest, CharacterBinaryAndUuidPoliciesAreExplicitPerProduct) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto* target : {"SQL_CHAR", "SQL_VARCHAR", "SQL_LONGVARCHAR",
+                           "SQL_WCHAR", "SQL_WVARCHAR", "SQL_WLONGVARCHAR"}) {
+    const auto sql = "SELECT {fn CONVERT('Grüße'," + std::string(target) + ")}";
+    EXPECT_EQ("SELECT CAST('Grüße' AS TEXT)", translate_odbc_sql(sql).sql);
+    EXPECT_EQ("SELECT CAST('Grüße' AS VARCHAR(65535))",
+        translate_odbc_sql(sql, SqlDialectProfile::Redshift).sql);
+  }
+  for (const auto* target : {"SQL_BINARY", "SQL_VARBINARY", "SQL_LONGVARBINARY"}) {
+    const auto sql = "SELECT {fn CONVERT(NULL," + std::string(target) + ")}";
+    EXPECT_EQ("SELECT CAST(NULL AS BYTEA)", translate_odbc_sql(sql).sql);
+    EXPECT_EQ("SELECT CAST(NULL AS VARBYTE)", translate_odbc_sql(sql, SqlDialectProfile::Redshift).sql);
+  }
+  EXPECT_EQ("SELECT CAST(NULL AS UUID)", translate_odbc_sql("SELECT {fn CONVERT(NULL,SQL_GUID)}").sql);
+  EXPECT_EQ(SqlTranslationError::Unsupported,
+      translate_odbc_sql("SELECT {fn CONVERT(NULL,SQL_GUID)}", SqlDialectProfile::Redshift).error);
+  EXPECT_EQ("SELECT CAST((ARRAY[1,2])[1] AS INTEGER)",
+      translate_odbc_sql("SELECT {fn CONVERT((ARRAY[1,2])[1],SQL_INTEGER)}").sql);
+  for (const auto* target : {"SQL_INTERVAL_YEAR", "SQL_INTERVAL_MONTH", "SQL_INTERVAL_YEAR_TO_MONTH",
+                           "SQL_INTERVAL_DAY", "SQL_INTERVAL_HOUR", "SQL_INTERVAL_MINUTE",
+                           "SQL_INTERVAL_SECOND", "SQL_INTERVAL_DAY_TO_HOUR", "SQL_INTERVAL_DAY_TO_MINUTE",
+                           "SQL_INTERVAL_DAY_TO_SECOND", "SQL_INTERVAL_HOUR_TO_MINUTE",
+                           "SQL_INTERVAL_HOUR_TO_SECOND", "SQL_INTERVAL_MINUTE_TO_SECOND"}) {
+    for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+      const auto result = translate_odbc_sql("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", profile);
+      EXPECT_EQ(SqlTranslationError::Unsupported, result.error) << target;
+      EXPECT_TRUE(result.sql.empty());
+    }
+  }
+}
+
+TEST(SqlTimestampEscapeTest, SupportedUnitsTranslateAndKeepMarkerAssociation) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}) {
+      const auto sql = "SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) + ", ?, ?)}";
+      const auto result = translate_odbc_sql(sql, profile);
+      ASSERT_TRUE(result) << result.message << sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("TIMESTAMPADD")) << result.sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("SQL_TSI_")) << result.sql;
+      EXPECT_EQ(2, std::count(result.sql.begin(), result.sql.end(), '?')) << result.sql;
+    }
+    for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "MONTH", "QUARTER", "YEAR"}) {
+      const auto sql = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) + ", first_value(), second_value())}";
+      const auto result = translate_odbc_sql(sql, profile);
+      ASSERT_TRUE(result) << result.message << sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("TIMESTAMPDIFF")) << result.sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("SQL_TSI_")) << result.sql;
+      const auto first = result.sql.find("first_value()");
+      const auto second = result.sql.find("second_value()");
+      ASSERT_NE(std::string::npos, first);
+      ASSERT_NE(std::string::npos, second);
+      EXPECT_LT(first, second) << result.sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("first_value()", first + 1));
+      EXPECT_EQ(std::string::npos, result.sql.find("second_value()", second + 1));
+    }
+  }
+}
+
+TEST(SqlTimestampEscapeTest, FractionalAdditionAndAmbiguousWeekDifferenceRefuseExplicitly) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* sql : {"{fn TIMESTAMPADD(SQL_TSI_FRAC_SECOND,1,NULL)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_FRAC_SECOND,NULL,NULL)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_WEEK,NULL,NULL)}",
+                           "{fn TIMESTAMPADD(SQL_TSI_UNKNOWN,1,NULL)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_UNKNOWN,NULL,NULL)}"}) {
+      const auto result = translate_odbc_sql(sql, profile);
+      EXPECT_EQ(SqlTranslationError::Unsupported, result.error) << sql;
+      EXPECT_TRUE(result.sql.empty());
+    }
+  }
+}
+
+TEST(SqlTimestampEscapeTest, InvalidArityUnitExpressionAndTrailingSqlNeverPassThrough) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* sql : {"{fn TIMESTAMPADD}", "{fn TIMESTAMPADD()}", "{fn TIMESTAMPADD(SQL_TSI_DAY,1)}",
+                           "{fn TIMESTAMPADD(SQL_TSI_DAY,,x)}", "{fn TIMESTAMPADD(SQL_TSI_DAY,1,x,2)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_DAY,x)}", "{fn TIMESTAMPDIFF(SQL_TSI_DAY,x,/* empty */)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_DAY,x,y) + 1}", "{fn TIMESTAMPADD(?,1,x)}",
+                           "{fn TIMESTAMPDIFF('SQL_TSI_DAY',x,y)}", "{fn TIMESTAMPADD(SQL_TSI_DAY+1,1,x)}"}) {
+      const auto result = translate_odbc_sql(sql, profile);
+      EXPECT_EQ(SqlTranslationError::InvalidSyntax, result.error) << sql;
+      EXPECT_TRUE(result.sql.empty());
+    }
   }
 }
 
