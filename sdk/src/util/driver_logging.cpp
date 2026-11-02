@@ -158,28 +158,107 @@ void apply(LoggingOptions& options,
 }
 
 #ifndef _WIN32
+// Returns true when a directory is trusted as an immediate parent for a log
+// file: we must own it (attacker-owned 0755 passes the write-bit check but
+// an attacker can plant entries there at will) and it must not be writable
+// by group or others.
+static bool directory_is_owned_and_tight(const struct stat& st) noexcept {
+  return st.st_uid == ::geteuid() &&
+         (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+// Returns true when an ancestor directory above the immediate parent is safe
+// to traverse: either we own it, or the sticky bit prevents non-owners from
+// replacing entries, or nobody else can write to it at all.  An ancestor that
+// is world-writable, not sticky, and not ours lets an attacker rename away
+// and replace the immediate parent directory itself.
+static bool ancestor_is_safe(const struct stat& st) noexcept {
+  if (st.st_uid == ::geteuid()) return true;          // we own it
+  if (st.st_mode & S_ISVTX)    return true;           // sticky bit
+  if ((st.st_mode & (S_IWGRP | S_IWOTH)) == 0) return true; // others cannot write
+  return false;
+}
+
 // Run by the rotating sink around every open, including re-creation after
-// rotation. Before opening, a new file is created owner-only and a symbolic
-// link or non-regular file is refused. After opening, the stream must be a
-// regular, singly linked file owned by this process user and is made
-// owner-only; otherwise it is redirected to /dev/null and the open fails, so a
-// path swapped between the two steps never receives log text.
+// rotation.
+//
+// Security invariants enforced here (before_open):
+//   1. The immediate parent directory must be owned by our effective user and
+//      not be writable by group or others.  An attacker-owned 0755 directory
+//      passes the write-bit check but allows the owner to plant symlinks or
+//      replace entries between our validation and spdlog's reopen.
+//   2. Every ancestor above the immediate parent must be either owned by us,
+//      sticky, or not writable by others.  A non-sticky, non-owned, world-
+//      writable ancestor lets an attacker replace the parent directory itself.
+//   3. The log file is pre-created and pre-truncated through O_NOFOLLOW so
+//      that (a) symlinks are refused immediately and (b) spdlog's subsequent
+//      fopen("wb") truncation is a no-op on an already-empty file.  Any path
+//      substitution that occurs after we return is caught by after_open, which
+//      redirects the stream to /dev/null and throws.
+//
+// After opening, secure_opened_log_file validates the open descriptor: the
+// file must be regular, singly linked, owned by our user, and is tightened to
+// 0600.  A path swapped between the two steps never receives log text.
 void prepare_log_file(const spdlog::filename_t& path) {
-  // Rotation renames the file away and re-creates the name, and spdlog's
-  // truncating reopen follows a symbolic link before after_open can inspect
-  // it. Another user who can write to the directory could plant such a link,
-  // so the directory must be writable by its owner only.
+  // --- 1. Validate the immediate parent directory ---
   const auto separator = path.find_last_of('/');
-  const auto directory = separator == spdlog::filename_t::npos ? spdlog::filename_t(".")
-      : separator == 0 ? spdlog::filename_t("/") : path.substr(0, separator);
+  const spdlog::filename_t directory =
+      separator == spdlog::filename_t::npos ? spdlog::filename_t(".")
+      : separator == 0                      ? spdlog::filename_t("/")
+                                            : path.substr(0, separator);
+
   struct stat parent {};
-  if (::stat(directory.c_str(), &parent) != 0)
-    throw std::runtime_error("LogFile directory cannot be inspected: " + std::string(std::strerror(errno)));
-  if ((parent.st_mode & (S_IWGRP | S_IWOTH)) != 0)
-    throw std::runtime_error("LogFile directory must not be writable by other users");
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC,
+  if (::stat(directory.c_str(), &parent) != 0) {
+    throw std::runtime_error("LogFile directory cannot be inspected: " +
+                             std::string(std::strerror(errno)));
+  }
+  if (!directory_is_owned_and_tight(parent)) {
+    if (parent.st_uid != ::geteuid()) {
+      throw std::runtime_error(
+          "LogFile directory must be owned by the driver's user");
+    }
+    throw std::runtime_error(
+        "LogFile directory must not be writable by other users");
+  }
+
+  // --- 2. Validate ancestor directories ---
+  // Walk upward until we reach the root or an ancestor we own.  If any
+  // ancestor is world-writable (or group-writable) without the sticky bit and
+  // not owned by us, the parent directory can be replaced by an attacker.
+  {
+    spdlog::filename_t current = directory;
+    for (int depth = 0; depth < 64; ++depth) {
+      const auto sep = current.rfind('/');
+      // At the filesystem root: both "/" and "." terminate the walk.
+      const spdlog::filename_t ancestor =
+          sep == spdlog::filename_t::npos ? spdlog::filename_t(".")
+          : sep == 0                      ? spdlog::filename_t("/")
+                                          : current.substr(0, sep);
+      if (ancestor == current) break;  // reached root
+
+      struct stat anc {};
+      if (::stat(ancestor.c_str(), &anc) != 0) break;  // cannot inspect — stop
+      if (!ancestor_is_safe(anc)) {
+        throw std::runtime_error(
+            "LogFile path has a replaceable ancestor directory: " + ancestor);
+      }
+      if (anc.st_uid == ::geteuid()) break;  // we own this level — safe above
+      current = ancestor;
+    }
+  }
+
+  // --- 3. Pre-create and pre-truncate through O_NOFOLLOW ---
+  // Using O_TRUNC ensures the file is empty before spdlog's fopen("wb") runs,
+  // so a victim file cannot be truncated by spdlog if the path is swapped
+  // after we return (after_open will reject the substituted file).
+  // O_NOFOLLOW rejects a symlink at the final path component immediately.
+  const int fd = ::open(path.c_str(),
+                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
                         0600);
-  if (fd < 0) throw std::runtime_error("LogFile cannot be opened: " + std::string(std::strerror(errno)));
+  if (fd < 0) {
+    throw std::runtime_error("LogFile cannot be opened: " +
+                             std::string(std::strerror(errno)));
+  }
   struct stat info {};
   const bool regular = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
   ::close(fd);

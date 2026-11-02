@@ -243,6 +243,100 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
       {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", (shared / "driver.log").string()}}, {}, {});
   EXPECT_THROW(DriverLogger::create(exposed, 1), std::runtime_error);
   EXPECT_FALSE(std::filesystem::exists(shared / "driver.log"));
+
+  // An attacker-owned-0755 immediate parent (no group/other write, wrong
+  // owner) must be rejected.  We cannot chown in an unprivileged test, so we
+  // detect the case indirectly: if /tmp is owned by a different user (root on
+  // most systems) and is not our temp base, a path directly in /tmp fails the
+  // ownership check.  When /tmp IS ours (running as root or a private-tmp
+  // container) we skip rather than false-fail.
+  {
+    struct stat tmp_stat {};
+    ASSERT_EQ(0, ::stat("/tmp", &tmp_stat));
+    if (tmp_stat.st_uid != ::geteuid()) {
+      // /tmp is owned by someone else.  Create a path directly inside it so
+      // the immediate parent is /tmp (wrong owner).
+      const auto direct_path = std::filesystem::path("/tmp") /
+          ("odbcpp-owner-check-" + std::to_string(::getpid()) + ".log");
+      const auto direct_opts = LoggingOptions::resolve(
+          {{"LogLevel", "Info"}, {"LogSink", "File"},
+           {"LogFile", direct_path.string()}}, {}, {});
+      EXPECT_THROW(DriverLogger::create(direct_opts, 1), std::runtime_error)
+          << "immediate parent owned by another user must be rejected";
+      // Victim must be untouched.
+      EXPECT_FALSE(std::filesystem::exists(direct_path));
+    }
+  }
+
+  std::filesystem::remove_all(directory);
+}
+
+// A sentinel victim file's content and mode must remain unchanged when an
+// attempted log-open fails because the configured path is a symlink to the
+// victim.  This is the core TOCTOU content-preservation check: O_NOFOLLOW in
+// prepare_log_file must prevent the open from reaching the victim at all, so
+// spdlog's fopen("wb") is never reached.
+TEST(DriverLoggerTest, VictimContentAndModePreservedWhenLogPathIsSymlink) {
+  const auto directory = temporary_directory("odbcpp-victim-preserve");
+  const auto victim = directory / "victim.txt";
+  const std::string sentinel = "VICTIM_SENTINEL_MUST_SURVIVE_9283746";
+  {
+    std::ofstream f(victim);
+    f << sentinel;
+  }
+  ASSERT_EQ(0, ::chmod(victim.c_str(), 0644));
+
+  const auto link = directory / "driver.log";
+  std::filesystem::create_symlink(victim, link);
+
+  const auto opts = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", link.string()}},
+      {}, {});
+  EXPECT_THROW(DriverLogger::create(opts, 1), std::runtime_error);
+
+  // Content must be byte-for-byte unchanged.
+  EXPECT_EQ(sentinel, read_file(victim));
+  // Mode must be unchanged (no chmod from our side).
+  struct stat info {};
+  ASSERT_EQ(0, ::stat(victim.c_str(), &info));
+  EXPECT_EQ(0644, info.st_mode & 0777);
+
+  std::filesystem::remove_all(directory);
+}
+
+// The immediate parent directory must be owned by the effective user.
+// An attacker-owned directory with mode 0755 (not group/other writable) passes
+// the old write-bit check but must be rejected by the new ownership check.
+// We test the rejection message using a path whose parent we know is not ours,
+// and the positive case (our own tight directory) to confirm it still works.
+TEST(DriverLoggerTest, LogFileDirectoryOwnershipIsEnforced) {
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "Running as root; ownership check cannot be meaningfully tested";
+  }
+
+  // Positive: our own 0700 directory is accepted.
+  const auto directory = temporary_directory("odbcpp-log-dir-owner");
+  ASSERT_EQ(0, ::chmod(directory.c_str(), 0700));
+  const auto good_path = directory / "driver.log";
+  const auto good_opts = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", good_path.string()}},
+      {}, {});
+  EXPECT_NO_THROW(DriverLogger::create(good_opts, 1));
+
+  // Negative: path directly under /tmp when /tmp is not owned by us.
+  struct stat tmp_stat {};
+  ASSERT_EQ(0, ::stat("/tmp", &tmp_stat));
+  if (tmp_stat.st_uid != ::geteuid()) {
+    const auto bad_path = std::filesystem::path("/tmp") /
+        ("odbcpp-dir-owner-" + std::to_string(::getpid()) + ".log");
+    const auto bad_opts = LoggingOptions::resolve(
+        {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", bad_path.string()}},
+        {}, {});
+    EXPECT_THROW(DriverLogger::create(bad_opts, 1), std::runtime_error)
+        << "parent owned by root must be rejected";
+    EXPECT_FALSE(std::filesystem::exists(bad_path));
+  }
+
   std::filesystem::remove_all(directory);
 }
 #endif
