@@ -120,42 +120,85 @@ actor=$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.
 > [!IMPORTANT]
 > Never embed tokens into remote URLs or pass them as command-line arguments (e.g. `http.extraheader`), which are visible in process tables (`ps`). Instead, use Git's built-in credential helper powered by `gh auth git-credential`.
 >
-> **SSH Transport Guard:** Git's credential helpers only intercept HTTP/HTTPS transports. If a clone has an SSH `origin`, an SSH `pushurl`, or a Git `url.<base>.insteadOf` rewrite configured, Git bypasses `credential.helper` and attempts authentication via local SSH keys (risking personal identity leaks). Bot pushes must therefore:
-> 1. Bind to the explicit canonical HTTPS URL (`https://github.com/vahid110/odbcpp.git`).
-> 2. Verify that the effective resolved push URL is HTTPS (detecting and failing closed on SSH rewrites).
-> 3. Pass `-c core.sshCommand="false"` to fail closed if Git attempts any SSH invocation under any configuration.
+> **Bot Identity Transport Security:** To guarantee that pushes authenticate strictly as the bot identity and never leak or fall back to personal credentials:
+> 1. **Exact Canonical Destination Binding:** Pushes must bind to the canonical HTTPS repository (`https://github.com/vahid110/odbcpp.git`). URLs are verified by exact string comparison against canonical endpoints, preventing prefix attacks (`odbcpp-other`), path traversals, or credential-bearing URLs (`https://user:token@...`). Rejected raw URLs are never printed in error messages to prevent leaking embedded secrets.
+> 2. **Neutralize Inherited HTTP Overrides:** Pre-flight checks verify that no local or global `http.*extraHeader` (such as personal `Authorization` headers) is configured, and `-c http.extraHeader=` clears any runtime values.
+> 3. **Protocol Restriction & Fail-Closed SSH Defense:** Pre-flight checks detect and reject `url.*pushInsteadOf` rewrites. At push execution, `GIT_ALLOW_PROTOCOL=https` and `-c protocol.allow=never -c protocol.https.allow=always` restrict Git's transport engine strictly to HTTPS. `GIT_SSH_COMMAND="false"` and `-c core.sshCommand="false"` ensure that any attempt to execute SSH aborts immediately without socket access or invoking personal SSH keys/agents.
 >
-> Offline contracts proving this protection are tested in `tools/development/test_safe_bot_push.py`.
+> Automated offline contracts proving these protections across all threat scenarios are tested in `tools/development/test_safe_bot_push.py`.
 
 #### POSIX Shell (macOS, Linux, WSL):
 ```bash
-# 1. Verify target repository resolves to HTTPS (detects SSH rewrites / non-HTTPS remotes)
 TARGET_REPO="https://github.com/vahid110/odbcpp.git"
-EFFECTIVE_URL=$(git ls-remote --get-url "$TARGET_REPO")
-case "$EFFECTIVE_URL" in
-  https://github.com/vahid110/odbcpp* | https://*.github.com/vahid110/odbcpp*) ;;
-  *) echo "Error: Push target resolved to non-HTTPS ($EFFECTIVE_URL). Prohibited for bot push." >&2; exit 1 ;;
-esac
 
-# 2. Push over verified HTTPS with fail-closed SSH guard and ephemeral credential helper
-git -c credential.helper= -c credential.helper='!gh auth git-credential' \
-    -c core.sshCommand="false" \
-    push "$TARGET_REPO" codex/<branch-name>
+# 1. Reject inherited HTTP header overrides and pushInsteadOf rewrites (without echoing secrets)
+if git config --name-only --get-regexp '^http\..*extraheader$' >/dev/null 2>&1; then
+  echo "Error: Inherited http.*extraHeader configuration detected in git config. Prohibited for bot push." >&2
+  exit 1
+fi
+if git config --name-only --get-regexp '^url\..*pushinsteadof$' >/dev/null 2>&1; then
+  echo "Error: Inherited url.*pushInsteadOf configuration detected in git config. Prohibited for bot push." >&2
+  exit 1
+fi
+
+# 2. Exact canonical URL verification (fetch and push resolution; fails closed without echoing raw URL)
+FETCH_URL=$(git ls-remote --get-url "$TARGET_REPO")
+if [ "$FETCH_URL" != "https://github.com/vahid110/odbcpp.git" ] && [ "$FETCH_URL" != "https://github.com/vahid110/odbcpp" ]; then
+  echo "Error: Push target did not resolve to canonical HTTPS repository URL." >&2
+  exit 1
+fi
+
+PUSH_URL=$(git remote get-url --push origin 2>/dev/null || echo "$TARGET_REPO")
+if [ "$PUSH_URL" != "https://github.com/vahid110/odbcpp.git" ] && [ "$PUSH_URL" != "https://github.com/vahid110/odbcpp" ]; then
+  echo "Error: Push destination did not resolve to canonical HTTPS repository URL." >&2
+  exit 1
+fi
+
+# 3. Push over HTTPS with strict protocol boundary, cleared extraHeader, and fail-closed defenses
+GIT_ALLOW_PROTOCOL=https GIT_SSH_COMMAND="false" \
+  git -c protocol.allow=never -c protocol.https.allow=always \
+      -c core.sshCommand="false" \
+      -c credential.helper= -c credential.helper='!gh auth git-credential' \
+      -c http.extraHeader= \
+      push "$TARGET_REPO" codex/<branch-name>
 ```
 
 #### Windows Native (PowerShell):
 ```powershell
-# 1. Verify target repository resolves to HTTPS (detects SSH rewrites / non-HTTPS remotes)
 $TargetRepo = "https://github.com/vahid110/odbcpp.git"
-$EffectiveUrl = (git ls-remote --get-url $TargetRepo).Trim()
-if ($EffectiveUrl -notlike "https://github.com/vahid110/odbcpp*") {
-    Write-Error "Error: Push target resolved to non-HTTPS ($EffectiveUrl). Prohibited for bot push."
+
+# 1. Reject inherited HTTP header overrides and pushInsteadOf rewrites
+if (git config --name-only --get-regexp '^http\..*extraheader$') {
+    Write-Error "Error: Inherited http.*extraHeader configuration detected in git config. Prohibited for bot push."
+    exit 1
+}
+if (git config --name-only --get-regexp '^url\..*pushinsteadof$') {
+    Write-Error "Error: Inherited url.*pushInsteadOf configuration detected in git config. Prohibited for bot push."
     exit 1
 }
 
-# 2. Push over verified HTTPS with fail-closed SSH guard and ephemeral credential helper
-git -c credential.helper= -c credential.helper="!gh auth git-credential" `
+# 2. Exact canonical URL verification (fetch and push resolution)
+$FetchUrl = (git ls-remote --get-url $TargetRepo).Trim()
+if ($FetchUrl -ne "https://github.com/vahid110/odbcpp.git" -and $FetchUrl -ne "https://github.com/vahid110/odbcpp") {
+    Write-Error "Error: Push target did not resolve to canonical HTTPS repository URL."
+    exit 1
+}
+
+$PushUrl = (git remote get-url --push origin 2>$null)
+if (-not $PushUrl) { $PushUrl = $TargetRepo }
+$PushUrl = $PushUrl.Trim()
+if ($PushUrl -ne "https://github.com/vahid110/odbcpp.git" -and $PushUrl -ne "https://github.com/vahid110/odbcpp") {
+    Write-Error "Error: Push destination did not resolve to canonical HTTPS repository URL."
+    exit 1
+}
+
+# 3. Push over HTTPS with strict protocol boundary, cleared extraHeader, and fail-closed defenses
+$env:GIT_ALLOW_PROTOCOL = "https"
+$env:GIT_SSH_COMMAND = "false"
+git -c protocol.allow=never -c protocol.https.allow=always `
     -c core.sshCommand="false" `
+    -c credential.helper= -c credential.helper="!gh auth git-credential" `
+    -c http.extraHeader= `
     push $TargetRepo codex/<branch-name>
 ```
 
