@@ -358,6 +358,94 @@ SqlTranslationResult translate_convert(std::string_view function, std::size_t na
   return failure(SqlTranslationError::Unsupported, "CONVERT target is not supported by this profile");
 }
 
+// ODBC supplies today's date for a TIME operand. A textual round trip also
+// handles typed DATE/TIMESTAMP and bound parameters without repeating them or
+// introducing a cast from TIME directly to TIMESTAMP (unsupported by PG).
+// Timestamp extensions use local wall-clock fields, not timezone arithmetic.
+std::string timestamp_operand(std::string_view argument, SqlDialectProfile profile) {
+  std::string result{"CAST(REGEXP_REPLACE(BTRIM(CAST(("};
+  result.append(argument);
+  if (profile == SqlDialectProfile::PostgreSql) {
+    result += ") AS TEXT)) COLLATE \"C\", '^(?=[0-9]{2}:)', CAST(CURRENT_DATE AS TEXT) || ' ') AS TIMESTAMP)";
+  } else {
+    result += ") AS VARCHAR(MAX))), '^(?=[0-9]{2}:)', CAST(CURRENT_DATE AS VARCHAR(10)) || ' ', 1, 'p') AS TIMESTAMP)";
+  }
+  return result;
+}
+
+struct TimestampUnit {
+  std::string_view keyword;
+  std::string_view native;
+  std::string_view pg_interval;
+  unsigned seconds;
+};
+
+std::string pg_boundary_ordinal(std::string_view argument, const TimestampUnit& unit) {
+  const auto timestamp = timestamp_operand(argument, SqlDialectProfile::PostgreSql);
+  if (unit.seconds != 0) {
+    return "(EXTRACT(EPOCH FROM DATE_TRUNC('" + std::string(unit.native) + "', " +
+        timestamp + ")) / " + std::to_string(unit.seconds) + ")";
+  }
+  // Truncate both sides to calendar boundaries before AGE: its interval then
+  // contains whole months only. Multiplying those stored months by 12 (month)
+  // or 4 (quarter) makes EXTRACT(YEAR) the signed boundary ordinal. The epoch
+  // cancels in the difference, including across PostgreSQL's missing year zero.
+  // This stays in the caller's expression scope (window/aggregate operands)
+  // and evaluates the application's operand exactly once.
+  const auto scale = unit.native == "month" ? "12" : unit.native == "quarter" ? "4" : "1";
+  return "EXTRACT(YEAR FROM (AGE(DATE_TRUNC('" + std::string(unit.native) + "', " +
+      timestamp + "), TIMESTAMP '2000-01-01') * " + scale + "))";
+}
+
+SqlTranslationResult translate_timestamp(std::string_view function, std::size_t name_end,
+                                         SqlDialectProfile profile, bool addition) {
+  const auto arguments = call_arguments<3>(function, name_end);
+  if (!arguments) return failure(SqlTranslationError::InvalidSyntax, "Timestamp escape requires three arguments");
+  const auto keyword = keyword_argument((*arguments)[0]);
+  if (!keyword) return failure(SqlTranslationError::InvalidSyntax, "Timestamp escape requires one interval keyword");
+  constexpr std::array units{
+      TimestampUnit{"SQL_TSI_SECOND", "second", "1 second", 1},
+      TimestampUnit{"SQL_TSI_MINUTE", "minute", "1 minute", 60},
+      TimestampUnit{"SQL_TSI_HOUR", "hour", "1 hour", 3600},
+      TimestampUnit{"SQL_TSI_DAY", "day", "1 day", 86400},
+      TimestampUnit{"SQL_TSI_WEEK", "week", "7 days", 604800},
+      TimestampUnit{"SQL_TSI_MONTH", "month", "1 month", 0},
+      TimestampUnit{"SQL_TSI_QUARTER", "quarter", "3 months", 0},
+      TimestampUnit{"SQL_TSI_YEAR", "year", "1 year", 0}};
+  for (const auto& unit : units) {
+    if (!ascii_word_equal(*keyword, unit.keyword)) continue;
+    if (!addition && unit.native == "week") break;
+    std::string result;
+    if (profile == SqlDialectProfile::Redshift) {
+      result = addition ? "DATEADD(" : "DATEDIFF(";
+      result.append(unit.native);
+      result += ", ";
+      if (addition) {
+        result += "CAST((";
+        result.append((*arguments)[1]);
+        result += ") AS INTEGER)";
+      } else {
+        result += timestamp_operand((*arguments)[1], profile);
+      }
+      result += ", " + timestamp_operand((*arguments)[2], profile) + ')';
+    } else if (addition) {
+      result = "(CAST((";
+      result.append((*arguments)[1]);
+      result += ") AS BIGINT) * INTERVAL '";
+      result.append(unit.pg_interval);
+      result += "' + " + timestamp_operand((*arguments)[2], profile) + ')';
+    } else {
+      // Negate start-minus-end to preserve the application's marker order.
+      result = "CAST(-(" + pg_boundary_ordinal((*arguments)[1], unit) + " - " +
+          pg_boundary_ordinal((*arguments)[2], unit) + ") AS BIGINT)";
+    }
+    return {std::move(result), SqlTranslationError::None, {}};
+  }
+  // FRAC_SECOND means nanoseconds, not the native microsecond interval.
+  // WEEK difference has no agreed cross-product week-origin contract yet.
+  return failure(SqlTranslationError::Unsupported, "Timestamp interval is not supported by this profile");
+}
+
 // Extract only the outer call's argument slices. Expressions remain native
 // authority; skipping lexical bodies and nested parentheses preserves commas
 // and parameter order without inventing an expression parser.
@@ -701,6 +789,12 @@ SqlTranslationResult translate_escape(std::string_view body, SqlDialectProfile p
           static_cast<unsigned char>(function[name_end]))) ++name_end;
       if (ascii_word_equal(function.substr(*first, name_end - *first), "CONVERT")) {
         return translate_convert(function, name_end, profile);
+      }
+      if (ascii_word_equal(function.substr(*first, name_end - *first), "TIMESTAMPADD")) {
+        return translate_timestamp(function, name_end, profile, true);
+      }
+      if (ascii_word_equal(function.substr(*first, name_end - *first), "TIMESTAMPDIFF")) {
+        return translate_timestamp(function, name_end, profile, false);
       }
     }
     if (profile == SqlDialectProfile::Redshift) {

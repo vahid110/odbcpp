@@ -169,6 +169,28 @@ class NativeSqlIntegrationTest : public ::testing::Test {
     if (environment_) SQLFreeHandle(SQL_HANDLE_ENV, environment_);
   }
 
+  void expect_scalar(const std::string& sql, const char* expected) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())), SQL_NTS))
+        << sql << " SQLSTATE=" << diagnostic_state(SQL_HANDLE_STMT, statement_);
+    ASSERT_NO_FATAL_FAILURE(expect_fetched_scalar(expected));
+  }
+
+  void expect_fetched_scalar(const char* expected) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+    SQLCHAR actual[256]{};
+    SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement_, 1, SQL_C_CHAR, actual, sizeof(actual), &length));
+    if (expected) {
+      ASSERT_NE(SQL_NULL_DATA, length);
+      EXPECT_STREQ(expected, reinterpret_cast<const char*>(actual));
+    } else {
+      EXPECT_EQ(SQL_NULL_DATA, length);
+    }
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  }
+
   SQLHENV environment_{SQL_NULL_HENV};
   SQLHDBC connection_{SQL_NULL_HDBC};
   SQLHSTMT statement_{SQL_NULL_HSTMT};
@@ -499,6 +521,162 @@ TEST_F(NativeSqlIntegrationTest, ExecutesEscapesInDirectAndPreparedSql) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetData(statement_, 1, SQL_C_CHAR, text, sizeof(text), nullptr));
   EXPECT_STREQ("prepared", reinterpret_cast<const char*>(text));
+}
+
+TEST_F(NativeSqlIntegrationTest, ConvertNumericEscapesPreserveValuesAndNulls) {
+  for (const auto* target : {"SQL_SMALLINT", "SQL_INTEGER", "SQL_BIGINT", "SQL_REAL",
+                           "SQL_FLOAT", "SQL_DOUBLE", "SQL_NUMERIC", "SQL_DECIMAL"}) {
+    SCOPED_TRACE(target);
+    const auto expression = "{fn CONVERT('42'," + std::string(target) + ")}";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN " + expression + " = 42 THEN 'ok' ELSE 'bad' END", "ok"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", nullptr));
+  }
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn CONVERT('1.25',SQL_DECIMAL)} = 1.25 THEN 'ok' ELSE 'bad' END", "ok"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn CONVERT(TRUE,SQL_BIT)} THEN 'ok' ELSE 'bad' END", "ok"));
+}
+
+TEST_F(NativeSqlIntegrationTest, ConvertCharacterBinaryAndTemporalEscapes) {
+  for (const auto* target : {"SQL_CHAR", "SQL_VARCHAR", "SQL_LONGVARCHAR", "SQL_WCHAR", "SQL_WVARCHAR", "SQL_WLONGVARCHAR"}) {
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('Grüße'," + std::string(target) + ")}", "Grüße"));
+  }
+  for (const auto* target : {"SQL_BINARY", "SQL_VARBINARY", "SQL_LONGVARBINARY"}) {
+    const auto expression = "{fn CONVERT('ab'," + std::string(target) + ")}";
+    const auto query = odbcpp::test::compiled_redshift_product()
+        ? "SELECT FROM_VARBYTE(" + expression + ", 'hex')"
+        : "SELECT encode(" + expression + ", 'hex')";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(query, "6162"));
+  }
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(42,SQL_VARCHAR)}", "42"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(DATE '2024-02-29',SQL_TIMESTAMP)}", "2024-02-29 00:00:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(TIMESTAMP '2024-02-29 12:34:56',SQL_DATE)}", "2024-02-29"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(TIMESTAMP '2024-02-29 12:34:56',SQL_TIME)}", "12:34:56"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('2024-02-29',SQL_DATE)}", "2024-02-29"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('12:34:56',SQL_TIME)}", "12:34:56"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('2024-02-29 12:34:56',SQL_TIMESTAMP)}", "2024-02-29 12:34:56"));
+  if (!odbcpp::test::compiled_redshift_product()) {
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(TRUE,SQL_VARCHAR)}", "true"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('12345678-1234-1234-1234-123456789abc',SQL_GUID)}",
+        "12345678-1234-1234-1234-123456789abc"));
+  }
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampAddEverySupportedUnitAndCalendarEdges) {
+  const std::array<std::pair<const char*, const char*>, 8> cases{{
+      {"SECOND", "2024-01-01 00:00:01"}, {"MINUTE", "2024-01-01 00:01:00"},
+      {"HOUR", "2024-01-01 01:00:00"}, {"DAY", "2024-01-02 00:00:00"},
+      {"WEEK", "2024-01-08 00:00:00"}, {"MONTH", "2024-02-01 00:00:00"},
+      {"QUARTER", "2024-04-01 00:00:00"}, {"YEAR", "2025-01-01 00:00:00"}}};
+  for (const auto& [unit, expected] : cases) {
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
+        ",1,{ts '2024-01-01 00:00:00'})}", expected));
+  }
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_MONTH,1,{d '2024-01-31'})}", "2024-02-29 00:00:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_YEAR,1,{d '2024-02-29'})}",
+      odbcpp::test::compiled_redshift_product() ? "2025-03-01 00:00:00" : "2025-02-28 00:00:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_MONTH,12,{d '2024-02-29'})}", "2025-02-28 00:00:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY,-1,{d '2024-01-01'})}", "2023-12-31 00:00:00"));
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampDiffCountsSignedBoundariesRatherThanRoundedDurations) {
+  for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "MONTH", "QUARTER", "YEAR"}) {
+    SCOPED_TRACE(unit);
+    const auto prefix = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) + ",";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + "{ts '2023-12-31 23:59:59.999999'},{ts '2024-01-01 00:00:00'})}", "1"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + "{ts '2024-01-01 00:00:00'},{ts '2023-12-31 23:59:59.999999'})}", "-1"));
+  }
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND,{ts '1969-12-31 23:59:59.1'},{ts '1969-12-31 23:59:59.9'})}", "0"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND,{ts '1969-12-31 23:59:59.9'},{ts '1970-01-01 00:00:00.1'})}", "1"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH,{d '2024-01-31'},{d '2024-02-01'})}", "1"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_YEAR,{d '2024-01-01'},{d '2024-12-31'})}", "0"));
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampEscapesNormalizeTimeDateAndNullOperands) {
+  ASSERT_NO_FATAL_FAILURE(expect_scalar(
+      "SELECT CASE WHEN {fn TIMESTAMPADD(SQL_TSI_DAY,1,TIME '12:34:56')} = "
+      "CAST(CAST(CURRENT_DATE AS VARCHAR(10)) || ' 12:34:56' AS TIMESTAMP) + INTERVAL '1 day' THEN 'ok' ELSE 'bad' END", "ok"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_DAY,TIME '01:00:00',TIME '23:00:00')}", "0"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_HOUR,TIME '01:00:00',TIME '23:00:00')}", "22"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_HOUR,{d '2024-01-01'},{ts '2024-01-01 02:30:00'})}", "2"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY,NULL,{d '2024-01-01'})}", nullptr));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY,1,NULL)}", nullptr));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_DAY,NULL,{d '2024-01-01'})}", nullptr));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH,{d '2024-01-01'},NULL)}", nullptr));
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampAddPreparedTypedTimePreservesParameterOrder) {
+  SQLCHAR sql[] = "SELECT CASE WHEN {fn TIMESTAMPADD(SQL_TSI_DAY,?,?)} = "
+      "CAST(CAST(CURRENT_DATE AS VARCHAR(10)) || ' 12:34:56' AS TIMESTAMP) + INTERVAL '2 days' THEN 'ok' ELSE 'bad' END";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(statement_, sql, SQL_NTS));
+  SQLINTEGER days = 2;
+  SQL_TIME_STRUCT time{12, 34, 56};
+  SQLLEN count_length = sizeof(days), time_length = sizeof(time);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(statement_, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+      0, 0, &days, sizeof(days), &count_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(statement_, 2, SQL_PARAM_INPUT, SQL_C_TYPE_TIME, SQL_TYPE_TIME,
+      0, 0, &time, sizeof(time), &time_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
+  ASSERT_NO_FATAL_FAILURE(expect_fetched_scalar("ok"));
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampCalendarDifferencePreservesWindowScopeAndEraBoundary) {
+  for (const auto* unit : {"MONTH", "QUARTER", "YEAR"}) {
+    SCOPED_TRACE(unit);
+    const auto query = "SELECT delta FROM (SELECT ts, {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
+        ",LAG(ts) OVER (ORDER BY ts),ts)} AS delta FROM (SELECT TIMESTAMP '2023-12-31' AS ts "
+        "UNION ALL SELECT TIMESTAMP '2024-01-01') AS events) AS differences WHERE delta IS NOT NULL";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(query, "1"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
+        ",MIN(ts),MAX(ts))} FROM (SELECT TIMESTAMP '2023-12-31' AS ts "
+        "UNION ALL SELECT TIMESTAMP '2024-01-01') AS events", "1"));
+    if (!odbcpp::test::compiled_redshift_product()) {
+      ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
+          ",TIMESTAMP '0001-12-31 BC',TIMESTAMP '0001-01-01 AD')}", "1"));
+      ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
+          ",TIMESTAMP '0001-01-01 AD',TIMESTAMP '0001-12-31 BC')}", "-1"));
+    }
+  }
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampCalendarDifferenceRetainsOuterColumnScope) {
+  for (const auto* unit : {"MONTH", "QUARTER", "YEAR"}) {
+    SCOPED_TRACE(unit);
+    const auto query = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
+        ", value, TIMESTAMP '2025-01-01')} FROM (SELECT TIMESTAMP '2024-01-01' AS value) AS source";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(query, std::strcmp(unit, "MONTH") == 0 ? "12" :
+        (std::strcmp(unit, "QUARTER") == 0 ? "4" : "1")));
+  }
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampNormalizationPreservesNativeDateStyle) {
+  if (odbcpp::test::compiled_redshift_product()) {
+    GTEST_SKIP() << "PostgreSQL-only DateStyle matrix; Redshift uses its native timestamp parser";
+  }
+  for (const auto* style : {"ISO, MDY", "SQL, DMY", "German, DMY", "Postgres, MDY"}) {
+    SCOPED_TRACE(style);
+    auto setting = "SET DateStyle TO '" + std::string(style) + "'";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, reinterpret_cast<SQLCHAR*>(setting.data()), SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn TIMESTAMPADD(SQL_TSI_DAY,1,DATE '2024-02-28')} = "
+        "TIMESTAMP '2024-02-29 00:00:00' THEN 'ok' ELSE 'bad' END", "ok"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn TIMESTAMPADD(SQL_TSI_HOUR,1,TIME '12:34:56')} = "
+        "CURRENT_DATE + TIME '13:34:56' THEN 'ok' ELSE 'bad' END", "ok"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH,"
+        "TIMESTAMP '2024-01-31 01:02:03', TIMESTAMP '2024-02-01 04:05:06')}", "1"));
+  }
+}
+
+TEST_F(NativeSqlIntegrationTest, TimestampMonthDifferenceEvaluatesVolatileOperandOnce) {
+  if (odbcpp::test::compiled_redshift_product()) {
+    GTEST_SKIP() << "PostgreSQL-only volatile-operand proof: Redshift uses native DATEDIFF and has no sequences";
+  }
+  SQLCHAR create[] = "CREATE TEMP SEQUENCE odbcpp_escape_evaluation";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, create, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH,"
+      "TIMESTAMP '2024-01-01' + nextval('odbcpp_escape_evaluation') * INTERVAL '1 month',TIMESTAMP '2025-01-01')}", "11"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT last_value FROM odbcpp_escape_evaluation", "1"));
+  SQLCHAR drop[] = "DROP SEQUENCE odbcpp_escape_evaluation";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, drop, SQL_NTS));
 }
 
 TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {

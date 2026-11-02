@@ -112,6 +112,8 @@ TEST(SqlConvertEscapeTest, CharacterBinaryAndUuidPoliciesAreExplicitPerProduct) 
 
 TEST(SqlTimestampEscapeTest, SupportedUnitsTranslateAndKeepMarkerAssociation) {
   using rs::core::database::postgres::SqlDialectProfile;
+  rs::core::database::postgres::PgBackendProvider parser{
+      {"postgresql", "PostgreSQL", "synthetic"}, {"synthetic.invalid", 5432, "synthetic", false}};
   for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
     for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}) {
       const auto sql = "SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) + ", ?, ?)}";
@@ -119,7 +121,7 @@ TEST(SqlTimestampEscapeTest, SupportedUnitsTranslateAndKeepMarkerAssociation) {
       ASSERT_TRUE(result) << result.message << sql;
       EXPECT_EQ(std::string::npos, result.sql.find("TIMESTAMPADD")) << result.sql;
       EXPECT_EQ(std::string::npos, result.sql.find("SQL_TSI_")) << result.sql;
-      EXPECT_EQ(2, std::count(result.sql.begin(), result.sql.end(), '?')) << result.sql;
+      EXPECT_EQ(2u, parser.sql_dialect().count_parameter_markers(result.sql)) << result.sql;
     }
     for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "MONTH", "QUARTER", "YEAR"}) {
       const auto sql = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) + ", first_value(), second_value())}";

@@ -1,6 +1,40 @@
 #include "pg_backend_provider.h"
 
 namespace rs::core::database::postgres {
+namespace {
+void set_sql_conversion_capabilities(BackendCapabilities& result, bool redshift) noexcept {
+  using Type = SqlConversionType;
+  constexpr std::array numeric_types{Type::SmallInteger, Type::Integer, Type::BigInteger,
+                                     Type::Real, Type::Double, Type::Numeric};
+  std::uint32_t numeric = 0;
+  for (const auto type : numeric_types) numeric |= sql_conversion_bit(type);
+  const auto character = sql_conversion_bit(Type::Character);
+  const auto binary = sql_conversion_bit(Type::Binary);
+  const auto boolean = sql_conversion_bit(Type::Boolean);
+  const auto date = sql_conversion_bit(Type::Date);
+  const auto time = sql_conversion_bit(Type::Time);
+  const auto timestamp = sql_conversion_bit(Type::Timestamp);
+  const auto uuid = sql_conversion_bit(Type::Uuid);
+  auto& targets = result.conversions.targets;
+  targets.fill(0);
+  for (const auto type : numeric_types) targets[static_cast<std::size_t>(type)] = numeric | character;
+  targets[static_cast<std::size_t>(Type::Character)] =
+      character | numeric | binary | date | time | timestamp | (redshift ? 0u : boolean | uuid);
+  targets[static_cast<std::size_t>(Type::Boolean)] = boolean | (redshift ? 0u : character);
+  targets[static_cast<std::size_t>(Type::Binary)] = binary | character;
+  targets[static_cast<std::size_t>(Type::Date)] = date | timestamp | character;
+  targets[static_cast<std::size_t>(Type::Time)] = time | character;
+  targets[static_cast<std::size_t>(Type::Timestamp)] = timestamp | date | time | character;
+  targets[static_cast<std::size_t>(Type::Uuid)] = redshift ? 0u : uuid | character;
+  result.timestamp_add_intervals = 0;
+  for (const auto unit : {SqlIntervalUnit::Second, SqlIntervalUnit::Minute, SqlIntervalUnit::Hour,
+       SqlIntervalUnit::Day, SqlIntervalUnit::Week, SqlIntervalUnit::Month, SqlIntervalUnit::Quarter, SqlIntervalUnit::Year}) {
+    result.timestamp_add_intervals |= sql_interval_bit(unit);
+  }
+  result.timestamp_diff_intervals = result.timestamp_add_intervals & ~sql_interval_bit(SqlIntervalUnit::Week);
+}
+} // namespace
+
 BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexcept {
   BackendCapabilities result;
   result.dbms_name = display_name;
@@ -41,6 +75,7 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   result.schema_in_dml = result.schema_in_procedures = true;
   result.schema_in_table_definitions = result.schema_in_index_definitions = true;
   result.schema_in_privileges = true;
+  set_sql_conversion_capabilities(result, false);
   return result;
 }
 
@@ -71,6 +106,7 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
+  set_sql_conversion_capabilities(result, true);
   return result;
 }
 
