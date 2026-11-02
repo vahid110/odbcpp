@@ -38,6 +38,7 @@ HIGH_RISK_PATH_PREFIXES = (
     ("tools/security/", "security"),
     ("tests/security/", "security"),
     ("SECURITY_MODEL.md", "security"),
+    ("tools/", "process"),
     (".github/", "process"),
     ("docs/adr/", "process"),
     ("AGENTS.md", "process"),
@@ -87,8 +88,11 @@ class GateResult:
 
 
 def identify_role(body: str) -> Optional[ReviewRole]:
-    """Extract declared review role from the first lines of review body."""
-    match = re.search(r"\[(correctness|red-team)\s+reviewer\]", body, re.IGNORECASE)
+    """Extract declared review role from anchored line header in review body.
+
+    Rejects quoted mentions (e.g. '> [correctness reviewer]').
+    """
+    match = re.search(r"^[ \t]*\[(correctness|red-team)\s+reviewer\]", body, re.IGNORECASE | re.MULTILINE)
     if not match:
         return None
     role_str = match.group(1).lower()
@@ -97,6 +101,13 @@ def identify_role(body: str) -> Optional[ReviewRole]:
     if role_str == "red-team":
         return ReviewRole.RED_TEAM
     return None
+
+
+def normalize_review_body(body: str) -> str:
+    """Normalize body by removing role headers, whitespace, and punctuation for independence checking."""
+    stripped = re.sub(r"\[(correctness|red-team)\s+reviewer\]", "", body, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "", stripped).lower()
+    return cleaned
 
 
 def determine_required_roles(
@@ -137,28 +148,42 @@ def evaluate_pr_reviews(
     required_roles, high_risk_labels, path_findings = determine_required_roles(labels, changed_files)
     findings: List[str] = list(path_findings)
 
+    # Check author-reviewer separation
+    if author_login == REQUIRED_REVIEWER_LOGIN:
+        findings.append(
+            f"Author '{author_login}' cannot be the designated reviewer identity '{REQUIRED_REVIEWER_LOGIN}'"
+        )
+
     # Parse and categorize reviews from designated reviewer identity
     parsed_reviews: List[ReviewRecord] = []
     for r in reviews_data:
         user = r.get("user", {}).get("login", "")
+        # Prevent author self-approval
+        if user == author_login and author_login:
+            continue
         # Only reviews from the designated bot reviewer count towards the agent gate
         if user != REQUIRED_REVIEWER_LOGIN:
             continue
+        state = (r.get("state") or "").upper()
+        # Ignore draft / pending reviews
+        if state == "PENDING":
+            continue
         body = r.get("body", "") or ""
         role = identify_role(body)
+        submitted_at = r.get("submitted_at") or ""
         parsed_reviews.append(
             ReviewRecord(
                 id=r.get("id", 0),
                 user_login=user,
-                state=r.get("state", "").upper(),
+                state=state,
                 body=body,
                 commit_id=r.get("commit_id", ""),
-                submitted_at=r.get("submitted_at", ""),
+                submitted_at=submitted_at,
                 role=role,
             )
         )
 
-    # Group reviews by role and evaluate exact-head status
+    # Group reviews by role
     approved_roles: Set[ReviewRole] = set()
     role_reviews: Dict[ReviewRole, List[ReviewRecord]] = {
         ReviewRole.CORRECTNESS: [],
@@ -168,10 +193,11 @@ def evaluate_pr_reviews(
     for rev in parsed_reviews:
         if rev.role:
             role_reviews[rev.role].append(rev)
-        else:
+        elif rev.commit_id == head_sha:
+            # Only flag missing role headers for reviews on the current head commit
             findings.append(
-                f"Review {rev.id} from {REQUIRED_REVIEWER_LOGIN} missing required role header "
-                f"('[correctness reviewer]' or '[red-team reviewer]')"
+                f"Review {rev.id} on head {head_sha[:7]} from {REQUIRED_REVIEWER_LOGIN} "
+                f"missing required role header ('[correctness reviewer]' or '[red-team reviewer]')"
             )
 
     # For each required role, check latest review on head
@@ -182,7 +208,7 @@ def evaluate_pr_reviews(
             continue
 
         # Sort chronologically by submitted_at, then id
-        reviews_for_role.sort(key=lambda r: (r.submitted_at, r.id))
+        reviews_for_role.sort(key=lambda r: (r.submitted_at or "", r.id))
         latest = reviews_for_role[-1]
 
         # Check commit ID
@@ -210,13 +236,15 @@ def evaluate_pr_reviews(
         correctness_rev = [r for r in role_reviews[ReviewRole.CORRECTNESS] if r.commit_id == head_sha and r.state == "APPROVED"][-1]
         red_team_rev = [r for r in role_reviews[ReviewRole.RED_TEAM] if r.commit_id == head_sha and r.state == "APPROVED"][-1]
 
-        def strip_role(b: str) -> str:
-            return re.sub(r"\[(correctness|red-team)\s+reviewer\]", "", b, flags=re.IGNORECASE).strip()
-
         if correctness_rev.id == red_team_rev.id:
             findings.append("Independence violation: correctness and red-team reviews cannot share the same review ID")
-        elif strip_role(correctness_rev.body) == strip_role(red_team_rev.body):
-            findings.append("Independence violation: correctness and red-team reviews contain duplicate review bodies")
+        if correctness_rev.submitted_at and red_team_rev.submitted_at and correctness_rev.submitted_at == red_team_rev.submitted_at:
+            findings.append("Independence violation: reviews cannot be submitted simultaneously at identical timestamps")
+
+        norm_corr = normalize_review_body(correctness_rev.body)
+        norm_red = normalize_review_body(red_team_rev.body)
+        if norm_corr == norm_red or (len(norm_corr) > 0 and norm_corr in norm_red) or (len(norm_red) > 0 and norm_red in norm_corr):
+            findings.append("Independence violation: correctness and red-team reviews contain duplicate or shared review bodies")
 
     passed = (required_roles == approved_roles) and (len(findings) == 0)
     return GateResult(
@@ -240,6 +268,23 @@ def fetch_github_json(url: str, token: Optional[str] = None) -> Any:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def fetch_github_paginated(url: str, token: Optional[str] = None) -> List[Any]:
+    """Fetch all pages of an array endpoint from GitHub API."""
+    results: List[Any] = []
+    page = 1
+    sep = "&" if "?" in url else "?"
+    while True:
+        paged_url = f"{url}{sep}per_page=100&page={page}"
+        batch = fetch_github_json(paged_url, token)
+        if not isinstance(batch, list) or not batch:
+            break
+        results.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify exact-head independent PR reviews.")
     parser.add_argument("--pr", type=int, required=True, help="Pull request number")
@@ -251,8 +296,8 @@ def main() -> int:
     api_base = f"https://api.github.com/repos/{args.repo}/pulls/{args.pr}"
     try:
         pr_data = fetch_github_json(api_base, args.token)
-        reviews_data = fetch_github_json(f"{api_base}/reviews", args.token)
-        files_data = fetch_github_json(f"{api_base}/files", args.token)
+        reviews_data = fetch_github_paginated(f"{api_base}/reviews", args.token)
+        files_data = fetch_github_paginated(f"{api_base}/files", args.token)
         changed_files = [f.get("filename", "") for f in files_data if isinstance(f, dict)]
     except urllib.error.HTTPError as e:
         sys.stderr.write(f"GitHub API HTTP error {e.code}: {e.reason}\n")

@@ -6,6 +6,7 @@ from tools.ci.verify_pr_reviews import (
     ReviewRole,
     evaluate_pr_reviews,
     identify_role,
+    normalize_review_body,
     REQUIRED_REVIEWER_LOGIN,
 )
 
@@ -22,10 +23,12 @@ class TestVerifyPrReviews(unittest.TestCase):
 
     def test_identify_role(self):
         self.assertEqual(ReviewRole.CORRECTNESS, identify_role("[correctness reviewer]\nLGTM"))
-        self.assertEqual(ReviewRole.CORRECTNESS, identify_role("[CORRECTNESS REVIEWER] Approved"))
+        self.assertEqual(ReviewRole.CORRECTNESS, identify_role("  [CORRECTNESS REVIEWER] Approved"))
         self.assertEqual(ReviewRole.RED_TEAM, identify_role("[red-team reviewer]\nNo attack vector found"))
         self.assertIsNone(identify_role("Looks good to me"))
         self.assertIsNone(identify_role("[security reviewer]"))
+        # Quoted mention should not be recognized
+        self.assertIsNone(identify_role("> [correctness reviewer]\nThis was quoted"))
 
     def test_clean_pr_with_exact_head_correctness_approval(self):
         reviews = [
@@ -117,35 +120,71 @@ class TestVerifyPrReviews(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(any("was dismissed" in f for f in result.findings))
 
-    def test_human_owner_review_does_not_satisfy_agent_gate(self):
+    def test_draft_pending_review_ignored(self):
         reviews = [
             {
-                "id": 101,
-                "user": {"login": "vahid110"},
-                "state": "APPROVED",
-                "body": "Approved by owner",
+                "id": 100,
+                "user": {"login": REQUIRED_REVIEWER_LOGIN},
+                "state": "PENDING",
+                "body": "[correctness reviewer]\n\nDraft review in progress.",
                 "commit_id": self.head_sha,
-                "submitted_at": "2026-11-02T12:00:00Z",
-            }
-        ]
-        result = evaluate_pr_reviews(self.pr_base, reviews)
-        self.assertFalse(result.passed)
-        self.assertTrue(any("Missing review for required role [correctness reviewer]" in f for f in result.findings))
-
-    def test_missing_role_header_rejected(self):
-        reviews = [
+                "submitted_at": None,
+            },
             {
                 "id": 101,
                 "user": {"login": REQUIRED_REVIEWER_LOGIN},
                 "state": "APPROVED",
-                "body": "LGTM without role tag",
+                "body": "[correctness reviewer]\n\nApproved final version.",
+                "commit_id": self.head_sha,
+                "submitted_at": "2026-11-02T12:00:00Z",
+            },
+        ]
+        result = evaluate_pr_reviews(self.pr_base, reviews)
+        self.assertTrue(result.passed)
+
+    def test_author_cannot_review_own_pr(self):
+        pr = dict(self.pr_base, user={"login": "malicious-author"})
+        reviews = [
+            {
+                "id": 101,
+                "user": {"login": "malicious-author"},
+                "state": "APPROVED",
+                "body": "[correctness reviewer]\n\nI approve my own code.",
                 "commit_id": self.head_sha,
                 "submitted_at": "2026-11-02T12:00:00Z",
             }
         ]
-        result = evaluate_pr_reviews(self.pr_base, reviews)
+        result = evaluate_pr_reviews(pr, reviews)
         self.assertFalse(result.passed)
-        self.assertTrue(any("missing required role header" in f for f in result.findings))
+        self.assertTrue(any("Missing review for required role [correctness reviewer]" in f for f in result.findings))
+
+    def test_author_identity_cannot_be_reviewer_app(self):
+        pr = dict(self.pr_base, user={"login": REQUIRED_REVIEWER_LOGIN})
+        result = evaluate_pr_reviews(pr, [])
+        self.assertFalse(result.passed)
+        self.assertTrue(any("cannot be the designated reviewer identity" in f for f in result.findings))
+
+    def test_historic_review_without_role_header_does_not_brick_pr(self):
+        reviews = [
+            {
+                "id": 99,
+                "user": {"login": REQUIRED_REVIEWER_LOGIN},
+                "state": "COMMENTED",
+                "body": "Legacy unlabelled comment from earlier version",
+                "commit_id": self.stale_sha,
+                "submitted_at": "2026-11-01T10:00:00Z",
+            },
+            {
+                "id": 101,
+                "user": {"login": REQUIRED_REVIEWER_LOGIN},
+                "state": "APPROVED",
+                "body": "[correctness reviewer]\n\nApproved head.",
+                "commit_id": self.head_sha,
+                "submitted_at": "2026-11-02T12:00:00Z",
+            },
+        ]
+        result = evaluate_pr_reviews(self.pr_base, reviews)
+        self.assertTrue(result.passed)
 
     def test_high_risk_label_requires_both_correctness_and_red_team(self):
         pr = dict(self.pr_base, labels=[{"name": "security"}])
@@ -189,14 +228,14 @@ class TestVerifyPrReviews(unittest.TestCase):
         self.assertEqual({ReviewRole.CORRECTNESS, ReviewRole.RED_TEAM}, result.approved_roles)
         self.assertEqual([], result.findings)
 
-    def test_independence_violation_identical_bodies_rejected(self):
+    def test_independence_violation_identical_timestamps_rejected(self):
         pr = dict(self.pr_base, labels=[{"name": "protocol"}])
         reviews = [
             {
                 "id": 101,
                 "user": {"login": REQUIRED_REVIEWER_LOGIN},
                 "state": "APPROVED",
-                "body": "[correctness reviewer]\nIdentical boilerplate text",
+                "body": "[correctness reviewer]\nCorrectness evaluation complete.",
                 "commit_id": self.head_sha,
                 "submitted_at": "2026-11-02T12:00:00Z",
             },
@@ -204,7 +243,31 @@ class TestVerifyPrReviews(unittest.TestCase):
                 "id": 102,
                 "user": {"login": REQUIRED_REVIEWER_LOGIN},
                 "state": "APPROVED",
-                "body": "[red-team reviewer]\nIdentical boilerplate text",
+                "body": "[red-team reviewer]\nAdversarial verification complete.",
+                "commit_id": self.head_sha,
+                "submitted_at": "2026-11-02T12:00:00Z",
+            },
+        ]
+        result = evaluate_pr_reviews(pr, reviews)
+        self.assertFalse(result.passed)
+        self.assertTrue(any("identical timestamps" in f for f in result.findings))
+
+    def test_independence_violation_identical_bodies_rejected(self):
+        pr = dict(self.pr_base, labels=[{"name": "protocol"}])
+        reviews = [
+            {
+                "id": 101,
+                "user": {"login": REQUIRED_REVIEWER_LOGIN},
+                "state": "APPROVED",
+                "body": "[correctness reviewer]\nIdentical boilerplate text with some details.",
+                "commit_id": self.head_sha,
+                "submitted_at": "2026-11-02T12:00:00Z",
+            },
+            {
+                "id": 102,
+                "user": {"login": REQUIRED_REVIEWER_LOGIN},
+                "state": "APPROVED",
+                "body": "[red-team reviewer]\nIdentical boilerplate text with some details.",
                 "commit_id": self.head_sha,
                 "submitted_at": "2026-11-02T12:05:00Z",
             },
@@ -229,6 +292,12 @@ class TestVerifyPrReviews(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(any("missing required label 'auth'" in f for f in result.findings))
         self.assertTrue(any("Missing review for required role [red-team reviewer]" in f for f in result.findings))
+
+    def test_tools_path_triggers_process_label_requirement(self):
+        changed_files = ["tools/ci/some_script.py"]
+        result = evaluate_pr_reviews(self.pr_base, [], changed_files=changed_files)
+        self.assertFalse(result.passed)
+        self.assertTrue(any("missing required label 'process'" in f for f in result.findings))
 
 
 if __name__ == "__main__":
