@@ -1,207 +1,144 @@
-# Canonical Agent Workflow and GitHub Projects Specification
+# Canonical Agent Workflow and Work Tracking Specification
 
-This document provides detailed operational instructions for autonomous and human agents working on `vahid110/odbcpp`. It implements the work-tracking and coordination decisions of [ADR 0001](adr/0001-development-process.md) and supplements [AGENTS.md](../AGENTS.md).
+This document provides concise operational instructions for autonomous and human agents working on `vahid110/odbcpp`. It implements the work-tracking and coordination decisions of [ADR 0001](adr/0001-development-process.md) and supplements [AGENTS.md](../AGENTS.md).
 
 ---
 
 ## 1. Core Principles
 
-1. **GitHub is the Shared Source of Truth:**
-   - All tasks, stages, assignments, progress reports, and blockers live on GitHub (Issues, Pull Requests, and the GitHub Project board).
-   - Local files, private handoff notes, or unpushed scratchpads are never coordination mechanisms. If it is not on GitHub, it does not exist for other agents.
+1. **Issues and PRs are Authoritative; GitHub is the Shared Truth:**
+   - All tasks, assignments, status updates, and blockers live on GitHub.
+   - GitHub Issues and Pull Requests are the authoritative operational mechanism. A GitHub Project board provides an optional Kanban visualization, but is a view rather than a gating coordination layer.
+   - Local files, private handoff notes, and unpushed scratchpads are never coordination mechanisms.
 2. **Standard Tools over Custom Machinery:**
-   - Coordination uses standard GitHub Issues, Projects v2, Pull Requests, and CI status checks. No custom daemon, central orchestration server, or custody ledger is required.
+   - Coordination relies on standard GitHub Issues, Pull Requests, CI checks, and standard Git commands. No custom coordination daemons, central orchestration servers, or custody ledgers are used.
 3. **Strict Attribution & Zero Credential Leaks:**
-   - Automated agents act strictly under dedicated GitHub App bot identities (`odbcpp-agent[bot]` for authoring, `odbcpp-reviewer[bot]` for reviewing).
-   - Personal credentials must never be used by agents, and bot tokens/private keys must never be committed or logged.
+   - Automated agents act strictly under dedicated GitHub App bot identities: `odbcpp-agent[bot]` for authoring, and `odbcpp-reviewer[bot]` for reviewing.
+   - Personal credentials must never be used by agents. Bot tokens, keys, and authorization headers must never be committed, passed on command-line process arguments, or printed in logs.
 
 ---
 
 ## 2. Worker Identity Specification
 
-To coordinate multiple concurrent agents across different hosts, tools, and platforms without collision, every worker session must identify itself using the canonical tuple:
+To disambiguate concurrent workers across tools, platforms, and machines, every session identifies itself with the canonical tuple:
 
 ```
 <tool>/<host>/<session>
 ```
 
+- **`<tool>`**: `codex`, `agy`, `claude`, `copilot`, `cursor`, `human`
+- **`<host>`**: `mac-arm64`, `mac-x86`, `win-x64`, `wsl2-ubuntu`, `linux-x64`, `remote-<name>`
+- **`<session>`**: Unique session ID, terminal PID, or invocation hash (e.g., `433005a4`, `run-20261102`)
+
 > [!NOTE]
-> The components `<tool>`, `<host>`, and `<session>` must contain only alphanumeric characters, hyphens, and dots (no forward slashes, colons, or whitespace) to guarantee unambiguous slash-delimited parsing across automated tooling.
-
-### Components
-
-- **`<tool>`**: The client agent runtime or driving interface:
-  - `codex` (OpenAI Codex CLI / ChatGPT Codex)
-  - `agy` (Google Antigravity CLI / IDE)
-  - `claude` (Anthropic Claude Code CLI)
-  - `copilot` (GitHub Copilot Agent)
-  - `cursor` (Cursor IDE agent)
-  - `human` (Direct human operator)
-- **`<host>`**: The operating platform and machine architecture:
-  - `mac-arm64` (Apple Silicon macOS)
-  - `mac-x86` (Intel macOS)
-  - `win-x64` (Native Windows 64-bit)
-  - `wsl2-ubuntu` (Windows Subsystem for Linux - Ubuntu)
-  - `linux-x64` (Native Linux 64-bit)
-  - `remote-<name>` (Cloud or CI host)
-- **`<session>`**: Unique session identifier, terminal PID, or conversation hash (e.g., `433005a4`, `pid-81204`, `run-20261102`).
-
-### Examples
-
-- `agy/mac-arm64/433005a4`
-- `codex/win-x64/session-88`
-- `claude/wsl2-ubuntu/worker-01`
-- `human/mac-arm64/vahid110`
+> Components must contain only alphanumeric characters, hyphens, and dots (no forward slashes, colons, or whitespace) to ensure unambiguous delimiter parsing. Examples: `agy/mac-arm64/433005a4`, `codex/win-x64/session-88`, `claude/wsl2-ubuntu/worker-01`.
 
 ---
 
-## 3. GitHub Projects Tracking & Board Structure
+## 3. Work Tracking & Stages
 
-Work is tracked on a GitHub Project (Projects v2) linked to `vahid110/odbcpp`.
+Tasks progress through six conceptual stages on GitHub:
 
-### Kanban Stages (Columns)
-
-| Stage | Definition | Entry Condition |
+| Stage | Definition | State Transition |
 | :--- | :--- | :--- |
-| **Ready** | Backlog item ready for implementation | Issue created with complete acceptance criteria; unassigned. |
-| **Working** | Under active implementation | Claimed by an agent worker (`Worker Identity` set); isolated `codex/` branch and worktree created. |
-| **Review** | Implementation complete; undergoing review | Commits pushed to branch; PR opened as `odbcpp-agent[bot]`; local test evidence attached; reviewers requested. |
-| **CI / Merge** | Reviews approved; awaiting CI / gate approval | `[correctness reviewer]` (and `[red-team reviewer]` if high-risk) approved exact PR head commit. Awaiting green CI and owner sign-off if touching protected paths. |
-| **Blocked** | Progress halted | Explicit blocker comment posted detailing failed operation, error output, and minimum resolution needed. |
-| **Done** | Completed and closed | PR merged into `main`; issue closed; worktree pruned. |
+| **Ready** | Unassigned task ready to be claimed | Issue has clear acceptance criteria; unassigned. |
+| **Working** | Under active implementation | Claim comment posted on the issue with `Worker Identity`; isolated worktree created. |
+| **Review** | Implementation complete; review in progress | PR opened by `odbcpp-agent[bot]` linking the issue; local test evidence attached; reviewers requested. |
+| **CI / Merge** | Reviews approved; awaiting CI & merge | Independent reviewer approvals secured on exact head commit. Awaiting green required CI and CODEOWNERS sign-off if touching protected paths. |
+| **Blocked** | Progress halted by external dependency | Blocker comment posted detailing the missing authority, credential, or decision. |
+| **Done** | Acceptance criteria fully satisfied | All issue acceptance criteria verified (code merged, tests passing, open criteria closed). |
 
-### Tracking Fields
-
-- **Title / Item:** The GitHub Issue (or PR).
-- **Status:** Single-select dropdown matching the six stages above.
-- **Worker Identity:** Text field containing `<tool>/<host>/<session>`.
-- **Linked PR:** Link or number of the active pull request.
-- **Last Update:** ISO timestamp or date of the latest status comment / commit.
+*Note on Done:* Merging a PR does not automatically mean `Done` if the issue specifies additional criteria (such as follow-up live tests or multi-platform qualification). An issue is closed only when all acceptance criteria are met.
 
 ---
 
-## 4. Concurrency, Claiming, and Handoff Rules
+## 4. Concurrency, Claiming, Recovery, and Handoff
 
 ### Claiming Work
+1. An agent may claim any open issue that has clear acceptance criteria and is not currently being worked.
+2. To claim:
+   - Post an advisory claim comment on the GitHub issue stating your `Worker Identity`, target branch name (`codex/...`), baseline commit SHA, and initial approach.
+   - Fetch latest `origin/main` and create an isolated worktree.
+3. **Conflict Resolution:** Issue comments are advisory claims, not atomic distributed locks. If concurrent claims occur, the authorized phase coordinator (or repository owner) determines assignment.
 
-1. An agent may only claim an issue in the **Ready** column that has clear acceptance criteria.
-2. Before modifying code, the agent must:
-   - Post a comment on the GitHub issue with its `Worker Identity`, target branch name, baseline commit SHA, and initial approach.
-   - Update the project item's **Status** to `Working` and set **Worker Identity** (or post the stage comment on the issue if board mutation is restricted).
-   - Create a fresh `codex/` branch from current `origin/main` in an isolated git worktree.
-3. **No Duplicate Claims:** An agent must NEVER claim or begin work on an issue that is already in `Working` or has an active worker identity.
+### Ownership, Stale Activity & Routine Recovery
+- **Anti-Hijacking:** Stale activity alone is NEVER permission to silently overwrite or take over a task.
+- **Routine Coordinator Recovery:** If a worker session crashes, hangs, or becomes unreachable, the authorized coordinator (or human owner) does not need to wait indefinitely. The coordinator may:
+  1. Inspect the worker's branch, worktree, and uncommitted dirty work.
+  2. Preserve all existing work, failure evidence, and branch commits.
+  3. Post an explicit reassignment comment on the issue transferring the task to a new `Worker Identity`.
+  4. Resume execution under the new session.
 
-### Stale Activity Protocol
+### Blocker Escalation vs. Normal Development
+- **Normal Development:** Transient compiler errors, failing tests, or local tool quirks encountered while coding are normal development activity; they must be diagnosed and safely repaired by the session without aborting the task.
+- **External Blockers:** Escalate to `Blocked` ONLY when progress is halted by genuinely missing external decisions, unavailable repository permissions, or unresolvable environment boundaries.
+- **Reporting:** Post a concise blocker comment stating: (1) exact failed operation, (2) exact error message (sanitized), and (3) the smallest remediation needed to proceed.
+- **Credential Scrubbing:** Always sanitize and redact any token pattern (`ghs_*`, `ghp_*`, private keys, passwords) before posting comments or logs.
 
-> [!IMPORTANT]
-> **Stale activity is NEVER permission to take over.**
-> If an issue or branch has had no commits or updates for hours or days, an agent must NOT assume the task is abandoned or overwrite the branch. A human operator must explicitly reassign the issue, or the prior worker must post a release comment, before another session may claim it.
-
-### Reporting Blockers
-
-If an agent encounters a blocking condition (missing GitHub API permissions, network sandbox restrictions, compiler bugs, missing credentials, or architectural ambiguities):
-1. Transition the project item status to **Blocked** (or post a blocker comment on the issue/PR).
-2. Immediately post a structured blocker comment on the issue or PR containing:
-   - **Failed Operation:** The exact command or API call that failed.
-   - **Exact Output / Error:** Full error text or status code (redacting any credentials).
-   - **Smallest Remediation:** The minimal permission grant, file change, or human decision required to proceed.
-3. **Credential Scrubbing:** Before posting any error output or log snippet to an issue, PR, or comment, sanitize and redact any token pattern (`ghs_[A-Za-z0-9_]+`, `ghp_[A-Za-z0-9_]+`, JWTs, private keys, or passwords). Never include URLs with embedded access tokens in error reports.
-4. Stop calling tools or idling; do not invent mock successes or switch identities.
-
-### Handoff Protocol
-
-When handing off work between sessions, tools, or machines:
-1. Ensure all local progress is committed and pushed to `origin/codex/<branch>`.
-2. Post a structured handoff comment on the issue and PR:
+### Explicit Handoff Protocol
+When transferring work between sessions:
+1. Ensure all work is committed and pushed to `origin/codex/<branch>`.
+2. Post a structured handoff comment on the issue and PR containing:
    - **Head Commit:** Exact commit SHA pushed to origin.
    - **Local Test Results:** Passed, skipped, failed tests with names and log paths.
    - **Acceptance Criteria Progress:** Checklist of satisfied vs remaining criteria.
-   - **Next Action:** Concrete next steps for the incoming session.
-3. **Unlocking Handoffs:** To resolve handoff claiming deadlocks, the departing worker resets the issue stage on GitHub to **Ready** (with note `Ready (Handoff)`), which unlocks the task so that incoming workers are authorized to claim it without violating duplicate-claim invariants.
-4. The next worker claims the handoff by posting its own `Worker Identity` in a comment and updating the **Worker Identity** field on the board.
+   - **Next Action:** Clear next steps for the incoming worker.
+3. Explicitly transfer or clear ownership in the comment so the incoming worker can claim the task cleanly without conflicting locks.
 
 ---
 
-## 5. Bot Authentication & Cross-Platform Git Commands
+## 5. Secure Bot Authentication & Git Operations
 
-Automated agents act only as `odbcpp-agent[bot]` for authoring and `odbcpp-reviewer[bot]` for reviewing. Never use the repository owner's personal identity.
+Automated agents act only as `odbcpp-agent[bot]` for authoring and `odbcpp-reviewer[bot]` for reviewing. Never use personal credentials.
 
-### Authentication Scripts
+### Installation Tokens
+Local token scripts use local private keys to generate short-lived (1-hour) GitHub App installation tokens:
+- `~/.config/odbcpp-agent/token.sh` (`app_id="5540186"`)
+- `~/.config/odbcpp-reviewer/token.sh` (`app_id="5545952"`)
 
-The machine must have installation token generator scripts:
-- `~/.config/odbcpp-agent/token.sh` (or `.ps1`)
-- `~/.config/odbcpp-reviewer/token.sh` (or `.ps1`)
+### Token Validation
+Strictly verify tokens before use to prevent silent fallback to personal user accounts:
 
-These scripts use a private GitHub App `.pem` key locally to sign a JWT and request a short-lived (1-hour) installation access token from GitHub. The private key never leaves the local machine.
-
-### Cross-Platform Token Generation
-
-#### macOS / Linux / WSL (Bash/Zsh)
 ```bash
-# Obtain agent author token
 export GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)
-
-# Strict token verification: prevent silent fallback to personal user accounts
 [ -n "$GH_TOKEN" ] || { echo "Error: GH_TOKEN is empty" >&2; exit 1; }
-gh api /installation/repositories --jq '.total_count' >/dev/null || {
-  echo "Error: GH_TOKEN is not a valid GitHub App installation token" >&2
-  exit 1
-}
+
+# Verify token belongs to the expected odbcpp-agent App (App ID 5540186)
+case "$GH_TOKEN" in
+  ghs_5540186_*) ;;
+  *) echo "Error: GH_TOKEN does not match odbcpp-agent App ID 5540186" >&2; exit 1 ;;
+esac
+
+# Verify installation repository access
+gh api /installation/repositories --jq '.total_count' >/dev/null
 ```
 
-#### Windows Native (PowerShell)
-```powershell
-# Obtain agent author token via PowerShell script or WSL execution
-$env:GH_TOKEN = & "$HOME\.config\odbcpp-agent\token.ps1"
-# Or invoke bash via Git Bash / WSL:
-# $env:GH_TOKEN = (bash -c '~/.config/odbcpp-agent/token.sh')
+*(For reviewer validation, verify prefix `ghs_5545952_*` instead).*
 
-# Strict token verification: prevent silent fallback to personal user accounts
-if (-not $env:GH_TOKEN) { Write-Error "GH_TOKEN is empty"; exit 1 }
-gh api /installation/repositories --jq '.total_count' | Out-Null
-if ($LASTEXITCODE -ne 0) {
-  Write-Error "GH_TOKEN is not a valid GitHub App installation token"
-  exit 1
-}
-```
+### Git Push via Credential Helper
+> [!IMPORTANT]
+> Never embed tokens into remote URLs or pass them as command-line arguments (e.g. `http.extraheader`). Process arguments are visible in process tables (`ps`). Instead, use Git's built-in credential helper powered by `gh auth git-credential`:
 
-> [!WARNING]
-> Do NOT use `gh api /repos/vahid110/odbcpp` without verifying `$GH_TOKEN`. If `$GH_TOKEN` is unset or empty, `gh` silently falls back to the host machine's personal user credentials, violating repository bot identity separation.
-
-### Git Author Configuration
-
-In every worktree, configure the bot identity so commits are properly attributed:
-
+#### POSIX Shell (macOS, Linux, WSL):
 ```bash
-git config user.name "odbcpp-agent[bot]"
-git config user.email "350232297+odbcpp-agent[bot]@users.noreply.github.com"
-```
-
-### Authenticated Git Push (Cross-Platform)
-
-> [!CAUTION]
-> Never embed the access token into the remote URL (e.g. `https://x-access-token:...@github.com`). If git encounters a network drop or rejected push, it echoes the full remote URL containing the token to stderr, creating a risk of accidental token leakage.
-
-Inject the token dynamically via HTTP authorization headers instead:
-
-#### Bash / Zsh (macOS / Linux / WSL):
-```bash
-git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64)" \
+git -c credential.helper= -c credential.helper='!gh auth git-credential' \
   push origin codex/<branch-name>
 ```
 
-#### PowerShell (Windows Native):
+#### Windows Native (PowerShell):
 ```powershell
-$auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$($env:GH_TOKEN)"))
-git -c http.extraheader="AUTHORIZATION: basic $auth" push origin codex/<branch-name>
+git -c credential.helper= -c credential.helper="!gh auth git-credential" `
+  push origin codex/<branch-name>
 ```
+
+`gh auth git-credential` automatically reads `GH_TOKEN` from the process environment and supplies it over standard input/output without command-line exposure.
 
 ---
 
-## 6. Development & Worktree Workflow
+## 6. Development, Worktrees, and Testing
 
-1. **Worktrees:**
-   Always create an isolated worktree from current `origin/main`:
+1. **Isolated Worktrees:**
+   Always create an isolated worktree from latest `origin/main`:
    ```bash
    git fetch origin main
    git worktree add -b codex/issue<number>-<slug> ../worktrees/issue<number> origin/main
@@ -209,16 +146,13 @@ git -c http.extraheader="AUTHORIZATION: basic $auth" push origin codex/<branch-n
    git config user.name "odbcpp-agent[bot]"
    git config user.email "350232297+odbcpp-agent[bot]@users.noreply.github.com"
    ```
-2. **Test-Driven Changes:**
-   - For bug fixes, write a failing GoogleTest first. Show that it fails before applying the fix.
-   - For C++ control flow changes containing GoogleTest macros, enclose all control bodies in braces:
-     ```bash
-     python3 tools/development/check_changed_gtest_control_flow.py --base origin/main
-     ```
-3. **Local Testing:**
-   Run relevant unit tests for `POSTGRESQL` and `REDSHIFT` profiles locally before opening a PR.
-4. **Worktree Teardown & Cleanup:**
-   Once the task is completed and the PR is merged or closed, prune the isolated worktree:
+2. **Test-Driven Changes & Control Flow:**
+   - For bug fixes, write a failing GoogleTest first.
+   - If changing C++ control flow bodies containing GoogleTest macros, enclose all bodies in braces and verify with `python3 tools/development/check_changed_gtest_control_flow.py --base origin/main`.
+3. **Focused Local Testing:**
+   Run focused local tests relevant to the modified code. Do not mandate running the full matrix of both products locally; required CI checks provide the canonical qualification evidence per ADR 0001 Decision 5.
+4. **Safe Worktree Cleanup:**
+   After the issue's acceptance criteria are fully satisfied and no active processes or evidence readers need the directory, prune the worktree:
    ```bash
    git worktree remove ../worktrees/issue<number>
    git worktree prune
@@ -229,86 +163,25 @@ git -c http.extraheader="AUTHORIZATION: basic $auth" push origin codex/<branch-n
 ## 7. Pull Request & Independent Review Protocol
 
 ### Opening the PR
+Open the PR as `odbcpp-agent[bot]` with description covering: What, Why, Change, Tests, Review, and Open debt.
 
-Open the PR using `odbcpp-agent[bot]`:
-```bash
-GH_TOKEN=$(~/.config/odbcpp-agent/token.sh) gh pr create \
-  --title "<category>: <summary> (#<issue>)" \
-  --body-file pr_description.md
-```
-
-PR description template:
-- **What:** Concise summary of what was done.
-- **Why:** Context and issue reference.
-- **Change:** Breakdown of modified components and files.
-- **Tests:** Exact test counts (passed, skipped, failed with names) and log paths.
-- **Review:** Requested reviewers and risk category.
-- **Open debt:** Explicit list of anything unverified or open.
-
-### Independent Review Process
-
-1. **Reviewer Separation:**
-   - The agent that authored the PR must NOT review it.
-   - A separate reviewer agent session performs the review using `odbcpp-reviewer[bot]`.
-2. **Correctness Review:**
-   - Reads code and attached evidence. Verifies that claims match evidence.
-   - Checks edge cases, architectural placement, security, and assertions.
-   - Ranks findings: `blocking`, `should-fix`, `nit` with `file:line`.
-   - Posts verdict using `odbcpp-reviewer[bot]`:
-     ```bash
-     GH_TOKEN=$(~/.config/odbcpp-reviewer/token.sh) gh pr review <pr-number> \
-       --approve --body "[correctness reviewer] Verdict: APPROVE. ..."
-     ```
-3. **Red-Team Review (High-Risk Changes):**
-   - Mandatory for PRs touching `security`, `auth`, `protocol`, `transactions`, `process`, or files under `tools/`, `.github/`, `docs/adr/`.
-   - A second independent review session acts as `[red-team reviewer]`.
-   - Attempts to break the change (hostile inputs, race conditions, privilege bypass, regression).
-   - Posts verdict using `odbcpp-reviewer[bot]`:
-     ```bash
-     GH_TOKEN=$(~/.config/odbcpp-reviewer/token.sh) gh pr review <pr-number> \
-       --approve --body "[red-team reviewer] Verdict: APPROVE. ..."
-     ```
-4. **Independence Invariants:**
-   - Correctness and red-team reviews must have distinct review IDs, distinct timestamps, and non-identical review text bodies.
-   - Reviews must be on the exact head commit SHA of the PR. Any new push invalidates past approvals and requires a new review.
-5. **Merge Safeguards:**
-   - Product PRs may be merged by agents once independent reviews approve and required CI checks pass.
-   - Changes touching gate files (`.github/`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `docs/AGENT_WORKFLOW.md`, `docs/adr/`, `.agents/`, `tools/`, `tests/security/`, `cmake/LiveSuite.cmake`, `DEVELOPMENT_WORKFLOW.md`) wait for the repository owner (`@vahid110`)'s personal approval per `CODEOWNERS`.
+### Substantive Review Independence
+Output-shape checks (such as distinct review IDs or timestamps) are secondary heuristics and not proof of independence. True independence requires:
+1. **Separation of Roles:** The author session must never review its own PR.
+2. **Correctness Review:** An independent session acting as `odbcpp-reviewer[bot]` reads the code and evidence, evaluates correctness, architecture placement, and test validity, and submits a review starting with `[correctness reviewer]`.
+3. **Red-Team Review (High-Risk Categories):** PRs touching `security`, `auth`, `protocol`, `transactions`, `process`, or gate files require a second independent red-team reviewer session. The red-team reviewer must operate in a blind context (not seeing the correctness review), actively attempt to break the change, and submit a review starting with `[red-team reviewer]`.
+4. **Exact Head Approval:** Approvals cover the exact head commit SHA. Any new push requires re-review.
+5. **Merge Gates:**
+   - Product PRs can be merged by agents once independent reviews approve and required CI checks pass.
+   - Changes touching gate files (`.github/CODEOWNERS`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `docs/AGENT_WORKFLOW.md`, `docs/adr/`, `.agents/`, `tools/`, `tests/security/`, `cmake/LiveSuite.cmake`, `DEVELOPMENT_WORKFLOW.md`) require repository owner (`@vahid110`) sign-off per `CODEOWNERS`.
 
 ---
 
-## 8. GitHub Projects Manual Setup & Safe Automation
+## 8. Appendix: GitHub Projects Setup (Optional Reference)
 
-### Personal User Account Permission Boundaries
-
-GitHub Projects (v2) on personal user accounts (e.g., `vahid110`) have specific permission constraints:
-- GitHub App installation access tokens (server-to-server) cannot execute `createProjectV2` on personal user accounts (returns `GraphQL: odbcpp-agent[bot] does not have permission to create projects on ownerId ...`).
-- Therefore, initial project board creation on a user account is performed by the human owner via the GitHub web UI.
-- **Avoiding Mutation Deadlocks:** If direct GraphQL or CLI project card mutations fail due to GitHub App permission boundaries on personal accounts, agents must NOT treat this as a fatal blocker that halts development. Agents record the stage transition via a comment on the GitHub issue/PR and proceed with the development, testing, and review phases normally.
-
-### Manual Setup Steps for the Repository Owner
-
-1. Navigate to: `https://github.com/users/vahid110/projects/new`.
-2. Choose **Board** (Kanban) template and name the project `ODBCPP Development`.
-3. Link the repository:
-   - Under Project Settings -> **Manage access** / **Linked repositories**, select `vahid110/odbcpp`.
-4. Configure Stages in the `Status` field:
-   - `Ready`
-   - `Working`
-   - `Review`
-   - `CI / Merge`
-   - `Blocked`
-   - `Done`
-5. Add Custom Fields:
-   - `Worker Identity` (Type: Text)
-   - `Linked PR` (Type: Text or linked pull request)
-   - `Last Update` (Type: Date or Text)
-6. Save the default Kanban view.
-
-### Safe Status Automation & Importing Work
-
-- When importing existing open issues and PRs into the board:
-  - Do NOT infer active ownership. Place unworked open issues into **Ready** with an empty `Worker Identity`.
-  - Only place items into **Working** if an active worker session has explicitly claimed them on GitHub.
-  - Active PRs with reviews in progress are placed in **Review**.
-- When status automation is active, agents update item fields via GraphQL API or `gh project item-edit` using authorized tokens. When direct API mutations are restricted, agents post explicit stage update comments on the issue/PR so that human operators or automation workflows can synchronize board state.
+If the repository owner chooses to maintain a GitHub Projects v2 Kanban view linked to `vahid110/odbcpp`:
+1. Create a Project at `https://github.com/users/vahid110/projects/new` named `ODBCPP Development`.
+2. Link repository `vahid110/odbcpp`.
+3. Configure `Status` single-select options: `Ready`, `Working`, `Review`, `CI / Merge`, `Blocked`, `Done`.
+4. Add custom text field: `Worker Identity`.
+5. *Note on Automation:* Do not manually duplicate linked PRs or timestamps that GitHub already tracks automatically. The board is a visualization aid; GitHub Issues and PRs remain the operational source of truth.

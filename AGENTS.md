@@ -7,17 +7,21 @@ decide the active task; nothing here grants authority beyond them.
 
 ## Working on a task
 
-- GitHub (Issues, PRs, Project board) is the shared source of truth; local files
-  and private handoffs are not coordination mechanisms.
+- GitHub Issues and Pull Requests are the authoritative operational mechanism;
+  a project board provides an optional Kanban status view. Local files and
+  private handoffs are retired.
 - Track worker identity as `<tool>/<host>/<session>` (supporting Codex, agy,
-  Claude, Copilot, and human sessions across macOS, Windows, WSL, and Linux).
+  Claude, Copilot, Cursor, and human sessions across macOS, Windows, WSL, and Linux).
 - Each task is a GitHub issue with acceptance criteria. Work on a new
   `codex/` branch from current `main`, in its own worktree; never reset or
   discard someone else's checkout or uncommitted work.
-- Never claim an issue in `Working`, and never treat stale activity as permission
-  to take over. Hand off explicitly with pushed commits and an issue comment.
-- Project board stages: `Ready`, `Working`, `Review`, `CI / Merge`, `Blocked`,
-  `Done`. Report blockers with the exact failed operation and minimum fix.
+- Stale activity alone is never permission to take over. Hand off explicitly with
+  pushed commits and an issue comment. If a worker session crashes or becomes
+  unreachable, the authorized coordinator may preserve uncommitted work and
+  evidence, post an explicit reassignment comment, and resume.
+- Normal compiler and test fixes are standard development, not blockers; escalate
+  to Blocked only when missing genuine external authority, credentials, or decisions.
+- Done means all acceptance criteria are verified and satisfied.
 - One PR per issue. Description: what, why, change, tests, review, open debt.
   Report test results exactly (passed / skipped / failed, with names).
 - Write a failing test first for every bug fix and show it failed before the
