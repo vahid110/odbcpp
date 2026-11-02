@@ -25,6 +25,9 @@ To coordinate multiple concurrent agents across different hosts, tools, and plat
 <tool>/<host>/<session>
 ```
 
+> [!NOTE]
+> The components `<tool>`, `<host>`, and `<session>` must contain only alphanumeric characters, hyphens, and dots (no forward slashes, colons, or whitespace) to guarantee unambiguous slash-delimited parsing across automated tooling.
+
 ### Components
 
 - **`<tool>`**: The client agent runtime or driving interface:
@@ -84,7 +87,7 @@ Work is tracked on a GitHub Project (Projects v2) linked to `vahid110/odbcpp`.
 1. An agent may only claim an issue in the **Ready** column that has clear acceptance criteria.
 2. Before modifying code, the agent must:
    - Post a comment on the GitHub issue with its `Worker Identity`, target branch name, baseline commit SHA, and initial approach.
-   - Update the project item's **Status** to `Working` and set **Worker Identity**.
+   - Update the project item's **Status** to `Working` and set **Worker Identity** (or post the stage comment on the issue if board mutation is restricted).
    - Create a fresh `codex/` branch from current `origin/main` in an isolated git worktree.
 3. **No Duplicate Claims:** An agent must NEVER claim or begin work on an issue that is already in `Working` or has an active worker identity.
 
@@ -97,12 +100,13 @@ Work is tracked on a GitHub Project (Projects v2) linked to `vahid110/odbcpp`.
 ### Reporting Blockers
 
 If an agent encounters a blocking condition (missing GitHub API permissions, network sandbox restrictions, compiler bugs, missing credentials, or architectural ambiguities):
-1. Transition the project item status to **Blocked**.
+1. Transition the project item status to **Blocked** (or post a blocker comment on the issue/PR).
 2. Immediately post a structured blocker comment on the issue or PR containing:
    - **Failed Operation:** The exact command or API call that failed.
-   - **Exact Output / Error:** Full error text or status code.
+   - **Exact Output / Error:** Full error text or status code (redacting any credentials).
    - **Smallest Remediation:** The minimal permission grant, file change, or human decision required to proceed.
-3. Stop calling tools or idling; do not invent mock successes or switch identities.
+3. **Credential Scrubbing:** Before posting any error output or log snippet to an issue, PR, or comment, sanitize and redact any token pattern (`ghs_[A-Za-z0-9_]+`, `ghp_[A-Za-z0-9_]+`, JWTs, private keys, or passwords). Never include URLs with embedded access tokens in error reports.
+4. Stop calling tools or idling; do not invent mock successes or switch identities.
 
 ### Handoff Protocol
 
@@ -113,7 +117,8 @@ When handing off work between sessions, tools, or machines:
    - **Local Test Results:** Passed, skipped, failed tests with names and log paths.
    - **Acceptance Criteria Progress:** Checklist of satisfied vs remaining criteria.
    - **Next Action:** Concrete next steps for the incoming session.
-3. The next worker claims the handoff by posting its own `Worker Identity` in a comment and updating the **Worker Identity** field on the board.
+3. **Unlocking Handoffs:** To resolve handoff claiming deadlocks, the departing worker resets the issue stage on GitHub to **Ready** (with note `Ready (Handoff)`), which unlocks the task so that incoming workers are authorized to claim it without violating duplicate-claim invariants.
+4. The next worker claims the handoff by posting its own `Worker Identity` in a comment and updating the **Worker Identity** field on the board.
 
 ---
 
@@ -136,8 +141,12 @@ These scripts use a private GitHub App `.pem` key locally to sign a JWT and requ
 # Obtain agent author token
 export GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)
 
-# Verify token without using personal identity
-gh api /repos/vahid110/odbcpp --jq '.full_name'
+# Strict token verification: prevent silent fallback to personal user accounts
+[ -n "$GH_TOKEN" ] || { echo "Error: GH_TOKEN is empty" >&2; exit 1; }
+gh api /installation/repositories --jq '.total_count' >/dev/null || {
+  echo "Error: GH_TOKEN is not a valid GitHub App installation token" >&2
+  exit 1
+}
 ```
 
 #### Windows Native (PowerShell)
@@ -147,8 +156,17 @@ $env:GH_TOKEN = & "$HOME\.config\odbcpp-agent\token.ps1"
 # Or invoke bash via Git Bash / WSL:
 # $env:GH_TOKEN = (bash -c '~/.config/odbcpp-agent/token.sh')
 
-gh api /repos/vahid110/odbcpp --jq '.full_name'
+# Strict token verification: prevent silent fallback to personal user accounts
+if (-not $env:GH_TOKEN) { Write-Error "GH_TOKEN is empty"; exit 1 }
+gh api /installation/repositories --jq '.total_count' | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "GH_TOKEN is not a valid GitHub App installation token"
+  exit 1
+}
 ```
+
+> [!WARNING]
+> Do NOT use `gh api /repos/vahid110/odbcpp` without verifying `$GH_TOKEN`. If `$GH_TOKEN` is unset or empty, `gh` silently falls back to the host machine's personal user credentials, violating repository bot identity separation.
 
 ### Git Author Configuration
 
@@ -161,16 +179,21 @@ git config user.email "350232297+odbcpp-agent[bot]@users.noreply.github.com"
 
 ### Authenticated Git Push (Cross-Platform)
 
-Do not persist tokens in git configuration or commit files. Use the ephemeral `GH_TOKEN` directly in the push invocation:
+> [!CAUTION]
+> Never embed the access token into the remote URL (e.g. `https://x-access-token:...@github.com`). If git encounters a network drop or rejected push, it echoes the full remote URL containing the token to stderr, creating a risk of accidental token leakage.
+
+Inject the token dynamically via HTTP authorization headers instead:
 
 #### Bash / Zsh (macOS / Linux / WSL):
 ```bash
-git push "https://x-access-token:${GH_TOKEN}@github.com/vahid110/odbcpp.git" codex/<branch-name>
+git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64)" \
+  push origin codex/<branch-name>
 ```
 
-#### PowerShell (Windows):
+#### PowerShell (Windows Native):
 ```powershell
-git push "https://x-access-token:$($env:GH_TOKEN)@github.com/vahid110/odbcpp.git" codex/<branch-name>
+$auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$($env:GH_TOKEN)"))
+git -c http.extraheader="AUTHORIZATION: basic $auth" push origin codex/<branch-name>
 ```
 
 ---
@@ -194,6 +217,12 @@ git push "https://x-access-token:$($env:GH_TOKEN)@github.com/vahid110/odbcpp.git
      ```
 3. **Local Testing:**
    Run relevant unit tests for `POSTGRESQL` and `REDSHIFT` profiles locally before opening a PR.
+4. **Worktree Teardown & Cleanup:**
+   Once the task is completed and the PR is merged or closed, prune the isolated worktree:
+   ```bash
+   git worktree remove ../worktrees/issue<number>
+   git worktree prune
+   ```
 
 ---
 
@@ -244,7 +273,7 @@ PR description template:
    - Reviews must be on the exact head commit SHA of the PR. Any new push invalidates past approvals and requires a new review.
 5. **Merge Safeguards:**
    - Product PRs may be merged by agents once independent reviews approve and required CI checks pass.
-   - Changes touching gate files (`.github/`, `AGENTS.md`, `docs/adr/`, `.agents/`, `tools/`, `tests/security/`, `cmake/LiveSuite.cmake`) wait for the repository owner (`@vahid110`)'s personal approval per `CODEOWNERS`.
+   - Changes touching gate files (`.github/`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `docs/AGENT_WORKFLOW.md`, `docs/adr/`, `.agents/`, `tools/`, `tests/security/`, `cmake/LiveSuite.cmake`, `DEVELOPMENT_WORKFLOW.md`) wait for the repository owner (`@vahid110`)'s personal approval per `CODEOWNERS`.
 
 ---
 
@@ -255,6 +284,7 @@ PR description template:
 GitHub Projects (v2) on personal user accounts (e.g., `vahid110`) have specific permission constraints:
 - GitHub App installation access tokens (server-to-server) cannot execute `createProjectV2` on personal user accounts (returns `GraphQL: odbcpp-agent[bot] does not have permission to create projects on ownerId ...`).
 - Therefore, initial project board creation on a user account is performed by the human owner via the GitHub web UI.
+- **Avoiding Mutation Deadlocks:** If direct GraphQL or CLI project card mutations fail due to GitHub App permission boundaries on personal accounts, agents must NOT treat this as a fatal blocker that halts development. Agents record the stage transition via a comment on the GitHub issue/PR and proceed with the development, testing, and review phases normally.
 
 ### Manual Setup Steps for the Repository Owner
 
