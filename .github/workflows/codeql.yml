@@ -188,3 +188,24 @@ jobs:
             build-codeql/CMakeCache.txt
           retention-days: 7
           if-no-files-found: warn
+
+  execution-gate:
+    name: CodeQL execution gate
+    needs: analyze
+    # A skipped/neutral Code Scanning summary satisfies branch protection.
+    # This job instead requires successful execution of the analysis matrix.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Require successful analysis execution
+        shell: bash
+        env:
+          ANALYSIS_RESULT: ${{ needs.analyze.result }}
+        run: |
+          if [[ "$ANALYSIS_RESULT" != "success" ]]; then
+            printf '::error::CodeQL analysis did not succeed (result: %s)\n' "$ANALYSIS_RESULT"
+            exit 1
+          fi
+          printf 'All CodeQL analysis jobs succeeded.\n'

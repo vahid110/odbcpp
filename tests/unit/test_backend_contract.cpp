@@ -2677,6 +2677,158 @@ TEST_F(BackendContractTest, ExplicitRedshiftProfileReportsBoundedNumericAndNoInd
   }
 }
 
+TEST_F(BackendContractTest, ExplicitPostgresProfileReportsDDLMasksKeywordsAndLimits) {
+  using postgres::PgCatalogProfile;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  dbc = nullptr;
+  auto profile = std::make_shared<postgres::PgBackendProvider>(
+      BackendIdentity{"postgres", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"localhost", 5432, std::nullopt, true},
+      std::nullopt, PgCatalogProfile::PostgreSQL);
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<FakeProvider>(seen, profile));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+  connect();
+
+  char keywords[1024]{};
+  SQLSMALLINT len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_KEYWORDS, keywords, sizeof(keywords), &len));
+  EXPECT_STREQ(
+      "ANALYSE,ANALYZE,ARRAY,ASYMMETRIC,CURRENT_CATALOG,CURRENT_ROLE,"
+      "CURRENT_SCHEMA,DO,ILIKE,LATERAL,LIMIT,LOCALTIME,LOCALTIMESTAMP,OFFSET,"
+      "PLACING,RETURNING,SYMMETRIC,VARIADIC,VERBOSE,WINDOW",
+      keywords);
+
+  SQLUSMALLINT max_columns = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_TABLE, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_SELECT, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+
+  SQLUINTEGER mask = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_CT_CREATE_TABLE | SQL_CT_COMMIT_PRESERVE | SQL_CT_COMMIT_DELETE |
+      SQL_CT_LOCAL_TEMPORARY | SQL_CT_COLUMN_CONSTRAINT | SQL_CT_COLUMN_DEFAULT |
+      SQL_CT_COLUMN_COLLATION | SQL_CT_TABLE_CONSTRAINT | SQL_CT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DT_DROP_TABLE | SQL_DT_CASCADE | SQL_DT_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CV_CREATE_VIEW | SQL_CV_CHECK_OPTION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DV_DROP_VIEW | SQL_DV_CASCADE | SQL_DV_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_ALTER_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_AT_ADD_COLUMN_SINGLE | SQL_AT_ADD_COLUMN_DEFAULT |
+      SQL_AT_ADD_COLUMN_COLLATION | SQL_AT_SET_COLUMN_DEFAULT |
+      SQL_AT_DROP_COLUMN_DEFAULT | SQL_AT_DROP_COLUMN_CASCADE |
+      SQL_AT_DROP_COLUMN_RESTRICT | SQL_AT_ADD_TABLE_CONSTRAINT |
+      SQL_AT_DROP_TABLE_CONSTRAINT_CASCADE |
+      SQL_AT_DROP_TABLE_CONSTRAINT_RESTRICT | SQL_AT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CS_CREATE_SCHEMA | SQL_CS_AUTHORIZATION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DS_DROP_SCHEMA | SQL_DS_CASCADE | SQL_DS_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INDEX_KEYWORDS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_IK_ASC | SQL_IK_DESC), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INFO_SCHEMA_VIEWS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_ISV_CHARACTER_SETS | SQL_ISV_CHECK_CONSTRAINTS |
+      SQL_ISV_COLLATIONS | SQL_ISV_COLUMN_DOMAIN_USAGE |
+      SQL_ISV_COLUMN_PRIVILEGES | SQL_ISV_COLUMNS |
+      SQL_ISV_CONSTRAINT_COLUMN_USAGE |
+      SQL_ISV_CONSTRAINT_TABLE_USAGE | SQL_ISV_DOMAIN_CONSTRAINTS |
+      SQL_ISV_DOMAINS | SQL_ISV_KEY_COLUMN_USAGE |
+      SQL_ISV_REFERENTIAL_CONSTRAINTS | SQL_ISV_SCHEMATA |
+      SQL_ISV_SQL_LANGUAGES | SQL_ISV_TABLE_CONSTRAINTS |
+      SQL_ISV_TABLE_PRIVILEGES | SQL_ISV_TABLES |
+      SQL_ISV_USAGE_PRIVILEGES | SQL_ISV_VIEW_COLUMN_USAGE |
+      SQL_ISV_VIEW_TABLE_USAGE | SQL_ISV_VIEWS), mask);
+}
+
+TEST_F(BackendContractTest, ExplicitRedshiftProfileReportsDDLMasksKeywordsAndLimits) {
+  using postgres::PgCatalogProfile;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  dbc = nullptr;
+  auto profile = std::make_shared<postgres::PgBackendProvider>(
+      BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost", 5439, std::nullopt, true},
+      std::nullopt, PgCatalogProfile::Redshift);
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<FakeProvider>(seen, profile));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+  connect();
+
+  char keywords[1024]{};
+  SQLSMALLINT len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_KEYWORDS, keywords, sizeof(keywords), &len));
+  EXPECT_STREQ(
+      "AES128,AES256,ALLOWOVERWRITE,ANALYSE,ANALYZE,ARRAY,AZ64,BACKUP,BINARY,"
+      "BLANKSASNULL,BYTEDICT,BZIP2,CREDENTIALS,CURRENT_USER_ID,DEFLATE,DEFRAG,"
+      "DELTA,DELTA32K,DISABLE,DO,EMPTYASNULL,ENABLE,ENCODE,ENCRYPTION,EXPLICIT,"
+      "FREEZE,GLOBALDICT256,GLOBALDICT64K,GZIP,IGNORE,ILIKE,ISNULL,LIMIT,"
+      "LOCALTIME,LOCALTIMESTAMP,LUN,LUNS,LZO,LZOP,MINUS,MOSTLY16,MOSTLY32,"
+      "MOSTLY8,NEW,NOTNULL,NULLS,OFF,OFFLINE,OFFSET,OID,OLD,PARALLEL,PARTITION,"
+      "PERCENT,PERMISSIONS,PIVOT,PLACING,RAW,READRATIO,RECOVER,REJECTLOG,"
+      "RESORT,RESPECT,RESTORE,SIMILAR,SYSDATE,SYSTEM,TAG,TDES,TEXT255,TEXT32K,"
+      "TOP,TRUNCATECOLUMNS,UNNEST,UNPIVOT,VERBOSE,WALLET,WITHOUT",
+      keywords);
+
+  SQLUSMALLINT max_columns = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_TABLE, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_SELECT, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+
+  SQLUINTEGER mask = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_CT_CREATE_TABLE | SQL_CT_LOCAL_TEMPORARY |
+      SQL_CT_COLUMN_CONSTRAINT | SQL_CT_COLUMN_DEFAULT |
+      SQL_CT_TABLE_CONSTRAINT | SQL_CT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DT_DROP_TABLE | SQL_DT_CASCADE | SQL_DT_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CV_CREATE_VIEW), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DV_DROP_VIEW | SQL_DV_CASCADE | SQL_DV_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_ALTER_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_AT_ADD_COLUMN_SINGLE | SQL_AT_ADD_COLUMN_DEFAULT |
+      SQL_AT_SET_COLUMN_DEFAULT | SQL_AT_DROP_COLUMN_DEFAULT |
+      SQL_AT_DROP_COLUMN_CASCADE | SQL_AT_DROP_COLUMN_RESTRICT |
+      SQL_AT_ADD_TABLE_CONSTRAINT |
+      SQL_AT_DROP_TABLE_CONSTRAINT_CASCADE |
+      SQL_AT_DROP_TABLE_CONSTRAINT_RESTRICT | SQL_AT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CS_CREATE_SCHEMA | SQL_CS_AUTHORIZATION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DS_DROP_SCHEMA | SQL_DS_CASCADE | SQL_DS_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INDEX_KEYWORDS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(0u, mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INFO_SCHEMA_VIEWS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_ISV_COLUMNS | SQL_ISV_SCHEMATA | SQL_ISV_TABLES | SQL_ISV_VIEWS), mask);
+}
+
 TEST_F(BackendContractTest, LongBinaryResultPreservesUnknownMetadataAndChunkNullEmptySemantics) {
   seen->long_binary = true; connect();
   ASSERT_EQ(SQL_SUCCESS, execute("rows"));

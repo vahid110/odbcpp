@@ -201,7 +201,7 @@ class GetInfoIntegrationTest : public ::testing::Test {
   }
 
   std::string string_info(SQLUSMALLINT type) {
-    SQLCHAR value[128]{};
+    SQLCHAR value[1024]{};
     SQLSMALLINT length = -1;
     EXPECT_EQ(SQL_SUCCESS,
               SQLGetInfo(connection_, type, value, sizeof(value), &length));
@@ -270,14 +270,17 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
           {SQL_ORDER_BY_COLUMNS_IN_SELECT, "N"},
           {SQL_ROW_UPDATES, "N"},
           {SQL_COLLATION_SEQ, ""},
-          {SQL_KEYWORDS, ""},
+          {SQL_KEYWORDS,
+           redshift_profile_
+               ? "AES128,AES256,ALLOWOVERWRITE,ANALYSE,ANALYZE,ARRAY,AZ64,BACKUP,BINARY,BLANKSASNULL,BYTEDICT,BZIP2,CREDENTIALS,CURRENT_USER_ID,DEFLATE,DEFRAG,DELTA,DELTA32K,DISABLE,DO,EMPTYASNULL,ENABLE,ENCODE,ENCRYPTION,EXPLICIT,FREEZE,GLOBALDICT256,GLOBALDICT64K,GZIP,IGNORE,ILIKE,ISNULL,LIMIT,LOCALTIME,LOCALTIMESTAMP,LUN,LUNS,LZO,LZOP,MINUS,MOSTLY16,MOSTLY32,MOSTLY8,NEW,NOTNULL,NULLS,OFF,OFFLINE,OFFSET,OID,OLD,PARALLEL,PARTITION,PERCENT,PERMISSIONS,PIVOT,PLACING,RAW,READRATIO,RECOVER,REJECTLOG,RESORT,RESPECT,RESTORE,SIMILAR,SYSDATE,SYSTEM,TAG,TDES,TEXT255,TEXT32K,TOP,TRUNCATECOLUMNS,UNNEST,UNPIVOT,VERBOSE,WALLET,WITHOUT"
+               : "ANALYSE,ANALYZE,ARRAY,ASYMMETRIC,CURRENT_CATALOG,CURRENT_ROLE,CURRENT_SCHEMA,DO,ILIKE,LATERAL,LIMIT,LOCALTIME,LOCALTIMESTAMP,OFFSET,PLACING,RETURNING,SYMMETRIC,VARIADIC,VERBOSE,WINDOW"},
           {SQL_SPECIAL_CHARACTERS, ""},
           {SQL_XOPEN_CLI_YEAR, "1995"},
       }};
   for (const auto& [type, expected] : expected_values) {
     EXPECT_EQ(expected, string_info(type)) << type;
 
-    SQLWCHAR wide_value[128]{};
+    SQLWCHAR wide_value[1024]{};
     SQLSMALLINT wide_bytes = -1;
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetInfoW(connection_, type, wide_value, sizeof(wide_value),
@@ -308,7 +311,7 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
 }
 
 TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
-  const std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 25>
+  const std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 27>
       small_values{{
           {SQL_ACTIVE_ENVIRONMENTS, 0},
           {SQL_MAX_CONCURRENT_ACTIVITIES, 0},
@@ -336,6 +339,8 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_MAX_CATALOG_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
           {SQL_MAX_PROCEDURE_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
           {SQL_MAX_USER_NAME_LEN, static_cast<SQLUSMALLINT>(redshift_profile_ ? 127 : 63)},
+          {SQL_MAX_COLUMNS_IN_TABLE, 1600},
+          {SQL_MAX_COLUMNS_IN_SELECT, 1600},
       }};
   for (const auto& [type, expected] : small_values) {
     SQLUSMALLINT value = std::numeric_limits<SQLUSMALLINT>::max();
@@ -349,8 +354,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
 
   constexpr SQLUSMALLINT zero_small_values[]{
       SQL_MAX_COLUMNS_IN_GROUP_BY, SQL_MAX_COLUMNS_IN_INDEX,
-      SQL_MAX_COLUMNS_IN_ORDER_BY, SQL_MAX_COLUMNS_IN_SELECT,
-      SQL_MAX_COLUMNS_IN_TABLE, SQL_MAX_CURSOR_NAME_LEN,
+      SQL_MAX_COLUMNS_IN_ORDER_BY, SQL_MAX_CURSOR_NAME_LEN,
       SQL_MAX_TABLES_IN_SELECT};
   for (const auto type : zero_small_values) {
     SQLUSMALLINT value = std::numeric_limits<SQLUSMALLINT>::max();
@@ -385,7 +389,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
     }
   }
 
-  const std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 35>
+  const std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 44>
       integer_values{{
           {SQL_TXN_ISOLATION_OPTION,
            redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(
@@ -433,6 +437,54 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
            SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
                SQL_SU_TABLE_DEFINITION | (redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_SU_INDEX_DEFINITION)) |
                SQL_SU_PRIVILEGE_DEFINITION},
+          {SQL_CREATE_TABLE,
+           static_cast<SQLUINTEGER>(
+               SQL_CT_CREATE_TABLE | SQL_CT_LOCAL_TEMPORARY |
+               SQL_CT_COLUMN_CONSTRAINT | SQL_CT_COLUMN_DEFAULT |
+               SQL_CT_TABLE_CONSTRAINT | SQL_CT_CONSTRAINT_NAME_DEFINITION |
+               (redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(
+                   SQL_CT_COMMIT_PRESERVE | SQL_CT_COMMIT_DELETE |
+                   SQL_CT_COLUMN_COLLATION)))},
+          {SQL_DROP_TABLE,
+           static_cast<SQLUINTEGER>(SQL_DT_DROP_TABLE | SQL_DT_CASCADE | SQL_DT_RESTRICT)},
+          {SQL_CREATE_VIEW,
+           static_cast<SQLUINTEGER>(
+               SQL_CV_CREATE_VIEW |
+               (redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_CV_CHECK_OPTION)))},
+          {SQL_DROP_VIEW,
+           static_cast<SQLUINTEGER>(SQL_DV_DROP_VIEW | SQL_DV_CASCADE | SQL_DV_RESTRICT)},
+          {SQL_ALTER_TABLE,
+           static_cast<SQLUINTEGER>(
+               SQL_AT_ADD_COLUMN_SINGLE | SQL_AT_ADD_COLUMN_DEFAULT |
+               SQL_AT_SET_COLUMN_DEFAULT | SQL_AT_DROP_COLUMN_DEFAULT |
+               SQL_AT_DROP_COLUMN_CASCADE | SQL_AT_DROP_COLUMN_RESTRICT |
+               SQL_AT_ADD_TABLE_CONSTRAINT |
+               SQL_AT_DROP_TABLE_CONSTRAINT_CASCADE |
+               SQL_AT_DROP_TABLE_CONSTRAINT_RESTRICT |
+               SQL_AT_CONSTRAINT_NAME_DEFINITION |
+               (redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_AT_ADD_COLUMN_COLLATION)))},
+          {SQL_CREATE_SCHEMA,
+           static_cast<SQLUINTEGER>(SQL_CS_CREATE_SCHEMA | SQL_CS_AUTHORIZATION)},
+          {SQL_DROP_SCHEMA,
+           static_cast<SQLUINTEGER>(SQL_DS_DROP_SCHEMA | SQL_DS_CASCADE | SQL_DS_RESTRICT)},
+          {SQL_INDEX_KEYWORDS,
+           redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_IK_ASC | SQL_IK_DESC)},
+          {SQL_INFO_SCHEMA_VIEWS,
+           redshift_profile_
+               ? static_cast<SQLUINTEGER>(
+                     SQL_ISV_COLUMNS | SQL_ISV_SCHEMATA | SQL_ISV_TABLES | SQL_ISV_VIEWS)
+               : static_cast<SQLUINTEGER>(
+                     SQL_ISV_CHARACTER_SETS | SQL_ISV_CHECK_CONSTRAINTS |
+                     SQL_ISV_COLLATIONS | SQL_ISV_COLUMN_DOMAIN_USAGE |
+                     SQL_ISV_COLUMN_PRIVILEGES | SQL_ISV_COLUMNS |
+                     SQL_ISV_CONSTRAINT_COLUMN_USAGE |
+                     SQL_ISV_CONSTRAINT_TABLE_USAGE | SQL_ISV_DOMAIN_CONSTRAINTS |
+                     SQL_ISV_DOMAINS | SQL_ISV_KEY_COLUMN_USAGE |
+                     SQL_ISV_REFERENTIAL_CONSTRAINTS | SQL_ISV_SCHEMATA |
+                     SQL_ISV_SQL_LANGUAGES | SQL_ISV_TABLE_CONSTRAINTS |
+                     SQL_ISV_TABLE_PRIVILEGES | SQL_ISV_TABLES |
+                     SQL_ISV_USAGE_PRIVILEGES | SQL_ISV_VIEW_COLUMN_USAGE |
+                     SQL_ISV_VIEW_TABLE_USAGE | SQL_ISV_VIEWS)},
       }};
   for (const auto& [type, expected] : integer_values) {
     SQLUINTEGER value = std::numeric_limits<SQLUINTEGER>::max();
@@ -448,16 +500,12 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
   constexpr SQLUSMALLINT zero_integer_values[]{
       SQL_AGGREGATE_FUNCTIONS,
       SQL_ALTER_DOMAIN,
-      SQL_ALTER_TABLE,
       SQL_DATETIME_LITERALS,
       SQL_CREATE_ASSERTION,
       SQL_CREATE_CHARACTER_SET,
       SQL_CREATE_COLLATION,
       SQL_CREATE_DOMAIN,
-      SQL_CREATE_SCHEMA,
-      SQL_CREATE_TABLE,
       SQL_CREATE_TRANSLATION,
-      SQL_CREATE_VIEW,
       SQL_CONVERT_BIGINT,
       SQL_CONVERT_BINARY,
       SQL_CONVERT_BIT,
@@ -489,12 +537,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
       SQL_DROP_CHARACTER_SET,
       SQL_DROP_COLLATION,
       SQL_DROP_DOMAIN,
-      SQL_DROP_SCHEMA,
-      SQL_DROP_TABLE,
       SQL_DROP_TRANSLATION,
-      SQL_DROP_VIEW,
-      SQL_INDEX_KEYWORDS,
-      SQL_INFO_SCHEMA_VIEWS,
       SQL_MAX_BINARY_LITERAL_LEN,
       SQL_MAX_CHAR_LITERAL_LEN,
       SQL_MAX_INDEX_SIZE,
