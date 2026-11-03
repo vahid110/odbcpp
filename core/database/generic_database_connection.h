@@ -113,11 +113,12 @@ protected:
   };
   virtual BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins_impl(
       std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline deadline);
+  void record_result_provenance(std::uint64_t result_id, std::vector<ParsedColumnProvenance> provenance);
+  void release_result_provenance(std::uint64_t result_id) noexcept override;
 
 private:
   friend struct detail::ConnectionAuthenticationTestAccess;
   void clear_authentication_state() noexcept;
-  void record_result_provenance(std::uint64_t result_id, std::vector<ParsedColumnProvenance> provenance);
   std::uint64_t next_result_id_{1};
   std::map<std::uint64_t, std::vector<ParsedColumnProvenance>> result_provenance_;
   BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;

@@ -336,6 +336,7 @@ struct Observations {
   int origin_calls{0};
   int origin_error{0};
   std::optional<std::vector<ResultColumnOrigin>> origin_results;
+  std::vector<std::uint64_t> released_provenance;
 };
 
 template <typename T>
@@ -395,6 +396,9 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       : seen_(std::move(seen)), absent_description_(seen_->absent_description) {}
   ~FakeBackend() override { ++seen_->destructions; }
   IColumnOriginResolver* column_origin_resolver() noexcept override { return this; }
+  void release_result_provenance(std::uint64_t result_id) noexcept override {
+    seen_->released_provenance.push_back(result_id);
+  }
   BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins(
       std::uint64_t result_id, Deadline deadline) override {
     ++seen_->origin_calls;
@@ -16997,6 +17001,138 @@ TEST_F(BackendContractTest, ResultColumnOriginTimeoutReportsErrorAndDisconnects)
   EXPECT_EQ("HYT00", state(SQL_HANDLE_STMT, stmt));
   const auto connection_handle = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
   EXPECT_FALSE(connection_handle->is_connected());
+}
+
+TEST_F(BackendContractTest, ResultColumnOriginBackendFailureDoesNotLatchSuccess) {
+  QueryResult result;
+  result.columns = {{"col", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  result.rows = {{"1"}};
+  seen->date_result = result;
+  seen->origin_error = 1; // QueryFailed (reusable session)
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT col FROM t"));
+
+  char text[64]{};
+  SQLSMALLINT len = -1;
+  // First attempt fails due to backend error
+  EXPECT_EQ(SQL_ERROR, SQLColAttribute(stmt, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_EQ(1, seen->origin_calls);
+
+  // Second attempt must NOT latch success with empty strings; must report error
+  EXPECT_EQ(SQL_ERROR, SQLColAttribute(stmt, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_EQ(2, seen->origin_calls);
+
+  // Once backend recovers, subsequent call succeeds and populates origins
+  seen->origin_error = 0;
+  seen->origin_results = std::vector<ResultColumnOrigin>{{"db", "sch", "tbl", "tbl", "col"}};
+  EXPECT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_EQ(3, seen->origin_calls);
+  EXPECT_STREQ("tbl", text);
+}
+
+TEST_F(BackendContractTest, ResultColumnOriginDescriptorGetFieldSetsDescriptorDiagnostic) {
+  QueryResult result;
+  result.columns = {{"col", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  result.rows = {{"1"}};
+  seen->date_result = result;
+  seen->origin_error = 1; // QueryFailed
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT col FROM t"));
+
+  SQLHDESC ird = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+
+  char desc_text[64]{};
+  SQLINTEGER desc_len = -1;
+  EXPECT_EQ(SQL_ERROR, SQLGetDescField(ird, 1, SQL_DESC_BASE_TABLE_NAME, desc_text, sizeof(desc_text), &desc_len));
+
+  // Must be able to read diagnostic directly from descriptor handle
+  SQLCHAR sqlstate[6]{};
+  SQLINTEGER native = -1;
+  SQLCHAR msg[256]{};
+  SQLSMALLINT msg_len = -1;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DESC, ird, 1, sqlstate, &native, msg, sizeof(msg), &msg_len));
+  EXPECT_STREQ("HY000", reinterpret_cast<const char*>(sqlstate));
+}
+
+TEST_F(BackendContractTest, ResultColumnOriginPropagatesConnectionTimeoutBudget) {
+  QueryResult result;
+  result.columns = {{"col", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  result.rows = {{"1"}};
+  seen->date_result = result;
+  seen->origin_error = 2; // Timeout
+  ASSERT_NO_FATAL_FAILURE(connect());
+
+  // Connection timeout 1s, query timeout 0s
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_TIMEOUT, reinterpret_cast<SQLPOINTER>(1), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, reinterpret_cast<SQLPOINTER>(0), 0));
+
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT col FROM t"));
+
+  char text[64]{};
+  SQLSMALLINT len = -1;
+  EXPECT_EQ(SQL_ERROR, SQLColAttribute(stmt, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  // Must report HYT01 (connection timeout) because connection timeout bounded the request
+  EXPECT_EQ("HYT01", state(SQL_HANDLE_STMT, stmt));
+}
+
+class NestedEvictionConnection final : public GenericDatabaseConnection {
+public:
+  using GenericDatabaseConnection::GenericDatabaseConnection;
+  using GenericDatabaseConnection::record_result_provenance;
+
+  BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins_impl(
+      std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline) override {
+    // Simulate nested queries causing eviction of the oldest entry
+    for (std::uint64_t i = 100; i < 170; ++i) {
+      record_result_provenance(i, {{static_cast<std::uint32_t>(i), 1}});
+    }
+    std::vector<ResultColumnOrigin> origins;
+    origins.reserve(provenance.size());
+    for (const auto& item : provenance) {
+      origins.push_back({"", "", std::to_string(item.table_oid), std::to_string(item.table_oid), ""});
+    }
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins),
+        SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}};
+  }
+};
+
+TEST(GenericDatabaseConnectionTest, ProvenanceResolutionOwnsInputAcrossNestedEviction) {
+  NestedEvictionConnection conn(std::make_unique<rs::core::database::postgres::PgProtocolParser>());
+  conn.record_result_provenance(1, {{424242, 1}});
+  auto res = conn.resolve_column_origins(1, rs::util::Deadline::max());
+  ASSERT_FALSE(res.has_error());
+  ASSERT_EQ(1u, res->size());
+  EXPECT_EQ("424242", (*res)[0].table_name);
+}
+
+TEST(GenericDatabaseConnectionTest, PreservesActiveResultAcrossMoreThan64InterveningResults) {
+  NestedEvictionConnection conn(std::make_unique<rs::core::database::postgres::PgProtocolParser>());
+  conn.record_result_provenance(1, {{9999, 1}});
+  for (std::uint64_t i = 2; i <= 75; ++i) {
+    conn.record_result_provenance(i, {{static_cast<std::uint32_t>(i), 1}});
+  }
+  auto res = conn.resolve_column_origins(1, rs::util::Deadline::max());
+  ASSERT_FALSE(res.has_error());
+  ASSERT_EQ(1u, res->size());
+  EXPECT_EQ("9999", (*res)[0].table_name);
+}
+
+TEST_F(BackendContractTest, ReleasesResultProvenanceOnCursorCloseAndExecution) {
+  QueryResult result;
+  result.result_id = 42;
+  result.columns = {{"col", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  result.rows = {{"1"}};
+  seen->date_result = result;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT col FROM t"));
+
+  EXPECT_TRUE(seen->released_provenance.empty());
+
+  // Closing cursor releases provenance for result_id 42
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(1u, seen->released_provenance.size());
+  EXPECT_EQ(42u, seen->released_provenance[0]);
 }
 
 

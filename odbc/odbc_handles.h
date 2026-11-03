@@ -182,6 +182,15 @@ public:
     return diagnostic_header_;
   }
 
+  void copy_diagnostics_from(const ODBCHandle& source) {
+    if (this == &source) return;
+    std::scoped_lock lock(diagnostics_mutex_, source.diagnostics_mutex_);
+    diagnostic_records_ = source.diagnostic_records_;
+    diagnostic_header_ = source.diagnostic_header_;
+    last_return_code_ = source.last_return_code_;
+    legacy_diagnostic_record_ = source.legacy_diagnostic_record_;
+  }
+
 private:
   friend class HandleRegistry;
 
@@ -319,6 +328,7 @@ private:
       std::string_view, std::span<const rs::core::database::QueryParameterType>, rs::util::Deadline);
   rs::core::database::BackendResult<std::vector<rs::core::database::ResultColumnOrigin>> backend_resolve_column_origins(
       std::uint64_t result_id, rs::util::Deadline deadline);
+  void backend_release_result_provenance(std::uint64_t result_id) noexcept;
   rs::core::database::BackendResult<rs::core::database::PreparedCommandPlan> backend_prepare_command_batch(
       std::string_view, std::vector<rs::core::database::PreparedCommandSet>, rs::util::Deadline);
   rs::core::database::BackendResult<rs::core::database::PreparedCommandBatchResult> backend_execute_command_batch(
@@ -779,13 +789,16 @@ private:
       const rs::core::database::QueryResult& result,
       bool include_parameter_metadata, bool parameter_result_publication = false,
       const MetadataRequestBudget* metadata_budget = nullptr);
-  SQLRETURN ensure_result_metadata();
-  SQLRETURN ensure_column_origins();
+  SQLRETURN ensure_result_metadata(
+      std::optional<MetadataRequestBudget> original_budget = std::nullopt);
+  SQLRETURN ensure_column_origins(
+      std::optional<MetadataRequestBudget> original_budget = std::nullopt);
   SQLRETURN describe_prepared_metadata(
       std::optional<MetadataRequestBudget> original_budget = std::nullopt);
   void invalidate_eager_prepare() noexcept;
   SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
   void clear_current_result();
+  void clear_pending_results();
   SQLRETURN complete_parameter_set(SQLRETURN result,
       const std::shared_ptr<PendingInput>& input = {});
   // Only ODBC C representation/dimensions/pointers, no catalog text fields.

@@ -865,6 +865,14 @@ BackendResult<std::vector<ResultColumnOrigin>> SessionLease::resolve_column_orig
             BackendOperation::Describe, physical.session_state());
       });
 }
+
+void SessionLease::release_result_provenance(std::uint64_t result_id) noexcept {
+  if (auto* physical = physical_session()) {
+    if (auto* facet = physical->column_origin_resolver()) {
+      facet->release_result_provenance(result_id);
+    }
+  }
+}
 } // namespace rs::core::database
 
 namespace rs::core::database {

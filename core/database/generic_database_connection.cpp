@@ -354,10 +354,14 @@ void GenericDatabaseConnection::disconnect() {
 
 void GenericDatabaseConnection::record_result_provenance(
     std::uint64_t result_id, std::vector<ParsedColumnProvenance> provenance) {
-  if (result_provenance_.size() >= 64) {
+  if (result_provenance_.size() >= 4096) {
     result_provenance_.erase(result_provenance_.begin());
   }
   result_provenance_[result_id] = std::move(provenance);
+}
+
+void GenericDatabaseConnection::release_result_provenance(std::uint64_t result_id) noexcept {
+  result_provenance_.erase(result_id);
 }
 
 BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolve_column_origins(
@@ -369,7 +373,9 @@ BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolv
         session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
     return BackendResult<std::vector<ResultColumnOrigin>>{std::vector<ResultColumnOrigin>{}, snapshot};
   }
-  return resolve_column_origins_impl(it->second, deadline);
+  // Own the provenance vector across any nested queries in resolve_column_origins_impl
+  const std::vector<ParsedColumnProvenance> provenance = it->second;
+  return resolve_column_origins_impl(provenance, deadline);
 }
 
 BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolve_column_origins_impl(

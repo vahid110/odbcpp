@@ -168,6 +168,7 @@ class IColumnOriginResolver {
   virtual ~IColumnOriginResolver() = default;
   virtual BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins(
       std::uint64_t result_id, rs::util::Deadline deadline) = 0;
+  virtual void release_result_provenance(std::uint64_t result_id) noexcept {}
 };
 
 // Synchronous internal interface, serialized by the ODBC handle layer. Backends
