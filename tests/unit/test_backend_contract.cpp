@@ -9664,12 +9664,12 @@ TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKe
   ASSERT_NO_FATAL_FAILURE(fetch_saved()); ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
 }
 
-// 32-bit fixed-length bookmarks on static cursors (ODBC 2.0 compatibility).
+// 32-bit and 64-bit fixed-length bookmarks on static cursors (ODBC 2.0 compatibility).
 class FixedBookmarkTest : public StaticBufferedScrollTest {
  protected:
   std::uint32_t flat[3]{};
   SQLLEN token_lengths[3]{73, 73, 73};
-  std::uint32_t saved{0};
+  BOOKMARK saved{0};
   SQLLEN piece_length{73};
 
   void begin(SQLULEN size = 1) {
@@ -9684,7 +9684,7 @@ class FixedBookmarkTest : public StaticBufferedScrollTest {
   }
   void save_selected() {
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_BOOKMARK, &saved, sizeof(saved), &piece_length));
-    EXPECT_EQ(static_cast<SQLLEN>(sizeof(std::uint32_t)), piece_length);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), piece_length);
   }
   void fetch_saved(SQLLEN delta = 0) {
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_FETCH_BOOKMARK_PTR, &saved, 0));
@@ -9744,8 +9744,8 @@ TEST_F(FixedBookmarkTest, BindColTypesFetchingAndGetDataSingleShot) {
   EXPECT_EQ(SQL_ERROR, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, flat, -1, token_lengths));
   EXPECT_EQ("HY090", state());
 
-  // Bind column 0 and fetch 3 rows.
-  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, flat, sizeof(std::uint32_t), token_lengths));
+  // Bind column 0 and fetch 3 rows with explicit 32-bit type SQL_C_ULONG.
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_ULONG, flat, sizeof(std::uint32_t), token_lengths));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
   EXPECT_EQ(3u, fetched);
   for (std::size_t row = 0; row < 3; ++row) {
@@ -9753,22 +9753,98 @@ TEST_F(FixedBookmarkTest, BindColTypesFetchingAndGetDataSingleShot) {
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(std::uint32_t)), token_lengths[row]);
   }
 
-  // Position on row 2, unbind col 0, and exercise SQLGetData(0).
+  // Position on row 2, unbind col 0, and exercise SQLGetData(0) with SQL_C_ULONG.
   ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 2, SQL_POSITION, SQL_LOCK_NO_CHANGE));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
 
   std::uint32_t val = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_BOOKMARK, &val, sizeof(val), &piece_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_ULONG, &val, sizeof(val), &piece_length));
   EXPECT_EQ(2u, val);
   EXPECT_EQ(static_cast<SQLLEN>(sizeof(std::uint32_t)), piece_length);
 
   // Subsequent call on col 0 for the same row returns SQL_NO_DATA.
-  EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 0, SQL_C_BOOKMARK, &val, sizeof(val), &piece_length));
+  EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 0, SQL_C_ULONG, &val, sizeof(val), &piece_length));
 
   // Invalid SQLGetData C type returns HY003.
   ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 1, SQL_POSITION, SQL_LOCK_NO_CHANGE));
   EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 0, SQL_C_CHAR, &val, sizeof(val), &piece_length));
   EXPECT_EQ("HY003", state());
+}
+
+TEST_F(FixedBookmarkTest, RealBookmarkArrayColumnWiseAndNonzeroUpperHalves) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+
+  // Verify real BOOKMARK array binding column-wise with nonzero upper halves.
+  // On 64-bit architectures, BOOKMARK is 8 bytes; column-wise stride must be 8 bytes
+  // and the upper half must be fully overwritten with the row index token.
+  BOOKMARK bookmarks[3]{
+      static_cast<BOOKMARK>(0xAAAAAAAAAAAAAAAAULL),
+      static_cast<BOOKMARK>(0xBBBBBBBBBBBBBBBBULL),
+      static_cast<BOOKMARK>(0xCCCCCCCCCCCCCCCCULL)};
+  SQLLEN bookmark_lens[3]{-1, -1, -1};
+
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, bookmarks, sizeof(BOOKMARK), bookmark_lens));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(3u, fetched);
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<BOOKMARK>(row + 1), bookmarks[row]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), bookmark_lens[row]);
+  }
+
+  // Unbind col 0, position on row 2, and test SQLGetData with nonzero upper half.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 2, SQL_POSITION, SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+
+  BOOKMARK single_bookmark = static_cast<BOOKMARK>(0xFEEDBEEFCAFEBABEULL);
+  SQLLEN single_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_BOOKMARK, &single_bookmark, sizeof(single_bookmark), &single_len));
+  EXPECT_EQ(static_cast<BOOKMARK>(2), single_bookmark);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), single_len);
+}
+
+TEST_F(FixedBookmarkTest, RowWiseBindingAndBindingOffset) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+
+  // Define a row-wise record structure containing BOOKMARK and length.
+  struct RowwiseBookmarkRecord {
+    BOOKMARK bookmark{static_cast<BOOKMARK>(0x7777777777777777ULL)};
+    SQLLEN bookmark_len{-1};
+    SQLINTEGER value{0};
+    SQLLEN value_len{-1};
+  };
+
+  RowwiseBookmarkRecord all_rows[6]{};
+
+  // Configure row-wise binding stride.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE,
+                                        reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(sizeof(RowwiseBookmarkRecord))), 0));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, &all_rows[0].bookmark, sizeof(BOOKMARK), &all_rows[0].bookmark_len));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_SLONG, &all_rows[0].value, sizeof(SQLINTEGER), &all_rows[0].value_len));
+
+  // 1. Fetch with zero offset.
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(3u, fetched);
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<BOOKMARK>(row + 1), all_rows[row].bookmark);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), all_rows[row].bookmark_len);
+    EXPECT_EQ(static_cast<SQLINTEGER>(row + 1), all_rows[row].value);
+  }
+
+  // 2. Reposition and fetch with row binding offset pointing to second half of array.
+  SQLULEN bind_offset = 3 * sizeof(RowwiseBookmarkRecord);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &bind_offset, 0));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ(3u, fetched);
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<BOOKMARK>(row + 1), all_rows[row + 3].bookmark);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), all_rows[row + 3].bookmark_len);
+    EXPECT_EQ(static_cast<SQLINTEGER>(row + 1), all_rows[row + 3].value);
+  }
 }
 
 TEST_F(FixedBookmarkTest, FetchScrollByFixedBookmarkWithOffsets) {
@@ -9802,6 +9878,17 @@ TEST_F(FixedBookmarkTest, FetchScrollByFixedBookmarkWithOffsets) {
   saved = 999;
   EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
   EXPECT_EQ("HY111", state());
+
+  // 64-bit invalid input tokens (nonzero upper 32 bits or huge values) return HY111.
+  if constexpr (sizeof(BOOKMARK) == 8) {
+    saved = static_cast<BOOKMARK>(0x0000000100000002ULL);
+    EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
+    EXPECT_EQ("HY111", state());
+
+    saved = static_cast<BOOKMARK>(0xFFFFFFFFFFFFFFFFULL);
+    EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
+    EXPECT_EQ("HY111", state());
+  }
 }
 
 

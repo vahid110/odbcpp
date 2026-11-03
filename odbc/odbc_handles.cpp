@@ -66,6 +66,26 @@ DescriptorRecord fixed_bookmark_metadata() {
   record.searchable = SQL_UNSEARCHABLE; record.type_name = "INTEGER";
   return record;
 }
+static bool is_supported_fixed_bookmark_c_type(SQLSMALLINT target_type) noexcept {
+  if (target_type == SQL_C_BOOKMARK || target_type == SQL_C_DEFAULT) return true;
+  if (target_type == SQL_C_ULONG || target_type == SQL_C_LONG || target_type == SQL_C_SLONG) return true;
+  if constexpr (sizeof(BOOKMARK) == 8) {
+    if (target_type == SQL_C_UBIGINT || target_type == SQL_C_SBIGINT) return true;
+  }
+  return false;
+}
+static std::size_t fixed_bookmark_c_type_width(SQLSMALLINT target_type, SQLLEN buffer_or_octet_length = 0) noexcept {
+  if (target_type == SQL_C_UBIGINT || target_type == SQL_C_SBIGINT) {
+    return sizeof(std::uint64_t);
+  }
+  if (target_type == SQL_C_DEFAULT) {
+    return sizeof(BOOKMARK);
+  }
+  if (sizeof(BOOKMARK) == 8 && buffer_or_octet_length >= static_cast<SQLLEN>(sizeof(BOOKMARK))) {
+    return sizeof(BOOKMARK);
+  }
+  return sizeof(std::uint32_t);
+}
 void bookmark_integer(unsigned char* bytes, std::uint64_t value) noexcept {
   for (std::size_t i = 0; i < 8; ++i) bytes[i] = static_cast<unsigned char>(value >> (56 - i * 8));
 }
@@ -4766,11 +4786,11 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
     if (!fetch_bookmark_ptr_) { fetch_failed_ = true; set_error("HY111", "Bookmark input is absent"); return SQL_ERROR; }
     if (use_fixed_bookmarks()) {
       const auto address = reinterpret_cast<std::uintptr_t>(fetch_bookmark_ptr_);
-      if (sizeof(std::uint32_t) > (std::numeric_limits<std::uintptr_t>::max)() - address) {
+      if (sizeof(BOOKMARK) > (std::numeric_limits<std::uintptr_t>::max)() - address) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark input address span is out of range"); return SQL_ERROR;
       }
-      std::uint32_t ordinal = 0;
-      std::memcpy(&ordinal, static_cast<const void*>(fetch_bookmark_ptr_), sizeof(ordinal));
+      BOOKMARK ordinal = 0;
+      std::memcpy(&ordinal, static_cast<const void*>(fetch_bookmark_ptr_), sizeof(BOOKMARK));
       if (ordinal == 0 || ordinal > result_rows_.size()) {
         fetch_failed_ = true;
         set_error("HY111", "Bookmark does not identify this owning result"); return SQL_ERROR;
@@ -4856,11 +4876,10 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
     if (record.data_ptr || record.indicator_ptr || record.octet_length_ptr) {
       if (!use_bookmarks()) { set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmarks are disabled"); return SQL_ERROR; }
       if (use_fixed_bookmarks()) {
-        if (record.concise_type != SQL_C_BOOKMARK && record.concise_type != SQL_C_ULONG &&
-            record.concise_type != SQL_C_LONG && record.concise_type != SQL_C_SLONG &&
-            record.concise_type != SQL_C_DEFAULT) {
+        if (!is_supported_fixed_bookmark_c_type(record.concise_type)) {
           set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR;
         }
+        const auto bookmark_width = fixed_bookmark_c_type_width(record.concise_type, record.octet_length);
         const auto fits = [&](const void* address, std::size_t extent) {
           if (!address) return true;
           const auto base = reinterpret_cast<std::uintptr_t>(address);
@@ -4868,7 +4887,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
           const auto* shifted = reinterpret_cast<const void*>(base + binding_offset);
           return row_stride == SQL_BIND_BY_COLUMN ? span_fits(shifted, size, extent) : row_span_fits(shifted, extent);
         };
-        if (!fits(record.data_ptr, sizeof(std::uint32_t)) || !fits(record.indicator_ptr, sizeof(SQLLEN)) ||
+        if (!fits(record.data_ptr, bookmark_width) || !fits(record.indicator_ptr, sizeof(SQLLEN)) ||
             !fits(record.octet_length_ptr, sizeof(SQLLEN))) {
           set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark output address span is out of range"); return SQL_ERROR;
         }
@@ -5069,18 +5088,24 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
   if (!bulk && use_bookmarks() && application_descriptor->bookmark_record_) {
     const auto& binding = *application_descriptor->bookmark_record_;
     if (use_fixed_bookmarks()) {
+      const auto bookmark_width = fixed_bookmark_c_type_width(binding.concise_type, binding.octet_length);
       const auto address = [&](void* base, std::size_t width) -> unsigned char* {
         return base ? reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(base) + binding_offset +
             slot * (row_stride == SQL_BIND_BY_COLUMN ? width : row_stride)) : nullptr;
       };
-      if (auto* output = address(binding.data_ptr, sizeof(std::uint32_t))) {
-        const auto token = static_cast<std::uint32_t>(row_index + 1);
-        std::memcpy(output, &token, sizeof(token));
+      if (auto* output = address(binding.data_ptr, bookmark_width)) {
+        if (bookmark_width == sizeof(BOOKMARK) && sizeof(BOOKMARK) == 8) {
+          const auto token = static_cast<BOOKMARK>(row_index + 1);
+          std::memcpy(output, &token, sizeof(token));
+        } else {
+          const auto token = static_cast<std::uint32_t>(row_index + 1);
+          std::memcpy(output, &token, sizeof(token));
+        }
       }
       auto* length = address(binding.octet_length_ptr, sizeof(SQLLEN));
       auto* indicator = address(binding.indicator_ptr, sizeof(SQLLEN));
-      if (length) store_application_value(reinterpret_cast<SQLLEN*>(length), static_cast<SQLLEN>(sizeof(std::uint32_t)));
-      if (indicator && indicator != length) store_application_value(reinterpret_cast<SQLLEN*>(indicator), static_cast<SQLLEN>(length ? 0 : sizeof(std::uint32_t)));
+      if (length) store_application_value(reinterpret_cast<SQLLEN*>(length), static_cast<SQLLEN>(bookmark_width));
+      if (indicator && indicator != length) store_application_value(reinterpret_cast<SQLLEN*>(indicator), static_cast<SQLLEN>(length ? 0 : bookmark_width));
     } else if (use_variable_bookmarks()) {
       const auto address = [&](void* base, std::size_t width) -> unsigned char* {
         return base ? reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(base) + binding_offset +
@@ -5398,9 +5423,7 @@ std::array<unsigned char, ODBCStatement::bookmark_bytes> ODBCStatement::bookmark
 SQLRETURN ODBCStatement::get_bookmark_data(SQLSMALLINT type, void* buffer, SQLLEN length, SQLLEN* indicator) {
   if (!use_bookmarks()) { set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmarks are disabled"); return SQL_ERROR; }
   if (use_fixed_bookmarks()) {
-    if (type != SQL_C_BOOKMARK && type != SQL_C_ULONG &&
-        type != SQL_C_LONG && type != SQL_C_SLONG &&
-        type != SQL_C_DEFAULT) {
+    if (!is_supported_fixed_bookmark_c_type(type)) {
       set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE, "Invalid bookmark retrieval type");
       return SQL_ERROR;
     }
@@ -5416,12 +5439,18 @@ SQLRETURN ODBCStatement::get_bookmark_data(SQLSMALLINT type, void* buffer, SQLLE
     const auto fits = [](const void* address, std::size_t extent) {
       return !address || extent <= (std::numeric_limits<std::uintptr_t>::max)() - reinterpret_cast<std::uintptr_t>(address);
     };
-    if (!fits(buffer, sizeof(std::uint32_t)) || !fits(indicator, sizeof(SQLLEN))) {
+    const auto bookmark_width = fixed_bookmark_c_type_width(type, length);
+    if (!fits(buffer, bookmark_width) || !fits(indicator, sizeof(SQLLEN))) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark output address span is out of range"); return SQL_ERROR;
     }
-    const auto token = static_cast<std::uint32_t>(current_row_ - 1 + selected_row_slot_ + 1);
-    std::memcpy(buffer, &token, sizeof(token));
-    if (indicator) store_application_value(indicator, static_cast<SQLLEN>(sizeof(std::uint32_t)));
+    if (bookmark_width == sizeof(BOOKMARK) && sizeof(BOOKMARK) == 8) {
+      const auto token = static_cast<BOOKMARK>(current_row_ - 1 + selected_row_slot_ + 1);
+      std::memcpy(buffer, &token, sizeof(token));
+    } else {
+      const auto token = static_cast<std::uint32_t>(current_row_ - 1 + selected_row_slot_ + 1);
+      std::memcpy(buffer, &token, sizeof(token));
+    }
+    if (indicator) store_application_value(indicator, static_cast<SQLLEN>(bookmark_width));
     get_data_column_ = 0; get_data_target_type_ = type;
     get_data_offset_ = complete; wide_get_data_ = {};
     return SQL_SUCCESS;
@@ -8301,9 +8330,7 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
                                   SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
   if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLBindCol",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (column_number == 0 && use_fixed_bookmarks()) {
-    if (target_type != SQL_C_BOOKMARK && target_type != SQL_C_ULONG &&
-        target_type != SQL_C_LONG && target_type != SQL_C_SLONG &&
-        target_type != SQL_C_DEFAULT) {
+    if (!is_supported_fixed_bookmark_c_type(target_type)) {
       set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR;
     }
     if (buffer_length < 0) { set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid bookmark buffer length"); return SQL_ERROR; }
