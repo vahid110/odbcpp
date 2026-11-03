@@ -72,7 +72,8 @@ Authors act on GitHub only as `odbcpp-agent[bot]`
 Reviews are posted as `odbcpp-reviewer[bot]` only by the automated review
 (`.github/workflows/agent-review.yml`), which also adds the high-risk labels
 and sets the required `agent review` check: green only when every required
-reviewer's latest review of the head commit approves. Its key and the Claude
+reviewer's latest review of the head commit approves. Branch protection pins
+that check to the odbcpp-reviewer App, so no other job can satisfy it. Its key and the Claude
 token live only in the main-only `agent-review` environment; no machine holds
 them. The review runs once the owner has enabled it after a passing canary.
 Until then, session reviews are PR comments by `odbcpp-agent[bot]`; never

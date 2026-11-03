@@ -188,22 +188,18 @@ jobs:
           fi
 
       - name: Update the agent review check
-        id: check
+        # Read, decide and post in one step, so the check reflects the
+        # reviews as late as possible (both roles may post at about the
+        # same time; a later event or a re-run settles any stale result).
         if: ${{ !cancelled() && steps.head.outputs.skip != 'true' && steps.reviewer.outputs.token != '' }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
         run: |
           gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '[.[].name]' > labels.json
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' | jq -R . | jq -s . > files.json
           gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events" --jq '.[]' | jq -s . > events.json
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
           python3 -I -B .github/review/review_gate.py status
-
-      - name: Post the check result
-        if: ${{ !cancelled() && steps.check.outputs.conclusion != '' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-          CONCLUSION: ${{ steps.check.outputs.conclusion }}
-          SUMMARY: ${{ steps.check.outputs.summary }}
-        run: .github/review/post-check.sh "$CONCLUSION" "$SUMMARY"
+          .github/review/post-check.sh

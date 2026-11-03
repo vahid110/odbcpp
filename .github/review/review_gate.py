@@ -20,6 +20,9 @@ HIGH_RISK = ("process", "auth", "security", "protocol", "transactions")
 ROLES = ("correctness", "red-team")
 # The API lists at most 3000 files of a pull request.
 FILE_LIST_LIMIT = 3000
+# Reviews one role may post on one PR in 24 hours before the check fails and
+# the owner has to look (bounds the subscription usage a PR can burn).
+DAILY_REVIEW_BUDGET = 12
 
 # Fixed path rules; the model may add labels, never remove these.
 PATH_RULES = {
@@ -43,11 +46,15 @@ def path_labels(files):
     return wanted
 
 
-def reviewer_labels(events):
-    """High-risk labels the reviewer ever added; removing them does not count."""
+def sticky_labels(events):
+    """High-risk labels anyone ever added; removing one does not lower the bar."""
     return {e["label"]["name"] for e in events
-            if e.get("event") == "labeled" and (e.get("actor") or {}).get("login") == REVIEWER
-            and e.get("label", {}).get("name") in HIGH_RISK}
+            if e.get("event") == "labeled" and (e.get("label") or {}).get("name") in HIGH_RISK}
+
+
+def risk_labels(labels, files, events):
+    """The high-risk labels a PR carries for review purposes."""
+    return (set(labels) | path_labels(files) | sticky_labels(events)) & set(HIGH_RISK)
 
 
 def role_of(body):
@@ -78,24 +85,39 @@ def required_roles(labels):
     return ["correctness"] + (["red-team"] if set(labels) & set(HIGH_RISK) else [])
 
 
-def plan(event_action, added_label, labels, files, events, reviews, head_sha):
+def over_budget(reviews, role, now):
+    """True if this role already posted DAILY_REVIEW_BUDGET reviews in 24 hours."""
+    from datetime import datetime, timedelta
+    since = now - timedelta(hours=24)
+    recent = [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER and role_of(r.get("body")) == role
+              and r.get("submitted_at")
+              and datetime.fromisoformat(r["submitted_at"].replace("Z", "+00:00")) >= since]
+    return len(recent) >= DAILY_REVIEW_BUDGET
+
+
+def plan(event_action, added_label, labels, files, events, reviews, head_sha, now=None):
     """Returns (correctness, red_team, labels_to_add)."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
     present = set(labels)
-    must_have = path_labels(files) | reviewer_labels(events)
+    must_have = risk_labels(labels, files, events)
     add = sorted(must_have - present)
-    risky = (present | must_have) & set(HIGH_RISK)
     red_done = any(not withheld(r.get("body")) for role, r in latest_reviews(reviews, head_sha).items()
                    if role == "red-team")
+    correctness_budget = not over_budget(reviews, "correctness", now)
+    red_budget = not over_budget(reviews, "red-team", now)
     if event_action == "labeled":
-        return False, added_label in HIGH_RISK and not red_done, add
+        return False, added_label in HIGH_RISK and not red_done and red_budget, add
     # Labels added here start the red-team review through their own labeled
     # event, so only labels already on the PR start it now.
-    return True, bool(present & set(HIGH_RISK)) and not red_done, add
+    return correctness_budget, bool(present & set(HIGH_RISK)) and not red_done and red_budget, add
 
 
-def status(reviews, labels, events, head_sha):
+def status(reviews, labels, files, events, head_sha, now=None):
     """Returns (conclusion, summary) for the required agent review check."""
-    labels = set(labels) | reviewer_labels(events)
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    labels = risk_labels(labels, files, events)
     latest = latest_reviews(reviews, head_sha)
     missing, blocking = [], []
     for role in required_roles(labels):
@@ -106,6 +128,10 @@ def status(reviews, labels, events, head_sha):
             blocking.append(role)
     if blocking:
         return "failure", "Changes requested by: " + ", ".join(blocking)
+    exhausted = [role for role in missing if over_budget(reviews, role, now)]
+    if exhausted:
+        return "failure", ("Daily review budget used up for: " + ", ".join(exhausted)
+                           + "; the owner must review or wait")
     if missing:
         return "pending", "Waiting for: " + ", ".join(missing)
     return "success", "Approved by: " + ", ".join(required_roles(labels))
@@ -120,10 +146,10 @@ def main(command):
     labels = _load("labels.json", [])
     events = _load("events.json", [])
     reviews = _load("reviews.json", [])
+    files = _load("files.json", [])
     head = os.environ["HEAD_SHA"]
     out = open(os.environ["GITHUB_OUTPUT"], "a")
     if command == "plan":
-        files = _load("files.json", [])
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
                                           labels, files, events, reviews, head)
         out.write(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
@@ -131,8 +157,10 @@ def main(command):
         print(f"files={len(files)} labels={sorted(labels)} add={add} "
               f"correctness={correctness} red_team={red_team}")
     elif command == "status":
-        conclusion, summary = status(reviews, labels, events, head)
+        conclusion, summary = status(reviews, labels, files, events, head)
         out.write(f"conclusion={conclusion}\nsummary={summary}\n")
+        with open("check-status.txt", "w") as f:
+            f.write(f"{conclusion}\n{summary}\n")
         print(f"{conclusion}: {summary}")
     else:
         raise SystemExit(f"unknown command {command}")

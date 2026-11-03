@@ -106,7 +106,6 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" --input - > /dev/null
 
       - name: Set the agent review check for this head
-        id: check
         if: steps.gate.outputs.state != 'off'
         shell: bash
         env:
@@ -116,17 +115,11 @@ jobs:
           if [[ "$STATE" == stale ]]; then
             .github/review/post-check.sh failure "Agent review configuration changed; the owner must re-run the canary."
           else
+            # Path rules and every high-risk label ever added count, so the
+            # labels added above are already part of this decision.
             python3 -I -B .github/review/review_gate.py status
+            .github/review/post-check.sh
           fi
-
-      - name: Post the check result
-        if: steps.check.outputs.conclusion != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-          CONCLUSION: ${{ steps.check.outputs.conclusion }}
-          SUMMARY: ${{ steps.check.outputs.summary }}
-        run: .github/review/post-check.sh "$CONCLUSION" "$SUMMARY"
 
   correctness:
     needs: plan
@@ -176,5 +169,5 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          jq -n --arg b "Agent review failed near ${HEAD_SHA:0:7}, so there may be no verdict for the current head. See $RUN_URL." \
+          jq -n --arg b "An agent review job failed for this PR (event at ${HEAD_SHA:0:7}), so the current head may have no verdict. Re-run the failed job from $RUN_URL." \
             '{body: $b}' | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - > /dev/null
