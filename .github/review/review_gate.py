@@ -16,10 +16,7 @@ import re
 import sys
 
 REVIEWER = "odbcpp-reviewer[bot]"
-# Failure notices are posted by the workflow token, one per run, naming the
-# roles whose job failed; they count toward each named role's budget.
-WORKFLOW_BOT = "github-actions[bot]"
-FAILURE_PREFIX = "Agent review failed for: "
+REVIEWER_APP_ID = 5545952
 HIGH_RISK = ("process", "auth", "security", "protocol", "transactions")
 ROLES = ("correctness", "red-team")
 # The API lists at most 3000 files of a pull request.
@@ -94,27 +91,20 @@ def _time(stamp):
     return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
-def failed_roles(comment):
-    """Roles named in a failure notice, or [] for any other comment."""
-    body = comment.get("body") or ""
-    if (comment.get("user") or {}).get("login") != WORKFLOW_BOT or not body.startswith(FAILURE_PREFIX):
-        return []
-    named = body[len(FAILURE_PREFIX):].split(".", 1)[0]
-    return [r.strip() for r in named.split(",") if r.strip() in ROLES]
+def over_budget(runs, role, now):
+    """True if this role used DAILY_REVIEW_BUDGET review runs in 24 hours.
 
-
-def over_budget(reviews, role, now, comments=()):
-    """True if this role used DAILY_REVIEW_BUDGET runs in 24 hours: reviews it
-    posted plus runs that failed without posting."""
+    <runs> are the "agent review run (<role>)" check runs the reviewer App
+    records when a review job starts, so failed, timed-out and cancelled runs
+    count as well as posted reviews."""
     from datetime import timedelta
     since = now - timedelta(hours=24)
-    posted = [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER and role_of(r.get("body")) == role
-              and r.get("submitted_at") and _time(r["submitted_at"]) >= since]
-    failed = [c for c in comments if role in failed_roles(c) and c.get("created_at") and _time(c["created_at"]) >= since]
-    return len(posted) + len(failed) >= DAILY_REVIEW_BUDGET
+    recent = [r for r in runs if r.get("app_id") == REVIEWER_APP_ID and r.get("name") == f"agent review run ({role})"
+              and r.get("started_at") and _time(r["started_at"]) >= since]
+    return len(recent) >= DAILY_REVIEW_BUDGET
 
 
-def plan(event_action, added_label, labels, files, events, reviews, head_sha, now=None, comments=()):
+def plan(event_action, added_label, labels, files, events, reviews, head_sha, now=None, runs=()):
     """Returns (correctness, red_team, labels_to_add)."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
@@ -123,8 +113,8 @@ def plan(event_action, added_label, labels, files, events, reviews, head_sha, no
     add = sorted(must_have - present)
     red_done = any(not withheld(r.get("body")) for role, r in latest_reviews(reviews, head_sha).items()
                    if role == "red-team")
-    correctness_budget = not over_budget(reviews, "correctness", now, comments)
-    red_budget = not over_budget(reviews, "red-team", now, comments)
+    correctness_budget = not over_budget(runs, "correctness", now)
+    red_budget = not over_budget(runs, "red-team", now)
     if event_action == "labeled":
         return False, added_label in HIGH_RISK and not red_done and red_budget, add
     # Labels added here start the red-team review through their own labeled
@@ -132,7 +122,7 @@ def plan(event_action, added_label, labels, files, events, reviews, head_sha, no
     return correctness_budget, bool(present & set(HIGH_RISK)) and not red_done and red_budget, add
 
 
-def status(reviews, labels, files, events, head_sha, now=None, comments=()):
+def status(reviews, labels, files, events, head_sha, now=None, runs=()):
     """Returns (conclusion, summary) for the required agent review check."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
@@ -147,7 +137,7 @@ def status(reviews, labels, files, events, head_sha, now=None, comments=()):
             blocking.append(role)
     if blocking:
         return "failure", "Changes requested by: " + ", ".join(blocking)
-    exhausted = [role for role in missing if over_budget(reviews, role, now, comments)]
+    exhausted = [role for role in missing if over_budget(runs, role, now)]
     if exhausted:
         return "failure", ("Daily review budget used up for: " + ", ".join(exhausted)
                            + ". Reviews resume 24 hours after the oldest counted run: then push "
@@ -159,7 +149,7 @@ def status(reviews, labels, files, events, head_sha, now=None, comments=()):
 
 def _load(name, default):
     """Reads one of the fixed input files the workflow writes to the working directory."""
-    if name not in ("labels.json", "events.json", "reviews.json", "files.json", "comments.json"):
+    if name not in ("labels.json", "events.json", "reviews.json", "files.json", "runs.json"):
         raise ValueError(name)
     return json.load(open(name)) if os.path.exists(name) else default
 
@@ -171,17 +161,17 @@ def main(command):
     events = _load("events.json", [])
     reviews = _load("reviews.json", [])
     files = _load("files.json", [])
-    comments = _load("comments.json", [])
+    runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
     if command == "plan":
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
-                                          labels, files, events, reviews, head, comments=comments)
+                                          labels, files, events, reviews, head, runs=runs)
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")
         print(f"files={len(files)} labels={sorted(labels)} add={add} "
               f"correctness={correctness} red_team={red_team}", file=sys.stderr)
     elif command == "status":
-        conclusion, summary = status(reviews, labels, files, events, head, comments=comments)
+        conclusion, summary = status(reviews, labels, files, events, head, runs=runs)
         # post-check.sh reads this fixed file in the same step.
         with open("check-status.txt", "w") as f:
             f.write(f"{conclusion}\n{summary}\n")

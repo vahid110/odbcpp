@@ -105,6 +105,31 @@ jobs:
         # Shared with agent-review-canary.yml, which proves these rules hold.
         run: echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)" >> "$GITHUB_OUTPUT"
 
+      - name: Get the reviewer identity
+        id: reviewer
+        if: steps.head.outputs.skip != 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liLzexEhszs2AHlm
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+          permission-checks: write
+
+      - name: Record this review run
+        # Before the model starts, so every run counts toward the daily review
+        # budget, however it ends (review_gate.py over_budget).
+        if: steps.head.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+        run: |
+          jq -n --arg sha "$HEAD_SHA" --arg name "agent review run ($ROLE)" \
+            '{name: $name, head_sha: $sha, status: "completed", conclusion: "neutral",
+              output: {title: "Review run started", summary: "Counts toward the daily review budget."}}' |
+            gh api -X POST "repos/$REPO/check-runs" --input - > /dev/null
+
       - name: Review
         id: review
         if: steps.head.outputs.skip != 'true'
@@ -124,18 +149,6 @@ jobs:
           claude_args: >-
             ${{ steps.args.outputs.args }}
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","body","labels"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string","enum":["security","auth","protocol","transactions","process"]}}}}'
-
-      - name: Get the reviewer identity
-        id: reviewer
-        if: ${{ !cancelled() && steps.head.outputs.skip != 'true' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: Iv23liLzexEhszs2AHlm
-          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-pull-requests: write
-          permission-checks: write
 
       - name: Post the verdict as odbcpp-reviewer[bot]
         if: steps.head.outputs.skip != 'true'
@@ -201,6 +214,6 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)' | jq -R . | jq -s . > files.json
           gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events" --jq '.[]' | jq -s . > events.json
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
-          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" --jq '.[]' | jq -s . > comments.json
+          .github/review/list-runs.sh
           python3 -I -B .github/review/review_gate.py status
           .github/review/post-check.sh

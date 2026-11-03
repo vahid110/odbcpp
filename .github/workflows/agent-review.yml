@@ -32,6 +32,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     outputs:
       correctness: ${{ steps.plan.outputs.correctness }}
       red_team: ${{ steps.plan.outputs.red_team }}
@@ -76,7 +77,7 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)' | jq -R . | jq -s . > files.json
           gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events" --jq '.[]' | jq -s . > events.json
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
-          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" --jq '.[]' | jq -s . > comments.json
+          .github/review/list-runs.sh
 
       - name: Decide which reviews run
         id: plan
@@ -172,8 +173,6 @@ jobs:
           CORRECTNESS: ${{ needs.correctness.result }}
           RED_TEAM: ${{ needs.red-team.result }}
         run: |
-          # The first line is read by review_gate.py (failed runs count toward
-          # the daily review budget of each named role).
           roles=""
           [[ "$CORRECTNESS" == failure ]] && roles="correctness"
           [[ "$RED_TEAM" == failure ]] && roles="${roles:+$roles, }red-team"

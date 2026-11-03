@@ -19,6 +19,10 @@ def review(role, state, sha=HEAD, at="2026-11-03T10:00:00Z", user=g.REVIEWER, bo
             "body": (f"**{header}**" if bold else header) + "\n\n" + body_tail}
 
 
+def run(role, at="2026-11-03T11:00:00Z", app_id=g.REVIEWER_APP_ID):
+    return {"name": f"agent review run ({role})", "started_at": at, "app_id": app_id}
+
+
 def labeled(name, actor=g.REVIEWER):
     return {"event": "labeled", "actor": {"login": actor}, "label": {"name": name}}
 
@@ -47,9 +51,9 @@ class Plan(unittest.TestCase):
                          ["process"])
 
     def test_review_budget_stops_new_runs(self):
-        reviews = [review("correctness", "CHANGES_REQUESTED", sha=f"{i:040x}", at="2026-11-03T11:00:00Z")
-                   for i in range(g.DAILY_REVIEW_BUDGET)]
-        self.assertEqual(plan_("synchronize", "", [], ["odbc/x.cpp"], [], reviews, HEAD, now=NOW)[0], False)
+        runs = [run("correctness")] * g.DAILY_REVIEW_BUDGET
+        self.assertEqual(plan_("synchronize", "", [], ["odbc/x.cpp"], [], [], HEAD, now=NOW, runs=runs)[0], False)
+        self.assertEqual(plan_("synchronize", "", [], ["odbc/x.cpp"], [], [], HEAD, now=NOW, runs=runs[1:])[0], True)
 
     def test_reviewer_label_removed_by_author_is_restored(self):
         events = [labeled("security")]
@@ -122,9 +126,8 @@ class Status(unittest.TestCase):
         self.assertEqual(g.status_([review("correctness", "APPROVED")], [], events, HEAD)[0], "pending")
 
     def test_exhausted_budget_fails_instead_of_waiting(self):
-        reviews = [review("correctness", "CHANGES_REQUESTED", sha=f"{i:040x}", at="2026-11-03T11:00:00Z")
-                   for i in range(g.DAILY_REVIEW_BUDGET)]
-        self.assertEqual(g.status_(reviews, [], [], HEAD)[0], "failure")
+        runs = [run("correctness")] * g.DAILY_REVIEW_BUDGET
+        self.assertEqual(g.status([], [], [], [], HEAD, now=NOW, runs=runs)[0], "failure")
 
     def test_withheld_verdict_blocks(self):
         r = review("correctness", "APPROVED")
@@ -132,32 +135,25 @@ class Status(unittest.TestCase):
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "failure")
 
 
-def failure_notice(roles, at="2026-11-03T11:00:00Z", user=g.WORKFLOW_BOT):
-    return {"user": {"login": user}, "created_at": at,
-            "body": f"{g.FAILURE_PREFIX}{roles}. Event at aaaaaaa; the current head may have no verdict."}
-
-
 class Budget(unittest.TestCase):
-    def test_failed_runs_count_toward_the_named_role(self):
-        reviews = [review("correctness", "CHANGES_REQUESTED", sha=f"{i:040x}", at="2026-11-03T11:00:00Z")
-                   for i in range(g.DAILY_REVIEW_BUDGET - 2)]
-        failures = [failure_notice("correctness"), failure_notice("correctness, red-team")]
-        self.assertTrue(g.over_budget(reviews, "correctness", NOW, failures))
-        self.assertFalse(g.over_budget(reviews, "correctness", NOW, failures[:1]))
-        self.assertFalse(g.over_budget([], "red-team", NOW, failures))
+    def test_every_recorded_run_counts_however_it_ended(self):
+        self.assertTrue(g.over_budget([run("correctness")] * g.DAILY_REVIEW_BUDGET, "correctness", NOW))
+        self.assertFalse(g.over_budget([run("correctness")] * (g.DAILY_REVIEW_BUDGET - 1), "correctness", NOW))
 
-    def test_only_workflow_failure_notices_count(self):
-        forged = [failure_notice("correctness", user="odbcpp-agent[bot]")] * g.DAILY_REVIEW_BUDGET
-        self.assertFalse(g.over_budget([], "correctness", NOW, forged))
-        self.assertEqual(g.failed_roles(failure_notice("plan")), [])
+    def test_runs_count_per_role(self):
+        self.assertFalse(g.over_budget([run("correctness")] * g.DAILY_REVIEW_BUDGET, "red-team", NOW))
 
-    def test_old_failures_do_not_count(self):
-        old = [failure_notice("correctness", at="2026-11-01T11:00:00Z")] * g.DAILY_REVIEW_BUDGET
-        self.assertFalse(g.over_budget([], "correctness", NOW, old))
+    def test_only_reviewer_app_runs_count(self):
+        forged = [run("correctness", app_id=15368)] * g.DAILY_REVIEW_BUDGET
+        self.assertFalse(g.over_budget(forged, "correctness", NOW))
+
+    def test_old_runs_do_not_count(self):
+        old = [run("correctness", at="2026-11-01T11:00:00Z")] * g.DAILY_REVIEW_BUDGET
+        self.assertFalse(g.over_budget(old, "correctness", NOW))
 
     def test_exhausted_check_says_how_to_recover(self):
-        failures = [failure_notice("correctness")] * g.DAILY_REVIEW_BUDGET
-        conclusion, summary = g.status([], [], [], [], HEAD, now=NOW, comments=failures)
+        runs = [run("correctness")] * g.DAILY_REVIEW_BUDGET
+        conclusion, summary = g.status([], [], [], [], HEAD, now=NOW, runs=runs)
         self.assertEqual(conclusion, "failure")
         self.assertIn("Reviews resume 24 hours after", summary)
 
