@@ -10,6 +10,8 @@ import review_gate as g  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 HEAD, OLD = "a" * 40, "b" * 40
+PR = "7"
+os.environ["PR_NUMBER"] = PR
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 
 
@@ -19,8 +21,8 @@ def review(role, state, sha=HEAD, at="2026-11-03T10:00:00Z", user=g.REVIEWER, bo
             "body": (f"**{header}**" if bold else header) + "\n\n" + body_tail}
 
 
-def run(role, at="2026-11-03T11:00:00Z", app_id=g.REVIEWER_APP_ID):
-    return {"name": f"agent review run ({role})", "started_at": at, "app_id": app_id}
+def run(role, at="2026-11-03T11:00:00Z", app_id=g.REVIEWER_APP_ID, pr=PR):
+    return {"name": f"agent review run ({role}) #{pr}", "started_at": at, "app_id": app_id}
 
 
 def labeled(name, actor=g.REVIEWER):
@@ -147,6 +149,9 @@ class Budget(unittest.TestCase):
         forged = [run("correctness", app_id=15368)] * g.DAILY_REVIEW_BUDGET
         self.assertFalse(g.over_budget(forged, "correctness", NOW))
 
+    def test_runs_of_other_prs_do_not_count(self):
+        self.assertFalse(g.over_budget([run("correctness", pr="8")] * g.DAILY_REVIEW_BUDGET, "correctness", NOW))
+
     def test_old_runs_do_not_count(self):
         old = [run("correctness", at="2026-11-01T11:00:00Z")] * g.DAILY_REVIEW_BUDGET
         self.assertFalse(g.over_budget(old, "correctness", NOW))
@@ -169,7 +174,7 @@ class Command(unittest.TestCase):
                     json.dump(data, f)
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_gate.py")
             out = subprocess.run([sys.executable, "-I", "-B", script, command], cwd=d, capture_output=True,
-                                 text=True, env={"HEAD_SHA": HEAD, **env}, check=True)
+                                 text=True, env={"HEAD_SHA": HEAD, "PR_NUMBER": PR, **env}, check=True)
             status_file = os.path.join(d, "check-status.txt")
             status = open(status_file).read() if os.path.exists(status_file) else ""
             return out.stdout, status

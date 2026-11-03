@@ -91,15 +91,17 @@ def _time(stamp):
     return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
-def over_budget(runs, role, now):
+def over_budget(runs, role, now, pr=None):
     """True if this role used DAILY_REVIEW_BUDGET review runs in 24 hours.
 
-    <runs> are the "agent review run (<role>)" check runs the reviewer App
-    records when a review job starts, so failed, timed-out and cancelled runs
-    count as well as posted reviews."""
+    <runs> are the "agent review run (<role>) #<pr>" check runs the reviewer
+    App records when a review job starts, so failed, timed-out and cancelled
+    runs count as well as posted reviews."""
     from datetime import timedelta
     since = now - timedelta(hours=24)
-    recent = [r for r in runs if r.get("app_id") == REVIEWER_APP_ID and r.get("name") == f"agent review run ({role})"
+    pr = pr if pr is not None else os.environ.get("PR_NUMBER", "")
+    name = f"agent review run ({role}) #{pr}"
+    recent = [r for r in runs if r.get("app_id") == REVIEWER_APP_ID and r.get("name") == name
               and r.get("started_at") and _time(r["started_at"]) >= since]
     return len(recent) >= DAILY_REVIEW_BUDGET
 

@@ -119,16 +119,24 @@ jobs:
 
       - name: Record this review run
         # Before the model starts, so every run counts toward the daily review
-        # budget, however it ends (review_gate.py over_budget).
+        # budget, however it ends (review_gate.py over_budget). Recorded on
+        # the fixed commit in .github/review/run-anchor, so a force-push does
+        # not drop it from the count.
         if: steps.head.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
         run: |
-          jq -n --arg sha "$HEAD_SHA" --arg name "agent review run ($ROLE)" \
+          jq -n --arg sha "$(cat .github/review/run-anchor)" --arg name "agent review run ($ROLE) #$PR_NUMBER" \
             '{name: $name, head_sha: $sha, status: "completed", conclusion: "neutral",
               output: {title: "Review run started", summary: "Counts toward the daily review budget."}}' |
-            gh api -X POST "repos/$REPO/check-runs" --input - > /dev/null
+            gh api -X POST "repos/$REPO/check-runs" --input - --jq .app.id > recorded-app-id.txt
+          # The budget counts only this App's runs; a mismatch would make it
+          # count nothing, so stop here instead.
+          if [[ "$(cat recorded-app-id.txt)" != 5545952 ]]; then
+            echo "::error::Review runs are recorded by App $(cat recorded-app-id.txt), not 5545952 (review_gate.py REVIEWER_APP_ID)."
+            exit 1
+          fi
 
       - name: Review
         id: review
