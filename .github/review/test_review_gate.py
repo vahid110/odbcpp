@@ -132,5 +132,61 @@ class Status(unittest.TestCase):
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "failure")
 
 
+def failure_notice(roles, at="2026-11-03T11:00:00Z", user=g.WORKFLOW_BOT):
+    return {"user": {"login": user}, "created_at": at,
+            "body": f"{g.FAILURE_PREFIX}{roles}. Event at aaaaaaa; the current head may have no verdict."}
+
+
+class Budget(unittest.TestCase):
+    def test_failed_runs_count_toward_the_named_role(self):
+        reviews = [review("correctness", "CHANGES_REQUESTED", sha=f"{i:040x}", at="2026-11-03T11:00:00Z")
+                   for i in range(g.DAILY_REVIEW_BUDGET - 2)]
+        failures = [failure_notice("correctness"), failure_notice("correctness, red-team")]
+        self.assertTrue(g.over_budget(reviews, "correctness", NOW, failures))
+        self.assertFalse(g.over_budget(reviews, "correctness", NOW, failures[:1]))
+        self.assertFalse(g.over_budget([], "red-team", NOW, failures))
+
+    def test_only_workflow_failure_notices_count(self):
+        forged = [failure_notice("correctness", user="odbcpp-agent[bot]")] * g.DAILY_REVIEW_BUDGET
+        self.assertFalse(g.over_budget([], "correctness", NOW, forged))
+        self.assertEqual(g.failed_roles(failure_notice("plan")), [])
+
+    def test_old_failures_do_not_count(self):
+        old = [failure_notice("correctness", at="2026-11-01T11:00:00Z")] * g.DAILY_REVIEW_BUDGET
+        self.assertFalse(g.over_budget([], "correctness", NOW, old))
+
+    def test_exhausted_check_says_how_to_recover(self):
+        failures = [failure_notice("correctness")] * g.DAILY_REVIEW_BUDGET
+        conclusion, summary = g.status([], [], [], [], HEAD, now=NOW, comments=failures)
+        self.assertEqual(conclusion, "failure")
+        self.assertIn("Reviews resume 24 hours after", summary)
+
+
+class Command(unittest.TestCase):
+    """Runs the script as the workflow does: fixed input names, outputs on stdout."""
+
+    def run_gate(self, command, files, env):
+        import json, subprocess, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for name, data in files.items():
+                with open(os.path.join(d, name), "w") as f:
+                    json.dump(data, f)
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_gate.py")
+            out = subprocess.run([sys.executable, "-I", "-B", script, command], cwd=d, capture_output=True,
+                                 text=True, env={"HEAD_SHA": HEAD, **env}, check=True)
+            status_file = os.path.join(d, "check-status.txt")
+            status = open(status_file).read() if os.path.exists(status_file) else ""
+            return out.stdout, status
+
+    def test_plan_prints_only_step_outputs(self):
+        stdout, _ = self.run_gate("plan", {"files.json": ["sdk/src/auth/x.cpp"]}, {"EVENT_ACTION": "opened"})
+        self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=false", "add_labels=auth"])
+
+    def test_status_writes_the_check_file(self):
+        stdout, status = self.run_gate("status", {"reviews.json": [review("correctness", "APPROVED")]}, {})
+        self.assertEqual(stdout, "")
+        self.assertEqual(status.splitlines()[0], "success")
+
+
 if __name__ == "__main__":
     unittest.main()
