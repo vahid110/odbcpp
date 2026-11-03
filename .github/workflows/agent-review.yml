@@ -1,10 +1,16 @@
 name: agent review
 
-# Independent agent review of every pull request (ADR 0001, decision 4).
-# Runs on pull_request_target so the workflows, the review instructions in
-# .github/review/ and the secrets always come from the base branch. The plan
-# job has no concurrency group, and review jobs queue instead of cancelling,
-# so no event can leave the current head unreviewed.
+# Independent agent review of every pull request to main (ADR 0001,
+# decision 4), and the required "agent review" check that is green only when
+# every required reviewer approved the exact head commit.
+#
+# Runs on pull_request_target so the workflows, the review configuration in
+# .github/review/ and the secrets always come from main. The secrets live in
+# the agent-review environment, which only main may use, so no other branch
+# can read them. Decisions are made in .github/review/review_gate.py (tested
+# by test_review_gate.py). The plan job has no concurrency group and review
+# jobs queue instead of cancelling; each review job reviews the PR's current
+# head when it starts.
 
 on:
   pull_request_target:
@@ -14,94 +20,72 @@ permissions: {}
 
 jobs:
   plan:
-    # Same-repository, non-draft PRs only: forks never reach the secrets.
+    # Same-repository, non-draft PRs to main only: forks never reach the
+    # secrets, and only main's configuration ever runs with them.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
       !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    environment: agent-review
     permissions:
       contents: read
       pull-requests: read
     outputs:
       correctness: ${{ steps.plan.outputs.correctness }}
       red_team: ${{ steps.plan.outputs.red_team }}
-      add_labels: ${{ steps.plan.outputs.add_labels }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       EVENT_ACTION: ${{ github.event.action }}
       ADDED_LABEL: ${{ github.event.label.name }}
-      PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       ENABLED_FOR: ${{ vars.AGENT_REVIEW_ENABLED }}
     steps:
-      - name: Check out the review configuration from the base branch
+      - name: Check out the review configuration from main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github
 
-      - name: Decide which reviews run
-        id: plan
+      - name: Check that the canary proved this configuration
+        id: gate
         shell: bash
         run: |
-          # The review runs only for the configuration the canary proved:
-          # AGENT_REVIEW_ENABLED must equal the current fingerprint.
           fingerprint=$(.github/review/fingerprint.sh)
-          if [[ "$ENABLED_FOR" != "$fingerprint" ]]; then
-            echo "::notice::Agent review is off: AGENT_REVIEW_ENABLED does not match fingerprint $fingerprint; run the agent review canary."
-            echo "add_labels=" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ "$ENABLED_FOR" == "$fingerprint" ]]; then
+            echo "state=enabled" >> "$GITHUB_OUTPUT"
+          elif [[ -z "$ENABLED_FOR" ]]; then
+            echo "::notice::Agent review is not enabled; run the agent review canary."
+            echo "state=off" >> "$GITHUB_OUTPUT"
+          else
+            # Enabled once, but the configuration changed since the canary
+            # passed: fail the required check until the canary passes again.
+            echo "::error::Agent review configuration changed (fingerprint $fingerprint); run the agent review canary."
+            echo "state=stale" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Read the PR's labels, files, label history and reviews
+        if: steps.gate.outputs.state == 'enabled'
+        shell: bash
+        run: |
+          gh api "repos/$REPO/issues/$PR_NUMBER/labels" --jq '[.[].name]' > labels.json
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
-            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
-          # Red-team reviews already posted for this exact commit.
-          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            --jq '.[] | select(.user.login == "odbcpp-reviewer[bot]")
-                      | select(.commit_id == env.HEAD_SHA)
-                      | select(.body | ltrimstr("**") | startswith("[red-team reviewer]"))
-                      | select(.body | contains("verdict withheld") | not)
-                      | .id' > red-team-done.txt
-          python3 -I - <<'EOF'
-          import os, re
-          # Fixed path rules; the model may add labels, never remove these.
-          rules = {
-              "process": r"^(\.github/|\.agents/|docs/adr/|tools/|AGENTS\.md$|DEVELOPMENT_WORKFLOW\.md$|cmake/LiveSuite\.cmake$)",
-              "auth": r"^(sdk/src/auth/|sdk/internal/odbcpp/auth/|sdk/src/adapters/|sdk/src/session/|sdk/internal/odbcpp/session/|odbc/connection_string\.|cmake/[^/]*Auth[^/]*\.cmake$)",
-              "security": r"^(sdk/src/security/|sdk/internal/odbcpp/security/|sdk/src/transport/|sdk/internal/odbcpp/transport/|sdk/include/odbcpp/transport/|cmake/dependencies/|cmake/[^/]*Crypto[^/]*\.cmake$|tests/security/|odbc/odbc_trace\.cpp$|odbc/odbc_api\.cpp$|sdk/src/util/driver_logging\.cpp$|root\.crt$|SECURITY)",
-              "protocol": r"^(core/database/(postgres|mysql)/|core/database/i_protocol_parser\.h$|core/database/session_cancellation_wire\.h$)",
-              "transactions": r"transaction",
-          }
-          files = open("files.txt").read().splitlines()
-          present = set(filter(None, os.environ["PR_LABELS"].split(",")))
-          wanted = {label for label, rx in rules.items() if any(re.search(rx, f) for f in files)}
-          if len(files) >= 3000:
-              # The API lists at most 3000 files; treat the rest as high risk.
-              wanted.add("process")
-          add = sorted(wanted - present)
-          high_risk = set(rules)
-          already = open("red-team-done.txt").read().strip() != ""
-          if os.environ["EVENT_ACTION"] == "labeled":
-              correctness = False
-              red_team = os.environ["ADDED_LABEL"] in high_risk and not already
-          else:
-              correctness = True
-              # Newly added labels start the red-team review via their own
-              # labeled event; here only labels already on the PR count.
-              red_team = bool(present & high_risk) and not already
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"correctness={str(correctness).lower()}\n")
-              out.write(f"red_team={str(red_team).lower()}\n")
-              out.write(f"add_labels={','.join(add)}\n")
-          print(f"files={len(files)} present={sorted(present)} add={add} "
-                f"correctness={correctness} red_team={red_team}")
-          EOF
+            --jq '.[] | .filename, (.previous_filename // empty)' | jq -R . | jq -s . > files.json
+          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events" --jq '.[]' | jq -s . > events.json
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
+
+      - name: Decide which reviews run
+        id: plan
+        if: steps.gate.outputs.state == 'enabled'
+        shell: bash
+        run: python3 -I -B .github/review/review_gate.py plan
 
       - name: Get the reviewer identity
         id: reviewer
-        if: steps.plan.outputs.add_labels != ''
+        if: steps.gate.outputs.state != 'off'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: Iv23liLzexEhszs2AHlm
@@ -109,8 +93,9 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-pull-requests: write
+          permission-checks: write
 
-      - name: Add the path-based high-risk labels
+      - name: Add the high-risk labels the reviewer requires
         if: steps.plan.outputs.add_labels != ''
         shell: bash
         env:
@@ -120,13 +105,35 @@ jobs:
           jq -cn --arg l "$ADD_LABELS" '{labels: ($l | split(","))}' |
             gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" --input - > /dev/null
 
+      - name: Set the agent review check for this head
+        id: check
+        if: steps.gate.outputs.state != 'off'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          STATE: ${{ steps.gate.outputs.state }}
+        run: |
+          if [[ "$STATE" == stale ]]; then
+            .github/review/post-check.sh failure "Agent review configuration changed; the owner must re-run the canary."
+          else
+            python3 -I -B .github/review/review_gate.py status
+          fi
+
+      - name: Post the check result
+        if: steps.check.outputs.conclusion != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          CONCLUSION: ${{ steps.check.outputs.conclusion }}
+          SUMMARY: ${{ steps.check.outputs.summary }}
+        run: .github/review/post-check.sh "$CONCLUSION" "$SUMMARY"
+
   correctness:
     needs: plan
     if: needs.plan.outputs.correctness == 'true'
     concurrency:
       group: agent-review-${{ github.event.pull_request.number }}-correctness
-      # No cancelling: an older run must never cancel the review of a newer
-      # head. A queued run for a stale head exits before the model starts.
+      # Queue, never cancel: an older run must not cancel a newer review.
       cancel-in-progress: false
     permissions:
       contents: read
@@ -135,17 +142,12 @@ jobs:
     uses: ./.github/workflows/agent-review-run.yml
     with:
       role: correctness
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
 
   red-team:
     needs: plan
     if: needs.plan.outputs.red_team == 'true'
     concurrency:
       group: agent-review-${{ github.event.pull_request.number }}-red-team
-      # No cancelling: an older run must never cancel the review of a newer
-      # head. A queued run for a stale head exits before the model starts.
       cancel-in-progress: false
     permissions:
       contents: read
@@ -154,13 +156,10 @@ jobs:
     uses: ./.github/workflows/agent-review-run.yml
     with:
       role: red-team
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
 
   report-failure:
     # A notice on the PR when a review fails; posted with the workflow token,
-    # since the reviewer identity is used only for reviews and their labels.
+    # since the reviewer identity only posts reviews, labels and the check.
     needs: [correctness, red-team]
     if: ${{ failure() }}
     runs-on: ubuntu-24.04
@@ -177,5 +176,5 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          jq -n --arg b "Agent review failed at ${HEAD_SHA:0:7}, so there is no verdict for that commit. See $RUN_URL." \
+          jq -n --arg b "Agent review failed near ${HEAD_SHA:0:7}, so there may be no verdict for the current head. See $RUN_URL." \
             '{body: $b}' | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - > /dev/null

@@ -3,3 +3,4 @@
 --setting-sources user
 --allowedTools "Read(./**)"
 --disallowedTools "Bash,WebFetch,WebSearch,Skill,Task,Write,Edit,NotebookEdit,Read(./.git/**),Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//root/**),Read(//tmp/**),Read(//run/**),Read(//home/runner/work/_temp/**),Read(//home/runner/.*/**),Read(//home/runner/.*),Read(~/.*/**),Read(~/.*)"
+--strict-mcp-config
