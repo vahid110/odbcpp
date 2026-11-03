@@ -1837,6 +1837,9 @@ BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
 
 BackendResult<std::vector<ResultColumnOrigin>> PgDatabaseConnection::resolve_column_origins_impl(
     std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline deadline) {
+  const auto snapshot = SessionSnapshot{session_state(),
+      session_state() == SessionState::Disconnected ? SessionDisposition::Retire :
+      session_state() == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
   std::vector<ResultColumnOrigin> origins(provenance.size());
   std::vector<std::uint32_t> distinct_table_oids;
   for (const auto& item : provenance) {
@@ -1845,7 +1848,7 @@ BackendResult<std::vector<ResultColumnOrigin>> PgDatabaseConnection::resolve_col
     }
   }
   if (distinct_table_oids.empty()) {
-    return origins;
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins), snapshot};
   }
   std::sort(distinct_table_oids.begin(), distinct_table_oids.end());
   distinct_table_oids.erase(
@@ -1854,7 +1857,7 @@ BackendResult<std::vector<ResultColumnOrigin>> PgDatabaseConnection::resolve_col
 
   const auto cancellation = cancellation_resolver_endpoint();
   if (cancellation && !cancellation->enter_resolver()) {
-    return origins;
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins), snapshot};
   }
   struct ResolverPhase {
     std::shared_ptr<SessionCancellationWire> endpoint;
@@ -1928,7 +1931,7 @@ BackendResult<std::vector<ResultColumnOrigin>> PgDatabaseConnection::resolve_col
     }
   }
 
-  return origins;
+  return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins), snapshot};
 }
 
 } // namespace rs::core::database::postgres

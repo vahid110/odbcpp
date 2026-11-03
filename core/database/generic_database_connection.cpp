@@ -364,14 +364,20 @@ BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolv
     std::uint64_t result_id, rs::util::Deadline deadline) {
   auto it = result_provenance_.find(result_id);
   if (it == result_provenance_.end()) {
-    return std::vector<ResultColumnOrigin>{};
+    SessionSnapshot snapshot{session_state_,
+        session_state_ == SessionState::Disconnected ? SessionDisposition::Retire :
+        session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::vector<ResultColumnOrigin>{}, snapshot};
   }
   return resolve_column_origins_impl(it->second, deadline);
 }
 
 BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolve_column_origins_impl(
     std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline) {
-  return std::vector<ResultColumnOrigin>(provenance.size());
+  SessionSnapshot snapshot{session_state_,
+      session_state_ == SessionState::Disconnected ? SessionDisposition::Retire :
+      session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+  return BackendResult<std::vector<ResultColumnOrigin>>{std::vector<ResultColumnOrigin>(provenance.size()), snapshot};
 }
 
 bool GenericDatabaseConnection::is_connected() const {
