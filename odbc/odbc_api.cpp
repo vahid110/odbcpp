@@ -3308,13 +3308,10 @@ static SQLRETURN SQLGetCursorNameW_impl(
       --copied;
     }
   }
-  auto* output_bytes = reinterpret_cast<std::byte*>(cursor_name);
   if (copied > 0) {
-    std::memcpy(output_bytes, wide->data(), copied * sizeof(SQLWCHAR));
+    std::memcpy(cursor_name, wide->data(), copied * sizeof(SQLWCHAR));
   }
-  const SQLWCHAR terminator = 0;
-  std::memcpy(output_bytes + copied * sizeof(SQLWCHAR), &terminator,
-              sizeof(terminator));
+  cursor_name[copied] = 0;
   if (copied < wide->size()) {
     stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                     "Cursor name was truncated");
