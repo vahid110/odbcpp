@@ -122,5 +122,27 @@ class CanaryJudge(unittest.TestCase):
         self.assertTrue(run(replace(17, ("18", "Read", {"file_path": "./pr-head/link.txt"}, False, "x"))))
 
 
+class PrepareWorkspace(unittest.TestCase):
+    """Runs prepare-workspace.sh itself, so a find incompatibility shows on
+    the runner's GNU find before any value is planted."""
+
+    def test_removes_links_and_agent_configuration_outside_git(self):
+        import subprocess, tempfile
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prepare-workspace.sh")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".git"))
+            os.makedirs(os.path.join(d, "pr-head", "sub", ".claude"))
+            os.symlink("/etc/hosts", os.path.join(d, "pr-head", "link"))
+            os.symlink("/tmp", os.path.join(d, "pr-head", "sub", "dirlink"))
+            os.symlink("/etc", os.path.join(d, ".git", "kept"))
+            open(os.path.join(d, "pr-head", "CLAUDE.md"), "w").close()
+            open(os.path.join(d, "pr-head", "keep.txt"), "w").close()
+            subprocess.run(["bash", script, d], check=True, capture_output=True)
+            remaining = sorted(os.path.relpath(os.path.join(root, n), d)
+                               for root, dirs, files in os.walk(d) for n in dirs + files)
+            self.assertEqual(remaining, [".git", os.path.join(".git", "kept"), "pr-head",
+                                         os.path.join("pr-head", "keep.txt"), os.path.join("pr-head", "sub")])
+
+
 if __name__ == "__main__":
     unittest.main()
