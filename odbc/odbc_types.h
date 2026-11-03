@@ -21,6 +21,11 @@
 #define SQL_API_SQLCANCELHANDLE 1022
 #endif
 
+// ODBC 2.0 statement option alias for row array size.
+#ifndef SQL_ROWSET_SIZE
+#define SQL_ROWSET_SIZE 9
+#endif
+
 namespace rs::odbc {
 
 static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4,
