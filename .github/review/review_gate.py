@@ -6,8 +6,8 @@ status: the required "agent review" check for a head commit: success only
         when every required role's latest review of that exact commit, by
         odbcpp-reviewer[bot], approves.
 
-Inputs are JSON files written by the workflow from the GitHub API, so the
-logic runs the same in tests and in Actions.
+Inputs are JSON files with fixed names that the workflow writes from the
+GitHub API, so the logic runs the same in tests and in Actions.
 """
 
 import json
@@ -138,30 +138,33 @@ def status(reviews, labels, files, events, head_sha, now=None):
 
 
 def _load(name, default):
-    path = os.path.join(os.environ.get("GATE_DIR", "."), name)
-    return json.load(open(path)) if os.path.exists(path) else default
+    """Reads one of the fixed input files the workflow writes to the working directory."""
+    if name not in ("labels.json", "events.json", "reviews.json", "files.json"):
+        raise ValueError(name)
+    return json.load(open(name)) if os.path.exists(name) else default
 
 
 def main(command):
+    """Prints key=value step outputs on stdout (the workflow appends them to
+    GITHUB_OUTPUT) and a human summary on stderr."""
     labels = _load("labels.json", [])
     events = _load("events.json", [])
     reviews = _load("reviews.json", [])
     files = _load("files.json", [])
     head = os.environ["HEAD_SHA"]
-    out = open(os.environ["GITHUB_OUTPUT"], "a")
     if command == "plan":
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
                                           labels, files, events, reviews, head)
-        out.write(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
-                  f"add_labels={','.join(add)}\n")
+        print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
+              f"add_labels={','.join(add)}")
         print(f"files={len(files)} labels={sorted(labels)} add={add} "
-              f"correctness={correctness} red_team={red_team}")
+              f"correctness={correctness} red_team={red_team}", file=sys.stderr)
     elif command == "status":
         conclusion, summary = status(reviews, labels, files, events, head)
-        out.write(f"conclusion={conclusion}\nsummary={summary}\n")
+        # post-check.sh reads this fixed file in the same step.
         with open("check-status.txt", "w") as f:
             f.write(f"{conclusion}\n{summary}\n")
-        print(f"{conclusion}: {summary}")
+        print(f"{conclusion}: {summary}", file=sys.stderr)
     else:
         raise SystemExit(f"unknown command {command}")
 

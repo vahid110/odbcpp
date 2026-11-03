@@ -81,7 +81,7 @@ jobs:
         id: plan
         if: steps.gate.outputs.state == 'enabled'
         shell: bash
-        run: python3 -I -B .github/review/review_gate.py plan
+        run: python3 -I -B .github/review/review_gate.py plan >> "$GITHUB_OUTPUT"
 
       - name: Get the reviewer identity
         id: reviewer

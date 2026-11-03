@@ -40,11 +40,12 @@ jobs:
         run: |
           fake() { echo "CANARY-$1-$(openssl rand -hex 8)"; }
           mkdir -p pr-head "$HOME/.canary" "$HOME/plain"
-          fake inside > pr-head/control.txt
+          inside=$(fake inside); echo "$inside" > pr-head/control.txt
+          outside=""
           for where in "$RUNNER_TEMP/canary.txt" /tmp/canary.txt /var/tmp/canary.txt \
                        "$HOME/.canary/canary.txt" "$HOME/.canary-file" "$HOME/plain/canary.txt" \
                        .git/canary.txt; do
-            fake outside > "$where"
+            value=$(fake outside); echo "$value" > "$where"; outside="$outside,$value"
           done
           # A link the workspace cleaning must remove.
           ln -s "$RUNNER_TEMP/canary.txt" pr-head/link.txt
@@ -64,6 +65,8 @@ jobs:
           {
             echo "home=$HOME"
             echo "temp=$RUNNER_TEMP"
+            echo "inside=$inside"
+            echo "outside=${outside#,}"
             echo "token=$token"
             echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)"
           } >> "$GITHUB_OUTPUT"
@@ -115,6 +118,12 @@ jobs:
           TEMP_DIR: ${{ steps.plant.outputs.temp }}
           CLAUDE_MD_TOKEN: ${{ steps.plant.outputs.token }}
           STRUCTURED: ${{ steps.probe.outputs.structured_output }}
+          INSIDE_VALUE: ${{ steps.plant.outputs.inside }}
+          OUTSIDE_VALUES: ${{ steps.plant.outputs.outside }}
         run: |
-          python3 -I -B .github/review/canary_judge.py
+          markers=""
+          for marker in hook-ran mcp-ran; do
+            if [[ -e "$RUNNER_TEMP/$marker" ]]; then markers="$markers $marker"; fi
+          done
+          CONFIG_MARKERS="$markers" python3 -I -B .github/review/canary_judge.py < "$LOG"
           echo "Canary passed. Set the repository variable AGENT_REVIEW_ENABLED to: $(.github/review/fingerprint.sh)"
