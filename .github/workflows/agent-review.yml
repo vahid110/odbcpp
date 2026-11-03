@@ -32,6 +32,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     outputs:
       correctness: ${{ steps.plan.outputs.correctness }}
       red_team: ${{ steps.plan.outputs.red_team }}
@@ -76,6 +77,7 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)' | jq -R . | jq -s . > files.json
           gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events" --jq '.[]' | jq -s . > events.json
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
+          .github/review/list-runs.sh
 
       - name: Decide which reviews run
         id: plan
@@ -168,6 +170,12 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CORRECTNESS: ${{ needs.correctness.result }}
+          RED_TEAM: ${{ needs.red-team.result }}
         run: |
-          jq -n --arg b "An agent review job failed for this PR (event at ${HEAD_SHA:0:7}), so the current head may have no verdict. Re-run the failed job from $RUN_URL." \
+          roles=""
+          [[ "$CORRECTNESS" == failure ]] && roles="correctness"
+          [[ "$RED_TEAM" == failure ]] && roles="${roles:+$roles, }red-team"
+          roles=${roles:-plan}
+          jq -n --arg b "Agent review failed for: $roles. Event at ${HEAD_SHA:0:7}; the current head may have no verdict. Re-run the failed job from $RUN_URL." \
             '{body: $b}' | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - > /dev/null

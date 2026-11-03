@@ -16,6 +16,7 @@ import re
 import sys
 
 REVIEWER = "odbcpp-reviewer[bot]"
+REVIEWER_APP_ID = 5545952
 HIGH_RISK = ("process", "auth", "security", "protocol", "transactions")
 ROLES = ("correctness", "red-team")
 # The API lists at most 3000 files of a pull request.
@@ -85,17 +86,27 @@ def required_roles(labels):
     return ["correctness"] + (["red-team"] if set(labels) & set(HIGH_RISK) else [])
 
 
-def over_budget(reviews, role, now):
-    """True if this role already posted DAILY_REVIEW_BUDGET reviews in 24 hours."""
-    from datetime import datetime, timedelta
+def _time(stamp):
+    from datetime import datetime
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def over_budget(runs, role, now, pr=None):
+    """True if this role used DAILY_REVIEW_BUDGET review runs in 24 hours.
+
+    <runs> are the "agent review run (<role>) #<pr>" check runs the reviewer
+    App records when a review job starts, so failed, timed-out and cancelled
+    runs count as well as posted reviews."""
+    from datetime import timedelta
     since = now - timedelta(hours=24)
-    recent = [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER and role_of(r.get("body")) == role
-              and r.get("submitted_at")
-              and datetime.fromisoformat(r["submitted_at"].replace("Z", "+00:00")) >= since]
+    pr = pr if pr is not None else os.environ.get("PR_NUMBER", "")
+    name = f"agent review run ({role}) #{pr}"
+    recent = [r for r in runs if r.get("app_id") == REVIEWER_APP_ID and r.get("name") == name
+              and r.get("started_at") and _time(r["started_at"]) >= since]
     return len(recent) >= DAILY_REVIEW_BUDGET
 
 
-def plan(event_action, added_label, labels, files, events, reviews, head_sha, now=None):
+def plan(event_action, added_label, labels, files, events, reviews, head_sha, now=None, runs=()):
     """Returns (correctness, red_team, labels_to_add)."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
@@ -104,8 +115,8 @@ def plan(event_action, added_label, labels, files, events, reviews, head_sha, no
     add = sorted(must_have - present)
     red_done = any(not withheld(r.get("body")) for role, r in latest_reviews(reviews, head_sha).items()
                    if role == "red-team")
-    correctness_budget = not over_budget(reviews, "correctness", now)
-    red_budget = not over_budget(reviews, "red-team", now)
+    correctness_budget = not over_budget(runs, "correctness", now)
+    red_budget = not over_budget(runs, "red-team", now)
     if event_action == "labeled":
         return False, added_label in HIGH_RISK and not red_done and red_budget, add
     # Labels added here start the red-team review through their own labeled
@@ -113,7 +124,7 @@ def plan(event_action, added_label, labels, files, events, reviews, head_sha, no
     return correctness_budget, bool(present & set(HIGH_RISK)) and not red_done and red_budget, add
 
 
-def status(reviews, labels, files, events, head_sha, now=None):
+def status(reviews, labels, files, events, head_sha, now=None, runs=()):
     """Returns (conclusion, summary) for the required agent review check."""
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
@@ -128,10 +139,11 @@ def status(reviews, labels, files, events, head_sha, now=None):
             blocking.append(role)
     if blocking:
         return "failure", "Changes requested by: " + ", ".join(blocking)
-    exhausted = [role for role in missing if over_budget(reviews, role, now)]
+    exhausted = [role for role in missing if over_budget(runs, role, now)]
     if exhausted:
         return "failure", ("Daily review budget used up for: " + ", ".join(exhausted)
-                           + "; the owner must review or wait")
+                           + ". Reviews resume 24 hours after the oldest counted run: then push "
+                           "a commit or re-run this workflow. An owner review cannot satisfy this check.")
     if missing:
         return "pending", "Waiting for: " + ", ".join(missing)
     return "success", "Approved by: " + ", ".join(required_roles(labels))
@@ -139,7 +151,7 @@ def status(reviews, labels, files, events, head_sha, now=None):
 
 def _load(name, default):
     """Reads one of the fixed input files the workflow writes to the working directory."""
-    if name not in ("labels.json", "events.json", "reviews.json", "files.json"):
+    if name not in ("labels.json", "events.json", "reviews.json", "files.json", "runs.json"):
         raise ValueError(name)
     return json.load(open(name)) if os.path.exists(name) else default
 
@@ -151,16 +163,17 @@ def main(command):
     events = _load("events.json", [])
     reviews = _load("reviews.json", [])
     files = _load("files.json", [])
+    runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
     if command == "plan":
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
-                                          labels, files, events, reviews, head)
+                                          labels, files, events, reviews, head, runs=runs)
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")
         print(f"files={len(files)} labels={sorted(labels)} add={add} "
               f"correctness={correctness} red_team={red_team}", file=sys.stderr)
     elif command == "status":
-        conclusion, summary = status(reviews, labels, files, events, head)
+        conclusion, summary = status(reviews, labels, files, events, head, runs=runs)
         # post-check.sh reads this fixed file in the same step.
         with open("check-status.txt", "w") as f:
             f.write(f"{conclusion}\n{summary}\n")

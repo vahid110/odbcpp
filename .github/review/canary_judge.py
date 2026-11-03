@@ -149,13 +149,14 @@ def main():
     the judge opens no path the environment chooses."""
     workspace, home, temp = os.environ["GITHUB_WORKSPACE"], os.environ["HOME_DIR"], os.environ["TEMP_DIR"]
     inside = os.environ["INSIDE_VALUE"]
-    outside = [v for v in os.environ["OUTSIDE_VALUES"].split(",") if v]
+    given = os.environ["OUTSIDE_VALUES"].split(",")
+    outside = [v for v in given if v]
     failures, lines = judge(json.load(sys.stdin), standard_probes(workspace, home, temp),
                             inside, outside, claude_md_token=os.environ["CLAUDE_MD_TOKEN"],
                             structured=os.environ.get("STRUCTURED", ""))
     for marker in os.environ.get("CONFIG_MARKERS", "").split():
         failures.append(f"repository configuration executed: {marker}")
-    if len(outside) != 7 or not inside:
+    if len(given) != 7 or len(outside) != 7 or not inside:
         failures.append("the planted values were not passed to the judge")
     print("\n".join(lines))
     if failures:
