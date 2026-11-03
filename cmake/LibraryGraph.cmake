@@ -151,6 +151,19 @@ function(odbcpp_library_dependencies target products out problem)
             set(${problem} "Imported target ${_current} may not depend on product target: ${_value}" PARENT_SCOPE)
             return()
           endif()
+          # Dynamic target generator expressions (e.g. TARGET_PROPERTY, GENEX_EVAL, TARGET_NAME)
+          # can evaluate to arbitrary targets at generate time and are forbidden on imported targets.
+          if(_value MATCHES "TARGET_|GENEX_EVAL")
+            set(${problem} "Imported target ${_current} may not use dynamic generator expressions: ${_value}" PARENT_SCOPE)
+            return()
+          endif()
+          # Multi-part or assembled generator expressions (e.g. $<1:odb><1:cpp_tls>,
+          # $<1:odb>$<1:cpp_tls>, odb$<1:cpp_tls>, or $<1:odb>_tls) evade tokenization
+          # and are forbidden on imported targets.
+          if(_value MATCHES "\\$<" AND (NOT _value MATCHES "^\\$<" OR NOT _value MATCHES ">$" OR _value MATCHES ">[^;]*<"))
+            set(${problem} "Imported target ${_current} may not use concatenated generator expressions: ${_value}" PARENT_SCOPE)
+            return()
+          endif()
           # Split on generator-expression syntax and whitespace, so paths stay whole
           # but space-separated lists are tokenized; "::" namespaces survive.
           string(REPLACE "::" "@NS@" _text "${_value}")
