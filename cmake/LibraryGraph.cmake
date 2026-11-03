@@ -2,6 +2,9 @@
 # are pure, so cmake/TestLibraryGraph.cmake exercises them in script mode; the
 # target walk and the check itself need a project and are exercised by the
 # scratch projects in that test.
+#
+# Include-level layering waits for ADR 0002 step 7, when each library gets its
+# own include directory; until then, the check judges link dependencies only.
 
 # Each entry is "<library>=<allowed>[,<allowed>...]"; an empty list allows no
 # product-library dependency.
@@ -69,14 +72,17 @@ set(ODBCPP_LIBRARY_LINK_PROPERTIES LINK_LIBRARIES INTERFACE_LINK_LIBRARIES
   LINK_DEPENDS INTERFACE_LINK_DEPENDS)
 
 # Each dependency entry of a target this build defines must be a plain name or
-# path, or exactly one allowed generator expression around plain text,
-# optionally inside one $<CONFIG:...> condition. Anything else could assemble
-# a target name only at generate time, which the walk below cannot see.
+# path, or allowed generator expressions around plain text, optionally nested
+# as CMake stores for PRIVATE links on static product libraries
+# ($<LINK_ONLY:$<BUILD_INTERFACE:x>> or $<LINK_ONLY:$<$<CONFIG:...>:x>>).
+# Anything else could assemble a target name only at generate time, which the
+# walk below cannot see.
 set(ODBCPP_LIBRARY_ALLOWED_GENEX LINK_ONLY BUILD_INTERFACE INSTALL_INTERFACE CONFIG
   TARGET_OBJECTS TARGET_FILE TARGET_LINKER_FILE 0 1)
 # Imported targets the product libraries may use; their own properties come
-# from the system and are not judged. Any other imported target is refused,
-# since the build could create one to hide a dependency.
+# from the system and are not judged by the strict generator-expression form.
+# However, their link properties are still tokenized to ensure they do not depend
+# on non-imported product targets. Any other imported target is refused.
 set(ODBCPP_LIBRARY_ALLOWED_IMPORTED Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 
 # Sets <out> to the problem with one dependency entry <value>, or to "".
@@ -87,9 +93,22 @@ function(odbcpp_library_genex_problem value out)
     return()
   endif()
   set(_payload "[^$<>]*")
+  set(_head "")
   if(value MATCHES "^\\$<([A-Z_01]+):${_payload}>$")
     set(_head "${CMAKE_MATCH_1}")
   elseif(value MATCHES "^\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:${_payload}>$")
+    set(_head "CONFIG")
+  elseif(value MATCHES "^\\$<LINK_ONLY:\\$<([A-Z_01]+):${_payload}>>$")
+    set(_head "${CMAKE_MATCH_1}")
+  elseif(value MATCHES "^\\$<LINK_ONLY:\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:${_payload}>>$")
+    set(_head "CONFIG")
+  elseif(value MATCHES "^\\$<LINK_ONLY:\\$<BUILD_INTERFACE:\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:${_payload}>>>$")
+    set(_head "CONFIG")
+  elseif(value MATCHES "^\\$<LINK_ONLY:\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:\\$<BUILD_INTERFACE:${_payload}>>>$")
+    set(_head "CONFIG")
+  elseif(value MATCHES "^\\$<BUILD_INTERFACE:\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:${_payload}>>$")
+    set(_head "CONFIG")
+  elseif(value MATCHES "^\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:\\$<BUILD_INTERFACE:${_payload}>>$")
     set(_head "CONFIG")
   else()
     set(${out} "Dependency entry must be a plain name or one allowed generator expression around plain text: ${value}" PARENT_SCOPE)
@@ -120,6 +139,60 @@ function(odbcpp_library_dependencies target products out problem)
         set(${problem} "Imported target ${_current} is not allowed in a product library dependency" PARENT_SCOPE)
         return()
       endif()
+      foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
+        get_target_property(_values ${_current} ${_property})
+        if(NOT _values)
+          continue()
+        endif()
+        foreach(_value IN LISTS _values)
+          # Any reference to a product target (direct, namespaced, or assembled)
+          # inside an allowed imported target's properties is forbidden.
+          if(_value MATCHES "odbcpp")
+            set(${problem} "Imported target ${_current} may not depend on product target: ${_value}" PARENT_SCOPE)
+            return()
+          endif()
+          # Dynamic target generator expressions (e.g. TARGET_PROPERTY, GENEX_EVAL, TARGET_NAME)
+          # can evaluate to arbitrary targets at generate time and are forbidden on imported targets.
+          if(_value MATCHES "TARGET_|GENEX_EVAL")
+            set(${problem} "Imported target ${_current} may not use dynamic generator expressions: ${_value}" PARENT_SCOPE)
+            return()
+          endif()
+          # Multi-part or assembled generator expressions (e.g. $<1:odb><1:cpp_tls>,
+          # $<1:odb>$<1:cpp_tls>, odb$<1:cpp_tls>, or $<1:odb>_tls) evade tokenization
+          # and are forbidden on imported targets.
+          if(_value MATCHES "\\$<" AND (NOT _value MATCHES "^\\$<" OR NOT _value MATCHES ">$" OR _value MATCHES ">[^;]*<"))
+            set(${problem} "Imported target ${_current} may not use concatenated generator expressions: ${_value}" PARENT_SCOPE)
+            return()
+          endif()
+          # Split on generator-expression syntax and whitespace, so paths stay whole
+          # but space-separated lists are tokenized; "::" namespaces survive.
+          string(REPLACE "::" "@NS@" _text "${_value}")
+          string(REGEX REPLACE "[$<>:, \t\r\n]+" ";" _text "${_text}")
+          string(REPLACE "@NS@" "::" _tokens "${_text}")
+          foreach(_token IN LISTS _tokens)
+            if(NOT TARGET "${_token}")
+              continue()
+            endif()
+            get_target_property(_aliased "${_token}" ALIASED_TARGET)
+            if(_aliased)
+              set(_token "${_aliased}")
+            endif()
+            get_target_property(_tok_imported "${_token}" IMPORTED)
+            if(NOT _tok_imported)
+              set(${problem} "Imported target ${_current} may not depend on target ${_token}" PARENT_SCOPE)
+              return()
+            endif()
+            if(NOT _token IN_LIST ODBCPP_LIBRARY_ALLOWED_IMPORTED)
+              set(${problem} "Imported target ${_current} may not depend on imported target ${_token}" PARENT_SCOPE)
+              return()
+            endif()
+            if(NOT _token IN_LIST _seen)
+              list(APPEND _seen "${_token}")
+              list(APPEND _pending "${_token}")
+            endif()
+          endforeach()
+        endforeach()
+      endforeach()
       continue()
     endif()
     foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
@@ -133,10 +206,10 @@ function(odbcpp_library_dependencies target products out problem)
           set(${problem} "${_current}: ${_genex}" PARENT_SCOPE)
           return()
         endif()
-        # Split only on generator-expression syntax, so a path stays whole and
-        # cannot be mistaken for a target; "::" namespaces survive.
+        # Split on generator-expression syntax and whitespace, so paths stay whole
+        # and "::" namespaces survive, but space-separated target lists inside genexes split.
         string(REPLACE "::" "@NS@" _text "${_value}")
-        string(REGEX REPLACE "[$<>:,]" ";" _text "${_text}")
+        string(REGEX REPLACE "[$<>:, \t\r\n]+" ";" _text "${_text}")
         string(REPLACE "@NS@" "::" _tokens "${_text}")
         foreach(_token IN LISTS _tokens)
           if(NOT TARGET "${_token}")
