@@ -68,26 +68,35 @@ set(ODBCPP_LIBRARY_LINK_PROPERTIES LINK_LIBRARIES INTERFACE_LINK_LIBRARIES
   INTERFACE_SOURCES MANUALLY_ADDED_DEPENDENCIES STATIC_LIBRARY_OPTIONS
   LINK_DEPENDS INTERFACE_LINK_DEPENDS)
 
-# Generator expressions allowed in those properties of targets this build
-# defines. Any other one could produce a target name only at generate time,
-# which the walk below cannot see.
+# Each dependency entry of a target this build defines must be a plain name or
+# path, or exactly one allowed generator expression around plain text,
+# optionally inside one $<CONFIG:...> condition. Anything else could assemble
+# a target name only at generate time, which the walk below cannot see.
 set(ODBCPP_LIBRARY_ALLOWED_GENEX LINK_ONLY BUILD_INTERFACE INSTALL_INTERFACE CONFIG
   TARGET_OBJECTS TARGET_FILE TARGET_LINKER_FILE 0 1)
+# Imported targets the product libraries may use; their own properties come
+# from the system and are not judged. Any other imported target is refused,
+# since the build could create one to hide a dependency.
+set(ODBCPP_LIBRARY_ALLOWED_IMPORTED Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 
-# Sets <out> to the problem with a property value <value>, or to "": a
-# generator expression not on the allowed list, or generator-expression output
-# joined to other text (which could assemble a name).
+# Sets <out> to the problem with one dependency entry <value>, or to "".
 function(odbcpp_library_genex_problem value out)
-  string(REGEX MATCHALL "\\$<[^:>$]*" _heads "${value}")
-  foreach(_head IN LISTS _heads)
-    string(SUBSTRING "${_head}" 2 -1 _name)
-    if(NOT _name STREQUAL "" AND NOT _name IN_LIST ODBCPP_LIBRARY_ALLOWED_GENEX)
-      set(${out} "Generator expression $<${_name}:...> is not allowed in a product library dependency: ${value}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-  if(value MATCHES ">[^;>:,$]" OR value MATCHES "[^;<:,$]\\$<")
-    set(${out} "Generator expression output joined to other text in a product library dependency: ${value}" PARENT_SCOPE)
+  string(FIND "${value}" "$<" _genex)
+  if(_genex EQUAL -1)
+    set(${out} "" PARENT_SCOPE)
+    return()
+  endif()
+  set(_payload "[^$<>]*")
+  if(value MATCHES "^\\$<([A-Z_01]+):${_payload}>$")
+    set(_head "${CMAKE_MATCH_1}")
+  elseif(value MATCHES "^\\$<\\$<CONFIG:[A-Za-z0-9_,]*>:${_payload}>$")
+    set(_head "CONFIG")
+  else()
+    set(${out} "Dependency entry must be a plain name or one allowed generator expression around plain text: ${value}" PARENT_SCOPE)
+    return()
+  endif()
+  if(NOT _head IN_LIST ODBCPP_LIBRARY_ALLOWED_GENEX)
+    set(${out} "Generator expression $<${_head}:...> is not allowed in a product library dependency: ${value}" PARENT_SCOPE)
     return()
   endif()
   set(${out} "" PARENT_SCOPE)
@@ -106,18 +115,23 @@ function(odbcpp_library_dependencies target products out problem)
   while(_pending)
     list(POP_FRONT _pending _current)
     get_target_property(_imported ${_current} IMPORTED)
+    if(_imported)
+      if(NOT _current IN_LIST ODBCPP_LIBRARY_ALLOWED_IMPORTED)
+        set(${problem} "Imported target ${_current} is not allowed in a product library dependency" PARENT_SCOPE)
+        return()
+      endif()
+      continue()
+    endif()
     foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
       get_target_property(_values ${_current} ${_property})
       if(NOT _values)
         continue()
       endif()
       foreach(_value IN LISTS _values)
-        if(NOT _imported)
-          odbcpp_library_genex_problem("${_value}" _genex)
-          if(_genex)
-            set(${problem} "${_current}: ${_genex}" PARENT_SCOPE)
-            return()
-          endif()
+        odbcpp_library_genex_problem("${_value}" _genex)
+        if(_genex)
+          set(${problem} "${_current}: ${_genex}" PARENT_SCOPE)
+          return()
         endif()
         # Split only on generator-expression syntax, so a path stays whole and
         # cannot be mistaken for a target; "::" namespaces survive.
