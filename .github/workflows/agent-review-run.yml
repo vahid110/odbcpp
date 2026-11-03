@@ -105,6 +105,20 @@ jobs:
         # Shared with agent-review-canary.yml, which proves these rules hold.
         run: echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)" >> "$GITHUB_OUTPUT"
 
+      - name: Install bubblewrap and socat for subprocess isolation
+        # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
+        # start without it. Before the run is recorded, so a failure here
+        # does not use up the daily review budget. The smoke test fails here, clearly, if the runner
+        # does not allow it (for example an AppArmor user-namespace rule).
+        if: steps.head.outputs.skip != 'true'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat
+          # Namespaces as in Claude Code's sandbox, not just a bind mount.
+          bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc true
+          echo "bubblewrap $(bwrap --version)"
+
       - name: Get the reviewer identity
         id: reviewer
         if: steps.head.outputs.skip != 'true'
@@ -137,18 +151,6 @@ jobs:
             echo "::error::Review runs are recorded by App $(cat recorded-app-id.txt), not 5545952 (review_gate.py REVIEWER_APP_ID)."
             exit 1
           fi
-
-      - name: Install bubblewrap for subprocess isolation
-        # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
-        # start without it. The smoke test fails here, clearly, if the runner
-        # does not allow it (for example an AppArmor user-namespace rule).
-        if: steps.head.outputs.skip != 'true'
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap
-          bwrap --ro-bind / / --dev /dev --proc /proc true
-          echo "bubblewrap $(bwrap --version)"
 
       - name: Review
         id: review

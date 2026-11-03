@@ -71,15 +71,16 @@ jobs:
             echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install bubblewrap for subprocess isolation
+      - name: Install bubblewrap and socat for subprocess isolation
         # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
         # start without it. The smoke test fails here, clearly, if the runner
         # does not allow it (for example an AppArmor user-namespace rule).
         shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap
-          bwrap --ro-bind / / --dev /dev --proc /proc true
+          sudo apt-get install -y -qq bubblewrap socat
+          # Namespaces as in Claude Code's sandbox, not just a bind mount.
+          bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc true
           echo "bubblewrap $(bwrap --version)"
 
       - name: Ask the model to try every probe
