@@ -1,6 +1,6 @@
 # ADR 0002: Library layout
 
-Status: Proposed (2026-10-30). Phase 1 of the 2026-10-28 architecture review.
+Status: Approved by the owner on 2026-10-30. Phase 1 of the 2026-10-28 architecture review.
 
 ## Context
 
