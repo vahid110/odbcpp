@@ -16961,12 +16961,12 @@ TEST_F(BackendContractTest, ResultColumnOriginMetadataLazyResolutionAndExpressio
   EXPECT_EQ(1, seen->origin_calls);
 
   // Column 2 is an expression: all origin fields remain empty strings.
-  for (const auto field_id : {
-           SQL_DESC_BASE_TABLE_NAME,
-           SQL_DESC_BASE_COLUMN_NAME,
-           SQL_DESC_TABLE_NAME,
-           SQL_DESC_SCHEMA_NAME,
-           SQL_DESC_CATALOG_NAME}) {
+  for (const SQLUSMALLINT field_id : {
+           SQLUSMALLINT(SQL_DESC_BASE_TABLE_NAME),
+           SQLUSMALLINT(SQL_DESC_BASE_COLUMN_NAME),
+           SQLUSMALLINT(SQL_DESC_TABLE_NAME),
+           SQLUSMALLINT(SQL_DESC_SCHEMA_NAME),
+           SQLUSMALLINT(SQL_DESC_CATALOG_NAME)}) {
     std::memset(text, 'x', sizeof(text));
     len = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 2, field_id, text, sizeof(text), &len, nullptr));
@@ -16975,7 +16975,7 @@ TEST_F(BackendContractTest, ResultColumnOriginMetadataLazyResolutionAndExpressio
 
     std::memset(desc_text, 'x', sizeof(desc_text));
     desc_len = -1;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 2, field_id, desc_text, sizeof(desc_text), &desc_len));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 2, static_cast<SQLSMALLINT>(field_id), desc_text, sizeof(desc_text), &desc_len));
     EXPECT_EQ(0, desc_len);
     EXPECT_STREQ("", desc_text);
   }
