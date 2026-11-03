@@ -3,8 +3,8 @@ name: agent review
 # Independent agent review of every pull request (ADR 0001, decision 4).
 # Runs on pull_request_target so the workflows, the review instructions in
 # .github/review/ and the secrets always come from the base branch. The plan
-# job has no concurrency group, so events that start no review (for example
-# an unrelated label) never cancel a review in progress.
+# job has no concurrency group, and review jobs queue instead of cancelling,
+# so no event can leave the current head unreviewed.
 
 on:
   pull_request_target:
@@ -61,7 +61,7 @@ jobs:
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --jq '.[] | select(.user.login == "odbcpp-reviewer[bot]")
                       | select(.commit_id == env.HEAD_SHA)
-                      | select(.body | startswith("**[red-team reviewer]"))
+                      | select(.body | ltrimstr("**") | startswith("[red-team reviewer]"))
                       | select(.body | contains("verdict withheld") | not)
                       | .id' > red-team-done.txt
           python3 -I - <<'EOF'
@@ -125,7 +125,9 @@ jobs:
     if: needs.plan.outputs.correctness == 'true'
     concurrency:
       group: agent-review-${{ github.event.pull_request.number }}-correctness
-      cancel-in-progress: true
+      # No cancelling: an older run must never cancel the review of a newer
+      # head. A queued run for a stale head exits before the model starts.
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
@@ -142,7 +144,9 @@ jobs:
     if: needs.plan.outputs.red_team == 'true'
     concurrency:
       group: agent-review-${{ github.event.pull_request.number }}-red-team
-      cancel-in-progress: true
+      # No cancelling: an older run must never cancel the review of a newer
+      # head. A queued run for a stale head exits before the model starts.
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
@@ -153,3 +157,25 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+
+  report-failure:
+    # A notice on the PR when a review fails; posted with the workflow token,
+    # since the reviewer identity is used only for reviews and their labels.
+    needs: [correctness, red-team]
+    if: ${{ failure() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment on the PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n --arg b "Agent review failed at ${HEAD_SHA:0:7}, so there is no verdict for that commit. See $RUN_URL." \
+            '{body: $b}' | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - > /dev/null

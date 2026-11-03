@@ -70,8 +70,10 @@ wait for the owner.
 Authors act on GitHub only as `odbcpp-agent[bot]`
 (`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`). Reviewers post their verdict
 as a PR review (approve or request changes) by `odbcpp-reviewer[bot]`
-(`GH_TOKEN=$(~/.config/odbcpp-reviewer/token.sh)`), and use that identity for
-nothing else. Each review starts with its role (`[correctness reviewer]` or
+(`GH_TOKEN=$(~/.config/odbcpp-reviewer/token.sh)`), and use that identity only
+for reviews and the high-risk labels a review assigns. The automated review
+(`.github/workflows/agent-review.yml`) posts the same way once the owner has
+enabled it after a passing canary. Each review starts with its role (`[correctness reviewer]` or
 `[red-team reviewer]`). Never use the owner's login. GitHub does not enforce
 the verdict and shows only the latest review per identity, so never merge
 unless every reviewer's latest review of the head commit approves. The owner

@@ -81,10 +81,10 @@ jobs:
             --jq '.check_runs[] | {name, status, conclusion}' > review-context/checks.jsonl
           # This role's own earlier reviews, so fixes can be checked; the
           # other role's reviews stay hidden (independent reviews).
-          tag="[$ROLE reviewer]"
+          # Role headers are "[<role> reviewer]", possibly in bold.
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --jq ".[] | select(.user.login == \"odbcpp-reviewer[bot]\")
-                      | select(.body | startswith(\"**$tag\"))
+                      | select(.body | ltrimstr(\"**\") | startswith(\"[$ROLE reviewer]\"))
                       | {commit: .commit_id, state, body}" > review-context/previous-reviews.jsonl
           ls -l review-context
 
@@ -152,13 +152,13 @@ jobs:
           short = os.environ["HEAD_SHA"][:7]
           if suspicious:
               review = {"event": "REQUEST_CHANGES",
-                        "body": f"**{tag} verdict withheld at {short}**\n\nThe review "
+                        "body": f"{tag} verdict withheld at {short}\n\nThe review "
                                 "output matched a credential pattern and was not published. "
                                 f"See {os.environ['RUN_URL']}."}
           else:
               event = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES"}[result["verdict"]]
               review = {"event": event,
-                        "body": f"**{tag} {result['verdict'].replace('_', ' ')} at {short}**\n\n{result['body']}"}
+                        "body": f"{tag} {result['verdict'].replace('_', ' ')} at {short}\n\n{result['body']}"}
           review["commit_id"] = os.environ["HEAD_SHA"]
           json.dump(review, open("review.json", "w"))
           labels = result.get("labels", []) if os.environ["ROLE"] == "correctness" and not suspicious else []
@@ -175,12 +175,3 @@ jobs:
             echo "::error::Review output matched a credential pattern and was withheld."
             exit 1
           fi
-
-      - name: Report a failed review on the PR
-        if: ${{ failure() && steps.reviewer.outputs.token != '' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-        run: |
-          jq -n --arg b "**[$ROLE reviewer] review failed at ${HEAD_SHA:0:7}**, so there is no verdict. See $RUN_URL." \
-            '{body: $b}' | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - > /dev/null
