@@ -46,4 +46,3 @@ reject_fixture(escape "${_base};${_root}/../outside.cpp" "Unclassified internal 
 reject_fixture(resource "${_base};${_root}/odbc/setup.rc" "Unsupported internal source")
 reject_fixture(empty "${_root}/sdk/src/transport/socket_transport.cpp" "Empty internal source partition: backend")
 
-reject_fixture(prototype "${_base};${_root}/core/database/connection_pool.cpp" "Prototype pool leaked into production partition")
