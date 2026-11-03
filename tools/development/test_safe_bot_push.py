@@ -164,7 +164,7 @@ class SafeBotPushVerificationTest(unittest.TestCase):
         log_path = os.path.join(self.repo, "ssh_invoked.log")
         with open(stub_path, "w") as f:
             f.write(f'#!/bin/sh\necho "INVOKED $@" >> "{log_path}"\nexit 1\n')
-        os.chmod(stub_path, 0o755)
+        os.chmod(stub_path, 0o700)
 
         # Configure pushInsteadOf mapping to SSH
         subprocess.run(
@@ -214,7 +214,7 @@ class SafeBotPushVerificationTest(unittest.TestCase):
             cred_helper = os.path.join(self.repo, "mock_cred_helper.sh")
             with open(cred_helper, "w") as f:
                 f.write(f'#!/bin/sh\necho "username=x-access-token"\necho "password={bot_token}"\n')
-            os.chmod(cred_helper, 0o755)
+            os.chmod(cred_helper, 0o700)
 
             target_url = f"http://127.0.0.1:{port}/repo.git"
 
