@@ -1749,8 +1749,8 @@ TEST_F(AttributeApisTest, VariableBookmarksRequireStaticAndPreserveClosedSetting
   EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_VARIABLE),0));
   EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_STATIC),0));
-  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_FIXED),0));
-  EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_FIXED),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,&mode,0,nullptr)); EXPECT_EQ(SQL_UB_FIXED,mode);
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_VARIABLE),0));
   EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,integer_value(SQL_NONSCROLLABLE),0));
   EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
@@ -1909,6 +1909,80 @@ TEST_F(AttributeApisTest, QueryTimeoutIsOnlyAStatementAttributeAndZeroOverrideSt
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(statement_, SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr));
   EXPECT_EQ(0u, value);
+}
+
+#ifndef SQL_ROWSET_SIZE
+#define SQL_ROWSET_SIZE 9
+#endif
+
+TEST_F(AttributeApisTest, FixedBookmarksAndRowsetSizeOdbc2Compatibility) {
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+
+  // 1. Fixed bookmarks (SQL_UB_FIXED / SQL_UB_ON)
+  // On forward-only cursor, SQL_UB_FIXED returns HYC00.
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                      integer_value(SQL_UB_FIXED), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  // On static cursor, SQL_UB_FIXED succeeds.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE,
+                                        integer_value(SQL_CURSOR_STATIC), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        integer_value(SQL_UB_FIXED), 0));
+  SQLULEN bookmark_mode = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        &bookmark_mode, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_UB_FIXED), bookmark_mode);
+
+  // Attempting to select forward-only while fixed bookmarks are enabled is refused.
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE,
+                                      integer_value(SQL_CURSOR_FORWARD_ONLY), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  // Disabling bookmarks succeeds and readback returns SQL_UB_OFF.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        integer_value(SQL_UB_OFF), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        &bookmark_mode, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_UB_OFF), bookmark_mode);
+
+  // Re-enabling fixed bookmarks succeeds.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        integer_value(SQL_UB_FIXED), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        &bookmark_mode, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_UB_FIXED), bookmark_mode);
+
+  // 2. SQL_ROWSET_SIZE (ODBC 2.0 statement option 9)
+  // Positive rowset size sets ARD SQL_DESC_ARRAY_SIZE / SQL_ATTR_ROW_ARRAY_SIZE.
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                        integer_value(10), 0));
+  SQLULEN rowset_size = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                        &rowset_size, 0, nullptr));
+  EXPECT_EQ(10u, rowset_size);
+
+  SQLULEN array_size = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_ROW_ARRAY_SIZE,
+                                        &array_size, 0, nullptr));
+  EXPECT_EQ(10u, array_size);
+
+  // Updating SQL_ATTR_ROW_ARRAY_SIZE reflects in SQL_ROWSET_SIZE.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_ROW_ARRAY_SIZE,
+                                        integer_value(5), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                        &rowset_size, 0, nullptr));
+  EXPECT_EQ(5u, rowset_size);
+
+  // Non-positive rowset size returns HY024.
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                      integer_value(0), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                      reinterpret_cast<SQLPOINTER>(static_cast<SQLLEN>(-1)), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
 TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
