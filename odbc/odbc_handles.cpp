@@ -2012,12 +2012,69 @@ std::string ODBCStatement::get_cursor_name() const {
 }
 
 namespace {
-// ODBC 3.14.2: cursor name characters must be valid identifier characters.
-// The permitted set is [A-Za-z0-9_] and the name must start with a letter or
-// underscore. Length must be 1..128 characters. Cursor names must not begin
-// with "SQLCUR" or "SQL_CUR" (case-insensitive), which are reserved for driver use.
+bool is_quoted_cursor_name(std::string_view name) {
+  return name.size() >= 2 && name.front() == '"' && name.back() == '"';
+}
+
+std::string unescape_quoted_cursor_name(std::string_view name) {
+  if (!is_quoted_cursor_name(name)) return std::string(name);
+  std::string result;
+  result.reserve(name.size() - 2);
+  for (std::size_t i = 1; i + 1 < name.size(); ++i) {
+    if (name[i] == '"' && i + 2 < name.size() && name[i + 1] == '"') {
+      result.push_back('"');
+      ++i;
+    } else {
+      result.push_back(name[i]);
+    }
+  }
+  return result;
+}
+
+// ODBC cursor names can be unquoted identifiers or quoted identifiers.
+// Length must be 1..128 characters. Cursor names must not begin with
+// "SQLCUR" or "SQL_CUR" (case-insensitive), which are reserved for driver use.
+// Quoted identifiers begin and end with '"', can contain spaces/special characters,
+// preserve case sensitivity, and escape embedded quotes via '""'.
 bool is_valid_cursor_name(const std::string& name) {
   if (name.empty() || name.size() > 128) return false;
+  if (name.front() == '"') {
+    if (name.size() < 2 || name.back() != '"') return false;
+    std::string unescaped;
+    unescaped.reserve(name.size() - 2);
+    for (std::size_t i = 1; i + 1 < name.size(); ++i) {
+      if (name[i] == '"') {
+        if (i + 2 < name.size() && name[i + 1] == '"') {
+          unescaped.push_back('"');
+          ++i;
+        } else {
+          return false;
+        }
+      } else {
+        unescaped.push_back(name[i]);
+      }
+    }
+    if (unescaped.empty()) return false;
+    std::string upper;
+    upper.reserve(unescaped.size());
+    for (const char c : unescaped) {
+      upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+    if (upper.starts_with("SQLCUR") || upper.starts_with("SQL_CUR")) {
+      return false;
+    }
+    return true;
+  }
+
+  const char first = name[0];
+  if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
+    return false;
+  }
+  for (const char c : name) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+      return false;
+    }
+  }
   std::string upper;
   upper.reserve(name.size());
   for (const char c : name) {
@@ -2026,12 +2083,31 @@ bool is_valid_cursor_name(const std::string& name) {
   if (upper.starts_with("SQLCUR") || upper.starts_with("SQL_CUR")) {
     return false;
   }
-  const char first = name[0];
-  if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
-    return false;
+  return true;
+}
+
+bool cursor_names_conflict(std::string_view a, std::string_view b) {
+  const bool a_quoted = is_quoted_cursor_name(a);
+  const bool b_quoted = is_quoted_cursor_name(b);
+  if (a_quoted && b_quoted) {
+    return a == b;
   }
-  for (const char c : name) {
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+  if (!a_quoted && !b_quoted) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (std::toupper(static_cast<unsigned char>(a[i])) !=
+          std::toupper(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const auto unquoted = a_quoted ? b : a;
+  const auto quoted = a_quoted ? a : b;
+  const auto unescaped = unescape_quoted_cursor_name(quoted);
+  if (unquoted.size() != unescaped.size()) return false;
+  for (std::size_t i = 0; i < unquoted.size(); ++i) {
+    if (static_cast<char>(std::toupper(static_cast<unsigned char>(unquoted[i]))) != unescaped[i]) {
       return false;
     }
   }
@@ -2050,14 +2126,8 @@ SQLRETURN ODBCStatement::set_cursor_name(const std::string& name) {
               "Cursor name cannot be set while the statement is in an executed or cursor-positioned state");
     return SQL_ERROR;
   }
-  if (!cursor_name_.empty()) {
-    set_error(SQLSTATE_INVALID_CURSOR_STATE,
-              "Cursor name has already been set on this statement");
-    return SQL_ERROR;
-  }
   const auto this_handle = reinterpret_cast<SQLHANDLE>(this);
   const auto connection_handle = reinterpret_cast<SQLHANDLE>(conn_.get());
-  // Case-insensitive duplicate check across sibling statements (per connection).
   auto siblings = HandleRegistry::instance().child_handles(
       connection_handle, HandleType::Statement);
   for (const auto sibling_handle : siblings) {
@@ -2065,22 +2135,11 @@ SQLRETURN ODBCStatement::set_cursor_name(const std::string& name) {
     auto sibling = HandleRegistry::instance().get_handle_as<ODBCStatement>(
         sibling_handle);
     if (!sibling) continue;
-    // Compare case-insensitively; cursor names are case-insensitive identifiers.
     const auto existing = sibling->get_cursor_name();
-    if (existing.size() == name.size()) {
-      bool eq = true;
-      for (std::size_t i = 0; i < name.size(); ++i) {
-        if (std::toupper(static_cast<unsigned char>(name[i])) !=
-            std::toupper(static_cast<unsigned char>(existing[i]))) {
-          eq = false;
-          break;
-        }
-      }
-      if (eq) {
-        set_error(SQLSTATE_DUPLICATE_CURSOR_NAME,
-                  "Cursor name is already in use by another statement");
-        return SQL_ERROR;
-      }
+    if (cursor_names_conflict(name, existing)) {
+      set_error(SQLSTATE_DUPLICATE_CURSOR_NAME,
+                "Cursor name is already in use by another statement");
+      return SQL_ERROR;
     }
   }
   cursor_name_ = name;
