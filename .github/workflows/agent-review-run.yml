@@ -138,6 +138,18 @@ jobs:
             exit 1
           fi
 
+      - name: Install bubblewrap for subprocess isolation
+        # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
+        # start without it. The smoke test fails here, clearly, if the runner
+        # does not allow it (for example an AppArmor user-namespace rule).
+        if: steps.head.outputs.skip != 'true'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          bwrap --ro-bind / / --dev /dev --proc /proc true
+          echo "bubblewrap $(bwrap --version)"
+
       - name: Review
         id: review
         if: steps.head.outputs.skip != 'true'

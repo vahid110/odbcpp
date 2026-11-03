@@ -71,6 +71,17 @@ jobs:
             echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install bubblewrap for subprocess isolation
+        # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
+        # start without it. The smoke test fails here, clearly, if the runner
+        # does not allow it (for example an AppArmor user-namespace rule).
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          bwrap --ro-bind / / --dev /dev --proc /proc true
+          echo "bubblewrap $(bwrap --version)"
+
       - name: Ask the model to try every probe
         id: probe
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
