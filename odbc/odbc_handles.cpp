@@ -57,6 +57,35 @@ DescriptorRecord bookmark_metadata() {
   record.searchable = SQL_UNSEARCHABLE; record.type_name = "BINARY";
   return record;
 }
+DescriptorRecord fixed_bookmark_metadata() {
+  DescriptorRecord record;
+  record.type = record.concise_type = SQL_INTEGER;
+  record.length = 10; record.octet_length = 4; record.display_size = 11;
+  record.precision = 10; record.scale = 0;
+  record.nullable = SQL_NO_NULLS; record.unsigned_attribute = SQL_TRUE;
+  record.searchable = SQL_UNSEARCHABLE; record.type_name = "INTEGER";
+  return record;
+}
+static bool is_supported_fixed_bookmark_c_type(SQLSMALLINT target_type) noexcept {
+  if (target_type == SQL_C_BOOKMARK || target_type == SQL_C_DEFAULT) return true;
+  if (target_type == SQL_C_ULONG || target_type == SQL_C_LONG || target_type == SQL_C_SLONG) return true;
+  if constexpr (sizeof(BOOKMARK) == 8) {
+    if (target_type == SQL_C_UBIGINT || target_type == SQL_C_SBIGINT) return true;
+  }
+  return false;
+}
+static std::size_t fixed_bookmark_c_type_width(SQLSMALLINT target_type, SQLLEN buffer_or_octet_length = 0) noexcept {
+  if (target_type == SQL_C_UBIGINT || target_type == SQL_C_SBIGINT) {
+    return sizeof(std::uint64_t);
+  }
+  if (target_type == SQL_C_DEFAULT) {
+    return sizeof(BOOKMARK);
+  }
+  if (sizeof(BOOKMARK) == 8 && buffer_or_octet_length >= static_cast<SQLLEN>(sizeof(BOOKMARK))) {
+    return sizeof(BOOKMARK);
+  }
+  return sizeof(std::uint32_t);
+}
 void bookmark_integer(unsigned char* bytes, std::uint64_t value) noexcept {
   for (std::size_t i = 0; i < 8; ++i) bytes[i] = static_cast<unsigned char>(value >> (56 - i * 8));
 }
@@ -1983,12 +2012,69 @@ std::string ODBCStatement::get_cursor_name() const {
 }
 
 namespace {
-// ODBC 3.14.2: cursor name characters must be valid identifier characters.
-// The permitted set is [A-Za-z0-9_] and the name must start with a letter or
-// underscore. Length must be 1..128 characters. Cursor names must not begin
-// with "SQLCUR" or "SQL_CUR" (case-insensitive), which are reserved for driver use.
+bool is_quoted_cursor_name(std::string_view name) {
+  return name.size() >= 2 && name.front() == '"' && name.back() == '"';
+}
+
+std::string unescape_quoted_cursor_name(std::string_view name) {
+  if (!is_quoted_cursor_name(name)) return std::string(name);
+  std::string result;
+  result.reserve(name.size() - 2);
+  for (std::size_t i = 1; i + 1 < name.size(); ++i) {
+    if (name[i] == '"' && i + 2 < name.size() && name[i + 1] == '"') {
+      result.push_back('"');
+      ++i;
+    } else {
+      result.push_back(name[i]);
+    }
+  }
+  return result;
+}
+
+// ODBC cursor names can be unquoted identifiers or quoted identifiers.
+// Length must be 1..128 characters. Cursor names must not begin with
+// "SQLCUR" or "SQL_CUR" (case-insensitive), which are reserved for driver use.
+// Quoted identifiers begin and end with '"', can contain spaces/special characters,
+// preserve case sensitivity, and escape embedded quotes via '""'.
 bool is_valid_cursor_name(const std::string& name) {
   if (name.empty() || name.size() > 128) return false;
+  if (name.front() == '"') {
+    if (name.size() < 2 || name.back() != '"') return false;
+    std::string unescaped;
+    unescaped.reserve(name.size() - 2);
+    for (std::size_t i = 1; i + 1 < name.size(); ++i) {
+      if (name[i] == '"') {
+        if (i + 2 < name.size() && name[i + 1] == '"') {
+          unescaped.push_back('"');
+          ++i;
+        } else {
+          return false;
+        }
+      } else {
+        unescaped.push_back(name[i]);
+      }
+    }
+    if (unescaped.empty()) return false;
+    std::string upper;
+    upper.reserve(unescaped.size());
+    for (const char c : unescaped) {
+      upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+    if (upper.starts_with("SQLCUR") || upper.starts_with("SQL_CUR")) {
+      return false;
+    }
+    return true;
+  }
+
+  const char first = name[0];
+  if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
+    return false;
+  }
+  for (const char c : name) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+      return false;
+    }
+  }
   std::string upper;
   upper.reserve(name.size());
   for (const char c : name) {
@@ -1997,12 +2083,31 @@ bool is_valid_cursor_name(const std::string& name) {
   if (upper.starts_with("SQLCUR") || upper.starts_with("SQL_CUR")) {
     return false;
   }
-  const char first = name[0];
-  if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
-    return false;
+  return true;
+}
+
+bool cursor_names_conflict(std::string_view a, std::string_view b) {
+  const bool a_quoted = is_quoted_cursor_name(a);
+  const bool b_quoted = is_quoted_cursor_name(b);
+  if (a_quoted && b_quoted) {
+    return a == b;
   }
-  for (const char c : name) {
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+  if (!a_quoted && !b_quoted) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (std::toupper(static_cast<unsigned char>(a[i])) !=
+          std::toupper(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const auto unquoted = a_quoted ? b : a;
+  const auto quoted = a_quoted ? a : b;
+  const auto unescaped = unescape_quoted_cursor_name(quoted);
+  if (unquoted.size() != unescaped.size()) return false;
+  for (std::size_t i = 0; i < unquoted.size(); ++i) {
+    if (static_cast<char>(std::toupper(static_cast<unsigned char>(unquoted[i]))) != unescaped[i]) {
       return false;
     }
   }
@@ -2021,14 +2126,8 @@ SQLRETURN ODBCStatement::set_cursor_name(const std::string& name) {
               "Cursor name cannot be set while the statement is in an executed or cursor-positioned state");
     return SQL_ERROR;
   }
-  if (!cursor_name_.empty()) {
-    set_error(SQLSTATE_INVALID_CURSOR_STATE,
-              "Cursor name has already been set on this statement");
-    return SQL_ERROR;
-  }
   const auto this_handle = reinterpret_cast<SQLHANDLE>(this);
   const auto connection_handle = reinterpret_cast<SQLHANDLE>(conn_.get());
-  // Case-insensitive duplicate check across sibling statements (per connection).
   auto siblings = HandleRegistry::instance().child_handles(
       connection_handle, HandleType::Statement);
   for (const auto sibling_handle : siblings) {
@@ -2036,22 +2135,11 @@ SQLRETURN ODBCStatement::set_cursor_name(const std::string& name) {
     auto sibling = HandleRegistry::instance().get_handle_as<ODBCStatement>(
         sibling_handle);
     if (!sibling) continue;
-    // Compare case-insensitively; cursor names are case-insensitive identifiers.
     const auto existing = sibling->get_cursor_name();
-    if (existing.size() == name.size()) {
-      bool eq = true;
-      for (std::size_t i = 0; i < name.size(); ++i) {
-        if (std::toupper(static_cast<unsigned char>(name[i])) !=
-            std::toupper(static_cast<unsigned char>(existing[i]))) {
-          eq = false;
-          break;
-        }
-      }
-      if (eq) {
-        set_error(SQLSTATE_DUPLICATE_CURSOR_NAME,
-                  "Cursor name is already in use by another statement");
-        return SQL_ERROR;
-      }
+    if (cursor_names_conflict(name, existing)) {
+      set_error(SQLSTATE_DUPLICATE_CURSOR_NAME,
+                "Cursor name is already in use by another statement");
+      return SQL_ERROR;
     }
   }
   cursor_name_ = name;
@@ -4093,7 +4181,7 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     }
     return true;
   };
-  if (use_variable_bookmarks_ &&
+  if (use_bookmarks() &&
       ((attribute == SQL_ATTR_CURSOR_TYPE && numeric == SQL_CURSOR_FORWARD_ONLY) ||
        (attribute == SQL_ATTR_CURSOR_SCROLLABLE && numeric == SQL_NONSCROLLABLE) ||
        (attribute == SQL_ATTR_CURSOR_SENSITIVITY && numeric == SQL_UNSPECIFIED))) {
@@ -4218,6 +4306,7 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       }
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Invalid simulate cursor value");
       return SQL_ERROR;
+    case SQL_ROWSET_SIZE:
     case SQL_ATTR_ROW_ARRAY_SIZE:
       if (numeric_signed <= 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -4244,8 +4333,8 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       return SQL_SUCCESS;
     case SQL_ATTR_USE_BOOKMARKS:
       if (!cursor_attribute_settable()) return SQL_ERROR;
-      if (numeric == SQL_UB_OFF) { use_variable_bookmarks_ = false; return SQL_SUCCESS; }
-      if (numeric == SQL_UB_VARIABLE && cursor_type_ == SQL_CURSOR_STATIC) {
+      if (numeric == SQL_UB_OFF) { bookmark_mode_ = SQL_UB_OFF; return SQL_SUCCESS; }
+      if ((numeric == SQL_UB_VARIABLE || numeric == SQL_UB_FIXED) && cursor_type_ == SQL_CURSOR_STATIC) {
         if (!bookmark_statement_id_) {
           auto id = next_bookmark_statement_id.load(std::memory_order_relaxed);
           for (;;) {
@@ -4256,7 +4345,7 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
           }
           bookmark_statement_id_ = id;
         }
-        use_variable_bookmarks_ = true; return SQL_SUCCESS;
+        bookmark_mode_ = numeric; return SQL_SUCCESS;
       }
       if (numeric != SQL_UB_FIXED && numeric != SQL_UB_VARIABLE) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -4428,6 +4517,7 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       write_ulen(0); break;
     case SQL_ATTR_SIMULATE_CURSOR:
       write_ulen(SQL_SC_NON_UNIQUE); break;
+    case SQL_ROWSET_SIZE:
     case SQL_ATTR_ROW_ARRAY_SIZE:
       write_ulen(descriptor(app_row_descriptor_)->array_size()); break;
     case SQL_ATTR_ROW_BIND_TYPE:
@@ -4437,7 +4527,7 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_RETRIEVE_DATA:
       write_ulen(retrieve_data_ ? SQL_RD_ON : SQL_RD_OFF); break;
     case SQL_ATTR_USE_BOOKMARKS:
-      write_ulen(use_variable_bookmarks_ ? SQL_UB_VARIABLE : SQL_UB_OFF); break;
+      write_ulen(bookmark_mode_); break;
     case SQL_ATTR_ASYNC_ENABLE:
       write_ulen(SQL_ASYNC_ENABLE_OFF); break;
     case SQL_ATTR_PARAMSET_SIZE:
@@ -4550,7 +4640,7 @@ SQLRETURN ODBCStatement::bulk_operations(SQLSMALLINT operation) {
   }
   const auto ard = descriptor(app_row_descriptor_);
   const auto* bookmark = ard->numbered_record(0);
-  if (!use_variable_bookmarks_ || !bookmark || !bookmark->data_ptr) {
+  if (!use_variable_bookmarks() || !bookmark || !bookmark->data_ptr) {
     set_error("HY092", "Bulk fetch requires a bound variable bookmark input"); return SQL_ERROR;
   }
   if (bookmark->concise_type != SQL_C_VARBOOKMARK) {
@@ -4718,13 +4808,13 @@ SQLRETURN ODBCStatement::fetch_scroll(SQLSMALLINT orientation, SQLLEN offset) {
       }
       return fetch_impl(orientation, offset);
     case SQL_FETCH_BOOKMARK:
-      if (!use_variable_bookmarks_) {
+      if (!use_bookmarks()) {
         // Preserve the existing disabled-bookmark compatibility diagnostic.
         set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Bookmark fetch is not supported when bookmarks are disabled");
         return SQL_ERROR;
       }
       if (cursor_type_ != SQL_CURSOR_STATIC) {
-        set_error(SQLSTATE_FETCH_TYPE_OUT_OF_RANGE, "Bookmark fetch requires a variable-bookmark static cursor"); return SQL_ERROR;
+        set_error(SQLSTATE_FETCH_TYPE_OUT_OF_RANGE, "Bookmark fetch requires a bookmark static cursor"); return SQL_ERROR;
       }
       return fetch_impl(orientation, offset);
     default:
@@ -4747,26 +4837,40 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
                             orientation == SQL_FETCH_RELATIVE)) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Bulk cursor requires explicit repositioning"); return SQL_ERROR;
   }
-  if (use_variable_bookmarks_ && !active_bookmark_generation_) {
+  if (use_bookmarks() && !active_bookmark_generation_) {
     set_error(SQLSTATE_GENERAL_ERROR, "Owning bookmark result is unavailable"); return SQL_ERROR;
   }
   std::size_t bookmark_row = 0;
   if (orientation == SQL_FETCH_BOOKMARK) {
     if (!fetch_bookmark_ptr_) { fetch_failed_ = true; set_error("HY111", "Bookmark input is absent"); return SQL_ERROR; }
-    const auto address = reinterpret_cast<std::uintptr_t>(fetch_bookmark_ptr_);
-    if (bookmark_bytes > (std::numeric_limits<std::uintptr_t>::max)() - address) {
-      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark input address span is out of range"); return SQL_ERROR;
+    if (use_fixed_bookmarks()) {
+      const auto address = reinterpret_cast<std::uintptr_t>(fetch_bookmark_ptr_);
+      if (sizeof(BOOKMARK) > (std::numeric_limits<std::uintptr_t>::max)() - address) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark input address span is out of range"); return SQL_ERROR;
+      }
+      BOOKMARK ordinal = 0;
+      std::memcpy(&ordinal, static_cast<const void*>(fetch_bookmark_ptr_), sizeof(BOOKMARK));
+      if (ordinal == 0 || ordinal > result_rows_.size()) {
+        fetch_failed_ = true;
+        set_error("HY111", "Bookmark does not identify this owning result"); return SQL_ERROR;
+      }
+      bookmark_row = static_cast<std::size_t>(ordinal - 1);
+    } else {
+      const auto address = reinterpret_cast<std::uintptr_t>(fetch_bookmark_ptr_);
+      if (bookmark_bytes > (std::numeric_limits<std::uintptr_t>::max)() - address) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark input address span is out of range"); return SQL_ERROR;
+      }
+      std::array<unsigned char, bookmark_bytes> token{};
+      std::memcpy(token.data(), static_cast<const void*>(fetch_bookmark_ptr_), token.size());
+      const auto ordinal = bookmark_integer(token.data() + 16);
+      if (!active_bookmark_generation_ || bookmark_integer(token.data()) != bookmark_statement_id_ ||
+          bookmark_integer(token.data() + 8) != active_bookmark_generation_ || ordinal == 0 ||
+          ordinal > result_rows_.size()) {
+        fetch_failed_ = true;
+        set_error("HY111", "Bookmark does not identify this owning result"); return SQL_ERROR;
+      }
+      bookmark_row = static_cast<std::size_t>(ordinal - 1);
     }
-    std::array<unsigned char, bookmark_bytes> token{};
-    std::memcpy(token.data(), static_cast<const void*>(fetch_bookmark_ptr_), token.size());
-    const auto ordinal = bookmark_integer(token.data() + 16);
-    if (!active_bookmark_generation_ || bookmark_integer(token.data()) != bookmark_statement_id_ ||
-        bookmark_integer(token.data() + 8) != active_bookmark_generation_ || ordinal == 0 ||
-        ordinal > result_rows_.size()) {
-      fetch_failed_ = true;
-      set_error("HY111", "Bookmark does not identify this owning result"); return SQL_ERROR;
-    }
-    bookmark_row = static_cast<std::size_t>(ordinal - 1);
   }
   const auto ard = descriptor(app_row_descriptor_);
   // The statement attribute documents SQLULEN*, while the same ARD header
@@ -4829,21 +4933,39 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
   if (retrieve_data_ && ard->bookmark_record_) {
     const auto& record = *ard->bookmark_record_;
     if (record.data_ptr || record.indicator_ptr || record.octet_length_ptr) {
-      if (!use_variable_bookmarks_) { set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmarks are disabled"); return SQL_ERROR; }
-      if (record.concise_type != SQL_C_VARBOOKMARK) { set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR; }
-      if (record.data_ptr && record.octet_length != static_cast<SQLLEN>(bookmark_bytes)) {
-        set_error(SQLSTATE_INVALID_STRING_LENGTH, "Bookmark binding requires the complete maximum length"); return SQL_ERROR;
-      }
-      const auto fits = [&](const void* address, std::size_t extent) {
-        if (!address) return true;
-        const auto base = reinterpret_cast<std::uintptr_t>(address);
-        if (binding_offset > (std::numeric_limits<std::uintptr_t>::max)() - base) return false;
-        const auto* shifted = reinterpret_cast<const void*>(base + binding_offset);
-        return row_stride == SQL_BIND_BY_COLUMN ? span_fits(shifted, size, extent) : row_span_fits(shifted, extent);
-      };
-      if (!fits(record.data_ptr, bookmark_bytes) || !fits(record.indicator_ptr, sizeof(SQLLEN)) ||
-          !fits(record.octet_length_ptr, sizeof(SQLLEN))) {
-        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark output address span is out of range"); return SQL_ERROR;
+      if (!use_bookmarks()) { set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmarks are disabled"); return SQL_ERROR; }
+      if (use_fixed_bookmarks()) {
+        if (!is_supported_fixed_bookmark_c_type(record.concise_type)) {
+          set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR;
+        }
+        const auto bookmark_width = fixed_bookmark_c_type_width(record.concise_type, record.octet_length);
+        const auto fits = [&](const void* address, std::size_t extent) {
+          if (!address) return true;
+          const auto base = reinterpret_cast<std::uintptr_t>(address);
+          if (binding_offset > (std::numeric_limits<std::uintptr_t>::max)() - base) return false;
+          const auto* shifted = reinterpret_cast<const void*>(base + binding_offset);
+          return row_stride == SQL_BIND_BY_COLUMN ? span_fits(shifted, size, extent) : row_span_fits(shifted, extent);
+        };
+        if (!fits(record.data_ptr, bookmark_width) || !fits(record.indicator_ptr, sizeof(SQLLEN)) ||
+            !fits(record.octet_length_ptr, sizeof(SQLLEN))) {
+          set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark output address span is out of range"); return SQL_ERROR;
+        }
+      } else {
+        if (record.concise_type != SQL_C_VARBOOKMARK) { set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR; }
+        if (record.data_ptr && record.octet_length != static_cast<SQLLEN>(bookmark_bytes)) {
+          set_error(SQLSTATE_INVALID_STRING_LENGTH, "Bookmark binding requires the complete maximum length"); return SQL_ERROR;
+        }
+        const auto fits = [&](const void* address, std::size_t extent) {
+          if (!address) return true;
+          const auto base = reinterpret_cast<std::uintptr_t>(address);
+          if (binding_offset > (std::numeric_limits<std::uintptr_t>::max)() - base) return false;
+          const auto* shifted = reinterpret_cast<const void*>(base + binding_offset);
+          return row_stride == SQL_BIND_BY_COLUMN ? span_fits(shifted, size, extent) : row_span_fits(shifted, extent);
+        };
+        if (!fits(record.data_ptr, bookmark_bytes) || !fits(record.indicator_ptr, sizeof(SQLLEN)) ||
+            !fits(record.octet_length_ptr, sizeof(SQLLEN))) {
+          set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark output address span is out of range"); return SQL_ERROR;
+        }
       }
     }
   }
@@ -5022,19 +5144,40 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
     else this->set_error(state, message);
   };
   SQLRETURN fetch_result = SQL_SUCCESS;
-  if (!bulk && use_variable_bookmarks_ && application_descriptor->bookmark_record_) {
+  if (!bulk && use_bookmarks() && application_descriptor->bookmark_record_) {
     const auto& binding = *application_descriptor->bookmark_record_;
-    const auto address = [&](void* base, std::size_t width) -> unsigned char* {
-      return base ? reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(base) + binding_offset +
-          slot * (row_stride == SQL_BIND_BY_COLUMN ? width : row_stride)) : nullptr;
-    };
-    if (auto* output = address(binding.data_ptr, bookmark_bytes)) {
-      const auto token = bookmark_for(row_index); std::memcpy(output, token.data(), token.size());
+    if (use_fixed_bookmarks()) {
+      const auto bookmark_width = fixed_bookmark_c_type_width(binding.concise_type, binding.octet_length);
+      const auto address = [&](void* base, std::size_t width) -> unsigned char* {
+        return base ? reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(base) + binding_offset +
+            slot * (row_stride == SQL_BIND_BY_COLUMN ? width : row_stride)) : nullptr;
+      };
+      if (auto* output = address(binding.data_ptr, bookmark_width)) {
+        if (bookmark_width == sizeof(BOOKMARK) && sizeof(BOOKMARK) == 8) {
+          const auto token = static_cast<BOOKMARK>(row_index + 1);
+          std::memcpy(output, &token, sizeof(token));
+        } else {
+          const auto token = static_cast<std::uint32_t>(row_index + 1);
+          std::memcpy(output, &token, sizeof(token));
+        }
+      }
+      auto* length = address(binding.octet_length_ptr, sizeof(SQLLEN));
+      auto* indicator = address(binding.indicator_ptr, sizeof(SQLLEN));
+      if (length) store_application_value(reinterpret_cast<SQLLEN*>(length), static_cast<SQLLEN>(bookmark_width));
+      if (indicator && indicator != length) store_application_value(reinterpret_cast<SQLLEN*>(indicator), static_cast<SQLLEN>(length ? 0 : bookmark_width));
+    } else if (use_variable_bookmarks()) {
+      const auto address = [&](void* base, std::size_t width) -> unsigned char* {
+        return base ? reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(base) + binding_offset +
+            slot * (row_stride == SQL_BIND_BY_COLUMN ? width : row_stride)) : nullptr;
+      };
+      if (auto* output = address(binding.data_ptr, bookmark_bytes)) {
+        const auto token = bookmark_for(row_index); std::memcpy(output, token.data(), token.size());
+      }
+      auto* length = address(binding.octet_length_ptr, sizeof(SQLLEN));
+      auto* indicator = address(binding.indicator_ptr, sizeof(SQLLEN));
+      if (length) store_application_value(reinterpret_cast<SQLLEN*>(length), static_cast<SQLLEN>(bookmark_bytes));
+      if (indicator && indicator != length) store_application_value(reinterpret_cast<SQLLEN*>(indicator), static_cast<SQLLEN>(length ? 0 : bookmark_bytes));
     }
-    auto* length = address(binding.octet_length_ptr, sizeof(SQLLEN));
-    auto* indicator = address(binding.indicator_ptr, sizeof(SQLLEN));
-    if (length) store_application_value(reinterpret_cast<SQLLEN*>(length), static_cast<SQLLEN>(bookmark_bytes));
-    if (indicator && indicator != length) store_application_value(reinterpret_cast<SQLLEN*>(indicator), static_cast<SQLLEN>(length ? 0 : bookmark_bytes));
   }
   // Auto-populate bound columns from ARD
   const auto& row = result_rows_[row_index];
@@ -5337,7 +5480,40 @@ std::array<unsigned char, ODBCStatement::bookmark_bytes> ODBCStatement::bookmark
   return token;
 }
 SQLRETURN ODBCStatement::get_bookmark_data(SQLSMALLINT type, void* buffer, SQLLEN length, SQLLEN* indicator) {
-  if (!use_variable_bookmarks_) { set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmarks are disabled"); return SQL_ERROR; }
+  if (!use_bookmarks()) { set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmarks are disabled"); return SQL_ERROR; }
+  if (use_fixed_bookmarks()) {
+    if (!is_supported_fixed_bookmark_c_type(type)) {
+      set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE, "Invalid bookmark retrieval type");
+      return SQL_ERROR;
+    }
+    if (!active_bookmark_generation_) { set_error(SQLSTATE_GENERAL_ERROR, "Owning bookmark result is unavailable"); return SQL_ERROR; }
+    const auto* binding = descriptor(app_row_descriptor_)->numbered_record(0);
+    if (binding && (binding->data_ptr || binding->indicator_ptr || binding->octet_length_ptr)) {
+      set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Bookmark SQLGetData requires an unbound output record"); return SQL_ERROR;
+    }
+    if (!buffer) { set_error(SQLSTATE_INVALID_NULL_POINTER, "Null bookmark output"); return SQL_ERROR; }
+    if (length < 0) { set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid bookmark output length"); return SQL_ERROR; }
+    constexpr auto complete = (std::numeric_limits<std::size_t>::max)();
+    if (get_data_column_ == 0 && get_data_offset_ == complete) return SQL_NO_DATA;
+    const auto fits = [](const void* address, std::size_t extent) {
+      return !address || extent <= (std::numeric_limits<std::uintptr_t>::max)() - reinterpret_cast<std::uintptr_t>(address);
+    };
+    const auto bookmark_width = fixed_bookmark_c_type_width(type, length);
+    if (!fits(buffer, bookmark_width) || !fits(indicator, sizeof(SQLLEN))) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark output address span is out of range"); return SQL_ERROR;
+    }
+    if (bookmark_width == sizeof(BOOKMARK) && sizeof(BOOKMARK) == 8) {
+      const auto token = static_cast<BOOKMARK>(current_row_ - 1 + selected_row_slot_ + 1);
+      std::memcpy(buffer, &token, sizeof(token));
+    } else {
+      const auto token = static_cast<std::uint32_t>(current_row_ - 1 + selected_row_slot_ + 1);
+      std::memcpy(buffer, &token, sizeof(token));
+    }
+    if (indicator) store_application_value(indicator, static_cast<SQLLEN>(bookmark_width));
+    get_data_column_ = 0; get_data_target_type_ = type;
+    get_data_offset_ = complete; wide_get_data_ = {};
+    return SQL_SUCCESS;
+  }
   if (type != SQL_C_VARBOOKMARK) { set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE, "Invalid bookmark retrieval type"); return SQL_ERROR; }
   if (!active_bookmark_generation_) { set_error(SQLSTATE_GENERAL_ERROR, "Owning bookmark result is unavailable"); return SQL_ERROR; }
   const auto* binding = descriptor(app_row_descriptor_)->numbered_record(0);
@@ -7140,7 +7316,7 @@ SQLRETURN ODBCStatement::publish_deferred_result(rs::core::database::PreparedCom
   bool local_authority_refusal = false;
   bool native_result_started = false;
   try {
-    if (use_variable_bookmarks_ && input->array_size >=
+    if (use_bookmarks() && input->array_size >=
         (std::numeric_limits<std::uint64_t>::max)() - bookmark_generation_) {
       discard(); set_error(SQLSTATE_GENERAL_ERROR,"Bookmark result identity exhausted");
       return complete_parameter_set(SQL_ERROR,input);
@@ -7444,7 +7620,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
       return SQL_ERROR;
     }
     const bool select_sequence = plan->description().described_result_shape == DescribedResultShape::ResultSet;
-    if (select_sequence && use_variable_bookmarks_ &&
+    if (select_sequence && use_bookmarks() &&
         size >= (std::numeric_limits<std::uint64_t>::max)() - bookmark_generation_) {
       set_error(SQLSTATE_GENERAL_ERROR, "Bookmark result identity exhausted"); return SQL_ERROR;
     }
@@ -8001,7 +8177,7 @@ void ODBCStatement::apply_query_result(
     std::erase_if(result.cell_errors, [&](const auto& error) { return error.row >= result.rows.size(); });
   }
   std::uint64_t staged_bookmark_generation = 0;
-  if (use_variable_bookmarks_ && (!result.columns.empty() || !result.rows.empty() ||
+  if (use_bookmarks() && (!result.columns.empty() || !result.rows.empty() ||
       (captured_max_rows && result.execution_result_shape == rs::core::database::ExecutionResultShape::ResultSet))) {
     if (bookmark_generation_ >= (std::numeric_limits<std::uint64_t>::max)() - 1)
       throw std::runtime_error("Bookmark result identity exhausted");
@@ -8122,10 +8298,10 @@ bool ODBCStatement::apply_result_metadata(
     }
   }
   std::optional<DescriptorRecord> staged_bookmark;
-  if (use_variable_bookmarks_ && (!staged_columns.empty() ||
+  if (use_bookmarks() && (!staged_columns.empty() ||
       (parameter_result_publication && result.execution_result_shape ==
           rs::core::database::ExecutionResultShape::ResultSet)))
-    staged_bookmark = bookmark_metadata();
+    staged_bookmark = use_fixed_bookmarks() ? fixed_bookmark_metadata() : bookmark_metadata();
   // Only SELECT-array result publication preserves the prepared input hints.
   // Ordinary false publication and description/true semantics remain unchanged.
   const bool preserve_parameters = parameter_result_publication && !include_parameter_metadata;
@@ -8212,7 +8388,16 @@ void ODBCStatement::clear_current_result() {
 SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
                                   SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
   if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLBindCol",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
-  if (column_number == 0 && use_variable_bookmarks_) {
+  if (column_number == 0 && use_fixed_bookmarks()) {
+    if (!is_supported_fixed_bookmark_c_type(target_type)) {
+      set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR;
+    }
+    if (buffer_length < 0) { set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid bookmark buffer length"); return SQL_ERROR; }
+    auto ard = descriptor(app_row_descriptor_);
+    return ard->set_record(0, target_type, 0, buffer_length, 0, 0,
+                          target_value, strlen_or_indicator, strlen_or_indicator);
+  }
+  if (column_number == 0 && use_variable_bookmarks()) {
     if (target_type != SQL_C_VARBOOKMARK) { set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR; }
     if (buffer_length < 0) { set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid bookmark buffer length"); return SQL_ERROR; }
     auto ard = descriptor(app_row_descriptor_);
@@ -8823,18 +9008,21 @@ SQLRETURN ODBCStatement::describe_col_impl(SQLUSMALLINT column_number, SQLCHAR* 
   }
   const auto metadata_result = ensure_result_metadata();
   if (metadata_result != SQL_SUCCESS) return metadata_result;
-  if (column_info_.empty() && !(parameter_result_cursor_ && use_variable_bookmarks_ && column_number == 0)) {
+  if (column_info_.empty() && !(parameter_result_cursor_ && use_bookmarks() && column_number == 0)) {
     set_error(SQLSTATE_PREPARED_STATEMENT_NOT_CURSOR,
               "Statement does not produce a result set");
     return SQL_ERROR;
   }
-  if ((column_number == 0 && !use_variable_bookmarks_) || column_number > column_info_.size()) {
+  if ((column_number == 0 && !use_bookmarks()) || column_number > column_info_.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
   
-  const ColumnInfo bookmark_column{"", SQL_BINARY, bookmark_bytes, 0, SQL_NO_NULLS};
-  const auto& col = column_number == 0 ? bookmark_column : column_info_[column_number - 1];
+  const ColumnInfo fixed_bookmark_column{"", SQL_INTEGER, 10, 0, SQL_NO_NULLS};
+  const ColumnInfo variable_bookmark_column{"", SQL_BINARY, bookmark_bytes, 0, SQL_NO_NULLS};
+  const auto& col = column_number == 0
+      ? (use_fixed_bookmarks() ? fixed_bookmark_column : variable_bookmark_column)
+      : column_info_[column_number - 1];
   
   // Copy column name
   if (column_name && name_buffer_length > 0) {
@@ -8913,18 +9101,21 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
     }
     return SQL_SUCCESS;
   }
-  if (column_info_.empty() && !(parameter_result_cursor_ && use_variable_bookmarks_ && column_number == 0)) {
+  if (column_info_.empty() && !(parameter_result_cursor_ && use_bookmarks() && column_number == 0)) {
     set_error(SQLSTATE_PREPARED_STATEMENT_NOT_CURSOR,
               "Statement does not produce a result set");
     return SQL_ERROR;
   }
-  if ((column_number == 0 && !use_variable_bookmarks_) || column_number > column_info_.size()) {
+  if ((column_number == 0 && !use_bookmarks()) || column_number > column_info_.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
   
-  const ColumnInfo bookmark_column{"", SQL_BINARY, bookmark_bytes, 0, SQL_NO_NULLS};
-  const auto& col = column_number == 0 ? bookmark_column : column_info_[column_number - 1];
+  const ColumnInfo fixed_bookmark_column{"", SQL_INTEGER, 10, 0, SQL_NO_NULLS};
+  const ColumnInfo variable_bookmark_column{"", SQL_BINARY, bookmark_bytes, 0, SQL_NO_NULLS};
+  const auto& col = column_number == 0
+      ? (use_fixed_bookmarks() ? fixed_bookmark_column : variable_bookmark_column)
+      : column_info_[column_number - 1];
   const auto row_descriptor = descriptor(imp_row_descriptor_);
   const auto* record = column_number == 0 ? row_descriptor->numbered_record(0) : row_descriptor->record(column_number - 1);
   if (!record) {

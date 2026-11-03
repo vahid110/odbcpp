@@ -736,7 +736,10 @@ private:
   SQLULEN max_rows_ = 0;
   bool no_scan_ = false;
   SQLLEN* fetch_bookmark_ptr_ = nullptr;
-  bool use_variable_bookmarks_{false};
+  SQLULEN bookmark_mode_{SQL_UB_OFF};
+  bool use_bookmarks() const noexcept { return bookmark_mode_ != SQL_UB_OFF; }
+  bool use_fixed_bookmarks() const noexcept { return bookmark_mode_ == SQL_UB_FIXED; }
+  bool use_variable_bookmarks() const noexcept { return bookmark_mode_ == SQL_UB_VARIABLE; }
   std::uint64_t bookmark_statement_id_{0}, bookmark_generation_{0};
   std::uint64_t active_bookmark_generation_{0};
   static constexpr std::size_t bookmark_bytes = 24;

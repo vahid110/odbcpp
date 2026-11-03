@@ -3233,9 +3233,38 @@ static SQLRETURN SQLGetCursorName_impl(
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   const auto name = stmt->get_cursor_name();
-  return write_narrow_output(
-      stmt.get(), name, cursor_name, buffer_length, name_length_ptr,
-      "Cursor name was truncated");
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output buffer length");
+    return SQL_ERROR;
+  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          name.size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
+  if (!cursor_name) {
+    return SQL_SUCCESS;
+  }
+  if (buffer_length == 0) {
+    if (!name.empty()) {
+      stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Cursor name was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+  const auto copied = std::min<std::size_t>(
+      name.size(), static_cast<std::size_t>(buffer_length - 1));
+  if (copied > 0) {
+    std::memcpy(cursor_name, name.data(), copied);
+  }
+  cursor_name[copied] = '\0';
+  if (copied < name.size()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Cursor name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
 }
 
 static SQLRETURN SQLGetCursorNameW_impl(
@@ -3244,9 +3273,51 @@ static SQLRETURN SQLGetCursorNameW_impl(
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   const auto name = stmt->get_cursor_name();
-  return write_wide_output(
-      stmt.get(), name, cursor_name, buffer_length, name_length_ptr,
-      "Cursor name was truncated");
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output buffer length");
+    return SQL_ERROR;
+  }
+  const auto wide = utf8_to_wide(name);
+  if (!wide) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid UTF-8 output text");
+    return SQL_ERROR;
+  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          wide->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
+  if (!cursor_name) {
+    return SQL_SUCCESS;
+  }
+  if (buffer_length == 0) {
+    if (!wide->empty()) {
+      stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Cursor name was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+  auto copied = std::min<std::size_t>(
+      wide->size(), static_cast<std::size_t>(buffer_length - 1));
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    if (copied < wide->size() && copied > 0 &&
+        (*wide)[copied - 1] >= 0xd800 &&
+        (*wide)[copied - 1] <= 0xdbff) {
+      --copied;
+    }
+  }
+  if (copied > 0) {
+    std::memcpy(cursor_name, wide->data(), copied * sizeof(SQLWCHAR));
+  }
+  cursor_name[copied] = 0;
+  if (copied < wide->size()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Cursor name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
 }
 
 static SQLRETURN SQLSetCursorName_impl(
