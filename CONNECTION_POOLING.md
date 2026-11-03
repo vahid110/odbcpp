@@ -24,7 +24,7 @@ An SDK-managed pool remains optional and initially internal. Its absence does no
 block standard DM pooling qualification. Any future pool must use the shared safe
 reuse contract; independent backend pools, public pool APIs and unmeasured sizing
 or eviction policies are outside the current commitment. The legacy prototype
-pool remains quarantined in its private test/example target.
+pool was deleted on 2026-10-30.
 
 ## Observable reuse boundaries
 
