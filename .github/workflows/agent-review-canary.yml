@@ -74,11 +74,20 @@ jobs:
       - name: Install bubblewrap and socat for subprocess isolation
         # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
         # start without it. The smoke test fails here, clearly, if the runner
-        # does not allow it (for example an AppArmor user-namespace rule).
+        # still does not allow it.
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap socat
+          # As the pinned action installs them for its own isolated mode.
+          for attempt in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap socat && break
+            echo "apt-get attempt $attempt failed, retrying..."
+            sleep 5
+          done
+          # Ubuntu 24.04 restricts unprivileged user namespaces through
+          # AppArmor; bubblewrap needs them. The runner is discarded after the job.
+          if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           # Namespaces as in Claude Code's sandbox, not just a bind mount.
           bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc true
           echo "bubblewrap $(bwrap --version)"
