@@ -15,7 +15,9 @@ include("${CMAKE_CURRENT_BINARY_DIR}/version/odbcpp-version.cmake")
 find_path(PROOF_ODBC_INCLUDE sql.h REQUIRED)
 find_library(PROOF_ODBC_LIBRARY odbc REQUIRED)
 odbcpp_collect_driver_sources(_driver_sources POSTGRESQL)
-# Library sources the product links as separate libraries (ADR 0002).
+# Library sources the product links as separate libraries (ADR 0002). The proof
+# compiles them straight into its driver: the same sources and crypto linkage,
+# though not the product's static-archive link shape.
 foreach(_library IN ITEMS odbcpp_base odbcpp_logging)
   odbcpp_library_sources(${_library} _library_sources)
   list(APPEND _driver_sources ${_library_sources})

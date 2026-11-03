@@ -307,8 +307,10 @@ add_test(
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckArchitecture.cmake)
 set_tests_properties(test_architecture_boundaries PROPERTIES LABELS "unit;architecture")
 add_test(NAME test_library_graph
-  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestLibraryGraph.cmake)
-set_tests_properties(test_library_graph PROPERTIES LABELS "unit;architecture" TIMEOUT 30)
+  COMMAND ${CMAKE_COMMAND} -DBINARY_DIR=${CMAKE_BINARY_DIR}
+          -DSCRATCH_DIR=${CMAKE_BINARY_DIR}/library-graph-scratch
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestLibraryGraph.cmake)
+set_tests_properties(test_library_graph PROPERTIES LABELS "unit;architecture" TIMEOUT 180)
 
 add_test(
   NAME test_unimplemented_backend_rejected

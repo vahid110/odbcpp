@@ -1,7 +1,10 @@
 # Product libraries (ADR 0002). Each library is compiled once and linked through
 # its declared dependencies. Until the files move under libs/, sources keep their
 # current paths, compile against the staged runtime include surface, and pass the
-# same internal-include check as the runtime partition.
+# same internal-include check as the runtime partition. The graph check therefore
+# judges link dependencies only: a library could still include, and call into,
+# headers of a library it may not link until ADR 0002 step 7 gives each library
+# its own include directory.
 include("${CMAKE_CURRENT_LIST_DIR}/LibraryGraph.cmake")
 find_package(Threads REQUIRED)
 
@@ -27,42 +30,26 @@ function(odbcpp_add_library name)
   set_property(GLOBAL APPEND PROPERTY ODBCPP_LIBRARIES ${name})
 endfunction()
 
-# Fails configuration on a malformed graph, a graph entry without a library, a
-# library missing from the graph, or a link the graph does not allow. Runs at the
-# end of configuration and reads each target's actual link properties, so links
-# added anywhere in the build count.
-function(odbcpp_check_library_graph)
-  odbcpp_library_graph_problem("${ODBCPP_LIBRARY_GRAPH}" _problem)
-  if(_problem)
-    message(FATAL_ERROR "${_problem}")
-  endif()
-  get_property(_libraries GLOBAL PROPERTY ODBCPP_LIBRARIES)
-  foreach(_entry IN LISTS ODBCPP_LIBRARY_GRAPH)
-    string(REGEX REPLACE "=.*$" "" _name "${_entry}")
-    if(NOT _name IN_LIST _libraries)
-      message(FATAL_ERROR "Library graph entry without a library: ${_name}")
-    endif()
-  endforeach()
-  foreach(_library IN LISTS _libraries)
-    set(_links "")
-    foreach(_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
-      get_target_property(_values ${_library} ${_property})
-      if(_values)
-        list(APPEND _links ${_values})
-      endif()
-    endforeach()
-    odbcpp_library_link_problem("${ODBCPP_LIBRARY_GRAPH}" ${_library} "${_links}" _problem)
-    if(_problem)
-      message(FATAL_ERROR "${_problem}")
-    endif()
-  endforeach()
-endfunction()
-
 # Export names stay private until the installable packages of ADR 0002 step 9.
 odbcpp_add_library(odbcpp_base EXPORT_NAME base_private)
 odbcpp_add_library(odbcpp_logging EXPORT_NAME logging_private
   DEPENDS Threads::Threads
   SYSTEM_INCLUDES "${SPDLOG_INCLUDE_DIR}")
+
+# Every source in the library directories must belong to a library; a new file
+# would otherwise silently drop out of the build.
+file(GLOB _util_sources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/sdk/src/util/*.cpp")
+get_property(_libraries GLOBAL PROPERTY ODBCPP_LIBRARIES)
+set(_assigned "")
+foreach(_library IN LISTS _libraries)
+  odbcpp_library_sources(${_library} _sources)
+  list(APPEND _assigned ${_sources})
+endforeach()
+foreach(_source IN LISTS _util_sources)
+  if(NOT _source IN_LIST _assigned)
+    message(FATAL_ERROR "${_source} belongs to no product library (cmake/DriverSources.cmake)")
+  endif()
+endforeach()
 
 cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL odbcpp_check_library_graph)
 
