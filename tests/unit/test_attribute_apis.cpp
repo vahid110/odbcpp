@@ -276,6 +276,56 @@ TEST(AttributeApisStandaloneTest, EnvironmentVersionGetSetMatrix) {
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
+TEST(AttributeApisStandaloneTest, EnvironmentOdbcVersionRejectsUnsupportedValues) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  constexpr SQLINTEGER unsupported_versions[]{-1, 0, 999, 12345};
+  for (const auto unsupported : unsupported_versions) {
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetEnvAttr(
+                  environment, SQL_ATTR_ODBC_VERSION,
+                  reinterpret_cast<SQLPOINTER>(
+                      static_cast<std::uintptr_t>(unsupported)),
+                  0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_STREQ("HY024", reinterpret_cast<const char*>(state));
+  }
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(AttributeApisStandaloneTest, EnvironmentOdbcVersionCannotChangeAfterConnectionAllocated) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(
+                environment, SQL_ATTR_ODBC_VERSION,
+                reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetEnvAttr(
+                environment, SQL_ATTR_ODBC_VERSION,
+                reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC2), 0));
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY010", reinterpret_cast<const char*>(state));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 TEST(AttributeApisStandaloneTest, SupportsNullTerminatedEnvironmentOutput) {
   SQLHENV environment = SQL_NULL_HENV;
   ASSERT_EQ(SQL_SUCCESS,
