@@ -23,10 +23,18 @@ public:
   bool is_connected() const override { return connected_; }
   rs::core::database::SessionState session_state() const override { return connected_?rs::core::database::SessionState::Idle:rs::core::database::SessionState::Disconnected; }
   rs::core::database::BackendResult<rs::core::database::QueryResult> execute_query(std::string_view,rs::util::Deadline) override {
-    ++queries_;return {rs::util::DbErrorCode::UnsupportedFeature};
+    ++queries_;
+    rs::core::database::QueryResult result;
+    return rs::core::database::BackendResult<rs::core::database::QueryResult>{
+        std::move(result),
+        {rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable}};
   }
   rs::core::database::BackendResult<rs::core::database::QueryResult> execute_prepared(std::string_view,std::span<const rs::core::database::QueryParameter>,rs::util::Deadline) override {
-    ++queries_;return {rs::util::DbErrorCode::UnsupportedFeature};
+    ++queries_;
+    rs::core::database::QueryResult result;
+    return rs::core::database::BackendResult<rs::core::database::QueryResult>{
+        std::move(result),
+        {rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable}};
   }
   std::string server_version() const override { return "8.0.2"; }
 private:
@@ -273,6 +281,56 @@ TEST(AttributeApisStandaloneTest, EnvironmentVersionGetSetMatrix) {
                           nullptr, 0, nullptr));
   EXPECT_STREQ("HY092", reinterpret_cast<const char*>(state));
 
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(AttributeApisStandaloneTest, EnvironmentOdbcVersionRejectsUnsupportedValues) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  constexpr SQLINTEGER unsupported_versions[]{-1, 0, 999, 12345};
+  for (const auto unsupported : unsupported_versions) {
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetEnvAttr(
+                  environment, SQL_ATTR_ODBC_VERSION,
+                  reinterpret_cast<SQLPOINTER>(
+                      static_cast<std::uintptr_t>(unsupported)),
+                  0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_STREQ("HY024", reinterpret_cast<const char*>(state));
+  }
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(AttributeApisStandaloneTest, EnvironmentOdbcVersionCannotChangeAfterConnectionAllocated) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(
+                environment, SQL_ATTR_ODBC_VERSION,
+                reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetEnvAttr(
+                environment, SQL_ATTR_ODBC_VERSION,
+                reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC2), 0));
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY010", reinterpret_cast<const char*>(state));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
@@ -1994,14 +2052,14 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   EXPECT_EQ(0u, default_name2.rfind("SQL_CUR", 0));
   EXPECT_NE(default_name, default_name2);
 
-  // Invalid cursor names (including reserved prefixes SQLCUR and SQL_CUR)
+  // Invalid unquoted cursor names (including reserved prefixes SQLCUR and SQL_CUR)
   for (const char* invalid : {"", "1starts_with_digit", "has space", "has-hyphen", "has.dot",
                               "SQLCUR1", "sqlcur2", "SQL_CUR1", "sql_cur2"}) {
     EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(invalid)), SQL_NTS));
     EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement_));
   }
 
-  // Set and get valid cursor name
+  // Set and get valid unquoted cursor name
   SQLCHAR valid_name[] = "my_custom_cursor";
   ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, valid_name, SQL_NTS));
   std::memset(name_buf, 0, sizeof(name_buf));
@@ -2010,19 +2068,32 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen("my_custom_cursor")), name_length);
   EXPECT_STREQ("my_custom_cursor", reinterpret_cast<const char*>(name_buf));
 
-  // Setting again on the same statement is refused with 24000
-  SQLCHAR another_name[] = "another_cursor";
-  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, another_name, SQL_NTS));
-  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  // Legal renaming before execution: setting a new name replaces the old name
+  SQLCHAR second_name[] = "second_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, second_name, SQL_NTS));
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_STREQ("second_cursor", reinterpret_cast<const char*>(name_buf));
 
-  // Duplicate name check across sibling statements on same connection (case-insensitive)
+  // Previous name ("my_custom_cursor") was released: statement2 can now take it!
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, valid_name, SQL_NTS));
+  name_length2 = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement2, name_buf2, sizeof(name_buf2), &name_length2));
+  EXPECT_STREQ("my_custom_cursor", reinterpret_cast<const char*>(name_buf2));
+
+  // Failed replacement preserves old name:
+  // 1) Failed with invalid name
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("bad name!")), SQL_NTS));
+  EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_STREQ("second_cursor", reinterpret_cast<const char*>(name_buf));
+
+  // 2) Failed with duplicate name already used by sibling statement2 ("my_custom_cursor")
   SQLCHAR duplicate_name[] = "MY_CUSTOM_CURSOR";
-  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement2, duplicate_name, SQL_NTS));
-  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement2));
-
-  // Setting distinct name on statement2 succeeds
-  SQLCHAR sibling_name[] = "sibling_cursor";
-  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, sibling_name, SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, duplicate_name, SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_STREQ("second_cursor", reinterpret_cast<const char*>(name_buf));
 
   // Wide variant round-trip on a fresh statement
   SQLHSTMT statement3 = odbcpp::test::make_statement(connection_);
@@ -2045,25 +2116,259 @@ TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
   }
   EXPECT_EQ(custom_wide, wide_readback);
 
-  // Truncation on narrow SQLGetCursorName
+  // Truncation on narrow SQLGetCursorName with intermediate capacity 5
   SQLCHAR truncated[5]{};
   name_length = 0;
-  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement3, truncated, 5, &name_length));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetCursorName(statement3, truncated, 5, &name_length));
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement3));
   EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
   EXPECT_STREQ("wide", reinterpret_cast<const char*>(truncated));
 
-  // Query length with null pointer
-  name_length = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement3, nullptr, 0, &name_length));
-  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
-
-  // Negative buffer length
+  // Negative buffer length returns HY090
   EXPECT_EQ(SQL_ERROR, SQLGetCursorName(statement3, name_buf, -1, &name_length));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement3));
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorNameW(statement3, wide_out, -1, &wide_length));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement3));
 
   ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement3));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement2));
+}
+
+TEST_F(AttributeApisTest, CursorNameQuotedIdentifierSemanticsAndDistinctCase) {
+  // Quoted identifiers allow spaces, punctuation, keywords, and escaped quotes
+  const char* valid_quoted[] = {
+      "\"Order Cursor\"",
+      "\"My\"\"Quoted\"\"Name\"",
+      "\"Select\"",
+      "\"Case\"",
+      "\"case\"",
+  };
+  for (const auto* quoted : valid_quoted) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(quoted)), SQL_NTS))
+        << "Failed to set valid quoted cursor name: " << quoted;
+    SQLCHAR readback[64]{};
+    SQLSMALLINT length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, readback, sizeof(readback), &length));
+    EXPECT_STREQ(quoted, reinterpret_cast<const char*>(readback));
+  }
+
+  // Quoted identifiers are case-sensitive: "Case" and "case" have distinct identities and can coexist on same connection!
+  SQLHSTMT statement2 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement2);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"Case\"")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"case\"")), SQL_NTS));
+
+  // But duplicate quoted name with exact case fails with 3C000
+  SQLHSTMT statement3 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement3);
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement3, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"Case\"")), SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement3));
+
+  // Malformed quoted identifiers rejected with 34000
+  const char* malformed_quoted[] = {
+      "\"unterminated",
+      "\"dangling\"quote\"",
+      "\"\"",
+      "\"SQLCUR1\"",
+      "\"SQL_CUR_TEST\"",
+      "\"sqlcur_lower\"",
+  };
+  for (const auto* malformed : malformed_quoted) {
+    EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement3, reinterpret_cast<SQLCHAR*>(const_cast<char*>(malformed)), SQL_NTS))
+        << "Should reject malformed quoted cursor name: " << malformed;
+    EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement3));
+  }
+
+  // Unquoted vs quoted conflict: unquoted "MY_CUR" conflicts with quoted "\"MY_CUR\""
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement3, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"MY_CUR\"")), SQL_NTS));
+  SQLHSTMT statement4 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement4);
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement4, reinterpret_cast<SQLCHAR*>(const_cast<char*>("my_cur")), SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement4));
+
+  // Wide variant round-trip of quoted name
+  std::u16string wide_quoted = u"\"Wide Cursor\"";
+  std::vector<SQLWCHAR> wide_input(wide_quoted.begin(), wide_quoted.end());
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorNameW(statement4, wide_input.data(), static_cast<SQLSMALLINT>(wide_input.size())));
+  std::vector<SQLWCHAR> wide_read(32, 0);
+  SQLSMALLINT wide_len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement4, wide_read.data(), static_cast<SQLSMALLINT>(wide_read.size()), &wide_len));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(wide_input.size()), wide_len);
+  EXPECT_TRUE(std::equal(wide_input.begin(), wide_input.end(), wide_read.begin()));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement4));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement3));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement2));
+}
+
+TEST_F(AttributeApisTest, CursorNameRenamingLifecycleAndExecutionStates) {
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+
+  // Statement in allocated state: renaming is allowed
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("initial_name")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_before_prep")), SQL_NTS));
+
+  // Statement in prepared state: renaming is still allowed
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_after_prep")), SQL_NTS));
+
+  // Statement in executed state: renaming is forbidden (24000)
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_after_exec")), SQL_NTS));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  // Closing cursor returns statement to closed state where renaming is allowed again
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_after_close")), SQL_NTS));
+  SQLCHAR buf[64]{};
+  SQLSMALLINT len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, buf, sizeof(buf), &len));
+  EXPECT_STREQ("renamed_after_close", reinterpret_cast<const char*>(buf));
+}
+
+TEST_F(AttributeApisTest, CursorNameZeroCapacityAndSentinelBufferTests) {
+  SQLCHAR name[] = "test_sentinel_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, name, SQL_NTS));
+  const auto expected_len = static_cast<SQLSMALLINT>(std::strlen("test_sentinel_cursor"));
+
+  // 1. Narrow output buffer tests
+  // Sentinel test at capacity 0 with non-null pointer:
+  // Must return SQL_SUCCESS_WITH_INFO / 01004, report expected length, and NOT touch buffer!
+  std::vector<SQLCHAR> narrow_buf(32, 0xAA);
+  SQLSMALLINT narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 0, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_EQ(0xAA, narrow_buf[0]);
+
+  // Null output pointer length query: returns SQL_SUCCESS and expected length
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, &narrow_len));
+  EXPECT_EQ(expected_len, narrow_len);
+
+  // Capacity 1: can only fit null terminator
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 1, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_EQ('\0', narrow_buf[0]);
+  EXPECT_EQ(0xAA, narrow_buf[1]);
+
+  // Intermediate capacity (e.g. 5): fits first 4 chars ("test") + null terminator, tail untouched
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 5, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_STREQ("test", reinterpret_cast<const char*>(narrow_buf.data()));
+  EXPECT_EQ(0xAA, narrow_buf[5]);
+
+  // Sufficient capacity: returns SQL_SUCCESS, full string null-terminated, beyond untouched
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, narrow_buf.data(), static_cast<SQLSMALLINT>(narrow_buf.size()), &narrow_len));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_STREQ("test_sentinel_cursor", reinterpret_cast<const char*>(narrow_buf.data()));
+  EXPECT_EQ(0xAA, narrow_buf[expected_len + 1]);
+
+  // 2. Wide output buffer tests
+  // Sentinel test at capacity 0 with non-null pointer:
+  std::vector<SQLWCHAR> wide_buf(32, SQLWCHAR(0xBEEF));
+  SQLSMALLINT wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 0, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[0]);
+
+  // Null output pointer length query
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, nullptr, 0, &wide_len));
+  EXPECT_EQ(expected_len, wide_len);
+
+  // Capacity 1: can only fit null terminator
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 1, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  EXPECT_EQ(SQLWCHAR(0), wide_buf[0]);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[1]);
+
+  // Intermediate capacity (e.g. 5): fits first 4 wide chars ("test") + null terminator, tail untouched
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 5, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  std::string partial_wide_str;
+  for (std::size_t i = 0; i < 4; ++i) {
+    partial_wide_str.push_back(static_cast<char>(wide_buf[i]));
+  }
+  EXPECT_EQ("test", partial_wide_str);
+  EXPECT_EQ(SQLWCHAR(0), wide_buf[4]);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[5]);
+
+  // Sufficient capacity
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, wide_buf.data(), static_cast<SQLSMALLINT>(wide_buf.size()), &wide_len));
+  EXPECT_EQ(expected_len, wide_len);
+  std::string wide_str;
+  for (SQLSMALLINT i = 0; i < wide_len; ++i) {
+    wide_str.push_back(static_cast<char>(wide_buf[i]));
+  }
+  EXPECT_EQ("test_sentinel_cursor", wide_str);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[expected_len + 1]);
+}
+
+TEST_F(AttributeApisTest, CursorNameLengthHandlesUnalignedOutput) {
+  SQLCHAR name[] = "unaligned_test_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, name, SQL_NTS));
+  const auto expected_len =
+      static_cast<SQLSMALLINT>(std::strlen("unaligned_test_cursor"));
+
+  // Narrow unaligned length
+  {
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+
+    std::vector<SQLCHAR> buf(64, 0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetCursorName(statement_, buf.data(),
+                               static_cast<SQLSMALLINT>(buf.size()), length));
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+  }
+
+  // Wide unaligned length
+  {
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+
+    std::vector<SQLWCHAR> buf(64, 0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetCursorNameW(statement_, buf.data(),
+                                static_cast<SQLSMALLINT>(buf.size()), length));
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+  }
 }
 
 TEST_F(AttributeApisTest, GetFunctionsReportsCursorNameAndCancelHandle) {
