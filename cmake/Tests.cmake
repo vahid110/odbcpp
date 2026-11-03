@@ -309,6 +309,7 @@ set_tests_properties(test_architecture_boundaries PROPERTIES LABELS "unit;archit
 add_test(NAME test_library_graph
   COMMAND ${CMAKE_COMMAND} -DBINARY_DIR=${CMAKE_BINARY_DIR}
           -DSCRATCH_DIR=${CMAKE_BINARY_DIR}/library-graph-scratch
+          "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestLibraryGraph.cmake)
 set_tests_properties(test_library_graph PROPERTIES LABELS "unit;architecture" TIMEOUT 180)
 

@@ -31,7 +31,8 @@ odbcpp_library_link_problem("${_graph}" odbcpp_base "odbcpp::core" _problem)
 expect("${_problem}" "Library odbcpp_base may not depend on odbcpp::core" "namespaced target")
 odbcpp_library_link_problem("${_graph}" odbcpp_unknown "" _problem)
 expect("${_problem}" "Library odbcpp_unknown is not in the library graph" "unknown library")
-# The check itself, in scratch projects: base may not depend on tls by any route.
+# The check itself, in scratch projects: base may not depend on tls by any of
+# the routes below.
 if(NOT SCRATCH_DIR)
   set(SCRATCH_DIR "${CMAKE_CURRENT_BINARY_DIR}/library-graph-scratch")
 endif()
@@ -56,7 +57,14 @@ ${_add}set_property(GLOBAL PROPERTY ODBCPP_LIBRARIES ${libraries})
 cmake_language(DEFER DIRECTORY \"\${CMAKE_SOURCE_DIR}\" CALL odbcpp_check_library_graph)
 ${body}
 ")
-  execute_process(COMMAND "${CMAKE_COMMAND}" -S "${_dir}" -B "${_dir}/build"
+  set(_toolchain "")
+  if(GENERATOR)
+    list(APPEND _toolchain -G "${GENERATOR}")
+  endif()
+  if(CXX_COMPILER)
+    list(APPEND _toolchain "-DCMAKE_CXX_COMPILER=${CXX_COMPILER}")
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" ${_toolchain} -S "${_dir}" -B "${_dir}/build"
     RESULT_VARIABLE _result OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
   if(expected STREQUAL "PASS")
     if(NOT _result EQUAL 0 OR NOT EXISTS "${_dir}/build/library-graph-checked.txt")
@@ -88,6 +96,12 @@ check_project(dependency NONE "${_both}" "add_dependencies(odbcpp_base odbcpp_tl
 check_project(core NONE "${_both}" "add_library(odbcpp_core INTERFACE)
 target_link_libraries(odbcpp_base INTERFACE odbcpp_core)" "Library odbcpp_base may not depend on odbcpp_core")
 check_project(path_is_not_a_target NONE "${_both}" "target_link_libraries(odbcpp_base INTERFACE /opt/odbcpp_tls/libfoo.a)" PASS)
+check_project(archiver_options CXX "${_both}" "set_property(TARGET odbcpp_base PROPERTY STATIC_LIBRARY_OPTIONS \$<TARGET_FILE:odbcpp_tls>)" "${_denied}")
+check_project(link_depends NONE "${_both}" "set_property(TARGET odbcpp_base PROPERTY INTERFACE_LINK_DEPENDS \$<TARGET_FILE:odbcpp_tls>)" "${_denied}")
+check_project(computed_name NONE "${_both}" "set_property(TARGET odbcpp_base PROPERTY X odbcpp_tls)
+target_link_libraries(odbcpp_base INTERFACE \$<GENEX_EVAL:\$<TARGET_PROPERTY:X>>)" "GENEX_EVAL:...> is not allowed")
+check_project(assembled_name NONE "${_both}" "target_link_libraries(odbcpp_base INTERFACE \$<1:odbcpp>_tls)" "output joined")
+check_project(allowed_genex NONE "${_both}" "target_link_libraries(odbcpp_tls INTERFACE \$<BUILD_INTERFACE:odbcpp_base> \$<\$<CONFIG:Debug>:odbcpp_base>)" PASS)
 check_project(unregistered NONE "odbcpp_base" "" "Library graph entry without a library: odbcpp_tls")
 
 # The product configuration must have run the check over its libraries.

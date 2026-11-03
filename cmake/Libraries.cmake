@@ -51,6 +51,9 @@ foreach(_source IN LISTS _util_sources)
   endif()
 endforeach()
 
+# The check leaves a record; remove an old one so only this configuration's run
+# can satisfy the test that the check ran.
+file(REMOVE "${CMAKE_BINARY_DIR}/library-graph-checked.txt")
 cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL odbcpp_check_library_graph)
 
 foreach(_artifact IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)

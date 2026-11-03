@@ -65,24 +65,60 @@ endfunction()
 # Properties through which a target can pull in another target's code.
 set(ODBCPP_LIBRARY_LINK_PROPERTIES LINK_LIBRARIES INTERFACE_LINK_LIBRARIES
   INTERFACE_LINK_LIBRARIES_DIRECT LINK_OPTIONS INTERFACE_LINK_OPTIONS SOURCES
-  INTERFACE_SOURCES MANUALLY_ADDED_DEPENDENCIES)
+  INTERFACE_SOURCES MANUALLY_ADDED_DEPENDENCIES STATIC_LIBRARY_OPTIONS
+  LINK_DEPENDS INTERFACE_LINK_DEPENDS)
+
+# Generator expressions allowed in those properties of targets this build
+# defines. Any other one could produce a target name only at generate time,
+# which the walk below cannot see.
+set(ODBCPP_LIBRARY_ALLOWED_GENEX LINK_ONLY BUILD_INTERFACE INSTALL_INTERFACE CONFIG
+  TARGET_OBJECTS TARGET_FILE TARGET_LINKER_FILE 0 1)
+
+# Sets <out> to the problem with a property value <value>, or to "": a
+# generator expression not on the allowed list, or generator-expression output
+# joined to other text (which could assemble a name).
+function(odbcpp_library_genex_problem value out)
+  string(REGEX MATCHALL "\\$<[^:>$]*" _heads "${value}")
+  foreach(_head IN LISTS _heads)
+    string(SUBSTRING "${_head}" 2 -1 _name)
+    if(NOT _name STREQUAL "" AND NOT _name IN_LIST ODBCPP_LIBRARY_ALLOWED_GENEX)
+      set(${out} "Generator expression $<${_name}:...> is not allowed in a product library dependency: ${value}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+  if(value MATCHES ">[^;>:,$]" OR value MATCHES "[^;<:,$]\\$<")
+    set(${out} "Generator expression output joined to other text in a product library dependency: ${value}" PARENT_SCOPE)
+    return()
+  endif()
+  set(${out} "" PARENT_SCOPE)
+endfunction()
 
 # Sets <out> to every target <target> depends on through any of those
 # properties, aliases resolved and wrapper targets followed transitively, stopping
 # at product libraries (whose own links the check judges separately). Names in
 # generator expressions count when they name a target; plain paths never do.
-function(odbcpp_library_dependencies target products out)
+# Sets <problem> to a disallowed generator expression found on the way, or "".
+function(odbcpp_library_dependencies target products out problem)
   set(_pending "${target}")
   set(_seen "")
   set(_found "")
+  set(${problem} "" PARENT_SCOPE)
   while(_pending)
     list(POP_FRONT _pending _current)
+    get_target_property(_imported ${_current} IMPORTED)
     foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
       get_target_property(_values ${_current} ${_property})
       if(NOT _values)
         continue()
       endif()
       foreach(_value IN LISTS _values)
+        if(NOT _imported)
+          odbcpp_library_genex_problem("${_value}" _genex)
+          if(_genex)
+            set(${problem} "${_current}: ${_genex}" PARENT_SCOPE)
+            return()
+          endif()
+        endif()
         # Split only on generator-expression syntax, so a path stays whole and
         # cannot be mistaken for a target; "::" namespaces survive.
         string(REPLACE "::" "@NS@" _text "${_value}")
@@ -130,7 +166,10 @@ function(odbcpp_check_library_graph)
   endforeach()
   set(_record "")
   foreach(_library IN LISTS _libraries)
-    odbcpp_library_dependencies(${_library} "${_libraries}" _dependencies)
+    odbcpp_library_dependencies(${_library} "${_libraries}" _dependencies _problem)
+    if(_problem)
+      message(FATAL_ERROR "${_problem}")
+    endif()
     set(_product_dependencies "")
     foreach(_dependency IN LISTS _dependencies)
       if(_dependency MATCHES "^odbcpp")
