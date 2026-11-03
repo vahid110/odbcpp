@@ -161,6 +161,16 @@ SQLRETURN SQLGetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
                           SQLINTEGER* string_length);
 SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle);
 SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option);
+SQLRETURN SQLGetCursorName(SQLHSTMT statement_handle, SQLCHAR* cursor_name,
+                           SQLSMALLINT buffer_length,
+                           SQLSMALLINT* name_length_ptr);
+SQLRETURN SQLGetCursorNameW(SQLHSTMT statement_handle, SQLWCHAR* cursor_name,
+                            SQLSMALLINT buffer_length,
+                            SQLSMALLINT* name_length_ptr);
+SQLRETURN SQLSetCursorName(SQLHSTMT statement_handle, SQLCHAR* cursor_name,
+                           SQLSMALLINT name_length);
+SQLRETURN SQLSetCursorNameW(SQLHSTMT statement_handle, SQLWCHAR* cursor_name,
+                            SQLSMALLINT name_length);
 
 // Error handling
 SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,

@@ -110,6 +110,8 @@ constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
 constexpr const char* SQLSTATE_CANNOT_MODIFY_IRD = "HY016";
 constexpr const char* SQLSTATE_INCONSISTENT_DESCRIPTOR = "HY021";
 constexpr const char* SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE = "HY017";
+constexpr const char* SQLSTATE_DUPLICATE_CURSOR_NAME = "3C000";
+constexpr const char* SQLSTATE_INVALID_CURSOR_NAME = "34000";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here

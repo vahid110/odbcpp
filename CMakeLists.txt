@@ -146,9 +146,9 @@ foreach(_export IN LISTS _driver_exports)
   list(APPEND _validated_driver_exports "${_export}")
 endforeach()
 list(LENGTH _validated_driver_exports _driver_export_count)
-if(NOT _driver_export_count EQUAL 82)
+if(NOT _driver_export_count EQUAL 86)
   message(FATAL_ERROR
-    "ODBC driver export allowlist must contain 82 entries, found ${_driver_export_count}")
+    "ODBC driver export allowlist must contain 86 entries, found ${_driver_export_count}")
 endif()
 
 if(WIN32)
@@ -305,17 +305,6 @@ include(cmake/CompilerSettings.cmake)
 apply_compiler_settings(${PROJECT_NAME}_core)
 apply_compiler_settings(${PROJECT_NAME}_driver)
 
-# Quarantined legacy pool: only test/example clients may link this target.
-if(BUILD_TESTING OR BUILD_EXAMPLES)
-  set(ODBCPP_PARTITION_prototype "${CMAKE_CURRENT_SOURCE_DIR}/core/database/connection_pool.cpp")
-  odbcpp_stage_internal_includes(prototype)
-  add_library(odbcpp_prototype_pool STATIC ${ODBCPP_PARTITION_prototype})
-  target_compile_features(odbcpp_prototype_pool PRIVATE cxx_std_20)
-  target_include_directories(odbcpp_prototype_pool PRIVATE "${ODBCPP_INTERNAL_INCLUDE_prototype}")
-  target_link_libraries(odbcpp_prototype_pool PRIVATE "$<LINK_ONLY:odbcpp_core>")
-  apply_compiler_settings(odbcpp_prototype_pool)
-endif()
-
 # Build-only forwarding target for the backend-owned credential consumer.
 include(cmake/PgAuthConsumer.cmake)
 
@@ -339,13 +328,6 @@ if(BUILD_TESTING)
   endforeach()
 endif()
 
-odbcpp_check_prototype_target(${PROJECT_NAME}_core)
-odbcpp_check_prototype_target(${PROJECT_NAME}_driver)
-foreach(_artifact IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)
-  foreach(_part IN ITEMS runtime backend composition odbc)
-    odbcpp_check_prototype_target(${_artifact}_${_part})
-  endforeach()
-endforeach()
 
 # ---- Installation ----
 include(cmake/Install.cmake)

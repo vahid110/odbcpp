@@ -71,21 +71,24 @@ inline constexpr std::array advertised_functions{
     FunctionExport{"SQLSpecialColumns", SQL_API_SQLSPECIALCOLUMNS},
     FunctionExport{"SQLStatistics", SQL_API_SQLSTATISTICS},
     FunctionExport{"SQLTables", SQL_API_SQLTABLES},
+    FunctionExport{"SQLCancelHandle", SQL_API_SQLCANCELHANDLE},
+    FunctionExport{"SQLGetCursorName", SQL_API_SQLGETCURSORNAME},
+    FunctionExport{"SQLSetCursorName", SQL_API_SQLSETCURSORNAME},
 };
 
 inline constexpr std::array wide_exports{
     "SQLColAttributeW", "SQLColumnsW", "SQLConnectW", "SQLDescribeColW",
     "SQLDriverConnectW", "SQLErrorW", "SQLExecDirectW", "SQLForeignKeysW",
-    "SQLGetConnectAttrW", "SQLGetDescFieldW", "SQLGetDescRecW",
+    "SQLGetConnectAttrW", "SQLGetCursorNameW", "SQLGetDescFieldW", "SQLGetDescRecW",
     "SQLGetDiagFieldW", "SQLGetDiagRecW", "SQLGetInfoW",
     "SQLGetStmtAttrW", "SQLGetTypeInfoW", "SQLNativeSqlW", "SQLPrepareW",
     "SQLPrimaryKeysW", "SQLProcedureColumnsW", "SQLProceduresW",
-    "SQLSetConnectAttrW", "SQLSetDescFieldW", "SQLSetStmtAttrW",
+    "SQLSetConnectAttrW", "SQLSetCursorNameW", "SQLSetDescFieldW", "SQLSetStmtAttrW",
     "SQLSpecialColumnsW", "SQLStatisticsW", "SQLTablesW",
 };
 
-// Exported compatibility entry; full connection-level support is not advertised.
-inline constexpr std::array partial_exports{"SQLCancelHandle"};
+// Exported compatibility entries without advertised support.
+inline constexpr std::array<const char*, 0> partial_exports{};
 
 inline bool expected_support(SQLUSMALLINT id) {
   return std::ranges::any_of(
