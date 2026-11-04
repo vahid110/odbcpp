@@ -68,7 +68,7 @@ class JunitSummaryTest(unittest.TestCase):
         self.assertEqual(text.splitlines(), [
             '**pg unit**: 5 tests: 2 passed, 1 failed, 1 skipped, 1 disabled',
             '- failed: `test_c`',
-            '- skipped: `test_d` (SKIP_RETURN_CODE=77)',
+            '- skipped: `test_d` (`SKIP_RETURN_CODE=77`)',
             '- disabled: `test_e`',
         ])
 
@@ -79,9 +79,9 @@ class JunitSummaryTest(unittest.TestCase):
             'skipped': [('Suite.Skips', long_message)]})
         lines = text.splitlines()
         self.assertEqual(len(lines), 2)
-        self.assertTrue(lines[1].startswith('- skipped: `Suite.Skips` (file.cpp:206 The loader kept the image. x'))
-        self.assertTrue(lines[1].endswith('...)'))
-        self.assertLessEqual(len(lines[1]), len('- skipped: `Suite.Skips` ()') + junit_summary.MAX_DETAIL)
+        self.assertTrue(lines[1].startswith('- skipped: `Suite.Skips` (`file.cpp:206 The loader kept the image. x'))
+        self.assertTrue(lines[1].endswith('...`)'))
+        self.assertLessEqual(len(lines[1]), len('- skipped: `Suite.Skips` (``)') + junit_summary.MAX_DETAIL)
 
     def test_ctest_not_run_without_skip_code_is_a_failure(self):
         # CTest marks a missing executable, a failed fixture or missing files
@@ -100,13 +100,11 @@ class JunitSummaryTest(unittest.TestCase):
         text = junit_summary.render('pg', {
             'passed': [], 'failed': [], 'disabled': [],
             'skipped': [('Suite.`odd`', 'ping @someone <!-- hide \x1b[31mred\x07')]})
-        line = text.splitlines()[1]
-        self.assertNotIn('@someone', line)
-        self.assertNotIn('<!--', line)
-        self.assertNotIn('\x1b', line)
-        self.assertNotIn('\x07', line)
-        self.assertEqual(line.count('`'), 4)  # two code spans, no stray backticks
-        self.assertTrue(line.startswith('- skipped: `Suite.'))
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 2)
+        # Name and message are each one code span, where GitHub renders
+        # '@name' and '<!--' literally; no backtick can close a span early.
+        self.assertEqual(lines[1], "- skipped: `Suite.'odd'` (`ping @someone <!-- hide [31mred`)")
 
     def test_root_totals_must_match(self):
         with self.assertRaisesRegex(junit_summary.SummaryError, 'declares 5 tests'):

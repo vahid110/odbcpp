@@ -22,6 +22,8 @@ for one issue:
 git fetch origin
 git worktree add -b codex/<topic> ~/.codex/worktrees/<topic>/odbcpp origin/main
 cd ~/.codex/worktrees/<topic>/odbcpp
+# Without this extension, --worktree writes the shared .git/config instead.
+[ "$(git config --get extensions.worktreeConfig)" = true ] || { echo "worktreeConfig is off; stop" >&2; exit 1; }
 git config --worktree committer.name 'odbcpp-agent[bot]'
 git config --worktree committer.email '350232297+odbcpp-agent[bot]@users.noreply.github.com'
 git var GIT_AUTHOR_IDENT     # must be: vahid saber <vahid.saber78@gmail.com>
@@ -52,10 +54,16 @@ stops at the first failure:
 set -euo pipefail
 T=$(~/.config/odbcpp-agent/token.sh)
 [[ "$T" == ghs_* ]] || { echo "no bot token" >&2; exit 1; }
+G=$(mktemp -d)   # an empty gh config: the owner's keyring login is unreachable
 ```
 
-- Pass it per command: `GH_TOKEN="$T" gh ...`. Never `export` it into a long
-  shell, and never echo it.
+- Pass it per command: `GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh ...`.
+  `${T:?}` stops the command if the token is empty. The empty config means
+  `gh` fails instead of acting as the owner. Never `export` the token into a
+  long shell, and never echo it.
+- Each Bash call of an agent harness starts a fresh shell, so put this block
+  at the top of every script that writes. The snippets below assume it ran in
+  the same script.
 - Never put a `gh` write after `;`, or after a step that can fail without
   stopping the script (`cmd || true`, a failed `&&` link followed by `;`).
   The write must run only if the token step succeeded.
@@ -64,10 +72,16 @@ T=$(~/.config/odbcpp-agent/token.sh)
 ## 4. Push
 
 ```sh
-git -c credential.helper= \
-    -c "credential.helper=!f() { echo username=x-access-token; echo password=$T; }; f" \
+GH_TOKEN="${T:?no bot token}" git -c credential.helper= \
+    -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GH_TOKEN:?}"; }; f' \
     push -u origin codex/<topic>
 ```
+
+Keep the helper in single quotes. The helper's shell then reads the token
+from its environment when git asks. In double quotes, the token would be
+expanded into git's arguments, where any local process can read it (`ps`).
+`credential.helper=` first clears the keychain helper, so the token is never
+stored.
 
 Use `--force-with-lease` only to update your own PR branch after a rebase. Never
 force-push `main` or someone else's branch.
@@ -96,7 +110,7 @@ End the body with the PR attribution line your harness gives. Then, in the
 same asserted script:
 
 ```sh
-GH_TOKEN="$T" gh pr create -R vahid110/odbcpp --base main \
+GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh pr create -R vahid110/odbcpp --base main \
   --head codex/<topic> --title "<title>" --body-file <scratchpad>/pr-body.md
 ```
 
@@ -108,7 +122,7 @@ must print `0`. If GraphQL keeps failing, create the PR through REST:
 ```sh
 jq -n --rawfile b <scratchpad>/pr-body.md \
   '{title: "<title>", head: "codex/<topic>", base: "main", body: $b}' > <scratchpad>/pr.json
-GH_TOKEN="$T" gh api -X POST repos/vahid110/odbcpp/pulls --input <scratchpad>/pr.json \
+GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh api -X POST repos/vahid110/odbcpp/pulls --input <scratchpad>/pr.json \
   --jq '.number, .user.login'   # must print odbcpp-agent[bot]
 ```
 
@@ -118,7 +132,7 @@ Do not add the high-risk labels yourself (`security`, `auth`, `protocol`,
 ## 6. Verify the author, every time
 
 ```sh
-GH_TOKEN="$T" gh pr view <n> -R vahid110/odbcpp --json author,commits \
+GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh pr view <n> -R vahid110/odbcpp --json author,commits \
   --jq '.author.login, (.commits[] | .authors[].email)'
 ```
 

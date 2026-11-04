@@ -119,7 +119,9 @@ replace hand-made evidence and custom ceremony.
     required check set by the reviewer App can enforce them later if they are
     ever skipped. The owner approves, through CODEOWNERS, only changes to
     what defines the gates:
-    `.github/` (CI, CODEOWNERS), `AGENTS.md`, `docs/adr/`, `.agents/`,
+    `.github/` (CI, CODEOWNERS), `docs/adr/`, `.agents/`, `.codex/`,
+    `.mcp.json`, agent instructions and settings at any depth (`AGENTS.md`,
+    `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `.claude/`),
     `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
     `DEVELOPMENT_WORKFLOW.md` while its live rules apply. Release tags
     (`v*`) can be created only by the owner, so nothing reaches users without

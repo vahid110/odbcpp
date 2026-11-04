@@ -42,20 +42,24 @@ Driver Manager, SQLWCHAR and crypto profile, using the presets in
 | Windows | `windows-pg`, `windows-redshift`, with `-DODBCPP_CRYPTO_ROOT=...` |
 
 ```sh
-export ODBCPP_IODBC_ROOT=/opt/homebrew/opt/libiodbc
 for p in pg redshift; do
   b=build-macos-iodbc-$p
-  cmake --preset macos-iodbc-$p -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC \
-        -DODBCPP_CRYPTO_ROOT="$(brew --prefix openssl@3)" > "$E/$p-configure.log" 2>&1 &&
-  cmake --build "$b" -j8 > "$E/$p-build.log" 2>&1 &&
-  ctest --test-dir "$b" -L '^unit$' --no-tests=error \
-        --output-junit "$E/$p-unit.xml" > "$E/$p-unit.log" 2>&1
-  echo "$p exit=$?" | tee -a "$E/exits.txt"
+  if ! ODBCPP_IODBC_ROOT=/opt/homebrew/opt/libiodbc cmake --preset macos-iodbc-$p \
+         -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC -DODBCPP_CRYPTO_ROOT="$(brew --prefix openssl@3)" \
+         > "$E/$p-configure.log" 2>&1; then
+    echo "$p configure failed" | tee -a "$E/exits.txt"
+  elif ! cmake --build "$b" -j8 > "$E/$p-build.log" 2>&1; then
+    echo "$p build failed" | tee -a "$E/exits.txt"
+  else
+    ctest --test-dir "$b" -L '^unit$' --no-tests=error \
+          --output-junit "$E/$p-unit.xml" > "$E/$p-unit.log" 2>&1
+    echo "$p ctest exit=$?" | tee -a "$E/exits.txt"
+  fi
 done
 ```
 
-A non-zero exit there can come from configure, build or tests. Read the logs
-in that order before you report anything.
+`exits.txt` records which stage failed. A failed configure or build is not a
+test result: fix it before reporting anything.
 
 - Run the unit label at minimum. If the change touches Driver Manager or ODBC
   entry points, also run the `-offline` test preset. If it touches only one
@@ -67,13 +71,18 @@ in that order before you report anything.
 ## 2. Summarise exactly
 
 ```sh
+set -o pipefail
 python3 -I -B tools/development/junit_summary.py \
   "POSTGRESQL unit=$E/pg-unit.xml" "REDSHIFT unit=$E/redshift-unit.xml" | tee "$E/summary.md"
+echo "summary exit=$?"
 ```
 
 Paste its output into the PR unedited: counts, plus the name of every failed,
 skipped and disabled case. A non-zero exit means a file was missing,
-truncated or inconsistent. That is not a pass.
+truncated or inconsistent, and `summary.md` then says `cannot summarise` for
+that file. That is not a pass. A CTest case that was not run for any reason
+other than its skip code (missing executable, failed fixture, missing files)
+is listed as failed.
 
 ## 3. Does each failure also fail on `main`?
 
@@ -128,7 +137,7 @@ After pushing, wait for the checks to finish. Use one watcher, not repeated
 polling. Then cite only runs whose head is `$HEAD`:
 
 ```sh
-GH_TOKEN="$T" gh api --paginate "repos/vahid110/odbcpp/commits/$HEAD/check-runs" \
+GH_TOKEN="${T:?no bot token}" gh api --paginate "repos/vahid110/odbcpp/commits/$HEAD/check-runs" \
   --jq '.check_runs[] | [.name, .conclusion, .html_url] | @tsv'
 ```
 
