@@ -212,7 +212,9 @@ endfunction()
 # the check runs (the top directory), may still be one where it is used: an
 # imported target created without GLOBAL in a subdirectory is visible only
 # there, so its properties cannot be judged. Namespaced names ("x::y") are
-# always targets in CMake; other names count if any directory imports them.
+# always targets in CMake; other names count if any directory imports them,
+# even when the top directory means a system library by that name (fails
+# closed). Without IMPORTED_TARGETS (CMake 3.20) only namespaced names count.
 # "::@(...)" markers, which CMake adds around items linked from another
 # directory, are not targets.
 function(odbcpp_library_hidden_target token out)
@@ -258,6 +260,15 @@ function(odbcpp_library_dependencies target products out problem)
       if(NOT _current IN_LIST ODBCPP_LIBRARY_ALLOWED_IMPORTED)
         set(${problem} "Imported target ${_current} is not allowed in a product library dependency" PARENT_SCOPE)
         return()
+      endif()
+      # Names in an imported target's links resolve in the directory that
+      # created it; only the top directory is the one the check sees.
+      if(NOT CMAKE_VERSION VERSION_LESS 3.21)
+        get_directory_property(_top_imported DIRECTORY "${CMAKE_SOURCE_DIR}" IMPORTED_TARGETS)
+        if(NOT _current IN_LIST _top_imported)
+          set(${problem} "Imported target ${_current} must be created in the top directory, where the library graph check runs" PARENT_SCOPE)
+          return()
+        endif()
       endif()
       odbcpp_library_imported_properties(${_current} _link_properties _file_properties)
       foreach(_property IN LISTS _file_properties)
@@ -343,12 +354,25 @@ function(odbcpp_library_dependencies target products out problem)
       endforeach()
       continue()
     endif()
+    # Link names resolve in the directory that declared them. The check sees
+    # only the top directory, so every target it walks must be defined there
+    # and linked from there; otherwise an imported target or alias local to a
+    # subdirectory could hide behind a plain name.
+    get_target_property(_source_dir ${_current} SOURCE_DIR)
+    if(NOT _source_dir STREQUAL CMAKE_SOURCE_DIR)
+      set(${problem} "${_current} must be defined in the top directory, where the library graph check runs (it is defined in ${_source_dir})" PARENT_SCOPE)
+      return()
+    endif()
     foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
       get_target_property(_values ${_current} ${_property})
       if(NOT _values)
         continue()
       endif()
       foreach(_value IN LISTS _values)
+        if(_value MATCHES "^::@")
+          set(${problem} "${_current} has links declared in another directory; declare them in the top directory, where the library graph check runs" PARENT_SCOPE)
+          return()
+        endif()
         odbcpp_library_genex_problem("${_value}" _genex)
         if(_genex)
           set(${problem} "${_current}: ${_genex}" PARENT_SCOPE)

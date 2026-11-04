@@ -186,20 +186,44 @@ target_link_libraries(odbcpp_base INTERFACE OpenSSL::SSL)" "Imported target Open
 check_project(imported_in_subdirectory_namespaced NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
 add_library(Evil::Lib STATIC IMPORTED)
 set_target_properties(Evil::Lib PROPERTIES IMPORTED_LOCATION /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES odbcpp_tls)
-target_link_libraries(odbcpp_base INTERFACE Evil::Lib)
 ]=])
-add_subdirectory(sub)" "links Evil::Lib, a target the check cannot see")
+add_subdirectory(sub)
+target_link_libraries(odbcpp_base INTERFACE Evil::Lib)" "links Evil::Lib, a target the check cannot see")
 check_project(imported_in_subdirectory_plain NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
 add_library(evil STATIC IMPORTED)
 set_target_properties(evil PROPERTIES IMPORTED_LOCATION /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES odbcpp_tls)
-target_link_libraries(odbcpp_base INTERFACE evil)
 ]=])
-add_subdirectory(sub)" "links evil, a target the check cannot see")
-# Linking from another directory adds ::@ markers; they are not targets.
+add_subdirectory(sub)
+target_link_libraries(odbcpp_base INTERFACE evil)" "links evil, a target the check cannot see")
+# Names resolve where they are declared; the check sees only the top
+# directory, so links declared elsewhere, targets defined elsewhere and
+# allowed imported targets created elsewhere are refused.
 check_project(link_from_subdirectory NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
 target_link_libraries(odbcpp_tls INTERFACE odbcpp_base)
 ]=])
-add_subdirectory(sub)" PASS)
+add_subdirectory(sub)" "has links declared in another directory")
+check_project(alias_of_subdirectory_import NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
+add_library(EvilLib STATIC IMPORTED)
+set_target_properties(EvilLib PROPERTIES IMPORTED_LOCATION /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES odbcpp_tls)
+add_library(innocent ALIAS EvilLib)
+target_link_libraries(odbcpp_base INTERFACE innocent)
+]=])
+add_subdirectory(sub)" "has links declared in another directory")
+check_project(wrapper_in_subdirectory NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
+add_library(EvilLib STATIC IMPORTED)
+set_target_properties(EvilLib PROPERTIES IMPORTED_LOCATION /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES odbcpp_tls)
+add_library(innocent ALIAS EvilLib)
+add_library(shim INTERFACE)
+target_link_libraries(shim INTERFACE innocent)
+]=])
+add_subdirectory(sub)
+target_link_libraries(odbcpp_base INTERFACE shim)" "shim must be defined in the top directory")
+check_project(allowed_import_in_subdirectory NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
+add_library(OpenSSL::SSL INTERFACE IMPORTED GLOBAL)
+set_property(TARGET OpenSSL::SSL PROPERTY INTERFACE_LINK_LIBRARIES -lssl)
+]=])
+add_subdirectory(sub)
+target_link_libraries(odbcpp_base INTERFACE OpenSSL::SSL)" "must be created in the top directory")
 # In-tree crypto builds live under a path that contains "odbcpp" (the build
 # directory); only the file name is judged.
 check_project(imported_location_in_build_tree NONE "${_both}" "add_library(OpenSSL::Crypto STATIC IMPORTED)
