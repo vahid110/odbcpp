@@ -16,7 +16,9 @@ import re
 import sys
 
 REVIEWER = "odbcpp-reviewer[bot]"
-REVIEWER_APP_ID = 5545952
+# The odbcpp-reviewer App; list-runs.sh and agent-review-run.yml read the same file.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "reviewer-app-id"), encoding="utf-8") as _f:
+    REVIEWER_APP_ID = int(_f.read().strip())
 HIGH_RISK = ("process", "auth", "security", "protocol", "transactions")
 ROLES = ("correctness", "red-team")
 # The API lists at most 3000 files of a pull request.
@@ -106,6 +108,10 @@ def over_budget(runs, role, now, pr=None):
     from datetime import timedelta
     since = now - timedelta(hours=24)
     pr = pr if pr is not None else os.environ.get("PR_NUMBER", "")
+    if not pr.isdigit():
+        # An empty or malformed number matches no run, so the budget would
+        # never be reached: fail closed.
+        raise ValueError(f"PR_NUMBER must be a pull request number, not {pr!r}")
     name = f"agent review run ({role}) #{pr}"
     recent = [r for r in runs if r.get("app_id") == REVIEWER_APP_ID and r.get("name") == name
               and r.get("started_at") and _time(r["started_at"]) >= since]

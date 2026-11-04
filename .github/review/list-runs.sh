@@ -7,12 +7,19 @@
 # cannot be deleted, and only the reviewer App (whose key only main's
 # agent-review environment holds) can create them; the query is filtered to
 # that App. Needs GH_TOKEN with checks: read, REPO and PR_NUMBER.
+#
+# Every review run of every PR lands on that one commit. If GitHub ever limits
+# the check runs a commit can hold, recording fails and the review job stops
+# before the model starts, so reviews stop rather than run unbudgeted. The
+# fallback is a new anchor: commit a new SHA to .github/review/run-anchor
+# (which restarts every PR's 24-hour count).
 set -euo pipefail
 anchor=$(cat .github/review/run-anchor)
+app_id=$(cat .github/review/reviewer-app-id)
 : > runs.jsonl
 for role in correctness red-team; do
   gh api --paginate --method GET "repos/$REPO/commits/$anchor/check-runs" \
-    -f filter=all -f app_id=5545952 -f "check_name=agent review run ($role) #$PR_NUMBER" \
+    -f filter=all -f "app_id=$app_id" -f "check_name=agent review run ($role) #$PR_NUMBER" \
     --jq '.check_runs[] | {name, started_at, app_id: .app.id}' >> runs.jsonl
 done
 jq -s . runs.jsonl > runs.json
