@@ -69,6 +69,9 @@ wait for the owner.
 
 Authors act on GitHub only as `odbcpp-agent[bot]`
 (`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`); never use the owner's login.
+The `open-pr` and `pr-evidence` skills in `.agents/skills/` (also found by
+Claude Code through `.claude/skills`) give the exact steps for opening a PR
+and assembling its evidence.
 Reviews are posted as `odbcpp-reviewer[bot]` only by the automated review
 (`.github/workflows/agent-review.yml`), which also adds the high-risk labels
 and sets the required `agent review` check: green only when every required
