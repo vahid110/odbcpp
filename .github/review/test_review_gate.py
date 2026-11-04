@@ -48,10 +48,18 @@ class Plan(unittest.TestCase):
         # Files agents load as instructions, settings or hooks, at any depth.
         for path in ("AGENTS.md", "src/odbc/AGENTS.md", "AGENTS.override.md", "x/AGENTS.override.md",
                      "CLAUDE.md", "odbc/CLAUDE.md", "CLAUDE.local.md", ".claude/settings.json",
-                     "sdk/.claude/skills/x/SKILL.md", ".mcp.json", ".codex/config.toml"):
+                     "sdk/.claude/skills/x/SKILL.md", ".mcp.json", ".codex/config.toml",
+                     # Codex loads nested .agents/skills; .codex may be nested too.
+                     "odbc/.agents/skills/x/SKILL.md", "odbc/.codex/config.toml",
+                     # A symlinked .claude is a file path with no trailing slash.
+                     "sdk/.claude",
+                     # Case-insensitive file systems (macOS) load these as the gated names.
+                     "odbc/Agents.md", "odbc/claude.md", ".Claude/settings.json",
+                     ".Agents/skills/x/SKILL.md", "Tools/x.py", ".GitHub/workflows/x.yml"):
             with self.subTest(path=path):
                 self.assertEqual(g.path_labels([path]), {"process"})
-        for path in ("docs/AGENTS.md.txt", "odbc/my_claude.cpp", "sdk/.mcp.json.example"):
+        for path in ("docs/AGENTS.md.txt", "odbc/my_claude.cpp", "sdk/.mcp.json.example",
+                     "odbc/.claudex/x", "odbc/x.agents/y"):
             with self.subTest(path=path):
                 self.assertEqual(g.path_labels([path]), set())
 

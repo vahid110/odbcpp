@@ -106,6 +106,13 @@ class JunitSummaryTest(unittest.TestCase):
         # '@name' and '<!--' literally; no backtick can close a span early.
         self.assertEqual(lines[1], "- skipped: `Suite.'odd'` (`ping @someone <!-- hide [31mred`)")
 
+    def test_render_keeps_long_names_whole(self):
+        # Names identify cases exactly; only messages are shortened.
+        name = 'Suite/Param.Case/' + 'x' * 300
+        text = junit_summary.render('gtest', {
+            'passed': [], 'skipped': [], 'disabled': [], 'failed': [(name, None)]})
+        self.assertEqual(text.splitlines()[1], f'- failed: `{name}`')
+
     def test_root_totals_must_match(self):
         with self.assertRaisesRegex(junit_summary.SummaryError, 'declares 5 tests'):
             junit_summary.summarise(self.write(GTEST.replace('<testsuites tests="4"', '<testsuites tests="5"')))
