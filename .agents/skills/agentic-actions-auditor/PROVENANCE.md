@@ -39,60 +39,105 @@ In Claude Code, `allowed-tools` lets an active skill use those tools without a
 permission prompt, and a bare `Bash` allows any command. This skill reads
 workflow files that an attacker may control, and a prompt injection in them
 could then run a shell command unasked. Even `Bash(gh api:*)` would allow
-`gh api -X POST`. Without `Bash` in the list, `gh api` still works, but
-through the session's normal permission prompt. Nothing else is changed.
+`gh api -X POST`. Nothing else is changed.
+
+This only removes the grant the skill itself makes in Claude Code. It does not
+contain the session:
+- Codex ignores `allowed-tools`. Its sandbox and approval policy decide what
+  runs.
+- In Claude Code, user or project allow rules and auto or bypass modes still
+  apply.
+
+To audit workflows that someone else controls (a fork's PR, a remote
+repository), use a read-only or approval-required session.
 
 ## Known errata (upstream, not changed here)
 
-`references/action-profiles.md` lines 170-173 label
-`RESULT='${{ steps.inference.outputs.result }}'` inside `run:` as SAFE. It is
-not safe. The expression is pasted into the script before bash parses it, so
-output containing `'` breaks out of the quotes. That is vectors B and G of
-this same skill. In this repository, AI output reaches a `run:` script only
-through `env:` and a quoted `"$VAR"`, as `.github/workflows/agent-review-run.yml`
-does. Never copy the upstream example.
+Do not copy these remediations from `references/action-profiles.md`:
+- **Lines 170-173** label `RESULT='${{ steps.inference.outputs.result }}'` in
+  `run:` as SAFE. It is not safe. The expression is pasted into the script
+  before bash parses it, so output containing `'` breaks out of the quotes.
+  That is vectors B and G of this same skill. AI output may reach a `run:`
+  script only through `env:` and a quoted `"$VAR"`, as
+  `.github/workflows/agent-review-run.yml` does.
+- **Lines 29-33** give `--allowedTools "Bash(npm test:*) Bash(git diff:*)"` as
+  a way to "restrict shell access". It is not a boundary:
+  - `npm test` runs `package.json` scripts, which are attacker code when a PR
+    head is checked out;
+  - `git diff --output=<path>` writes files, and `--ext-diff` runs programs.
+  - Prefix rules (`Bash(x:*)`) never restrict arguments. Allow no shell, or
+    only exact commands that cannot run PR-controlled code.
+- **Line 182** repeats `Bash(specific:*)`. It also lists Codex
+  `sandbox: workspace-write` as restricting shell access, but that setting is
+  a filesystem limit, not a command limit.
 
 ## Verifying this copy
 
-From this directory:
+Run it with bash from this directory. It prints `PASS` and exits 0 only if every check
+passes:
 
 ```sh
 C=711af095215ad4ecde5b90cd1d0124b3f1c4ca9e
 P=plugins/agentic-actions-auditor/skills/agentic-actions-auditor
-U=$(mktemp)
-gh api "repos/trailofbits/skills/git/trees/$C?recursive=1" \
-  --jq '.tree[] | select(.type=="blob") | "\(.sha)  \(.path)"' > "$U"
-# Every unmodified file's blob id is in the upstream tree at its path:
+R=repos/trailofbits/skills
+U=$(mktemp); trap 'rm -f "$U"' EXIT; bad=0
+# 1. The commit is on upstream main. GitHub also serves commits that exist
+#    only in a fork through the parent's URLs, so the SHA alone proves nothing.
+#    compare/$C...main is "identical" or "ahead" only if $C is an ancestor of main.
+case "$(gh api "$R/compare/$C...main" --jq .status)" in identical|ahead) ;; *) echo "FAIL not on main"; bad=1;; esac
+[ "$(gh api "$R/commits/$C" --jq .commit.verification.verified)" = true ] || { echo "FAIL unverified"; bad=1; }
+# 2. Exactly the expected files, so an added script or config is caught.
+printf '%s\n' LICENSE PROVENANCE.md SKILL.md references/action-profiles.md \
+  references/cross-file-resolution.md references/foundations.md \
+  references/vector-{a-env-var-intermediary,b-direct-expression-injection,c-cli-data-fetch,d-pr-target-checkout,e-error-log-injection,f-subshell-expansion,g-eval-of-ai-output,h-dangerous-sandbox-configs,i-wildcard-allowlists}.md \
+  | sort | diff - <(git ls-files . | sort) >/dev/null || { echo "FAIL file set"; bad=1; }
+# 3. Every unmodified file's blob id is in the upstream tree at its path.
+gh api "$R/git/trees/$C?recursive=1" --jq '.tree[] | select(.type=="blob") | "\(.sha)  \(.path)"' > "$U"
 for f in LICENSE references/*.md; do
   u=$P/$f; [ "$f" = LICENSE ] && u=LICENSE
-  grep -qxF "$(git hash-object "$f")  $u" "$U" && echo "ok $f" || echo "MISMATCH $f"
+  grep -qxF "$(git hash-object "$f")  $u" "$U" || { echo "FAIL blob $f"; bad=1; }
 done
-# SKILL.md: upstream's blob is the listed one, and only line 4 differs:
-grep -qxF "efdeacdf470d5bd1d714ca231d6276f086214971  $P/SKILL.md" "$U" && echo "ok upstream SKILL.md"
-gh api repos/trailofbits/skills/git/blobs/efdeacdf470d5bd1d714ca231d6276f086214971 \
-  --jq .content | base64 -d | diff - SKILL.md
-# The local hashes:
-sed -n '/^## SHA-256/,$p' PROVENANCE.md | grep -E '^[0-9a-f]{64}  ' | shasum -a 256 -c
-# Hidden content. Expected: the first scan lists only ./LICENSE (the licence's
-# typographic quotes) and ./PROVENANCE.md (the "ó" in López); the second
-# prints nothing.
-LC_ALL=C grep -rl '[^[:print:][:space:]]' .
-grep -rl --exclude=PROVENANCE.md '<!--' .
+# 4. SKILL.md: upstream's blob is the listed one, and only line 4 differs, as
+#    the local change. allowed-tools must stay within Read Grep Glob.
+grep -qxF "efdeacdf470d5bd1d714ca231d6276f086214971  $P/SKILL.md" "$U" || { echo "FAIL upstream SKILL.md"; bad=1; }
+d=$(gh api "$R/git/blobs/efdeacdf470d5bd1d714ca231d6276f086214971" --jq .content | base64 -d | diff - SKILL.md | cat -v)
+[ "$d" = "$(printf '4c4\n< allowed-tools: Read Grep Glob Bash\n---\n> allowed-tools: Read Grep Glob')" ] || { echo "FAIL SKILL.md diff"; bad=1; }
+# 5. The local SHA-256 list.
+sed -n '/^## SHA-256/,$p' PROVENANCE.md | grep -E '^[0-9a-f]{64}  ' | shasum -a 256 -c --quiet || bad=1
+# 6. Hidden content, per character: only the listed non-ASCII characters, and
+#    no control characters other than tab and newline, no CR and no HTML
+#    comments. ('<!-''-' keeps this file from matching itself.)
+python3 -I -c '
+import pathlib, sys
+allowed = {"LICENSE": {"\u201c", "\u201d"}, "PROVENANCE.md": {"\u00f3"}}
+bad = 0
+for f in sorted(pathlib.Path(".").rglob("*")):
+    if f.is_file():
+        for n, line in enumerate(f.read_text(encoding="utf-8").split("\n"), 1):
+            for ch in line:
+                if (ord(ch) > 126 and ch not in allowed.get(str(f), ())) or (ord(ch) < 32 and ch != "\t"):
+                    print(f"FAIL {f}:{n} U+{ord(ch):04X}"); bad = 1
+sys.exit(bad)' || bad=1
+! grep -rn '<!-''-' . || bad=1
+[ $bad = 0 ] && echo PASS || { echo FAIL; false; }
 ```
 
 ## Updating
 
-Never edit these files in place, apart from re-applying the local change. To
-update:
-1. Pick a new upstream commit by its full 40-character SHA. Never use a branch,
-   a tag or a short SHA.
-2. Read the upstream diff in full. Call out in the PR any change to frontmatter
-   (`allowed-tools`, `description`) and any new executable, script, hook, MCP
-   configuration or `agents/` file.
-3. Copy the files again, and re-apply the local change if it is still needed.
-4. Update the commit, the blob ids, the hashes and this file. Run the
-   verification above and put its output in the PR.
-5. Open a PR. It needs the owner's approval, because `.agents/` is in CODEOWNERS.
+Never edit these files in place, apart from the local change. To update:
+1. Pick a new upstream commit by its full 40-character SHA. Never use a
+   branch, a tag or a short SHA. Check 1 must show that it is on upstream
+   `main` and verified.
+2. Read the upstream diff in full. In the PR, call out any change to
+   frontmatter (`allowed-tools`, `description`) and any new executable,
+   script, hook, MCP configuration or `agents/` file.
+3. Copy the files again and re-apply the local change. `allowed-tools` stays
+   within `Read Grep Glob` unless the PR explicitly asks the owner to accept a
+   wider grant. Re-check the errata against the new text.
+4. Update the commit, the file list, the blob ids, the hashes and the allowed
+   characters in the verification. Run it and put its output in the PR.
+5. Open a PR. It needs the owner's approval, because `.agents/` is in
+   CODEOWNERS.
 
 ## Upstream git blob ids at the commit
 
