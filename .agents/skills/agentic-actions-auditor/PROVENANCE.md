@@ -73,8 +73,12 @@ Do not copy these remediations from `references/action-profiles.md`:
 
 ## Verifying this copy
 
-Run it with bash from this directory. It prints `PASS` and exits 0 only if every check
-passes:
+Run it with bash from this directory, in a checkout of a reviewed commit: a
+copy of the script taken from an unreviewed change proves nothing. It prints
+`PASS` and exits 0 only if every check passes. The exit code is what counts:
+the files are untrusted, so the output of checks that show their text goes
+through `cat -v`, which makes terminal control sequences visible instead of
+running them.
 
 ```sh
 C=711af095215ad4ecde5b90cd1d0124b3f1c4ca9e
@@ -86,16 +90,22 @@ U=$(mktemp); trap 'rm -f "$U"' EXIT; bad=0
 #    compare/$C...main is "identical" or "ahead" only if $C is an ancestor of main.
 case "$(gh api "$R/compare/$C...main" --jq .status)" in identical|ahead) ;; *) echo "FAIL not on main"; bad=1;; esac
 [ "$(gh api "$R/commits/$C" --jq .commit.verification.verified)" = true ] || { echo "FAIL unverified"; bad=1; }
-# 2. Exactly the expected files, so an added script or config is caught.
+# 2. Exactly the expected files, each a regular non-executable file (mode
+#    100644, so no symlink), and nothing untracked or ignored here, so an
+#    added script or config is caught.
 printf '%s\n' LICENSE PROVENANCE.md SKILL.md references/action-profiles.md \
   references/cross-file-resolution.md references/foundations.md \
   references/vector-{a-env-var-intermediary,b-direct-expression-injection,c-cli-data-fetch,d-pr-target-checkout,e-error-log-injection,f-subshell-expansion,g-eval-of-ai-output,h-dangerous-sandbox-configs,i-wildcard-allowlists}.md \
   | sort | diff - <(git ls-files . | sort) >/dev/null || { echo "FAIL file set"; bad=1; }
+m=$(git ls-files -s . | awk '$1 != "100644"' | cat -v)
+[ -z "$m" ] || { printf 'FAIL mode\n%s\n' "$m"; bad=1; }
+o=$(git ls-files -o . | cat -v)
+[ -z "$o" ] || { printf 'FAIL untracked\n%s\n' "$o"; bad=1; }
 # 3. Every unmodified file's blob id is in the upstream tree at its path.
 gh api "$R/git/trees/$C?recursive=1" --jq '.tree[] | select(.type=="blob") | "\(.sha)  \(.path)"' > "$U"
 for f in LICENSE references/*.md; do
   u=$P/$f; [ "$f" = LICENSE ] && u=LICENSE
-  grep -qxF "$(git hash-object "$f")  $u" "$U" || { echo "FAIL blob $f"; bad=1; }
+  grep -qxF "$(git hash-object "$f")  $u" "$U" || { echo "FAIL blob $f" | cat -v; bad=1; }
 done
 # 4. SKILL.md: upstream's blob is the listed one, and only line 4 differs, as
 #    the local change. allowed-tools must stay within Read Grep Glob.
@@ -103,22 +113,28 @@ grep -qxF "efdeacdf470d5bd1d714ca231d6276f086214971  $P/SKILL.md" "$U" || { echo
 d=$(gh api "$R/git/blobs/efdeacdf470d5bd1d714ca231d6276f086214971" --jq .content | base64 -d | diff - SKILL.md | cat -v)
 [ "$d" = "$(printf '4c4\n< allowed-tools: Read Grep Glob Bash\n---\n> allowed-tools: Read Grep Glob')" ] || { echo "FAIL SKILL.md diff"; bad=1; }
 # 5. The local SHA-256 list.
-sed -n '/^## SHA-256/,$p' PROVENANCE.md | grep -E '^[0-9a-f]{64}  ' | shasum -a 256 -c --quiet || bad=1
-# 6. Hidden content, per character: only the listed non-ASCII characters, and
-#    no control characters other than tab and newline, no CR and no HTML
-#    comments. ('<!-''-' keeps this file from matching itself.)
+h=$(sed -n '/^## SHA-256/,$p' PROVENANCE.md | grep -E '^[0-9a-f]{64}  ' | shasum -a 256 -c --quiet 2>&1) \
+  || { printf 'FAIL sha256\n%s\n' "$h" | cat -v; bad=1; }
+# 6. Hidden content, per character. Each file may contain only the non-ASCII
+#    characters listed for it (the allowlist is per file, not per line), and
+#    no control characters other than tab and newline: no CR (the bytes are
+#    decoded directly, so a CR is not turned into a newline first) and no
+#    HTML comments. ('<!-''-' keeps this file from matching itself.)
 python3 -I -c '
 import pathlib, sys
 allowed = {"LICENSE": {"\u201c", "\u201d"}, "PROVENANCE.md": {"\u00f3"}}
 bad = 0
 for f in sorted(pathlib.Path(".").rglob("*")):
     if f.is_file():
-        for n, line in enumerate(f.read_text(encoding="utf-8").split("\n"), 1):
+        text = f.read_bytes().decode("utf-8")
+        for n, line in enumerate(text.split("\n"), 1):
             for ch in line:
                 if (ord(ch) > 126 and ch not in allowed.get(str(f), ())) or (ord(ch) < 32 and ch != "\t"):
-                    print(f"FAIL {f}:{n} U+{ord(ch):04X}"); bad = 1
+                    print(f"FAIL {ascii(str(f))}:{n} U+{ord(ch):04X}"); bad = 1
 sys.exit(bad)' || bad=1
-! grep -rn '<!-''-' . || bad=1
+# grep exits 1 when nothing matches, 0 on a match and 2 on an error; only 1 passes.
+c=$(grep -rn '<!-''-' . 2>&1); rc=$?
+[ $rc = 1 ] || { printf 'FAIL html comment or grep error (%s)\n%s\n' "$rc" "$c" | cat -v; bad=1; }
 [ $bad = 0 ] && echo PASS || { echo FAIL; false; }
 ```
 
