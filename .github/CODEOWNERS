@@ -6,6 +6,8 @@
 /AGENTS.md                        @vahid110
 /docs/adr/                        @vahid110
 /.agents/                         @vahid110
+/.claude/                         @vahid110
+/CLAUDE.md                        @vahid110
 /tools/                           @vahid110
 /tests/security/                  @vahid110
 /cmake/LiveSuite.cmake            @vahid110
