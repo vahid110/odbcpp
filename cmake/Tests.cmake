@@ -193,6 +193,12 @@ set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT
 add_test(NAME test_aws_sdk_provenance COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/dependencies/test_aws_sdk_provenance.py")
 set_tests_properties(test_aws_sdk_provenance PROPERTIES LABELS "unit;security" TIMEOUT 60)
+add_test(NAME test_junit_summary COMMAND "${Python3_EXECUTABLE}" -I -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/test_junit_summary.py")
+set_tests_properties(test_junit_summary PROPERTIES LABELS "unit" TIMEOUT 60)
+add_test(NAME test_review_gate COMMAND "${Python3_EXECUTABLE}" -I -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/.github/review/test_review_gate.py")
+set_tests_properties(test_review_gate PROPERTIES LABELS "unit" TIMEOUT 60)
 # This lifecycle runs on the POSIX coordinator (including WSL), not native Windows.
 if(UNIX)
   add_test(NAME test_redshift_ca_snapshot COMMAND "${Python3_EXECUTABLE}" -B
@@ -306,6 +312,12 @@ add_test(
           -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckArchitecture.cmake)
 set_tests_properties(test_architecture_boundaries PROPERTIES LABELS "unit;architecture")
+add_test(NAME test_library_graph
+  COMMAND ${CMAKE_COMMAND} -DBINARY_DIR=${CMAKE_BINARY_DIR}
+          -DSCRATCH_DIR=${CMAKE_BINARY_DIR}/library-graph-scratch
+          "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestLibraryGraph.cmake)
+set_tests_properties(test_library_graph PROPERTIES LABELS "unit;architecture" TIMEOUT 180)
 
 add_test(
   NAME test_unimplemented_backend_rejected
