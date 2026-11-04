@@ -44,6 +44,17 @@ class Plan(unittest.TestCase):
         self.assertEqual((c, r, add), (True, False, ["auth"]))
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], [], HEAD)[:2], (False, True))
 
+    def test_agent_instruction_paths_require_process(self):
+        # Files agents load as instructions, settings or hooks, at any depth.
+        for path in ("AGENTS.md", "src/odbc/AGENTS.md", "AGENTS.override.md", "x/AGENTS.override.md",
+                     "CLAUDE.md", "odbc/CLAUDE.md", "CLAUDE.local.md", ".claude/settings.json",
+                     "sdk/.claude/skills/x/SKILL.md", ".mcp.json", ".codex/config.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(g.path_labels([path]), {"process"})
+        for path in ("docs/AGENTS.md.txt", "odbc/my_claude.cpp", "sdk/.mcp.json.example"):
+            with self.subTest(path=path):
+                self.assertEqual(g.path_labels([path]), set())
+
     def test_unrelated_label_starts_nothing(self):
         self.assertEqual(plan_("labeled", "unit", [], [], [], [], HEAD)[:2], (False, False))
 

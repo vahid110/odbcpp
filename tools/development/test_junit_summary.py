@@ -83,6 +83,55 @@ class JunitSummaryTest(unittest.TestCase):
         self.assertTrue(lines[1].endswith('...)'))
         self.assertLessEqual(len(lines[1]), len('- skipped: `Suite.Skips` ()') + junit_summary.MAX_DETAIL)
 
+    def test_ctest_not_run_without_skip_code_is_a_failure(self):
+        # CTest marks a missing executable, a failed fixture or missing files
+        # "notrun", outside failures=, but fails the run for them.
+        for message in ('Unable to find executable', 'Fixture dependency failed', 'Required Files Missing'):
+            with self.subTest(message=message):
+                text = CTEST.replace('message="SKIP_RETURN_CODE=77"', f'message="{message}"')
+                result = junit_summary.summarise(self.write(text))
+                self.assertEqual(result['failed'], [('test_c', None), ('test_d', message)])
+                self.assertEqual(result['skipped'], [])
+        text = CTEST.replace('message="SKIP_RETURN_CODE=77"', 'message="SKIP_REGULAR_EXPRESSION_MATCHED"')
+        self.assertEqual(junit_summary.summarise(self.write(text))['skipped'],
+                         [('test_d', 'SKIP_REGULAR_EXPRESSION_MATCHED')])
+
+    def test_render_neutralises_markdown_and_control_characters(self):
+        text = junit_summary.render('pg', {
+            'passed': [], 'failed': [], 'disabled': [],
+            'skipped': [('Suite.`odd`', 'ping @someone <!-- hide \x1b[31mred\x07')]})
+        line = text.splitlines()[1]
+        self.assertNotIn('@someone', line)
+        self.assertNotIn('<!--', line)
+        self.assertNotIn('\x1b', line)
+        self.assertNotIn('\x07', line)
+        self.assertEqual(line.count('`'), 4)  # two code spans, no stray backticks
+        self.assertTrue(line.startswith('- skipped: `Suite.'))
+
+    def test_root_totals_must_match(self):
+        with self.assertRaisesRegex(junit_summary.SummaryError, 'declares 5 tests'):
+            junit_summary.summarise(self.write(GTEST.replace('<testsuites tests="4"', '<testsuites tests="5"')))
+
+    def test_errors_without_failures_attribute_are_checked(self):
+        text = CTEST.replace('failures="1"', 'errors="2"')
+        with self.assertRaisesRegex(junit_summary.SummaryError, 'declares 2 failures'):
+            junit_summary.summarise(self.write(text))
+
+    def test_unknown_gtest_result_is_refused(self):
+        with self.assertRaisesRegex(junit_summary.SummaryError, 'unknown result'):
+            junit_summary.summarise(self.write(GTEST.replace('result="completed" classname="Suite"/>',
+                                                             'result="odd" classname="Suite"/>', 1)))
+
+    def test_non_ascii_digits_are_refused(self):
+        with self.assertRaisesRegex(junit_summary.SummaryError, 'not a count'):
+            junit_summary.summarise(self.write(CTEST.replace('tests="5"', 'tests="²"')))
+
+    def test_main_puts_refusal_in_the_summary_too(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(junit_summary.main(['redshift=/no/such/file.xml']), 1)
+        self.assertIn('**redshift**: cannot summarise', out.getvalue())
+
     def test_truncated_file_is_refused(self):
         # A suite that declares more tests than it holds is not complete.
         with self.assertRaisesRegex(junit_summary.SummaryError, 'declares 6 tests'):
