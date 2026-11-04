@@ -164,6 +164,48 @@ function(odbcpp_library_genex_problem value out)
   set(${out} "" PARENT_SCOPE)
 endfunction()
 
+# Sets <links> and <files> to the properties of the imported target <target>
+# that can add link items or files to a link line, including the ones CMake
+# falls back to when INTERFACE_LINK_LIBRARIES is unset, each also with the
+# suffix of every configuration this build could select (#202). A suffix none
+# of these lists name is not judged.
+function(odbcpp_library_imported_properties target links files)
+  set(_configs NOCONFIG DEBUG RELEASE RELWITHDEBINFO MINSIZEREL ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
+  get_target_property(_imported_configs ${target} IMPORTED_CONFIGURATIONS)
+  if(_imported_configs)
+    list(APPEND _configs ${_imported_configs})
+  endif()
+  set(_mapped "")
+  foreach(_config IN LISTS _configs)
+    string(TOUPPER "${_config}" _upper)
+    get_target_property(_map ${target} MAP_IMPORTED_CONFIG_${_upper})
+    if(_map)
+      list(APPEND _mapped ${_map})
+    endif()
+    if(DEFINED CMAKE_MAP_IMPORTED_CONFIG_${_upper})
+      list(APPEND _mapped ${CMAKE_MAP_IMPORTED_CONFIG_${_upper}})
+    endif()
+  endforeach()
+  set(_suffixes "")
+  foreach(_config IN LISTS _configs _mapped)
+    string(TOUPPER "${_config}" _upper)
+    if(_upper MATCHES "^[A-Z0-9_]+$")
+      list(APPEND _suffixes "_${_upper}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _suffixes)
+  set(_links ${ODBCPP_LIBRARY_LINK_PROPERTIES})
+  set(_files "")
+  foreach(_suffix IN ITEMS "" ${_suffixes})
+    list(APPEND _links IMPORTED_LINK_INTERFACE_LIBRARIES${_suffix}
+      IMPORTED_LINK_DEPENDENT_LIBRARIES${_suffix} LINK_INTERFACE_LIBRARIES${_suffix})
+    list(APPEND _files IMPORTED_LOCATION${_suffix} IMPORTED_IMPLIB${_suffix}
+      IMPORTED_OBJECTS${_suffix} IMPORTED_LIBNAME${_suffix})
+  endforeach()
+  set(${links} "${_links}" PARENT_SCOPE)
+  set(${files} "${_files}" PARENT_SCOPE)
+endfunction()
+
 # Sets <out> to every target <target> depends on through any of those
 # properties, aliases resolved and wrapper targets followed transitively, stopping
 # at product libraries (whose own links the check judges separately). Names in
@@ -182,7 +224,25 @@ function(odbcpp_library_dependencies target products out problem)
         set(${problem} "Imported target ${_current} is not allowed in a product library dependency" PARENT_SCOPE)
         return()
       endif()
-      foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
+      odbcpp_library_imported_properties(${_current} _link_properties _file_properties)
+      foreach(_property IN LISTS _file_properties)
+        get_target_property(_values ${_current} ${_property})
+        if(NOT _values)
+          continue()
+        endif()
+        foreach(_value IN LISTS _values)
+          # The file itself may not be a product library. Only its name is
+          # judged: in-tree crypto builds live under the build directory, whose
+          # path may contain "odbcpp".
+          get_filename_component(_name "${_value}" NAME)
+          string(TOLOWER "${_name}" _lower)
+          if(_value MATCHES "\\$<" OR _lower MATCHES "odbcpp")
+            set(${problem} "Imported target ${_current} may not use this file (${_property}): ${_value}" PARENT_SCOPE)
+            return()
+          endif()
+        endforeach()
+      endforeach()
+      foreach(_property IN LISTS _link_properties)
         get_target_property(_values ${_current} ${_property})
         if(NOT _values)
           continue()
