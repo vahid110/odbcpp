@@ -37,20 +37,25 @@ Driver Manager, SQLWCHAR and crypto profile, using the presets in
 
 | Host | Presets |
 | --- | --- |
-| macOS | `macos-iodbc-pg`, `macos-iodbc-redshift`, with `ODBCPP_IODBC_ROOT=/opt/homebrew/opt/libiodbc` and `-DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC` |
+| macOS | `macos-iodbc-pg`, `macos-iodbc-redshift`, with `ODBCPP_IODBC_ROOT=/opt/homebrew/opt/libiodbc`, `-DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC` and `-DODBCPP_CRYPTO_ROOT=$(brew --prefix openssl@3)` |
 | Linux / WSL | `unixodbc-pg`, `unixodbc-redshift` (or `linux-iodbc-*` with `ODBCPP_IODBC_ROOT`) |
 | Windows | `windows-pg`, `windows-redshift`, with `-DODBCPP_CRYPTO_ROOT=...` |
 
 ```sh
+export ODBCPP_IODBC_ROOT=/opt/homebrew/opt/libiodbc
 for p in pg redshift; do
   b=build-macos-iodbc-$p
-  cmake --preset macos-iodbc-$p -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC > "$E/$p-configure.log" 2>&1 &&
+  cmake --preset macos-iodbc-$p -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC \
+        -DODBCPP_CRYPTO_ROOT="$(brew --prefix openssl@3)" > "$E/$p-configure.log" 2>&1 &&
   cmake --build "$b" -j8 > "$E/$p-build.log" 2>&1 &&
   ctest --test-dir "$b" -L '^unit$' --no-tests=error \
         --output-junit "$E/$p-unit.xml" > "$E/$p-unit.log" 2>&1
   echo "$p exit=$?" | tee -a "$E/exits.txt"
 done
 ```
+
+A non-zero exit there can come from configure, build or tests. Read the logs
+in that order before you report anything.
 
 - Run the unit label at minimum. If the change touches Driver Manager or ODBC
   entry points, also run the `-offline` test preset. If it touches only one
