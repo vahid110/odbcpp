@@ -172,10 +172,34 @@ set_target_properties(OpenSSL::SSL PROPERTIES MAP_IMPORTED_CONFIG_DEBUG CUSTOM I
 target_link_libraries(odbcpp_base INTERFACE OpenSSL::SSL)" "Imported target OpenSSL::SSL may not")
 check_project(imported_location_is_product NONE "${_both}" "add_library(OpenSSL::Crypto STATIC IMPORTED)
 set_target_properties(OpenSSL::Crypto PROPERTIES IMPORTED_LOCATION \${CMAKE_BINARY_DIR}/libODBCPP_tls.a)
-target_link_libraries(odbcpp_base INTERFACE OpenSSL::Crypto)" "Imported target OpenSSL::Crypto may not")
+target_link_libraries(odbcpp_base INTERFACE OpenSSL::Crypto)" "Imported target OpenSSL::Crypto may not use this file")
 check_project(imported_forged_placeholder NONE "${_both}" "add_library(OpenSSL::SSL INTERFACE IMPORTED)
 set_property(TARGET OpenSSL::SSL PROPERTY INTERFACE_LINK_LIBRARIES \"\$<1:@C@>\")
 target_link_libraries(odbcpp_base INTERFACE OpenSSL::SSL)" "Imported target OpenSSL::SSL may not")
+check_project(imported_link_interface_dashed_config NONE "${_both}" "add_library(OpenSSL::SSL STATIC IMPORTED)
+set_target_properties(OpenSSL::SSL PROPERTIES MAP_IMPORTED_CONFIG_RELEASE my-cfg IMPORTED_LOCATION_MY-CFG /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES_MY-CFG odbcpp_tls)
+target_link_libraries(odbcpp_base INTERFACE OpenSSL::SSL)" "Imported target OpenSSL::SSL may not")
+check_project(imported_link_dependent_dotted_config NONE "${_both}" "add_library(OpenSSL::SSL SHARED IMPORTED)
+set_target_properties(OpenSSL::SSL PROPERTIES IMPORTED_CONFIGURATIONS my.cfg IMPORTED_LOCATION_MY.CFG /usr/lib/libm.so IMPORTED_LINK_DEPENDENT_LIBRARIES_MY.CFG odbcpp_tls)
+target_link_libraries(odbcpp_base INTERFACE OpenSSL::SSL)" "Imported target OpenSSL::SSL may not")
+# Imported targets created in a subdirectory are not visible to the check.
+check_project(imported_in_subdirectory_namespaced NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
+add_library(Evil::Lib STATIC IMPORTED)
+set_target_properties(Evil::Lib PROPERTIES IMPORTED_LOCATION /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES odbcpp_tls)
+target_link_libraries(odbcpp_base INTERFACE Evil::Lib)
+]=])
+add_subdirectory(sub)" "links Evil::Lib, a target the check cannot see")
+check_project(imported_in_subdirectory_plain NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
+add_library(evil STATIC IMPORTED)
+set_target_properties(evil PROPERTIES IMPORTED_LOCATION /usr/lib/libm.a IMPORTED_LINK_INTERFACE_LIBRARIES odbcpp_tls)
+target_link_libraries(odbcpp_base INTERFACE evil)
+]=])
+add_subdirectory(sub)" "links evil, a target the check cannot see")
+# Linking from another directory adds ::@ markers; they are not targets.
+check_project(link_from_subdirectory NONE "${_both}" "file(WRITE \${CMAKE_SOURCE_DIR}/sub/CMakeLists.txt [=[
+target_link_libraries(odbcpp_tls INTERFACE odbcpp_base)
+]=])
+add_subdirectory(sub)" PASS)
 # In-tree crypto builds live under a path that contains "odbcpp" (the build
 # directory); only the file name is judged.
 check_project(imported_location_in_build_tree NONE "${_both}" "add_library(OpenSSL::Crypto STATIC IMPORTED)
