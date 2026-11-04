@@ -55,7 +55,9 @@ class Plan(unittest.TestCase):
                      "sdk/.claude",
                      # Case-insensitive file systems (macOS) load these as the gated names.
                      "odbc/Agents.md", "odbc/claude.md", ".Claude/settings.json",
-                     ".Agents/skills/x/SKILL.md", "Tools/x.py", ".GitHub/workflows/x.yml"):
+                     ".Agents/skills/x/SKILL.md", "Tools/x.py", ".GitHub/workflows/x.yml",
+                     # U+017F (long s) case-folds to "s"; APFS loads this as AGENTS.md.
+                     "odbc/AGENT\u017f.md", "odbc/.\u017fkills/AGENT\u017f.md"):
             with self.subTest(path=path):
                 self.assertEqual(g.path_labels([path]), {"process"})
         for path in ("docs/AGENTS.md.txt", "odbc/my_claude.cpp", "sdk/.mcp.json.example",
@@ -99,6 +101,40 @@ def _status(reviews, labels, events, head, files=()):
 
 
 g.status_ = _status
+
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+class Owners(unittest.TestCase):
+    def test_agent_config_names_are_owned_as_files_too(self):
+        # A pattern ending in "/" matches only directories; git stores a
+        # symlink as a file, so sdk/.claude -> elsewhere needs the bare name.
+        with open(os.path.join(ROOT, ".github", "CODEOWNERS"), encoding="utf-8") as f:
+            rules = {line.split()[0] for line in f if line.strip() and not line.startswith("#")}
+        for name in (".agents", ".codex", ".claude", "AGENTS.md", "AGENTS.override.md",
+                     "CLAUDE.md", "CLAUDE.local.md"):
+            with self.subTest(name=name):
+                self.assertIn(name, rules)
+
+    def test_symlinks_into_gated_paths_point_at_gated_paths(self):
+        # Owning the link is not enough: later edits land in its target. So a
+        # symlink with a gated path must resolve, inside the repository, to a
+        # gated path too.
+        import posixpath
+        import subprocess
+        out = subprocess.run(["git", "-C", ROOT, "ls-files", "-s", "-z"], check=True,
+                             capture_output=True).stdout.decode("utf-8")
+        links = [e.split("\t", 1)[1] for e in out.split("\0") if e.startswith("120000 ")]
+        for link in links:
+            if not g.path_labels([link]) & {"process"}:
+                continue
+            blob = subprocess.run(["git", "-C", ROOT, "cat-file", "blob", f":{link}"], check=True,
+                                  capture_output=True).stdout.decode("utf-8")
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(link), blob))
+            with self.subTest(link=link, target=target):
+                self.assertFalse(target == ".." or target.startswith("../") or target.startswith("/"))
+                self.assertEqual(g.path_labels([target]) & {"process"}, {"process"})
 
 
 class Status(unittest.TestCase):
