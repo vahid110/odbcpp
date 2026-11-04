@@ -83,6 +83,7 @@ jobs:
             echo "apt-get attempt $attempt failed, retrying..."
             sleep 5
           done
+          command -v bwrap >/dev/null && command -v socat >/dev/null || { echo "::error::could not install bubblewrap and socat after 3 attempts"; exit 1; }
           # Ubuntu 24.04 restricts unprivileged user namespaces through
           # AppArmor; bubblewrap needs them. The runner is discarded after the job.
           if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
