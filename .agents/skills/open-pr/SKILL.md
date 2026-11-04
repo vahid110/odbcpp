@@ -100,6 +100,18 @@ GH_TOKEN="$T" gh pr create -R vahid110/odbcpp --base main \
   --head codex/<topic> --title "<title>" --body-file <scratchpad>/pr-body.md
 ```
 
+`gh pr create` uses GitHub's GraphQL API, which sometimes fails with a 502 or
+"Something went wrong". Before retrying, check that no PR was created:
+`gh api "repos/vahid110/odbcpp/pulls?head=vahid110:codex/<topic>&state=all" --jq length`
+must print `0`. If GraphQL keeps failing, create the PR through REST:
+
+```sh
+jq -n --rawfile b <scratchpad>/pr-body.md \
+  '{title: "<title>", head: "codex/<topic>", base: "main", body: $b}' > <scratchpad>/pr.json
+GH_TOKEN="$T" gh api -X POST repos/vahid110/odbcpp/pulls --input <scratchpad>/pr.json \
+  --jq '.number, .user.login'   # must print odbcpp-agent[bot]
+```
+
 Do not add the high-risk labels yourself (`security`, `auth`, `protocol`,
 `transactions`, `process`). The reviewer assigns them.
 
@@ -109,6 +121,11 @@ Do not add the high-risk labels yourself (`security`, `auth`, `protocol`,
 GH_TOKEN="$T" gh pr view <n> -R vahid110/odbcpp --json author,commits \
   --jq '.author.login, (.commits[] | .authors[].email)'
 ```
+
+The REST form, if GraphQL is failing:
+`gh api repos/vahid110/odbcpp/pulls/<n> --jq .user.login` must print
+`odbcpp-agent[bot]`, and `gh api repos/vahid110/odbcpp/pulls/<n>/commits
+--jq '.[].commit.author.email'` must print the owner's email.
 
 - The PR author must be `app/odbcpp-agent`. If it is `vahid110`, stop and tell
   the human. The owner cannot approve their own PR. Ask the human to close it,
