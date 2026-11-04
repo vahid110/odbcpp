@@ -182,6 +182,28 @@ class Budget(unittest.TestCase):
         self.assertIn("Reviews resume 24 hours after", summary)
 
 
+class BudgetInputs(unittest.TestCase):
+    def test_empty_pr_number_fails_instead_of_counting_nothing(self):
+        # With no PR number every run's name misses, so the budget would never
+        # be reached; fail closed instead.
+        for pr in ("", " ", "7 "):
+            with self.subTest(pr=pr):
+                with self.assertRaises(ValueError):
+                    g.over_budget([run("correctness")] * g.DAILY_REVIEW_BUDGET, "correctness", NOW, pr=pr)
+
+    def test_reviewer_app_id_is_kept_in_one_place(self):
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        with open(os.path.join(root, ".github", "review", "reviewer-app-id"), encoding="utf-8") as f:
+            self.assertEqual(g.REVIEWER_APP_ID, int(f.read().strip()))
+        literal = str(g.REVIEWER_APP_ID)
+        for rel in (".github/review/list-runs.sh", ".github/review/review_gate.py",
+                    ".github/workflows/agent-review.yml", ".github/workflows/agent-review-run.yml",
+                    ".github/workflows/agent-review-canary.yml", ".github/review/post-check.sh"):
+            with self.subTest(file=rel):
+                with open(os.path.join(root, rel), encoding="utf-8") as f:
+                    self.assertNotIn(literal, f.read())
+
+
 class Command(unittest.TestCase):
     """Runs the script as the workflow does: fixed input names, outputs on stdout."""
 
