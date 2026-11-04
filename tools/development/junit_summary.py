@@ -119,17 +119,18 @@ def _check_failures(element, failed):
         raise SummaryError(f'{element.tag} declares {declared} failures but has {failed}')
 
 
-def _code(text):
+def _code(text, limit=MAX_DETAIL):
     """One line of untrusted text as an inert Markdown code span.
 
     Control characters are dropped, whitespace is collapsed and backticks are
     replaced, so the text cannot end the span, hide later lines (<!--),
-    mention a user (@name) or send terminal escapes.
+    mention a user (@name) or send terminal escapes. Text longer than
+    `limit` is shortened; None keeps it whole.
     """
     text = ''.join(ch if ch.isprintable() else ' ' for ch in text)
     text = ' '.join(text.split()).replace('`', "'")
-    if len(text) > MAX_DETAIL:
-        text = text[:MAX_DETAIL - 3] + '...'
+    if limit is not None and len(text) > limit:
+        text = text[:limit - 3] + '...'
     return f'`{text}`'
 
 
@@ -141,7 +142,7 @@ def render(label, result):
         for name, detail in result[category]:
             # One line per case: messages can span lines (GoogleTest skips).
             suffix = f' ({_code(detail)})' if detail and detail.strip() else ''
-            lines.append(f'- {category}: {_code(name)}{suffix}')
+            lines.append(f'- {category}: {_code(name, limit=None)}{suffix}')  # names stay exact
     return '\n'.join(lines)
 
 

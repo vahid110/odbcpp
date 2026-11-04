@@ -4,10 +4,12 @@
 
 /.github/                         @vahid110
 /docs/adr/                        @vahid110
-/.agents/                         @vahid110
-/.codex/                          @vahid110
 /.mcp.json                        @vahid110
 # Agent instructions and settings at any depth (nested files are loaded too).
+# CODEOWNERS is case-sensitive; the review gate's process rule also
+# matches case variants (.github/review/review_gate.py).
+.agents/                          @vahid110
+.codex/                           @vahid110
 AGENTS.md                         @vahid110
 AGENTS.override.md                @vahid110
 CLAUDE.md                         @vahid110

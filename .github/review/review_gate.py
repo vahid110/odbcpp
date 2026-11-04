@@ -28,9 +28,12 @@ DAILY_REVIEW_BUDGET = 12
 # Fixed path rules; the model may add labels, never remove these.
 PATH_RULES = {
     # Agent instructions, settings and hooks count at any depth: Codex and
-    # Claude Code load a nested AGENTS.md, CLAUDE.md or .claude/ too.
-    "process": r"^(\.github/|\.agents/|\.codex/|docs/adr/|tools/|\.mcp\.json$|DEVELOPMENT_WORKFLOW\.md$|"
-               r"cmake/LiveSuite\.cmake$)|(^|/)(\.claude/|(AGENTS|AGENTS\.override|CLAUDE|CLAUDE\.local)\.md$)",
+    # Claude Code load a nested AGENTS.md, CLAUDE.md, .claude/ or .agents/
+    # too. Case-insensitive, because on a case-insensitive file system
+    # (macOS) odbc/Agents.md is loaded as odbc/AGENTS.md; CODEOWNERS cannot
+    # fold case, so this rule is what forces the red-team review for those.
+    "process": r"(?i)^(\.github/|docs/adr/|tools/|\.mcp\.json$|DEVELOPMENT_WORKFLOW\.md$|cmake/LiveSuite\.cmake$)"
+               r"|(^|/)(\.agents|\.codex|\.claude)(/|$)|(^|/)(AGENTS|AGENTS\.override|CLAUDE|CLAUDE\.local)\.md$",
     "auth": r"^(sdk/src/auth/|sdk/internal/odbcpp/auth/|sdk/src/adapters/|sdk/src/session/|"
             r"sdk/internal/odbcpp/session/|odbc/connection_string\.|cmake/[^/]*Auth[^/]*\.cmake$)",
     "security": r"^(sdk/src/security/|sdk/internal/odbcpp/security/|sdk/src/transport/|"

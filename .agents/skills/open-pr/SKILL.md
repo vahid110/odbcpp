@@ -57,7 +57,7 @@ T=$(~/.config/odbcpp-agent/token.sh)
 G=$(mktemp -d)   # an empty gh config: the owner's keyring login is unreachable
 ```
 
-- Pass it per command: `GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh ...`.
+- Pass it per command: `GH_CONFIG_DIR="${G:?}" GH_TOKEN="${T:?no bot token}" gh ...`.
   `${T:?}` stops the command if the token is empty. The empty config means
   `gh` fails instead of acting as the owner. Never `export` the token into a
   long shell, and never echo it.
@@ -81,7 +81,9 @@ Keep the helper in single quotes. The helper's shell then reads the token
 from its environment when git asks. In double quotes, the token would be
 expanded into git's arguments, where any local process can read it (`ps`).
 `credential.helper=` first clears the keychain helper, so the token is never
-stored.
+stored. `GH_TOKEN` is visible to every child of `git push`, including a local
+`pre-push` hook. That is acceptable, because any process running as the
+same user can already run `token.sh`.
 
 Use `--force-with-lease` only to update your own PR branch after a rebase. Never
 force-push `main` or someone else's branch.
@@ -110,7 +112,7 @@ End the body with the PR attribution line your harness gives. Then, in the
 same asserted script:
 
 ```sh
-GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh pr create -R vahid110/odbcpp --base main \
+GH_CONFIG_DIR="${G:?}" GH_TOKEN="${T:?no bot token}" gh pr create -R vahid110/odbcpp --base main \
   --head codex/<topic> --title "<title>" --body-file <scratchpad>/pr-body.md
 ```
 
@@ -122,7 +124,7 @@ must print `0`. If GraphQL keeps failing, create the PR through REST:
 ```sh
 jq -n --rawfile b <scratchpad>/pr-body.md \
   '{title: "<title>", head: "codex/<topic>", base: "main", body: $b}' > <scratchpad>/pr.json
-GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh api -X POST repos/vahid110/odbcpp/pulls --input <scratchpad>/pr.json \
+GH_CONFIG_DIR="${G:?}" GH_TOKEN="${T:?no bot token}" gh api -X POST repos/vahid110/odbcpp/pulls --input <scratchpad>/pr.json \
   --jq '.number, .user.login'   # must print odbcpp-agent[bot]
 ```
 
@@ -132,7 +134,7 @@ Do not add the high-risk labels yourself (`security`, `auth`, `protocol`,
 ## 6. Verify the author, every time
 
 ```sh
-GH_CONFIG_DIR="$G" GH_TOKEN="${T:?no bot token}" gh pr view <n> -R vahid110/odbcpp --json author,commits \
+GH_CONFIG_DIR="${G:?}" GH_TOKEN="${T:?no bot token}" gh pr view <n> -R vahid110/odbcpp --json author,commits \
   --jq '.author.login, (.commits[] | .authors[].email)'
 ```
 
