@@ -67,6 +67,28 @@ class Plan(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(g.path_labels([path]), set())
 
+    def test_code_change_starts_red_team_without_a_label(self):
+        # #204: the red-team review is the default; a prompt injection that
+        # keeps the correctness reviewer from labelling a PR no longer skips it.
+        self.assertEqual(plan_("synchronize", "", [], ["odbc/odbc_cursor.cpp"], [], [], HEAD)[:2], (True, True))
+        self.assertEqual(plan_("opened", "", [], ["tests/unit/test_x.cpp"], [], [], HEAD)[:2], (True, True))
+
+    def test_documentation_only_change_runs_correctness_only(self):
+        for files in (["docs/notes.md"], ["README.md", "docs/guide/x.md"], ["CHANGELOG.md"]):
+            with self.subTest(files=files):
+                self.assertEqual(plan_("synchronize", "", [], files, [], [], HEAD), (True, False, []))
+
+    def test_documentation_lookalikes_are_not_low_risk(self):
+        # ADRs and agent instructions define the gates; other paths may run.
+        for path in ("docs/adr/0003-x.md", "AGENTS.md", "CLAUDE.md", "docs/x.sh", "docs/x.py",
+                     "odbc/README.md", "SECURITY.md", "docs/../odbc/x.cpp"):
+            with self.subTest(path=path):
+                self.assertTrue(g.red_team_by_path([path]))
+
+    def test_empty_file_list_requires_red_team(self):
+        # Fail closed: an empty or missing file list is not "documentation only".
+        self.assertTrue(g.red_team_by_path([]))
+
     def test_unrelated_label_starts_nothing(self):
         self.assertEqual(plan_("labeled", "unit", [], [], [], [], HEAD)[:2], (False, False))
 
@@ -240,6 +262,16 @@ class Status(unittest.TestCase):
         r = review("correctness", "APPROVED")
         r["body"] = "Looks fine.\n[correctness reviewer] approve"
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "pending")
+
+    def test_code_change_requires_red_team_approval(self):
+        reviews = [review("correctness", "APPROVED")]
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=["odbc/x.cpp"])[0], "pending")
+        reviews.append(review("red-team", "APPROVED"))
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=["odbc/x.cpp"])[0], "success")
+
+    def test_documentation_only_change_needs_correctness_only(self):
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD, files=["docs/x.md"])[0],
+                         "success")
 
     def test_path_rule_requires_red_team_even_without_the_label(self):
         reviews = [review("correctness", "APPROVED")]
