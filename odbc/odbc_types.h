@@ -21,6 +21,11 @@
 #define SQL_API_SQLCANCELHANDLE 1022
 #endif
 
+// ODBC 2.0 statement option alias for row array size.
+#ifndef SQL_ROWSET_SIZE
+#define SQL_ROWSET_SIZE 9
+#endif
+
 namespace rs::odbc {
 
 static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4,
@@ -74,6 +79,7 @@ constexpr const char* SQLSTATE_INVALID_CHARACTER_VALUE = "22018";
 constexpr const char* SQLSTATE_STRING_DATA_RIGHT_TRUNCATION = "22001";
 constexpr const char* SQLSTATE_STRING_DATA_TRUNCATED = "01004";
 constexpr const char* SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE = "01S00";
+constexpr const char* SQLSTATE_OPTION_VALUE_CHANGED = "01S02";
 constexpr const char* SQLSTATE_FRACTIONAL_TRUNCATION = "01S07";
 constexpr const char* SQLSTATE_INVALID_STRING_LENGTH = "HY090";
 constexpr const char* SQLSTATE_INVALID_NULL_POINTER = "HY009";
@@ -104,6 +110,8 @@ constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
 constexpr const char* SQLSTATE_CANNOT_MODIFY_IRD = "HY016";
 constexpr const char* SQLSTATE_INCONSISTENT_DESCRIPTOR = "HY021";
 constexpr const char* SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE = "HY017";
+constexpr const char* SQLSTATE_DUPLICATE_CURSOR_NAME = "3C000";
+constexpr const char* SQLSTATE_INVALID_CURSOR_NAME = "34000";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here

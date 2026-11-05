@@ -24,7 +24,7 @@ An SDK-managed pool remains optional and initially internal. Its absence does no
 block standard DM pooling qualification. Any future pool must use the shared safe
 reuse contract; independent backend pools, public pool APIs and unmeasured sizing
 or eviction policies are outside the current commitment. The legacy prototype
-pool remains quarantined in its private test/example target.
+pool was deleted on 2026-10-30.
 
 ## Observable reuse boundaries
 
@@ -112,6 +112,24 @@ are absent or already sufficient.
 
 These are deferred follow-ups. They do not request a candidate switch, new build,
 new live partition, resource admission or interruption of an executing suite.
+
+## Reset and reuse operations audit (#101 part 1)
+
+This audit documents which reset and reuse operations currently exist across the
+ODBCPP driver stack and which remain missing, satisfying the initial bounded
+scope of #101:
+
+| Operation / Capability | Layer | Current status | Implemented behavior and remaining gaps |
+| --- | --- | --- | --- |
+| `SQL_ATTR_CONNECTION_DEAD` | ODBC adapter / SDK session | **Implemented** | Passive inspection (`backend_lease_->inspect()`) without network I/O. Reports `SQL_CD_FALSE` when connected and healthy; reports `SQL_CD_TRUE` when connected but broken/dead (`SessionState::Broken`); returns `SQL_ERROR` with `08003` when disconnected (unconnected, post-`SQLDisconnect`, or post-timeout retirement) leaving output buffer untouched. Zero network reads/sends guaranteed across ANSI (`SQLGetConnectAttr`) and Wide (`SQLGetConnectAttrW`). Setting is rejected as read-only (`HY092`). Length-only queries report `sizeof(SQLUINTEGER)`. |
+| `ISessionHealth` active probe | SDK / Backend | **Implemented** (SDK & PostgreSQL) | Serialized active probe under an absolute deadline. On network drop or timeout, retires session to `SessionState::Disconnected`. Internal SDK facet; standard DMs rely on passive `SQL_ATTR_CONNECTION_DEAD`. |
+| `ISessionReset` (`SameAuthenticatedServerSession`) | SDK / Backend | **Partial** (PostgreSQL only) | PostgreSQL backend rolls back active/failed transactions and executes `DISCARD ALL` under an absolute deadline, retiring on any failure. SDK `SessionLease::reset_session` enforces idle outcome, invalidates metadata cache, and retires on failure. |
+| Redshift session reset | Backend | **Missing** | Redshift does not support PostgreSQL `DISCARD ALL`. Lacks a dedicated dialect-appropriate reset sequence (explicit `ROLLBACK` + supported variable resets, or connection retirement). |
+| MySQL / SQL Server session reset | Backend | **Missing** | Backend connections return `nullptr` for `session_reset()`. |
+| Multi-tenant re-authentication | SDK | **Missing** | The reset profile only covers `SameAuthenticatedServerSession`. It does not support re-authenticating as a distinct database user or re-binding credentials over an existing transport. |
+| `SQL_ATTR_RESET_CONNECTION` | ODBC adapter | **Missing** | Recognized as unsupported; returns `SQL_ERROR` (`HYC00`). Windows DM sets this attribute during connection recycling; adapter does not yet dispatch it to `ODBCConnection::backend_reset()`. |
+| DM logical checkout/return visibility | ODBC adapter | **Missing** | unixODBC/iODBC do not notify the driver when a connection is logically checked out or returned to the pool. `SQLDisconnect` currently executes `close_connection()`, tearing down the physical transport. Application cleanup obligations remain required. |
+| Driver-aware pooling SPI | ODBC adapter | **Declared unsupported** | Reports `SQL_DRIVER_AWARE_POOLING_NOT_CAPABLE` in `SQLGetInfo`. Separate optional Windows capability; not a prerequisite for standard DM pooling. |
 
 ## Primary references
 

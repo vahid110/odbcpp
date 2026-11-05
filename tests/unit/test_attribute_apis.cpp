@@ -23,10 +23,18 @@ public:
   bool is_connected() const override { return connected_; }
   rs::core::database::SessionState session_state() const override { return connected_?rs::core::database::SessionState::Idle:rs::core::database::SessionState::Disconnected; }
   rs::core::database::BackendResult<rs::core::database::QueryResult> execute_query(std::string_view,rs::util::Deadline) override {
-    ++queries_;return {rs::util::DbErrorCode::UnsupportedFeature};
+    ++queries_;
+    rs::core::database::QueryResult result;
+    return rs::core::database::BackendResult<rs::core::database::QueryResult>{
+        std::move(result),
+        {rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable}};
   }
   rs::core::database::BackendResult<rs::core::database::QueryResult> execute_prepared(std::string_view,std::span<const rs::core::database::QueryParameter>,rs::util::Deadline) override {
-    ++queries_;return {rs::util::DbErrorCode::UnsupportedFeature};
+    ++queries_;
+    rs::core::database::QueryResult result;
+    return rs::core::database::BackendResult<rs::core::database::QueryResult>{
+        std::move(result),
+        {rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable}};
   }
   std::string server_version() const override { return "8.0.2"; }
 private:
@@ -347,6 +355,56 @@ TEST(AttributeApisStandaloneTest, EnvironmentVersionGetSetMatrix) {
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
+TEST(AttributeApisStandaloneTest, EnvironmentOdbcVersionRejectsUnsupportedValues) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  constexpr SQLINTEGER unsupported_versions[]{-1, 0, 999, 12345};
+  for (const auto unsupported : unsupported_versions) {
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetEnvAttr(
+                  environment, SQL_ATTR_ODBC_VERSION,
+                  reinterpret_cast<SQLPOINTER>(
+                      static_cast<std::uintptr_t>(unsupported)),
+                  0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_STREQ("HY024", reinterpret_cast<const char*>(state));
+  }
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(AttributeApisStandaloneTest, EnvironmentOdbcVersionCannotChangeAfterConnectionAllocated) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(
+                environment, SQL_ATTR_ODBC_VERSION,
+                reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetEnvAttr(
+                environment, SQL_ATTR_ODBC_VERSION,
+                reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC2), 0));
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY010", reinterpret_cast<const char*>(state));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 TEST(AttributeApisStandaloneTest, SupportsNullTerminatedEnvironmentOutput) {
   SQLHENV environment = SQL_NULL_HENV;
   ASSERT_EQ(SQL_SUCCESS,
@@ -455,6 +513,21 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
             SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
                               sizeof(dead), nullptr));
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+
+  SQLUINTEGER dead_w = SQL_CD_TRUE;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttrW(connection_, SQL_ATTR_CONNECTION_DEAD, &dead_w,
+                               sizeof(dead_w), nullptr));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_CD_TRUE, dead_w);
+
+  SQLINTEGER dead_len = -73;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, nullptr,
+                              0, &dead_len));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(-73, dead_len);
 
   EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
@@ -481,6 +554,10 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ(SQL_ERROR,
             SQLSetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD,
                               integer_value(SQL_CD_FALSE), 0));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttrW(connection_, SQL_ATTR_CONNECTION_DEAD,
+                               integer_value(SQL_CD_FALSE), 0));
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
@@ -1104,10 +1181,10 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_TYPE, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLSetStmtAttr(
       statement_, SQL_ATTR_CONCURRENCY,
       integer_value(SQL_CONCUR_VALUES), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CONCURRENCY, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
@@ -1168,12 +1245,12 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_ENABLE_AUTO_IPD, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLSetStmtAttr(
       statement_, SQL_ATTR_KEYSET_SIZE, integer_value(1), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLSetStmtAttr(
       statement_, SQL_ATTR_MAX_LENGTH, integer_value(1), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
 TEST_F(AttributeApisTest, StoresApplicationDescriptorBindOffsetPointers) {
@@ -1254,14 +1331,16 @@ TEST_F(AttributeApisTest, StoresBookmarkAndOperationPointers) {
 }
 
 TEST_F(AttributeApisTest, ClassifiesRecognizedUnsupportedStatementAttributes) {
+#ifdef SQL_ATTR_ASYNC_STMT_EVENT
   SQLULEN value = 77;
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
-      statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(0), 0));
+      statement_, SQL_ATTR_ASYNC_STMT_EVENT, integer_value(0), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
-      statement_, SQL_ATTR_SIMULATE_CURSOR, &value, sizeof(value), nullptr));
+      statement_, SQL_ATTR_ASYNC_STMT_EVENT, &value, sizeof(value), nullptr));
   EXPECT_EQ(77u, value);
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+#endif
 }
 
 TEST_F(AttributeApisTest, StoresEscapeScanningMode) {
@@ -1756,8 +1835,8 @@ TEST_F(AttributeApisTest, StaticCursorExplicitCouplingAndRefusalsPreserveClosedT
   }
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_STATIC),0));
   for (SQLULEN type : {static_cast<SQLULEN>(SQL_CURSOR_DYNAMIC),static_cast<SQLULEN>(SQL_CURSOR_KEYSET_DRIVEN)}) {
-    EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(type),0));
-    EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_)); expect_tuple(SQL_CURSOR_STATIC);
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(type),0));
+    EXPECT_EQ("01S02",diagnostic_state(SQL_HANDLE_STMT,statement_)); expect_tuple(SQL_CURSOR_STATIC);
   }
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,integer_value(SQL_NONSCROLLABLE),0));
   expect_tuple(SQL_CURSOR_FORWARD_ONLY);
@@ -1791,8 +1870,8 @@ TEST_F(AttributeApisTest, VariableBookmarksRequireStaticAndPreserveClosedSetting
   EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_VARIABLE),0));
   EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_STATIC),0));
-  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_FIXED),0));
-  EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_FIXED),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,&mode,0,nullptr)); EXPECT_EQ(SQL_UB_FIXED,mode);
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_VARIABLE),0));
   EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,integer_value(SQL_NONSCROLLABLE),0));
   EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
@@ -1951,4 +2030,537 @@ TEST_F(AttributeApisTest, QueryTimeoutIsOnlyAStatementAttributeAndZeroOverrideSt
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(statement_, SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr));
   EXPECT_EQ(0u, value);
+}
+
+#ifndef SQL_ROWSET_SIZE
+#define SQL_ROWSET_SIZE 9
+#endif
+
+TEST_F(AttributeApisTest, FixedBookmarksAndRowsetSizeOdbc2Compatibility) {
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+
+  // 1. Fixed bookmarks (SQL_UB_FIXED / SQL_UB_ON)
+  // On forward-only cursor, SQL_UB_FIXED returns HYC00.
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                      integer_value(SQL_UB_FIXED), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  // On static cursor, SQL_UB_FIXED succeeds.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE,
+                                        integer_value(SQL_CURSOR_STATIC), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        integer_value(SQL_UB_FIXED), 0));
+  SQLULEN bookmark_mode = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        &bookmark_mode, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_UB_FIXED), bookmark_mode);
+
+  // Attempting to select forward-only while fixed bookmarks are enabled is refused.
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE,
+                                      integer_value(SQL_CURSOR_FORWARD_ONLY), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  // Disabling bookmarks succeeds and readback returns SQL_UB_OFF.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        integer_value(SQL_UB_OFF), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        &bookmark_mode, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_UB_OFF), bookmark_mode);
+
+  // Re-enabling fixed bookmarks succeeds.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        integer_value(SQL_UB_FIXED), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_USE_BOOKMARKS,
+                                        &bookmark_mode, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_UB_FIXED), bookmark_mode);
+
+  // 2. SQL_ROWSET_SIZE (ODBC 2.0 statement option 9)
+  // Positive rowset size sets ARD SQL_DESC_ARRAY_SIZE / SQL_ATTR_ROW_ARRAY_SIZE.
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                        integer_value(10), 0));
+  SQLULEN rowset_size = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                        &rowset_size, 0, nullptr));
+  EXPECT_EQ(10u, rowset_size);
+
+  SQLULEN array_size = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_ROW_ARRAY_SIZE,
+                                        &array_size, 0, nullptr));
+  EXPECT_EQ(10u, array_size);
+
+  // Updating SQL_ATTR_ROW_ARRAY_SIZE reflects in SQL_ROWSET_SIZE.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_ROW_ARRAY_SIZE,
+                                        integer_value(5), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                        &rowset_size, 0, nullptr));
+  EXPECT_EQ(5u, rowset_size);
+
+  // Non-positive rowset size returns HY024.
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                      integer_value(0), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ROWSET_SIZE,
+                                      reinterpret_cast<SQLPOINTER>(static_cast<SQLLEN>(-1)), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+}
+
+TEST_F(AttributeApisTest, CursorNameDefaultSetGetTruncationAndValidation) {
+  SQLCHAR name_buf[64]{};
+  SQLSMALLINT name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_GT(name_length, 7);
+  std::string default_name(reinterpret_cast<const char*>(name_buf), name_length);
+  EXPECT_EQ(0u, default_name.rfind("SQL_CUR", 0));
+
+  SQLHSTMT statement2 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement2);
+  SQLCHAR name_buf2[64]{};
+  SQLSMALLINT name_length2 = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement2, name_buf2, sizeof(name_buf2), &name_length2));
+  std::string default_name2(reinterpret_cast<const char*>(name_buf2), name_length2);
+  EXPECT_EQ(0u, default_name2.rfind("SQL_CUR", 0));
+  EXPECT_NE(default_name, default_name2);
+
+  // Invalid unquoted cursor names (including reserved prefixes SQLCUR and SQL_CUR)
+  for (const char* invalid : {"", "1starts_with_digit", "has space", "has-hyphen", "has.dot",
+                              "SQLCUR1", "sqlcur2", "SQL_CUR1", "sql_cur2"}) {
+    EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(invalid)), SQL_NTS));
+    EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  }
+
+  // Set and get valid unquoted cursor name
+  SQLCHAR valid_name[] = "my_custom_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, valid_name, SQL_NTS));
+  std::memset(name_buf, 0, sizeof(name_buf));
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen("my_custom_cursor")), name_length);
+  EXPECT_STREQ("my_custom_cursor", reinterpret_cast<const char*>(name_buf));
+
+  // Legal renaming before execution: setting a new name replaces the old name
+  SQLCHAR second_name[] = "second_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, second_name, SQL_NTS));
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_STREQ("second_cursor", reinterpret_cast<const char*>(name_buf));
+
+  // Previous name ("my_custom_cursor") was released: statement2 can now take it!
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, valid_name, SQL_NTS));
+  name_length2 = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement2, name_buf2, sizeof(name_buf2), &name_length2));
+  EXPECT_STREQ("my_custom_cursor", reinterpret_cast<const char*>(name_buf2));
+
+  // Failed replacement preserves old name:
+  // 1) Failed with invalid name
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("bad name!")), SQL_NTS));
+  EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_STREQ("second_cursor", reinterpret_cast<const char*>(name_buf));
+
+  // 2) Failed with duplicate name already used by sibling statement2 ("my_custom_cursor")
+  SQLCHAR duplicate_name[] = "MY_CUSTOM_CURSOR";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, duplicate_name, SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, name_buf, sizeof(name_buf), &name_length));
+  EXPECT_STREQ("second_cursor", reinterpret_cast<const char*>(name_buf));
+
+  // Wide variant round-trip on a fresh statement
+  SQLHSTMT statement3 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement3);
+
+  SQLWCHAR wide_input[32]{};
+  const std::string custom_wide = "wide_cursor_name";
+  for (std::size_t i = 0; i < custom_wide.size(); ++i) {
+    wide_input[i] = static_cast<SQLWCHAR>(custom_wide[i]);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorNameW(statement3, wide_input, static_cast<SQLSMALLINT>(custom_wide.size())));
+
+  SQLWCHAR wide_out[32]{};
+  SQLSMALLINT wide_length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement3, wide_out, sizeof(wide_out) / sizeof(SQLWCHAR), &wide_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), wide_length);
+  std::string wide_readback;
+  for (SQLSMALLINT i = 0; i < wide_length; ++i) {
+    wide_readback.push_back(static_cast<char>(wide_out[i]));
+  }
+  EXPECT_EQ(custom_wide, wide_readback);
+
+  // Truncation on narrow SQLGetCursorName with intermediate capacity 5
+  SQLCHAR truncated[5]{};
+  name_length = 0;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetCursorName(statement3, truncated, 5, &name_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement3));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(custom_wide.size()), name_length);
+  EXPECT_STREQ("wide", reinterpret_cast<const char*>(truncated));
+
+  // Negative buffer length returns HY090
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorName(statement3, name_buf, -1, &name_length));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement3));
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorNameW(statement3, wide_out, -1, &wide_length));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement3));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement3));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement2));
+}
+
+TEST_F(AttributeApisTest, CursorNameQuotedIdentifierSemanticsAndDistinctCase) {
+  // Quoted identifiers allow spaces, punctuation, keywords, and escaped quotes
+  const char* valid_quoted[] = {
+      "\"Order Cursor\"",
+      "\"My\"\"Quoted\"\"Name\"",
+      "\"Select\"",
+      "\"Case\"",
+      "\"case\"",
+  };
+  for (const auto* quoted : valid_quoted) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(quoted)), SQL_NTS))
+        << "Failed to set valid quoted cursor name: " << quoted;
+    SQLCHAR readback[64]{};
+    SQLSMALLINT length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, readback, sizeof(readback), &length));
+    EXPECT_STREQ(quoted, reinterpret_cast<const char*>(readback));
+  }
+
+  // Quoted identifiers are case-sensitive: "Case" and "case" have distinct identities and can coexist on same connection!
+  SQLHSTMT statement2 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement2);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"Case\"")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement2, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"case\"")), SQL_NTS));
+
+  // But duplicate quoted name with exact case fails with 3C000
+  SQLHSTMT statement3 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement3);
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement3, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"Case\"")), SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement3));
+
+  // Malformed quoted identifiers rejected with 34000
+  const char* malformed_quoted[] = {
+      "\"unterminated",
+      "\"dangling\"quote\"",
+      "\"\"",
+      "\"SQLCUR1\"",
+      "\"SQL_CUR_TEST\"",
+      "\"sqlcur_lower\"",
+  };
+  for (const auto* malformed : malformed_quoted) {
+    EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement3, reinterpret_cast<SQLCHAR*>(const_cast<char*>(malformed)), SQL_NTS))
+        << "Should reject malformed quoted cursor name: " << malformed;
+    EXPECT_EQ("34000", diagnostic_state(SQL_HANDLE_STMT, statement3));
+  }
+
+  // Unquoted vs quoted conflict: unquoted "MY_CUR" conflicts with quoted "\"MY_CUR\""
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement3, reinterpret_cast<SQLCHAR*>(const_cast<char*>("\"MY_CUR\"")), SQL_NTS));
+  SQLHSTMT statement4 = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, statement4);
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement4, reinterpret_cast<SQLCHAR*>(const_cast<char*>("my_cur")), SQL_NTS));
+  EXPECT_EQ("3C000", diagnostic_state(SQL_HANDLE_STMT, statement4));
+
+  // Wide variant round-trip of quoted name
+  std::u16string wide_quoted = u"\"Wide Cursor\"";
+  std::vector<SQLWCHAR> wide_input(wide_quoted.begin(), wide_quoted.end());
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorNameW(statement4, wide_input.data(), static_cast<SQLSMALLINT>(wide_input.size())));
+  std::vector<SQLWCHAR> wide_read(32, 0);
+  SQLSMALLINT wide_len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement4, wide_read.data(), static_cast<SQLSMALLINT>(wide_read.size()), &wide_len));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(wide_input.size()), wide_len);
+  EXPECT_TRUE(std::equal(wide_input.begin(), wide_input.end(), wide_read.begin()));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement4));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement3));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement2));
+}
+
+TEST_F(AttributeApisTest, CursorNameRenamingLifecycleAndExecutionStates) {
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+
+  // Statement in allocated state: renaming is allowed
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("initial_name")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_before_prep")), SQL_NTS));
+
+  // Statement in prepared state: renaming is still allowed
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_after_prep")), SQL_NTS));
+
+  // Statement in executed state: renaming is forbidden (24000)
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_after_exec")), SQL_NTS));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  // Closing cursor returns statement to closed state where renaming is allowed again
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("renamed_after_close")), SQL_NTS));
+  SQLCHAR buf[64]{};
+  SQLSMALLINT len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, buf, sizeof(buf), &len));
+  EXPECT_STREQ("renamed_after_close", reinterpret_cast<const char*>(buf));
+}
+
+TEST_F(AttributeApisTest, CursorNameZeroCapacityAndSentinelBufferTests) {
+  SQLCHAR name[] = "test_sentinel_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, name, SQL_NTS));
+  const auto expected_len = static_cast<SQLSMALLINT>(std::strlen("test_sentinel_cursor"));
+
+  // 1. Narrow output buffer tests
+  // Sentinel test at capacity 0 with non-null pointer:
+  // Must return SQL_SUCCESS_WITH_INFO / 01004, report expected length, and NOT touch buffer!
+  std::vector<SQLCHAR> narrow_buf(32, 0xAA);
+  SQLSMALLINT narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 0, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_EQ(0xAA, narrow_buf[0]);
+
+  // Null output pointer length query: returns SQL_SUCCESS and expected length
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, &narrow_len));
+  EXPECT_EQ(expected_len, narrow_len);
+
+  // Capacity 1: can only fit null terminator
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 1, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_EQ('\0', narrow_buf[0]);
+  EXPECT_EQ(0xAA, narrow_buf[1]);
+
+  // Intermediate capacity (e.g. 5): fits first 4 chars ("test") + null terminator, tail untouched
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorName(statement_, narrow_buf.data(), 5, &narrow_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_STREQ("test", reinterpret_cast<const char*>(narrow_buf.data()));
+  EXPECT_EQ(0xAA, narrow_buf[5]);
+
+  // Sufficient capacity: returns SQL_SUCCESS, full string null-terminated, beyond untouched
+  std::fill(narrow_buf.begin(), narrow_buf.end(), 0xAA);
+  narrow_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, narrow_buf.data(), static_cast<SQLSMALLINT>(narrow_buf.size()), &narrow_len));
+  EXPECT_EQ(expected_len, narrow_len);
+  EXPECT_STREQ("test_sentinel_cursor", reinterpret_cast<const char*>(narrow_buf.data()));
+  EXPECT_EQ(0xAA, narrow_buf[expected_len + 1]);
+
+  // 2. Wide output buffer tests
+  // Sentinel test at capacity 0 with non-null pointer:
+  std::vector<SQLWCHAR> wide_buf(32, SQLWCHAR(0xBEEF));
+  SQLSMALLINT wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 0, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[0]);
+
+  // Null output pointer length query
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, nullptr, 0, &wide_len));
+  EXPECT_EQ(expected_len, wide_len);
+
+  // Capacity 1: can only fit null terminator
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 1, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  EXPECT_EQ(SQLWCHAR(0), wide_buf[0]);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[1]);
+
+  // Intermediate capacity (e.g. 5): fits first 4 wide chars ("test") + null terminator, tail untouched
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetCursorNameW(statement_, wide_buf.data(), 5, &wide_len));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(expected_len, wide_len);
+  std::string partial_wide_str;
+  for (std::size_t i = 0; i < 4; ++i) {
+    partial_wide_str.push_back(static_cast<char>(wide_buf[i]));
+  }
+  EXPECT_EQ("test", partial_wide_str);
+  EXPECT_EQ(SQLWCHAR(0), wide_buf[4]);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[5]);
+
+  // Sufficient capacity
+  std::fill(wide_buf.begin(), wide_buf.end(), SQLWCHAR(0xBEEF));
+  wide_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, wide_buf.data(), static_cast<SQLSMALLINT>(wide_buf.size()), &wide_len));
+  EXPECT_EQ(expected_len, wide_len);
+  std::string wide_str;
+  for (SQLSMALLINT i = 0; i < wide_len; ++i) {
+    wide_str.push_back(static_cast<char>(wide_buf[i]));
+  }
+  EXPECT_EQ("test_sentinel_cursor", wide_str);
+  EXPECT_EQ(SQLWCHAR(0xBEEF), wide_buf[expected_len + 1]);
+}
+
+TEST_F(AttributeApisTest, CursorNameLengthHandlesUnalignedOutput) {
+  SQLCHAR name[] = "unaligned_test_cursor";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetCursorName(statement_, name, SQL_NTS));
+  const auto expected_len =
+      static_cast<SQLSMALLINT>(std::strlen("unaligned_test_cursor"));
+
+  // Narrow unaligned length
+  {
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorName(statement_, nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+
+    std::vector<SQLCHAR> buf(64, 0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetCursorName(statement_, buf.data(),
+                               static_cast<SQLSMALLINT>(buf.size()), length));
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+  }
+
+  // Wide unaligned length
+  {
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetCursorNameW(statement_, nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+
+    std::vector<SQLWCHAR> buf(64, 0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetCursorNameW(statement_, buf.data(),
+                                static_cast<SQLSMALLINT>(buf.size()), length));
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(expected_len, required);
+  }
+}
+
+TEST_F(AttributeApisTest, GetFunctionsReportsCursorNameAndCancelHandle) {
+  SQLUSMALLINT flag = 73;
+  EXPECT_EQ(SQL_ERROR, SQLGetFunctions(connection_, SQL_API_SQLCANCELHANDLE, &flag));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(73, flag);
+
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+
+  for (const auto id : std::array<SQLUSMALLINT, 3>{
+           SQL_API_SQLCANCELHANDLE, SQL_API_SQLGETCURSORNAME, SQL_API_SQLSETCURSORNAME}) {
+    flag = SQL_FALSE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(connection_, id, &flag));
+    EXPECT_EQ(SQL_TRUE, flag) << "Failed for function id: " << id;
+  }
+
+  SQLUSMALLINT all[100]{}, bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(connection_, SQL_API_ALL_FUNCTIONS, all));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(connection_, SQL_API_ODBC3_ALL_FUNCTIONS, bitmap));
+
+  EXPECT_EQ(SQL_TRUE, all[SQL_API_SQLGETCURSORNAME]);
+  EXPECT_EQ(SQL_TRUE, all[SQL_API_SQLSETCURSORNAME]);
+
+  EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap, SQL_API_SQLCANCELHANDLE));
+  EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap, SQL_API_SQLGETCURSORNAME));
+  EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap, SQL_API_SQLSETCURSORNAME));
+}
+
+TEST_F(AttributeApisTest, UnsupportedCursorAttributeValuesSubstituteWith01S02) {
+  // 1. SQL_ATTR_CURSOR_TYPE: KEYSET/DYNAMIC -> STATIC with 01S02
+  for (const auto unsupported_type : {SQL_CURSOR_KEYSET_DRIVEN, SQL_CURSOR_DYNAMIC}) {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE, integer_value(unsupported_type), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_CURSOR_STATIC), readback);
+  }
+
+  // 2. SQL_ATTR_CONCURRENCY: LOCK/ROWVER/VALUES -> READ_ONLY with 01S02
+  for (const auto unsupported_concur : {SQL_CONCUR_LOCK, SQL_CONCUR_ROWVER, SQL_CONCUR_VALUES}) {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CONCURRENCY, integer_value(unsupported_concur), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_CONCURRENCY, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_CONCUR_READ_ONLY), readback);
+  }
+
+  // 3. SQL_ATTR_CURSOR_SENSITIVITY: SENSITIVE -> INSENSITIVE with 01S02
+  {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(SQL_SENSITIVE), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_CURSOR_SENSITIVITY, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_INSENSITIVE), readback);
+  }
+
+  // 4. SQL_ATTR_KEYSET_SIZE: any != 0 -> 0 with 01S02
+  {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_KEYSET_SIZE, integer_value(100), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 99;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_KEYSET_SIZE, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(0u, readback);
+  }
+
+  // 5. SQL_ATTR_MAX_LENGTH: any != 0 -> 0 with 01S02
+  {
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLSetStmtAttr(statement_, SQL_ATTR_MAX_LENGTH, integer_value(512), 0));
+    EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    SQLULEN readback = 99;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_MAX_LENGTH, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(0u, readback);
+  }
+
+  // 6. SQL_ATTR_SIMULATE_CURSOR: TRY_UNIQUE/UNIQUE -> SQL_SC_NON_UNIQUE with 01S02; NON_UNIQUE is SQL_SUCCESS
+  {
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLSetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(SQL_SC_NON_UNIQUE), 0));
+    SQLULEN readback = 99;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, &readback, sizeof(readback), nullptr));
+    EXPECT_EQ(static_cast<SQLULEN>(SQL_SC_NON_UNIQUE), readback);
+
+    for (const auto unsupported_sim : {SQL_SC_TRY_UNIQUE, SQL_SC_UNIQUE}) {
+      EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+                SQLSetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(unsupported_sim), 0));
+      EXPECT_EQ("01S02", diagnostic_state(SQL_HANDLE_STMT, statement_));
+      readback = 99;
+      EXPECT_EQ(SQL_SUCCESS,
+                SQLGetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, &readback, sizeof(readback), nullptr));
+      EXPECT_EQ(static_cast<SQLULEN>(SQL_SC_NON_UNIQUE), readback);
+    }
+  }
+
+  // 7. Invalid values return HY024
+  {
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_TYPE, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CONCURRENCY, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetStmtAttr(statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(99), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  }
 }

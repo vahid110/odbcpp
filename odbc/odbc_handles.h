@@ -563,6 +563,10 @@ public:
   SQLRETURN bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
                      SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
   
+  // Cursor name functions (SQLGetCursorName / SQLSetCursorName)
+  std::string get_cursor_name() const;
+  SQLRETURN set_cursor_name(const std::string& name);
+
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
   SQLRETURN get_type_info(SQLSMALLINT data_type);
@@ -714,6 +718,8 @@ private:
   bool parameter_result_cursor_{false};
   SQLRETURN advance_parameter_result(bool initial);
   std::string prepared_sql_;
+  std::string cursor_name_;   // empty = use default SQL_CUR<id>
+  std::uint64_t statement_id_{0};  // process-wide atomic sequence for default name
   size_t current_row_ = 0;
   bool row_positioned_ = false;
   // True when the most recent fetch attempt could not fetch its requested
@@ -730,7 +736,10 @@ private:
   SQLULEN max_rows_ = 0;
   bool no_scan_ = false;
   SQLLEN* fetch_bookmark_ptr_ = nullptr;
-  bool use_variable_bookmarks_{false};
+  SQLULEN bookmark_mode_{SQL_UB_OFF};
+  bool use_bookmarks() const noexcept { return bookmark_mode_ != SQL_UB_OFF; }
+  bool use_fixed_bookmarks() const noexcept { return bookmark_mode_ == SQL_UB_FIXED; }
+  bool use_variable_bookmarks() const noexcept { return bookmark_mode_ == SQL_UB_VARIABLE; }
   std::uint64_t bookmark_statement_id_{0}, bookmark_generation_{0};
   std::uint64_t active_bookmark_generation_{0};
   static constexpr std::size_t bookmark_bytes = 24;
