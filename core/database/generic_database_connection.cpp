@@ -349,6 +349,41 @@ void GenericDatabaseConnection::disconnect() {
   session_state_ = SessionState::Disconnected;
   server_params_.clear();
   peer_identity_verified_ = false;
+  result_provenance_.clear();
+}
+
+void GenericDatabaseConnection::record_result_provenance(
+    std::uint64_t result_id, std::vector<ParsedColumnProvenance> provenance) {
+  if (result_provenance_.size() >= 4096) {
+    result_provenance_.erase(result_provenance_.begin());
+  }
+  result_provenance_[result_id] = std::move(provenance);
+}
+
+void GenericDatabaseConnection::release_result_provenance(std::uint64_t result_id) noexcept {
+  result_provenance_.erase(result_id);
+}
+
+BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolve_column_origins(
+    std::uint64_t result_id, rs::util::Deadline deadline) {
+  auto it = result_provenance_.find(result_id);
+  if (it == result_provenance_.end()) {
+    SessionSnapshot snapshot{session_state_,
+        session_state_ == SessionState::Disconnected ? SessionDisposition::Retire :
+        session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::vector<ResultColumnOrigin>{}, snapshot};
+  }
+  // Own the provenance vector across any nested queries in resolve_column_origins_impl
+  const std::vector<ParsedColumnProvenance> provenance = it->second;
+  return resolve_column_origins_impl(provenance, deadline);
+}
+
+BackendResult<std::vector<ResultColumnOrigin>> GenericDatabaseConnection::resolve_column_origins_impl(
+    std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline) {
+  SessionSnapshot snapshot{session_state_,
+      session_state_ == SessionState::Disconnected ? SessionDisposition::Retire :
+      session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+  return BackendResult<std::vector<ResultColumnOrigin>>{std::vector<ResultColumnOrigin>(provenance.size()), snapshot};
 }
 
 bool GenericDatabaseConnection::is_connected() const {
@@ -939,6 +974,14 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     }
     const auto normalize_item = [&](ParsedQueryResult& parsed) -> BackendResult<QueryResult> {
       QueryResult item;
+      const auto rid = next_result_id_++;
+      item.result_id = rid;
+      std::vector<ParsedColumnProvenance> prov;
+      prov.reserve(parsed.columns.size());
+      for (const auto& column : parsed.columns) {
+        prov.push_back({column.table_oid, column.column_attribute_number});
+      }
+      record_result_provenance(rid, std::move(prov));
       item.rows = std::move(parsed.rows);
       item.error = std::move(parsed.error);
       item.affected_rows = parsed.affected_rows;

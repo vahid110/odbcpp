@@ -81,6 +81,8 @@ protected:
   void authenticated_backend_key(std::span<const std::byte> payload) override;
   void forget_backend_key() noexcept override;
   virtual RedshiftCatalogMode catalog_mode() const noexcept { return catalog_mode_; }
+  BackendResult<std::vector<ResultColumnOrigin>> resolve_column_origins_impl(
+      std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline deadline) override;
 
 private:
   BackendResult<QueryResult> execute_database_discovery(const CatalogRequest& request,

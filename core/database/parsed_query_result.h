@@ -14,6 +14,8 @@ struct ParsedColumnMetadata {
   std::int16_t type_size{-1};
   std::int32_t type_modifier{-1};
   std::int16_t format_code{0};
+  std::uint32_t table_oid{0};
+  std::int16_t column_attribute_number{0};
 };
 
 struct ParsedQueryResult {
