@@ -182,6 +182,22 @@ class Owners(unittest.TestCase):
                 self.assertTrue(owned(target, pats), target)
 
 
+class Workflows(unittest.TestCase):
+    def test_review_callers_inherit_secrets(self):
+        # The review job reads the reviewer key and the Claude token from the
+        # agent-review environment. A reusable workflow resolves environment
+        # secrets only when its caller uses "secrets: inherit" (#213).
+        import re as _re
+        with open(os.path.join(ROOT, ".github", "workflows", "agent-review.yml"), encoding="utf-8") as f:
+            text = f.read()
+        jobs = _re.split(r"\n  (?=[A-Za-z0-9_-]+:\n)", text)
+        callers = [j for j in jobs if "uses: ./.github/workflows/agent-review-run.yml" in j]
+        self.assertEqual(len(callers), 2, "expected the correctness and red-team callers")
+        for job in callers:
+            with self.subTest(job=job.split(":", 1)[0]):
+                self.assertRegex(job, r"\n    secrets: inherit\n")
+
+
 class Status(unittest.TestCase):
     def test_ordinary_pr_needs_correctness_approval(self):
         self.assertEqual(g.status_([], [], [], HEAD)[0], "pending")
