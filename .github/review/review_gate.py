@@ -199,6 +199,54 @@ def status(reviews, labels, files, events, head_sha, now=None, runs=()):
     return "success", "Approved by: " + ", ".join(required_roles(labels, files))
 
 
+# The model's structured output is untrusted. The post job publishes only
+# what prepare_review returns (#205): exactly the schema's three keys, a
+# known verdict, a bounded body with mentions neutralised, and allow-listed
+# labels from the correctness role. Anything else becomes a withheld
+# verdict, which never approves and lets the review run again. The
+# credential scan is defence in depth only: it catches accidental leaks, not
+# a model that encodes or splits a secret.
+SECRET = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|sk-ant-|eyJ[A-Za-z0-9_-]{10,}\.|"
+    r"-----BEGIN [A-Z ]*KEY|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN|"
+    r"CLAUDE_CODE_OAUTH_TOKEN\s*[=:]")
+MENTION = re.compile(r"@(?=[A-Za-z0-9_-])")
+# Character references that render as "@": escape their "&" so they show as
+# text instead of possibly becoming a mention.
+AT_ENTITY = re.compile(r"&(?=#0*64;|#[xX]0*40;|commat;)")
+MAX_REVIEW_BODY = 60000
+VERDICTS = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES"}
+
+
+def prepare_review(result_text, role, head_sha, run_url):
+    """Returns (review, labels, withheld) for the model's raw output."""
+    tag = f"[{role} reviewer]"
+    try:
+        result = json.loads(result_text)
+    except (TypeError, ValueError):
+        result = None
+    valid = (isinstance(result, dict) and set(result) == {"verdict", "body", "labels"}
+             and result.get("verdict") in VERDICTS
+             and isinstance(result.get("body"), str) and isinstance(result.get("labels"), list))
+    if not valid or SECRET.search(json.dumps(result)):
+        reason = ("matched a credential pattern" if valid else "was missing or malformed")
+        review = {"event": "REQUEST_CHANGES", "commit_id": head_sha,
+                  "body": f"{tag} verdict withheld at {head_sha}\n\nThe review output {reason} "
+                          f"and was not published. See {run_url}."}
+        return review, [], True
+    body = MENTION.sub("@\u200d", AT_ENTITY.sub("&amp;", result["body"]))
+    if len(body) > MAX_REVIEW_BODY:
+        body = body[:MAX_REVIEW_BODY] + "\n\n[truncated]"
+    header = f"{tag} {result['verdict'].replace('_', ' ')} at {head_sha}"
+    review = {"event": VERDICTS[result["verdict"]], "commit_id": head_sha, "body": f"{header}\n\n{body}"}
+    labels = []
+    if role == "correctness":
+        for label in result["labels"]:
+            if isinstance(label, str) and label in HIGH_RISK and label not in labels:
+                labels.append(label)
+    return review, labels, False
+
+
 def _load(name, default):
     """Reads one of the fixed input files the workflow writes to the working directory."""
     if name not in ("labels.json", "events.json", "reviews.json", "files.json", "runs.json"):
@@ -215,6 +263,14 @@ def main(command):
     files = _load("files.json", [])
     runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
+    if command == "prepare":
+        review, labels, held = prepare_review(os.environ.get("RESULT", ""), os.environ["ROLE"], head,
+                                              os.environ.get("RUN_URL", ""))
+        json.dump(review, open("review.json", "w"))
+        json.dump({"labels": labels}, open("labels-to-add.json", "w"))
+        open("withheld", "w").write("1" if held else "")
+        print(f"event={review['event']} labels={labels} withheld={held}", file=sys.stderr)
+        return
     if command == "plan":
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
                                           labels, files, events, reviews, head, runs=runs)

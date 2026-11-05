@@ -259,6 +259,99 @@ class Workflows(unittest.TestCase):
                 self.assertRegex(text, rf"\n      {name}:\n        required: true\n")
 
 
+class PrepareReview(unittest.TestCase):
+    """The model's structured output is untrusted; the post job publishes only
+    what prepare_review keeps (#205)."""
+
+    def prep(self, result, role="correctness"):
+        import json as _json
+        text = result if isinstance(result, str) else _json.dumps(result)
+        return g.prepare_review(text, role, HEAD, "https://run")
+
+    def test_approval_keeps_verdict_body_and_full_sha_header(self):
+        review, labels, withheld = self.prep({"verdict": "approve", "body": "fine", "labels": ["auth"]})
+        self.assertEqual(review["event"], "APPROVE")
+        self.assertEqual(review["commit_id"], HEAD)
+        self.assertTrue(review["body"].startswith(f"[correctness reviewer] approve at {HEAD}\n"))
+        self.assertEqual(labels, ["auth"])
+        self.assertFalse(withheld)
+
+    def test_only_allow_listed_labels_and_only_from_correctness(self):
+        _, labels, _ = self.prep({"verdict": "approve", "body": "x",
+                                  "labels": ["auth", "good first issue", "auth", 7, "process"]})
+        self.assertEqual(labels, ["auth", "process"])
+        _, labels, _ = self.prep({"verdict": "approve", "body": "x", "labels": ["auth"]}, role="red-team")
+        self.assertEqual(labels, [])
+
+    def test_mentions_are_neutralised(self):
+        review, _, _ = self.prep({"verdict": "approve", "body": "ping @vahid110 and @org/team, a@b", "labels": []})
+        self.assertNotIn("@vahid110", review["body"])
+        self.assertNotIn("@org", review["body"])
+        self.assertIn("vahid110", review["body"])
+        review, _, _ = self.prep({"verdict": "approve", "labels": [],
+                                  "body": "&#64;octocat &#064;a &#x40;b &#X0040;c &commat;d &amp; &&"})
+        for entity in ("&#64;octocat", "&#064;a", "&#x40;b", "&#X0040;c", "&commat;d"):
+            self.assertIn("&amp;" + entity[1:], review["body"])
+        self.assertIn("&amp; &&", review["body"])
+
+    def test_body_is_bounded(self):
+        review, _, _ = self.prep({"verdict": "approve", "body": "x" * 200000, "labels": []})
+        self.assertLess(len(review["body"]), 65536)
+
+    def test_malformed_or_unknown_output_is_withheld_not_published(self):
+        for bad in ("not json", '"a string"', {"verdict": "merge", "body": "x", "labels": []},
+                    {"verdict": "approve", "body": 3, "labels": []}, {"verdict": "approve", "labels": []},
+                    {"verdict": "approve", "body": "x", "labels": "auth"},
+                    {"verdict": "approve", "body": "x", "labels": [], "extra": "y"}):
+            with self.subTest(bad=bad):
+                review, labels, withheld = self.prep(bad)
+                self.assertTrue(withheld)
+                self.assertEqual(review["event"], "REQUEST_CHANGES")
+                self.assertTrue(review["body"].startswith(f"[correctness reviewer] verdict withheld at {HEAD}"))
+                self.assertEqual(labels, [])
+                self.assertTrue(g.withheld(review["body"]))
+
+    def test_credential_like_output_is_withheld(self):
+        review, labels, withheld = self.prep({"verdict": "approve", "body": "ghp_" + "a" * 36, "labels": ["auth"]})
+        self.assertTrue(withheld)
+        self.assertNotIn("ghp_", review["body"])
+        self.assertEqual(labels, [])
+
+
+class SplitJobs(unittest.TestCase):
+    """The App key is used only by the start and post jobs; the job that runs
+    the model never mints or holds a reviewer token (#205)."""
+
+    def jobs(self):
+        import re as _re
+        with open(os.path.join(ROOT, ".github", "workflows", "agent-review-run.yml"), encoding="utf-8") as f:
+            text = f.read()
+        parts = _re.split(r"\n  (?=[A-Za-z0-9_-]+:\n)", text.split("\njobs:\n", 1)[1])
+        return {p.split(":", 1)[0].strip(): p for p in parts}
+
+    def test_model_job_never_touches_the_reviewer_key(self):
+        jobs = self.jobs()
+        self.assertIn("model", jobs)
+        model = jobs["model"]
+        self.assertIn("anthropics/claude-code-action@", model)
+        self.assertNotIn("ODBCPP_REVIEWER_PRIVATE_KEY", model)
+        self.assertNotIn("create-github-app-token", model)
+
+    def test_job_names_substitute_the_role(self):
+        for name, job in self.jobs().items():
+            with self.subTest(job=name):
+                self.assertNotIn("({{ inputs.role }})", job)
+                names = [l for l in job.splitlines() if l.startswith("    name: ")]
+                self.assertEqual(1, len(names), job[:120])
+                self.assertTrue(names[0].endswith("(${{ inputs.role }})"), names[0])
+
+    def test_reviews_are_posted_only_after_validation(self):
+        jobs = self.jobs()
+        self.assertIn("post", jobs)
+        self.assertIn("review_gate.py prepare", jobs["post"])
+        self.assertNotIn("anthropics/claude-code-action@", jobs["post"])
+
+
 class Status(unittest.TestCase):
     def test_ordinary_pr_needs_correctness_approval(self):
         # Changed for #204: correctness alone suffices only for documentation.
