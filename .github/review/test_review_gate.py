@@ -183,19 +183,35 @@ class Owners(unittest.TestCase):
 
 
 class Workflows(unittest.TestCase):
-    def test_review_callers_inherit_secrets(self):
-        # The review job reads the reviewer key and the Claude token from the
-        # agent-review environment. A reusable workflow resolves environment
-        # secrets only when its caller uses "secrets: inherit" (#213).
+    SECRETS = ("ODBCPP_REVIEWER_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+
+    def read(self, name):
+        with open(os.path.join(ROOT, ".github", "workflows", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_review_callers_pass_exactly_the_review_secrets(self):
+        # The review job reads its secrets from the agent-review environment,
+        # but a caller must still pass each one, or it is an empty string
+        # (#213). By name, so no other secret reaches the model's job.
         import re as _re
-        with open(os.path.join(ROOT, ".github", "workflows", "agent-review.yml"), encoding="utf-8") as f:
-            text = f.read()
+        text = self.read("agent-review.yml")
+        self.assertNotIn("secrets: inherit", text)
         jobs = _re.split(r"\n  (?=[A-Za-z0-9_-]+:\n)", text)
         callers = [j for j in jobs if "uses: ./.github/workflows/agent-review-run.yml" in j]
         self.assertEqual(len(callers), 2, "expected the correctness and red-team callers")
         for job in callers:
             with self.subTest(job=job.split(":", 1)[0]):
-                self.assertRegex(job, r"\n    secrets: inherit\n")
+                block = _re.search(r"\n    secrets:\n((?:      [^\n]*\n)+)", job)
+                self.assertIsNotNone(block, "the caller passes no secrets")
+                passed = _re.findall(r"^      ([A-Z_]+): \$\{\{ secrets\.([A-Z_]+) \}\}$", block.group(1), _re.M)
+                self.assertEqual(sorted(passed), sorted((n, n) for n in self.SECRETS))
+
+    def test_review_workflow_requires_its_secrets(self):
+        import re as _re
+        text = self.read("agent-review-run.yml")
+        for name in self.SECRETS:
+            with self.subTest(secret=name):
+                self.assertRegex(text, rf"\n      {name}:\n        required: true\n")
 
 
 class Status(unittest.TestCase):
