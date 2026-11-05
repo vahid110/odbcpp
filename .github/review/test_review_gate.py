@@ -10,6 +10,7 @@ import review_gate as g  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 HEAD, OLD = "a" * 40, "b" * 40
+DOCS = ["docs/notes.md"]
 PR = "7"
 os.environ["PR_NUMBER"] = PR
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
@@ -37,13 +38,18 @@ def plan_(*args, **kwargs):
 
 
 class Plan(unittest.TestCase):
-    def test_ordinary_push_runs_correctness_only(self):
-        self.assertEqual(plan_("synchronize", "", [], ["odbc/odbc_cursor.cpp"], [], [], HEAD),
+    def test_documentation_push_runs_correctness_only(self):
+        # Changed for #204: a code push now also starts the red-team review
+        # (test_code_change_starts_red_team_without_a_label).
+        self.assertEqual(plan_("synchronize", "", [], ["docs/odbc-cursor.md"], [], [], HEAD),
                          (True, False, []))
 
     def test_path_rule_adds_label_and_lets_its_event_start_red_team(self):
         c, r, add = plan_("opened", "", [], ["sdk/src/auth/x.cpp"], [], [], HEAD)
-        self.assertEqual((c, r, add), (True, False, ["auth"]))
+        # Changed for #204: a code path starts the red-team review at once; the
+        # label is still added, and its own event does not start a second one
+        # once the review is done.
+        self.assertEqual((c, r, add), (True, True, ["auth"]))
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], [], HEAD)[:2], (False, True))
 
     def test_agent_instruction_paths_require_process(self):
@@ -208,8 +214,9 @@ class Owners(unittest.TestCase):
 
 class Status(unittest.TestCase):
     def test_ordinary_pr_needs_correctness_approval(self):
-        self.assertEqual(g.status_([], [], [], HEAD)[0], "pending")
-        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD)[0], "success")
+        # Changed for #204: correctness alone suffices only for documentation.
+        self.assertEqual(g.status_([], [], [], HEAD, files=DOCS)[0], "pending")
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD, files=DOCS)[0], "success")
 
     def test_high_risk_pr_needs_both_roles(self):
         reviews = [review("correctness", "APPROVED")]
@@ -224,9 +231,9 @@ class Status(unittest.TestCase):
     def test_latest_review_per_role_wins(self):
         reviews = [review("correctness", "APPROVED", at="2026-11-03T10:00:00Z"),
                    review("correctness", "CHANGES_REQUESTED", at="2026-11-03T11:00:00Z")]
-        self.assertEqual(g.status_(reviews, [], [], HEAD)[0], "failure")
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=DOCS)[0], "failure")
         reviews.append(review("correctness", "APPROVED", at="2026-11-03T12:00:00Z"))
-        self.assertEqual(g.status_(reviews, [], [], HEAD)[0], "success")
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=DOCS)[0], "success")
 
     def test_approval_of_another_commit_does_not_count(self):
         self.assertEqual(g.status_([review("correctness", "APPROVED", sha=OLD)], [], [], HEAD)[0], "pending")
@@ -256,7 +263,8 @@ class Status(unittest.TestCase):
                          "pending")
 
     def test_bold_and_plain_headers_are_both_recognised(self):
-        self.assertEqual(g.status_([review("correctness", "APPROVED", bold=True)], [], [], HEAD)[0], "success")
+        self.assertEqual(g.status_([review("correctness", "APPROVED", bold=True)], [], [], HEAD, files=DOCS)[0],
+                         "success")
 
     def test_header_must_lead_the_body(self):
         r = review("correctness", "APPROVED")
@@ -357,10 +365,13 @@ class Command(unittest.TestCase):
 
     def test_plan_prints_only_step_outputs(self):
         stdout, _ = self.run_gate("plan", {"files.json": ["sdk/src/auth/x.cpp"]}, {"EVENT_ACTION": "opened"})
-        self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=false", "add_labels=auth"])
+        # Changed for #204: the code path starts the red-team review at once.
+        self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=true", "add_labels=auth"])
 
     def test_status_writes_the_check_file(self):
-        stdout, status = self.run_gate("status", {"reviews.json": [review("correctness", "APPROVED")]}, {})
+        # Changed for #204: correctness alone suffices only for documentation.
+        stdout, status = self.run_gate("status", {"reviews.json": [review("correctness", "APPROVED")],
+                                                  "files.json": DOCS}, {})
         self.assertEqual(stdout, "")
         self.assertEqual(status.splitlines()[0], "success")
 

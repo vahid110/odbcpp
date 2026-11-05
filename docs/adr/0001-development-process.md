@@ -41,9 +41,12 @@ replace hand-made evidence and custom ceremony.
 4. **Independent review.** The author attaches the evidence to the PR (see
    `AGENTS.md`). Every PR gets a reviewer agent that did not write it; it reads
    the code and the evidence but does not build or run anything, and treats an
-   unsupported claim as a finding. PRs labelled `security`, `auth`, `protocol`,
-   `transactions` or `process` also get a second, independent red-team
+   unsupported claim as a finding. Every PR that changes more than plain
+   documentation, and every PR labelled `security`, `auth`, `protocol`,
+   `transactions` or `process`, also gets a second, independent red-team
    reviewer that tries to break the change and does not see the first review.
+   (Default since #204: a prompt injection that keeps the first reviewer from
+   adding a label must not also skip the second.)
    Findings are posted on the PR; the author fixes and pushes, and the
    reviewers review again, until every reviewer approves. Approval covers one
    commit: any new push needs a new review. Agents merge their own PRs once
