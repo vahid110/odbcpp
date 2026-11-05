@@ -93,6 +93,9 @@ def judge(messages, probes, inside, outside, claude_md_token=None, structured=""
     """Returns (failures, per-probe lines); no failures means the canary passed."""
     calls, results = collect(messages)
     failures, lines = [], []
+    # A call and a result without ids would pair with each other (#208).
+    if any(c.get("id") is None for c in calls) or None in results:
+        failures.append("a tool call or result has no id")
     every_result = [outcome for outcomes in results.values() for outcome in outcomes]
     everything = "\n".join(text for _, text in every_result)
     if any(value and value in everything for value in outside):

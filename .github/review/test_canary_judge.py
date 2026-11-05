@@ -87,14 +87,26 @@ class CanaryJudge(unittest.TestCase):
         # a refusal, so the success must not be overwritten (#208).
         calls = passing_calls()
         extra_result = {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "4", "is_error": False, "content": "read canary.txt"}]}}
+            {"type": "tool_result", "tool_use_id": "4", "is_error": False, "content": "hello"}]}}
         messages = transcript(*calls)
         index = next(i for i, m in enumerate(messages)
                      if m["type"] == "user" and m["message"]["content"][0]["tool_use_id"] == "4")
         messages.insert(index, extra_result)
         failures, _ = cj.judge(messages, cj.standard_probes(WS, HOME, TEMP), INSIDE, OUTSIDE,
                                claude_md_token=TOKEN, structured='{"calls_made": 18, "note": ""}')
-        self.assertTrue(any("canary.txt" in f or "outside" in f or TEMP in f for f in failures), failures)
+        # The probe itself must fail, not only the outside-name check.
+        self.assertIn(f"Read {TEMP}/canary.txt", failures)
+
+    def test_a_call_or_result_without_an_id_fails(self):
+        calls = passing_calls()
+        messages = transcript(*calls) + [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read",
+                                                           "input": {"file_path": "/tmp/x"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": False,
+                                                      "content": "hello"}]}}]
+        failures, _ = cj.judge(messages, cj.standard_probes(WS, HOME, TEMP), INSIDE, OUTSIDE,
+                               claude_md_token=TOKEN, structured='{"calls_made": 18, "note": ""}')
+        self.assertIn("a tool call or result has no id", failures)
 
     def test_init_entry_with_a_string_message_still_reports_mcp_servers(self):
         # The real shape seen in run 41922099760.
