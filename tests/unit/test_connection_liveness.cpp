@@ -282,6 +282,218 @@ TEST(TerminalErrorResponseTest, FatalAfterBeginKeepsPassiveDeadHandleAndExplicit
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, env));
 }
 
+TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecycleStatesWithoutNetworkIo) {
+  const auto facts = std::make_shared<TerminalResponseFacts>();
+  SQLHENV env{}; SQLHDBC dbc{}; SQLHSTMT stmt{};
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &env));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION,
+      reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<TerminalResponseProvider>(facts));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+
+  // 1. Unconnected / Pre-connect state:
+  // Both ANSI and Wide getters must fail with 08003 without performing any network I/O.
+  EXPECT_EQ(0u, facts->reads);
+  EXPECT_EQ(0u, facts->sends);
+  {
+    constexpr SQLUINTEGER canary_ansi = 0xAA55AA55;
+    SQLUINTEGER dead_ansi = canary_ansi;
+    SQLINTEGER len_ansi = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_ansi, sizeof(dead_ansi), &len_ansi));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(canary_ansi, dead_ansi);
+    EXPECT_EQ(-73, len_ansi);
+    EXPECT_EQ(0u, facts->reads);
+    EXPECT_EQ(0u, facts->sends);
+
+    constexpr SQLUINTEGER canary_wide = 0x55AA55AA;
+    SQLUINTEGER dead_wide = canary_wide;
+    SQLINTEGER len_wide = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_wide, sizeof(dead_wide), &len_wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(canary_wide, dead_wide);
+    EXPECT_EQ(-73, len_wide);
+    EXPECT_EQ(0u, facts->reads);
+    EXPECT_EQ(0u, facts->sends);
+
+    // Length-only query on unconnected handle
+    SQLINTEGER len_only = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
+    EXPECT_EQ(-73, len_only);
+    EXPECT_EQ(0u, facts->reads);
+    EXPECT_EQ(0u, facts->sends);
+
+    // Null value and null length pointer
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY009", reinterpret_cast<char*>(state));
+    EXPECT_EQ(0u, facts->reads);
+    EXPECT_EQ(0u, facts->sends);
+
+    // Attempting to set read-only attribute must be rejected with HY092
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(0u, facts->reads);
+    EXPECT_EQ(0u, facts->sends);
+  }
+
+  // 2. Connected & healthy state:
+  SQLCHAR input[] = "SERVER=synthetic.invalid;SSL=0";
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, input, SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  const auto connected_reads = facts->reads;
+  const auto connected_sends = facts->sends;
+  EXPECT_GT(connected_reads, 0u);
+  EXPECT_GT(connected_sends, 0u);
+
+  {
+    SQLUINTEGER dead_ansi = SQL_CD_TRUE;
+    SQLINTEGER len_ansi = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_ansi, sizeof(dead_ansi), &len_ansi));
+    EXPECT_EQ(SQL_CD_FALSE, dead_ansi);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_ansi);
+    EXPECT_EQ(connected_reads, facts->reads);
+    EXPECT_EQ(connected_sends, facts->sends);
+
+    SQLUINTEGER dead_wide = SQL_CD_TRUE;
+    SQLINTEGER len_wide = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_wide, sizeof(dead_wide), &len_wide));
+    EXPECT_EQ(SQL_CD_FALSE, dead_wide);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_wide);
+    EXPECT_EQ(connected_reads, facts->reads);
+    EXPECT_EQ(connected_sends, facts->sends);
+
+    // Length-only query on open handle
+    SQLINTEGER len_only = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only);
+    EXPECT_EQ(connected_reads, facts->reads);
+    EXPECT_EQ(connected_sends, facts->sends);
+
+    // Rejection of setting read-only attribute on active connection
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_TRUE), 0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_TRUE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(connected_reads, facts->reads);
+    EXPECT_EQ(connected_sends, facts->sends);
+  }
+
+  // 3. Broken connection state (fatal server error / communication failure):
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(2), 0));
+  SQLCHAR query[] = "SELECT pg_terminate_backend(pg_backend_pid())";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, query, SQL_NTS));
+  SQLCHAR stmt_state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, stmt_state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("08S01", reinterpret_cast<char*>(stmt_state));
+
+  const auto broken_reads = facts->reads;
+  const auto broken_sends = facts->sends;
+  EXPECT_GT(broken_reads, connected_reads);
+  EXPECT_GT(broken_sends, connected_sends);
+
+  {
+    SQLUINTEGER dead_ansi = SQL_CD_FALSE;
+    SQLINTEGER len_ansi = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_ansi, sizeof(dead_ansi), &len_ansi));
+    EXPECT_EQ(SQL_CD_TRUE, dead_ansi);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_ansi);
+    EXPECT_EQ(broken_reads, facts->reads);
+    EXPECT_EQ(broken_sends, facts->sends);
+
+    SQLUINTEGER dead_wide = SQL_CD_FALSE;
+    SQLINTEGER len_wide = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_wide, sizeof(dead_wide), &len_wide));
+    EXPECT_EQ(SQL_CD_TRUE, dead_wide);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_wide);
+    EXPECT_EQ(broken_reads, facts->reads);
+    EXPECT_EQ(broken_sends, facts->sends);
+
+    // Length-only query on broken handle
+    SQLINTEGER len_only = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only);
+    EXPECT_EQ(broken_reads, facts->reads);
+    EXPECT_EQ(broken_sends, facts->sends);
+
+    // Rejection of setting read-only attribute on broken connection
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(broken_reads, facts->reads);
+    EXPECT_EQ(broken_sends, facts->sends);
+  }
+
+  // 4. Post-SQLDisconnect state:
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  const auto dc_reads = facts->reads;
+  const auto dc_sends = facts->sends;
+
+  {
+    constexpr SQLUINTEGER canary_dc = 0x12345678;
+    SQLUINTEGER dead_ansi = canary_dc;
+    SQLINTEGER len_ansi = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_ansi, sizeof(dead_ansi), &len_ansi));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(canary_dc, dead_ansi);
+    EXPECT_EQ(-73, len_ansi);
+    EXPECT_EQ(dc_reads, facts->reads);
+    EXPECT_EQ(dc_sends, facts->sends);
+
+    constexpr SQLUINTEGER canary_dc_w = 0x87654321;
+    SQLUINTEGER dead_wide = canary_dc_w;
+    SQLINTEGER len_wide = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_wide, sizeof(dead_wide), &len_wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(canary_dc_w, dead_wide);
+    EXPECT_EQ(-73, len_wide);
+    EXPECT_EQ(dc_reads, facts->reads);
+    EXPECT_EQ(dc_sends, facts->sends);
+
+    // Length-only query post-disconnect
+    SQLINTEGER len_only = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
+    EXPECT_EQ(-73, len_only);
+    EXPECT_EQ(dc_reads, facts->reads);
+    EXPECT_EQ(dc_sends, facts->sends);
+
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(dc_reads, facts->reads);
+    EXPECT_EQ(dc_sends, facts->sends);
+  }
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, env));
+}
+
 // Wire fixtures supply PostgreSQL endpoint policy explicitly, outside SDK defaults.
 rs::core::database::ConnectionSettings pg_fixture_settings() {
   rs::core::database::ConnectionSettings settings;

@@ -19,9 +19,8 @@ const IBackendProvider& configured_backend_provider() {
 #elif defined(ODBCPP_ENABLE_REDSHIFT)
   static const postgres::PgBackendProvider provider{
       BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
-      // Preserve the existing PostgreSQL-shaped defaults until a real Redshift
-      // pilot establishes a supported product profile.
-      BackendConnectionDefaults{"localhost", 5432, "postgres", true}, std::nullopt,
+      // Redshift's own defaults: port 5439 and the "dev" database.
+      BackendConnectionDefaults{"localhost", 5439, "dev", true}, std::nullopt,
       postgres::PgCatalogProfile::Redshift};
   return provider;
 #else

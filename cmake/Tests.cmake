@@ -164,8 +164,6 @@ target_include_directories(test_pg_credential_consumer PRIVATE "${ODBCPP_PG_AUTH
 foreach(_test IN LISTS ODBCPP_AUTH_CORE_UNIT_TESTS)
   target_include_directories(${_test} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
 endforeach()
-target_link_libraries(test_connection_pool PRIVATE odbcpp_prototype_pool)
-target_link_libraries(test_thread_safety PRIVATE odbcpp_prototype_pool)
 target_link_libraries(test_response_operation PRIVATE Threads::Threads)
 target_link_libraries(test_session_cancellation PRIVATE Threads::Threads)
 target_sources(test_pg_staged_refusal_observer PRIVATE
@@ -195,6 +193,12 @@ set_tests_properties(test_xml_evidence PROPERTIES LABELS "unit;security" TIMEOUT
 add_test(NAME test_aws_sdk_provenance COMMAND "${Python3_EXECUTABLE}" -B
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/dependencies/test_aws_sdk_provenance.py")
 set_tests_properties(test_aws_sdk_provenance PROPERTIES LABELS "unit;security" TIMEOUT 60)
+add_test(NAME test_junit_summary COMMAND "${Python3_EXECUTABLE}" -I -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/development/test_junit_summary.py")
+set_tests_properties(test_junit_summary PROPERTIES LABELS "unit" TIMEOUT 60)
+add_test(NAME test_review_gate COMMAND "${Python3_EXECUTABLE}" -I -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/.github/review/test_review_gate.py")
+set_tests_properties(test_review_gate PROPERTIES LABELS "unit" TIMEOUT 60)
 # This lifecycle runs on the POSIX coordinator (including WSL), not native Windows.
 if(UNIX)
   add_test(NAME test_redshift_ca_snapshot COMMAND "${Python3_EXECUTABLE}" -B
@@ -308,6 +312,12 @@ add_test(
           -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckArchitecture.cmake)
 set_tests_properties(test_architecture_boundaries PROPERTIES LABELS "unit;architecture")
+add_test(NAME test_library_graph
+  COMMAND ${CMAKE_COMMAND} -DBINARY_DIR=${CMAKE_BINARY_DIR}
+          -DSCRATCH_DIR=${CMAKE_BINARY_DIR}/library-graph-scratch
+          "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestLibraryGraph.cmake)
+set_tests_properties(test_library_graph PROPERTIES LABELS "unit;architecture" TIMEOUT 180)
 
 add_test(
   NAME test_unimplemented_backend_rejected
@@ -521,7 +531,6 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "integration")
 endforeach()
-target_link_libraries(it_connection_pool PRIVATE odbcpp_prototype_pool)
 if(TARGET it_session_baseline)
   target_link_libraries(it_session_baseline PRIVATE odbcpp_session_baseline)
 endif()
@@ -984,6 +993,13 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ProbeInternalIncludes.cmake")
 set_tests_properties(test_internal_include_closure
   PROPERTIES LABELS "unit;architecture" TIMEOUT 90)
 
+# Reconfigure must not re-stamp unchanged staged headers (issue #119).
+add_test(NAME test_stable_header_staging COMMAND "${CMAKE_COMMAND}"
+  "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+  "-DFIXTURE_DIR=${CMAKE_CURRENT_BINARY_DIR}/stable header staging fixtures"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestStableHeaderStaging.cmake")
+set_tests_properties(test_stable_header_staging PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
+
 # Backend-private first/only include; compile-only, with no source-root fallback.
 add_library(odbcpp_mysql_session_header_isolation OBJECT
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/header_isolation/mysql_session_first_include.cpp")
@@ -992,14 +1008,3 @@ target_include_directories(odbcpp_mysql_session_header_isolation PRIVATE
   "${ODBCPP_INTERNAL_INCLUDE_backend}")
 apply_compiler_settings(odbcpp_mysql_session_header_isolation)
 
-add_test(NAME test_prototype_pool_quarantine COMMAND "${CMAKE_COMMAND}"
-  "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-  "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DCONFIG=$<CONFIG>"
-  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestPrototypePool.cmake")
-set_tests_properties(test_prototype_pool_quarantine PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
-add_test(NAME test_prototype_pool_artifacts COMMAND "${CMAKE_COMMAND}"
-  "-DCORE=$<TARGET_FILE:odbcpp_core>" "-DDRIVER=$<TARGET_FILE:odbcpp_driver>"
-  "-DPROTOTYPE=$<TARGET_FILE:odbcpp_prototype_pool>"
-  "-DINSPECTOR=${ODBCPP_DRIVER_EXPORT_INSPECTOR}" "-DPLATFORM=${CMAKE_SYSTEM_NAME}"
-  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckPrototypeArtifacts.cmake")
-set_tests_properties(test_prototype_pool_artifacts PROPERTIES LABELS "unit;architecture" TIMEOUT 60)

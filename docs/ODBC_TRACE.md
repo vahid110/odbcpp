@@ -117,5 +117,7 @@ Recommended follow-up. This is an incremental change, not a redesign:
   connection.
 - Attribute `ValuePtr` and info buffers are shown as addresses, not decoded per
   attribute.
-- Unchanged pre-existing behavior: the connection logger still accepts
-  `LogFile` from connection strings.
+- The connection logger accepts `LogFile`, `LogMaxSize`, `LogMaxFiles`,
+  `LogSink=File` and `LogQueries=true` only from the DSN or driver section;
+  connection strings may set the level, format, stderr/syslog sinks and
+  `LogQueries=false`.

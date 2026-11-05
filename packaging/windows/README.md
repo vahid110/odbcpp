@@ -30,6 +30,16 @@ packaging an older artifact does not become a new compilation result. The
 tracked-source guard alone does not prove which source compiled a cached image;
 retain its actual source/image/build/CI evidence separately.
 
+On Windows, configure also records the resolved spdlog source directory and
+hashes of its license/version inputs in `odbcpp-logging-package-inputs.json`.
+This honors `FETCHCONTENT_SOURCE_DIR_SPDLOG` and a custom FetchContent base
+directory. Packaging takes both spdlog and its bundled fmt notices and versions
+from that single source; it refuses missing metadata or changed inputs instead
+of falling back to another dependency copy. Reconfigure and rebuild the exact
+clean source after dependency changes. The package inventory includes versions
+and input hashes, not the local dependency path. These are configure-time facts;
+they do not establish that an older cached binary used the recorded headers.
+
 The build pins WiX 6.0.2, rejects non-x64 PE payloads, stages only runtime files
 and notices, and emits an MSI, SHA-256 checksum and per-file dependency inventory.
 The generated crypto manifest is validated against the Windows `OPENSSL` +

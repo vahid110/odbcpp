@@ -91,7 +91,7 @@ namespace {
 
   std::optional<std::string> first_unknown_connection_keyword(
       const std::string& connection_string) {
-    static constexpr std::array<std::string_view, 65> supported{{
+    static constexpr std::array<std::string_view, 70> supported{{
         "DSN", "DRIVER", "SERVER", "HOST", "PORT", "DATABASE", "DB",
         "MAXRESPONSEBYTES", "MAXRESPONSEMESSAGES", "MAXSTARTUPRESPONSEBYTES", "MAXSTARTUPRESPONSEMESSAGES",
         "MAXROWS", "MAXCELLS", "MAXCOLUMNS", "MAXRESULTS", "MAXMETADATAENTRIES", "MAXCOLUMNNAMEBYTES",
@@ -104,7 +104,7 @@ namespace {
         "MAXVARCHARSIZE", "MAXLONGVARCHARSIZE", "BOOLSASCHAR", "ENABLETABLETYPES", "DATABASEMETADATACURRENTDBONLY",
         "ASYNCENGINE", "DEADLINEMODEL", "LOGLEVEL", "LOGFORMAT",
         "LOGSINK", "LOGFILE", "LOGMAXSIZE", "LOGMAXFILES", "LOGASYNC",
-        "LOGQUERIES"}};
+        "LOGQUERIES", "PLUGINNAME", "PROVIDERNAME", "TOKENTYPE", "IDENTITYNAMESPACE", "TOKEN"}};
     for (const auto& [keyword, value] :
          ConnectionString::parse(connection_string)) {
       (void)value;
@@ -352,8 +352,8 @@ namespace {
       case SQL_PROCEDURE_TERM: return backend.procedure_term;
       case SQL_SEARCH_PATTERN_ESCAPE: return backend.pattern_escape;
       case SQL_COLLATION_SEQ:
-      case SQL_KEYWORDS:
       case SQL_SPECIAL_CHARACTERS: return "";
+      case SQL_KEYWORDS: return backend.keywords;
       case SQL_XOPEN_CLI_YEAR: return "1995";
       case SQL_CATALOG_NAME: return backend.catalog_names ? "Y" : "N";
       case SQL_COLUMN_ALIAS: return backend.column_aliases ? "Y" : "N";
@@ -522,6 +522,11 @@ namespace {
       case SQL_API_SQLSPECIALCOLUMNS:
       case SQL_API_SQLSTATISTICS:
       case SQL_API_SQLTABLES:
+#ifdef SQL_API_SQLCANCELHANDLE
+      case SQL_API_SQLCANCELHANDLE:
+#endif
+      case SQL_API_SQLGETCURSORNAME:
+      case SQL_API_SQLSETCURSORNAME:
         return true;
       default:
         return false;
@@ -537,9 +542,6 @@ namespace {
       case SQL_API_SQLBINDPARAM:
       case SQL_API_SQLBROWSECONNECT:
       case SQL_API_SQLCANCEL:
-#ifdef SQL_API_SQLCANCELHANDLE
-      case SQL_API_SQLCANCELHANDLE:
-#endif
       case SQL_API_SQLCOLATTRIBUTES:
       case SQL_API_SQLCOLUMNPRIVILEGES:
       case SQL_API_SQLDATASOURCES:
@@ -548,12 +550,10 @@ namespace {
       case SQL_API_SQLFREECONNECT:
       case SQL_API_SQLFREEENV:
       case SQL_API_SQLGETCONNECTOPTION:
-      case SQL_API_SQLGETCURSORNAME:
       case SQL_API_SQLGETSTMTOPTION:
       case SQL_API_SQLPARAMDATA:
       case SQL_API_SQLPUTDATA:
       case SQL_API_SQLSETCONNECTOPTION:
-      case SQL_API_SQLSETCURSORNAME:
       case SQL_API_SQLSETPARAM:
       case SQL_API_SQLSETSTMTOPTION:
       case SQL_API_SQLTABLEPRIVILEGES:
@@ -1735,11 +1735,13 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_MAX_COLUMNS_IN_GROUP_BY:
     case SQL_MAX_COLUMNS_IN_INDEX:
     case SQL_MAX_COLUMNS_IN_ORDER_BY:
-    case SQL_MAX_COLUMNS_IN_SELECT:
-    case SQL_MAX_COLUMNS_IN_TABLE:
     case SQL_MAX_CURSOR_NAME_LEN:
     case SQL_MAX_TABLES_IN_SELECT:
       return write_usmallint(0);
+    case SQL_MAX_COLUMNS_IN_SELECT:
+      return write_usmallint(backend.max_columns_in_select);
+    case SQL_MAX_COLUMNS_IN_TABLE:
+      return write_usmallint(backend.max_columns_in_table);
     case SQL_IDENTIFIER_CASE:
       return write_usmallint(backend_enum_value(backend.identifier_case,
           std::array<SQLUSMALLINT, 4>{SQL_IC_SENSITIVE, SQL_IC_UPPER, SQL_IC_LOWER, SQL_IC_MIXED}));
@@ -1782,16 +1784,12 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_BATCH_SUPPORT:
     case SQL_AGGREGATE_FUNCTIONS:
     case SQL_ALTER_DOMAIN:
-    case SQL_ALTER_TABLE:
     case SQL_DATETIME_LITERALS:
     case SQL_CREATE_ASSERTION:
     case SQL_CREATE_CHARACTER_SET:
     case SQL_CREATE_COLLATION:
     case SQL_CREATE_DOMAIN:
-    case SQL_CREATE_SCHEMA:
-    case SQL_CREATE_TABLE:
     case SQL_CREATE_TRANSLATION:
-    case SQL_CREATE_VIEW:
     case SQL_CONVERT_FUNCTIONS:
     case SQL_CONVERT_BIGINT:
     case SQL_CONVERT_BINARY:
@@ -1826,12 +1824,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_DROP_CHARACTER_SET:
     case SQL_DROP_COLLATION:
     case SQL_DROP_DOMAIN:
-    case SQL_DROP_SCHEMA:
-    case SQL_DROP_TABLE:
     case SQL_DROP_TRANSLATION:
-    case SQL_DROP_VIEW:
-    case SQL_INFO_SCHEMA_VIEWS:
-    case SQL_INDEX_KEYWORDS:
     case SQL_KEYSET_CURSOR_ATTRIBUTES1:
     case SQL_KEYSET_CURSOR_ATTRIBUTES2:
     case SQL_MAX_BINARY_LITERAL_LEN:
@@ -1862,6 +1855,93 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_TIMEDATE_DIFF_INTERVALS:
     case SQL_TIMEDATE_FUNCTIONS:
       return write_uinteger(0);
+    case SQL_CREATE_TABLE:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.create_table
+              ? (SQL_CT_CREATE_TABLE | SQL_CT_LOCAL_TEMPORARY |
+                 SQL_CT_COLUMN_CONSTRAINT | SQL_CT_COLUMN_DEFAULT |
+                 SQL_CT_TABLE_CONSTRAINT | SQL_CT_CONSTRAINT_NAME_DEFINITION |
+                 (backend.create_table_commit_preserve ? SQL_CT_COMMIT_PRESERVE : 0) |
+                 (backend.create_table_commit_delete ? SQL_CT_COMMIT_DELETE : 0) |
+                 (backend.create_table_column_collation ? SQL_CT_COLUMN_COLLATION : 0))
+              : 0));
+    case SQL_DROP_TABLE:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.drop_table
+              ? (SQL_DT_DROP_TABLE | SQL_DT_CASCADE | SQL_DT_RESTRICT)
+              : 0));
+    case SQL_CREATE_VIEW:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.create_view
+              ? (SQL_CV_CREATE_VIEW |
+                 (backend.create_view_check_option ? SQL_CV_CHECK_OPTION : 0))
+              : 0));
+    case SQL_DROP_VIEW:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.drop_view
+              ? (SQL_DV_DROP_VIEW | SQL_DV_CASCADE | SQL_DV_RESTRICT)
+              : 0));
+    case SQL_ALTER_TABLE:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.alter_table
+              ? (SQL_AT_ADD_COLUMN_SINGLE | SQL_AT_ADD_COLUMN_DEFAULT |
+                 SQL_AT_SET_COLUMN_DEFAULT | SQL_AT_DROP_COLUMN_DEFAULT |
+                 SQL_AT_DROP_COLUMN_CASCADE | SQL_AT_DROP_COLUMN_RESTRICT |
+                 SQL_AT_ADD_TABLE_CONSTRAINT |
+                 SQL_AT_DROP_TABLE_CONSTRAINT_CASCADE |
+                 SQL_AT_DROP_TABLE_CONSTRAINT_RESTRICT |
+                 SQL_AT_CONSTRAINT_NAME_DEFINITION |
+                 (backend.alter_table_column_collation ? SQL_AT_ADD_COLUMN_COLLATION : 0))
+              : 0));
+    case SQL_CREATE_SCHEMA:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.create_schema
+              ? (SQL_CS_CREATE_SCHEMA | SQL_CS_AUTHORIZATION)
+              : 0));
+    case SQL_DROP_SCHEMA:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.drop_schema
+              ? (SQL_DS_DROP_SCHEMA | SQL_DS_CASCADE | SQL_DS_RESTRICT)
+              : 0));
+    case SQL_INDEX_KEYWORDS:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          backend.create_index ? (SQL_IK_ASC | SQL_IK_DESC) : 0));
+    case SQL_INFO_SCHEMA_VIEWS:
+      using rs::core::database::InfoSchemaSupport;
+      switch (backend.info_schema_support) {
+        case InfoSchemaSupport::Full:
+          return write_uinteger(static_cast<SQLUINTEGER>(
+              SQL_ISV_CHARACTER_SETS |
+              SQL_ISV_CHECK_CONSTRAINTS |
+              SQL_ISV_COLLATIONS |
+              SQL_ISV_COLUMN_DOMAIN_USAGE |
+              SQL_ISV_COLUMN_PRIVILEGES |
+              SQL_ISV_COLUMNS |
+              SQL_ISV_CONSTRAINT_COLUMN_USAGE |
+              SQL_ISV_CONSTRAINT_TABLE_USAGE |
+              SQL_ISV_DOMAIN_CONSTRAINTS |
+              SQL_ISV_DOMAINS |
+              SQL_ISV_KEY_COLUMN_USAGE |
+              SQL_ISV_REFERENTIAL_CONSTRAINTS |
+              SQL_ISV_SCHEMATA |
+              SQL_ISV_SQL_LANGUAGES |
+              SQL_ISV_TABLE_CONSTRAINTS |
+              SQL_ISV_TABLE_PRIVILEGES |
+              SQL_ISV_TABLES |
+              SQL_ISV_USAGE_PRIVILEGES |
+              SQL_ISV_VIEW_COLUMN_USAGE |
+              SQL_ISV_VIEW_TABLE_USAGE |
+              SQL_ISV_VIEWS));
+        case InfoSchemaSupport::Partial:
+          return write_uinteger(static_cast<SQLUINTEGER>(
+              SQL_ISV_COLUMNS |
+              SQL_ISV_SCHEMATA |
+              SQL_ISV_TABLES |
+              SQL_ISV_VIEWS));
+        case InfoSchemaSupport::None:
+        default:
+          return write_uinteger(0);
+      }
     case SQL_DDL_INDEX:
       return write_uinteger(static_cast<SQLUINTEGER>(
           (backend.create_index ? SQL_DI_CREATE_INDEX : 0) |
@@ -3147,6 +3227,141 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
   return target->copy_from(*source);
 }
 
+static SQLRETURN SQLGetCursorName_impl(
+    SQLHSTMT statement_handle, SQLCHAR* cursor_name, SQLSMALLINT buffer_length,
+    SQLSMALLINT* name_length_ptr) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  const auto name = stmt->get_cursor_name();
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output buffer length");
+    return SQL_ERROR;
+  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          name.size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
+  if (!cursor_name) {
+    return SQL_SUCCESS;
+  }
+  if (buffer_length == 0) {
+    if (!name.empty()) {
+      stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Cursor name was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+  const auto copied = std::min<std::size_t>(
+      name.size(), static_cast<std::size_t>(buffer_length - 1));
+  if (copied > 0) {
+    std::memcpy(cursor_name, name.data(), copied);
+  }
+  cursor_name[copied] = '\0';
+  if (copied < name.size()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Cursor name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
+}
+
+static SQLRETURN SQLGetCursorNameW_impl(
+    SQLHSTMT statement_handle, SQLWCHAR* cursor_name, SQLSMALLINT buffer_length,
+    SQLSMALLINT* name_length_ptr) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  const auto name = stmt->get_cursor_name();
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output buffer length");
+    return SQL_ERROR;
+  }
+  const auto wide = utf8_to_wide(name);
+  if (!wide) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid UTF-8 output text");
+    return SQL_ERROR;
+  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          wide->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
+  if (!cursor_name) {
+    return SQL_SUCCESS;
+  }
+  if (buffer_length == 0) {
+    if (!wide->empty()) {
+      stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Cursor name was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+  auto copied = std::min<std::size_t>(
+      wide->size(), static_cast<std::size_t>(buffer_length - 1));
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    if (copied < wide->size() && copied > 0 &&
+        (*wide)[copied - 1] >= 0xd800 &&
+        (*wide)[copied - 1] <= 0xdbff) {
+      --copied;
+    }
+  }
+  if (copied > 0) {
+    std::memcpy(cursor_name, wide->data(), copied * sizeof(SQLWCHAR));
+  }
+  cursor_name[copied] = 0;
+  if (copied < wide->size()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Cursor name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
+}
+
+static SQLRETURN SQLSetCursorName_impl(
+    SQLHSTMT statement_handle, SQLCHAR* cursor_name, SQLSMALLINT name_length) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!cursor_name) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "Cursor name is null");
+    return SQL_ERROR;
+  }
+  if (name_length < 0 && name_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid cursor name length");
+    return SQL_ERROR;
+  }
+  const auto len = (name_length == SQL_NTS)
+                       ? std::strlen(reinterpret_cast<const char*>(cursor_name))
+                       : static_cast<std::size_t>(name_length);
+  std::string name(reinterpret_cast<const char*>(cursor_name), len);
+  return stmt->set_cursor_name(name);
+}
+
+static SQLRETURN SQLSetCursorNameW_impl(
+    SQLHSTMT statement_handle, SQLWCHAR* cursor_name, SQLSMALLINT name_length) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!cursor_name) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "Cursor name is null");
+    return SQL_ERROR;
+  }
+  if (name_length < 0 && name_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid cursor name length");
+    return SQL_ERROR;
+  }
+  const auto utf8 = sqlwchar_to_utf8(cursor_name, name_length);
+  if (!utf8) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character cursor name");
+    return SQL_ERROR;
+  }
+  return stmt->set_cursor_name(*utf8);
+}
+
 } // extern "C"
 
 // Every exported entry point is intercepted once, outside its handle guard, so
@@ -3319,6 +3534,12 @@ ODBCPP_API_5(SQLGetStmtAttrW, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER,
              SQLINTEGER, SQLINTEGER*)
 ODBCPP_API_1(SQLCloseCursor, a1, SQLHSTMT)
 ODBCPP_API_2(SQLFreeStmt, a1, SQLHSTMT, SQLUSMALLINT)
+ODBCPP_API_4(SQLGetCursorName, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_4(SQLGetCursorNameW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_3(SQLSetCursorName, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_3(SQLSetCursorNameW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT)
 ODBCPP_DIAG_API_8(SQLGetDiagRec, a2, SQLSMALLINT, SQLHANDLE,
              SQLSMALLINT, SQLCHAR*, SQLINTEGER*, SQLCHAR*, SQLSMALLINT,
              SQLSMALLINT*)

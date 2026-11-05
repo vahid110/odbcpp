@@ -8,6 +8,7 @@ enum class IdentifierCase { Sensitive, Upper, Lower, Mixed };
 enum class NullCollation { High, Low, Start, End };
 enum class CorrelationNames { None, Different, Any };
 enum class GroupBySupport { None, EqualsSelect, ContainsSelect, Unrelated };
+enum class InfoSchemaSupport { None, Partial, Full };
 
 // No ODBC identifiers or native protocol IDs. Zero limits mean unknown/no
 // declared limit. Strings must remain valid for the provider lifetime.
@@ -21,12 +22,16 @@ struct BackendCapabilities {
   std::string_view table_term{};
   std::string_view procedure_term{};
   std::string_view pattern_escape{};
+  std::string_view keywords{};
   std::uint16_t max_identifier_length{0};
+  std::uint16_t max_columns_in_table{0};
+  std::uint16_t max_columns_in_select{0};
   IdentifierCase identifier_case{IdentifierCase::Sensitive};
   IdentifierCase quoted_identifier_case{IdentifierCase::Sensitive};
   NullCollation null_collation{NullCollation::High};
   CorrelationNames correlation_names{CorrelationNames::None};
   GroupBySupport group_by{GroupBySupport::None};
+  InfoSchemaSupport info_schema_support{InfoSchemaSupport::None};
   bool catalog_at_start{true};
   bool catalog_names{false};
   bool column_aliases{false};
@@ -40,6 +45,18 @@ struct BackendCapabilities {
   bool procedures{false};
   bool concat_null_yields_null{true};
   bool non_nullable_columns{false};
+  bool create_table{false};
+  bool create_table_commit_preserve{false};
+  bool create_table_commit_delete{false};
+  bool create_table_column_collation{false};
+  bool drop_table{false};
+  bool create_view{false};
+  bool create_view_check_option{false};
+  bool drop_view{false};
+  bool alter_table{false};
+  bool alter_table_column_collation{false};
+  bool create_schema{false};
+  bool drop_schema{false};
   bool create_index{false};
   bool drop_index{false};
   bool insert_literals{false};

@@ -4,6 +4,7 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
+#include "tests/support/scoped_driver_config.h"
 #include "odbcpp/util/hex.h"
 #include "odbc/unicode.h"
 
@@ -558,6 +559,12 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       error.native_state = "FAKE_ERROR";
       error.disposition = SessionDisposition::Reusable;
       error.session_state = SessionState::Idle;
+      // Like a server, an error inside a transaction leaves it failed.
+      if (seen_->transaction_state == SessionState::Transaction) {
+        seen_->transaction_state = SessionState::FailedTransaction;
+        error.session_state = SessionState::FailedTransaction;
+        error.disposition = SessionDisposition::ResetRequired;
+      }
       error.operation = BackendOperation::ExecuteDirect;
       return error;
     }
@@ -604,7 +611,18 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       for (const auto& item : result.additional_results)
         seen_->additional_row_storage.push_back(item.rows.data());
     }
-    return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
+    // Like a server, SQL transaction control changes the reported state.
+    if (sql.ends_with("BEGIN")) seen_->transaction_state = SessionState::Transaction;
+    if (sql.ends_with("COMMIT") || sql.ends_with("ROLLBACK")) seen_->transaction_state = SessionState::Idle;
+    return BackendResult<QueryResult>{std::move(result), reported_snapshot()};
+  }
+  // The server's post-statement state: an open transaction needs a reset
+  // before reuse; anything else keeps the historical idle report.
+  SessionSnapshot reported_snapshot() const {
+    const auto state = seen_->transaction_state.value_or(SessionState::Idle);
+    if (state == SessionState::Transaction || state == SessionState::FailedTransaction)
+      return {state, SessionDisposition::ResetRequired};
+    return {SessionState::Idle, SessionDisposition::Reusable};
   }
   BackendResult<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
                                       Deadline deadline) override {
@@ -896,6 +914,77 @@ class BackendContractTest : public ::testing::Test {
 
 // These tests specify the prerequisite BEGIN boundary only. They do not enable
 // manual-transaction PrimaryKeys or model native PostgreSQL/Redshift acceptance.
+// A transaction ended by SQL (not SQLEndTran) leaves the server idle. In
+// manual-commit mode the next statement must begin a new transaction instead of
+// running in autocommit, so a later SQLEndTran(ROLLBACK) still covers it.
+TEST_F(BackendContractTest, ManualCommitBeginsAgainAfterSqlEndsTheTransaction) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  ASSERT_EQ(SQL_SUCCESS, execute("first"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS, execute("COMMIT"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  EXPECT_EQ(1u, seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS, execute("second"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(3u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[2]);
+}
+
+// With autocommit on, transactions are outside ODBC's model: a SQL BEGIN does
+// not make the driver own one, so SQLEndTran stays a no-op and disconnect is
+// not refused.
+TEST_F(BackendContractTest, AutocommitSqlBeginDoesNotMakeTheDriverOwnATransaction) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("BEGIN"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  stmt = nullptr;
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+}
+
+// A statement that fails inside a transaction leaves it failed, not ended; the
+// driver must still send ROLLBACK for SQLEndTran.
+TEST_F(BackendContractTest, ManualCommitFailedStatementStillRollsBack) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  EXPECT_EQ(SQL_ERROR, execute("statement error"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[1]);
+}
+
+// The parameterized dispatch path must reconcile the same way.
+TEST_F(BackendContractTest, ManualCommitParameterizedStatementsBeginAgainAfterSqlCommit) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  // COMMIT itself runs through the prepared (parameterized dispatch) path.
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"COMMIT", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  char input[] = "ok"; SQLLEN length = 2;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows ?"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[1]);
+}
+
 TEST_F(BackendContractTest, BeginPreservesVerifiedTransactionSnapshotAndOriginalDeadline) {
   seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
   ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
@@ -1312,7 +1401,9 @@ TEST_F(BackendContractTest, BackendDiagnosticStaysDetailedWhileFailureLogUsesPub
   std::filesystem::create_directories(directory);
   const auto path = directory / "driver.log";
   seen->failure_message = "credential=server-secret-981724\nprivate SQL and identifiers";
-  connect_with("SERVER=fake;SSL=0;LogLevel=Trace;LogQueries=false;LogAsync=false;LogSink=File;LogFile=" + path.string());
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}, {"LogQueries", "false"}});
+  connect_with(config.connection_prefix() + "SERVER=fake;SSL=0;LogLevel=Trace;LogAsync=false");
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   for (const bool prepared : {false, true}) {
     if (prepared) {
@@ -1347,7 +1438,9 @@ TEST_F(BackendContractTest, MetadataCacheEventsExposeNoSqlContents) {
       ("odbcpp-metadata-log-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   std::filesystem::create_directories(directory);
   const auto path = directory / "driver.log";
-  connect_with("SERVER=fake;SSL=0;LogLevel=Debug;LogQueries=false;LogAsync=false;LogSink=File;LogFile=" + path.string());
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}, {"LogQueries", "false"}});
+  connect_with(config.connection_prefix() + "SERVER=fake;SSL=0;LogLevel=Debug;LogAsync=false");
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"private_sql_canary_781 ?", SQL_NTS));
   SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
@@ -2582,6 +2675,158 @@ TEST_F(BackendContractTest, ExplicitRedshiftProfileReportsBoundedNumericAndNoInd
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
   }
+}
+
+TEST_F(BackendContractTest, ExplicitPostgresProfileReportsDDLMasksKeywordsAndLimits) {
+  using postgres::PgCatalogProfile;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  dbc = nullptr;
+  auto profile = std::make_shared<postgres::PgBackendProvider>(
+      BackendIdentity{"postgres", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"localhost", 5432, std::nullopt, true},
+      std::nullopt, PgCatalogProfile::PostgreSQL);
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<FakeProvider>(seen, profile));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+  connect();
+
+  char keywords[1024]{};
+  SQLSMALLINT len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_KEYWORDS, keywords, sizeof(keywords), &len));
+  EXPECT_STREQ(
+      "ANALYSE,ANALYZE,ARRAY,ASYMMETRIC,CURRENT_CATALOG,CURRENT_ROLE,"
+      "CURRENT_SCHEMA,DO,ILIKE,LATERAL,LIMIT,LOCALTIME,LOCALTIMESTAMP,OFFSET,"
+      "PLACING,RETURNING,SYMMETRIC,VARIADIC,VERBOSE,WINDOW",
+      keywords);
+
+  SQLUSMALLINT max_columns = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_TABLE, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_SELECT, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+
+  SQLUINTEGER mask = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_CT_CREATE_TABLE | SQL_CT_COMMIT_PRESERVE | SQL_CT_COMMIT_DELETE |
+      SQL_CT_LOCAL_TEMPORARY | SQL_CT_COLUMN_CONSTRAINT | SQL_CT_COLUMN_DEFAULT |
+      SQL_CT_COLUMN_COLLATION | SQL_CT_TABLE_CONSTRAINT | SQL_CT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DT_DROP_TABLE | SQL_DT_CASCADE | SQL_DT_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CV_CREATE_VIEW | SQL_CV_CHECK_OPTION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DV_DROP_VIEW | SQL_DV_CASCADE | SQL_DV_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_ALTER_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_AT_ADD_COLUMN_SINGLE | SQL_AT_ADD_COLUMN_DEFAULT |
+      SQL_AT_ADD_COLUMN_COLLATION | SQL_AT_SET_COLUMN_DEFAULT |
+      SQL_AT_DROP_COLUMN_DEFAULT | SQL_AT_DROP_COLUMN_CASCADE |
+      SQL_AT_DROP_COLUMN_RESTRICT | SQL_AT_ADD_TABLE_CONSTRAINT |
+      SQL_AT_DROP_TABLE_CONSTRAINT_CASCADE |
+      SQL_AT_DROP_TABLE_CONSTRAINT_RESTRICT | SQL_AT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CS_CREATE_SCHEMA | SQL_CS_AUTHORIZATION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DS_DROP_SCHEMA | SQL_DS_CASCADE | SQL_DS_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INDEX_KEYWORDS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_IK_ASC | SQL_IK_DESC), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INFO_SCHEMA_VIEWS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_ISV_CHARACTER_SETS | SQL_ISV_CHECK_CONSTRAINTS |
+      SQL_ISV_COLLATIONS | SQL_ISV_COLUMN_DOMAIN_USAGE |
+      SQL_ISV_COLUMN_PRIVILEGES | SQL_ISV_COLUMNS |
+      SQL_ISV_CONSTRAINT_COLUMN_USAGE |
+      SQL_ISV_CONSTRAINT_TABLE_USAGE | SQL_ISV_DOMAIN_CONSTRAINTS |
+      SQL_ISV_DOMAINS | SQL_ISV_KEY_COLUMN_USAGE |
+      SQL_ISV_REFERENTIAL_CONSTRAINTS | SQL_ISV_SCHEMATA |
+      SQL_ISV_SQL_LANGUAGES | SQL_ISV_TABLE_CONSTRAINTS |
+      SQL_ISV_TABLE_PRIVILEGES | SQL_ISV_TABLES |
+      SQL_ISV_USAGE_PRIVILEGES | SQL_ISV_VIEW_COLUMN_USAGE |
+      SQL_ISV_VIEW_TABLE_USAGE | SQL_ISV_VIEWS), mask);
+}
+
+TEST_F(BackendContractTest, ExplicitRedshiftProfileReportsDDLMasksKeywordsAndLimits) {
+  using postgres::PgCatalogProfile;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  dbc = nullptr;
+  auto profile = std::make_shared<postgres::PgBackendProvider>(
+      BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost", 5439, std::nullopt, true},
+      std::nullopt, PgCatalogProfile::Redshift);
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<FakeProvider>(seen, profile));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+  connect();
+
+  char keywords[1024]{};
+  SQLSMALLINT len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_KEYWORDS, keywords, sizeof(keywords), &len));
+  EXPECT_STREQ(
+      "AES128,AES256,ALLOWOVERWRITE,ANALYSE,ANALYZE,ARRAY,AZ64,BACKUP,BINARY,"
+      "BLANKSASNULL,BYTEDICT,BZIP2,CREDENTIALS,CURRENT_USER_ID,DEFLATE,DEFRAG,"
+      "DELTA,DELTA32K,DISABLE,DO,EMPTYASNULL,ENABLE,ENCODE,ENCRYPTION,EXPLICIT,"
+      "FREEZE,GLOBALDICT256,GLOBALDICT64K,GZIP,IGNORE,ILIKE,ISNULL,LIMIT,"
+      "LOCALTIME,LOCALTIMESTAMP,LUN,LUNS,LZO,LZOP,MINUS,MOSTLY16,MOSTLY32,"
+      "MOSTLY8,NEW,NOTNULL,NULLS,OFF,OFFLINE,OFFSET,OID,OLD,PARALLEL,PARTITION,"
+      "PERCENT,PERMISSIONS,PIVOT,PLACING,RAW,READRATIO,RECOVER,REJECTLOG,"
+      "RESORT,RESPECT,RESTORE,SIMILAR,SYSDATE,SYSTEM,TAG,TDES,TEXT255,TEXT32K,"
+      "TOP,TRUNCATECOLUMNS,UNNEST,UNPIVOT,VERBOSE,WALLET,WITHOUT",
+      keywords);
+
+  SQLUSMALLINT max_columns = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_TABLE, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_COLUMNS_IN_SELECT, &max_columns, sizeof(max_columns), nullptr));
+  EXPECT_EQ(1600, max_columns);
+
+  SQLUINTEGER mask = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_CT_CREATE_TABLE | SQL_CT_LOCAL_TEMPORARY |
+      SQL_CT_COLUMN_CONSTRAINT | SQL_CT_COLUMN_DEFAULT |
+      SQL_CT_TABLE_CONSTRAINT | SQL_CT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DT_DROP_TABLE | SQL_DT_CASCADE | SQL_DT_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CV_CREATE_VIEW), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_VIEW, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DV_DROP_VIEW | SQL_DV_CASCADE | SQL_DV_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_ALTER_TABLE, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_AT_ADD_COLUMN_SINGLE | SQL_AT_ADD_COLUMN_DEFAULT |
+      SQL_AT_SET_COLUMN_DEFAULT | SQL_AT_DROP_COLUMN_DEFAULT |
+      SQL_AT_DROP_COLUMN_CASCADE | SQL_AT_DROP_COLUMN_RESTRICT |
+      SQL_AT_ADD_TABLE_CONSTRAINT |
+      SQL_AT_DROP_TABLE_CONSTRAINT_CASCADE |
+      SQL_AT_DROP_TABLE_CONSTRAINT_RESTRICT | SQL_AT_CONSTRAINT_NAME_DEFINITION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_CREATE_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CS_CREATE_SCHEMA | SQL_CS_AUTHORIZATION), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DROP_SCHEMA, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_DS_DROP_SCHEMA | SQL_DS_CASCADE | SQL_DS_RESTRICT), mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INDEX_KEYWORDS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(0u, mask);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_INFO_SCHEMA_VIEWS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(
+      SQL_ISV_COLUMNS | SQL_ISV_SCHEMATA | SQL_ISV_TABLES | SQL_ISV_VIEWS), mask);
 }
 
 TEST_F(BackendContractTest, LongBinaryResultPreservesUnknownMetadataAndChunkNullEmptySemantics) {
@@ -9419,6 +9664,233 @@ TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKe
   ASSERT_NO_FATAL_FAILURE(fetch_saved()); ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
 }
 
+// 32-bit and 64-bit fixed-length bookmarks on static cursors (ODBC 2.0 compatibility).
+class FixedBookmarkTest : public StaticBufferedScrollTest {
+ protected:
+  std::uint32_t flat[3]{};
+  SQLLEN token_lengths[3]{73, 73, 73};
+  BOOKMARK saved{0};
+  SQLLEN piece_length{73};
+
+  void begin(SQLULEN size = 1) {
+    seen->date_result = snapshot();
+    connect();
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_CURSOR_TYPE, SQL_CURSOR_STATIC));
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_USE_BOOKMARKS, SQL_UB_FIXED));
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE, size));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &fetched, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, statuses, 0));
+    ASSERT_EQ(SQL_SUCCESS, execute("owning fixed bookmark snapshot"));
+  }
+  void save_selected() {
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_BOOKMARK, &saved, sizeof(saved), &piece_length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), piece_length);
+  }
+  void fetch_saved(SQLLEN delta = 0) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_FETCH_BOOKMARK_PTR, &saved, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, delta));
+  }
+};
+
+TEST_F(FixedBookmarkTest, MetadataDescriptorFieldsAndColZeroDescribe) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+  SQLSMALLINT type = 0, digits = -1, nullable = -1, names = -1;
+  SQLULEN width = 0;
+  SQLWCHAR name[2]{0x7777, 0x7777};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(stmt, 0, name, 2, &names, &type, &width, &digits, &nullable));
+  EXPECT_EQ(0, names);
+  EXPECT_EQ(0, name[0]);
+  EXPECT_EQ(0x7777, name[1]);
+  EXPECT_EQ(SQL_INTEGER, type);
+  EXPECT_EQ(10u, width);
+  EXPECT_EQ(0, digits);
+  EXPECT_EQ(SQL_NO_NULLS, nullable);
+
+  SQLLEN desc_type = -1, concise_type = -1, octet_len = -1, display = -1, unsigned_val = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_TYPE, nullptr, 0, nullptr, &desc_type));
+  EXPECT_EQ(SQL_INTEGER, desc_type);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_CONCISE_TYPE, nullptr, 0, nullptr, &concise_type));
+  EXPECT_EQ(SQL_INTEGER, concise_type);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_OCTET_LENGTH, nullptr, 0, nullptr, &octet_len));
+  EXPECT_EQ(4, octet_len);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_DISPLAY_SIZE, nullptr, 0, nullptr, &display));
+  EXPECT_EQ(11, display);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(stmt, 0, SQL_DESC_UNSIGNED, nullptr, 0, nullptr, &unsigned_val));
+  EXPECT_EQ(SQL_TRUE, unsigned_val);
+
+  char type_name[32]{};
+  SQLSMALLINT type_name_len = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_TYPE_NAME, type_name, sizeof(type_name), &type_name_len, nullptr));
+  EXPECT_STREQ("INTEGER", type_name);
+}
+
+TEST_F(FixedBookmarkTest, BindColTypesFetchingAndGetDataSingleShot) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+
+  // Verify supported C types for column 0 binding with fixed bookmarks.
+  for (const SQLSMALLINT c_type : {
+           static_cast<SQLSMALLINT>(SQL_C_BOOKMARK),
+           static_cast<SQLSMALLINT>(SQL_C_ULONG),
+           static_cast<SQLSMALLINT>(SQL_C_LONG),
+           static_cast<SQLSMALLINT>(SQL_C_SLONG),
+           static_cast<SQLSMALLINT>(SQL_C_DEFAULT)}) {
+    EXPECT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, c_type, flat, sizeof(std::uint32_t), token_lengths));
+  }
+  // Rejection of invalid binding types for fixed bookmarks.
+  EXPECT_EQ(SQL_ERROR, SQLBindCol(stmt, 0, SQL_C_CHAR, flat, sizeof(flat), token_lengths));
+  EXPECT_EQ("07006", state());
+  EXPECT_EQ(SQL_ERROR, SQLBindCol(stmt, 0, SQL_C_VARBOOKMARK, flat, sizeof(flat), token_lengths));
+  EXPECT_EQ("07006", state());
+  EXPECT_EQ(SQL_ERROR, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, flat, -1, token_lengths));
+  EXPECT_EQ("HY090", state());
+
+  // Bind column 0 and fetch 3 rows with explicit 32-bit type SQL_C_ULONG.
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_ULONG, flat, sizeof(std::uint32_t), token_lengths));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(3u, fetched);
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<std::uint32_t>(row + 1), flat[row]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(std::uint32_t)), token_lengths[row]);
+  }
+
+  // Position on row 2, unbind col 0, and exercise SQLGetData(0) with SQL_C_ULONG.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 2, SQL_POSITION, SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+
+  std::uint32_t val = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_ULONG, &val, sizeof(val), &piece_length));
+  EXPECT_EQ(2u, val);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(std::uint32_t)), piece_length);
+
+  // Subsequent call on col 0 for the same row returns SQL_NO_DATA.
+  EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 0, SQL_C_ULONG, &val, sizeof(val), &piece_length));
+
+  // Invalid SQLGetData C type returns HY003.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 1, SQL_POSITION, SQL_LOCK_NO_CHANGE));
+  EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 0, SQL_C_CHAR, &val, sizeof(val), &piece_length));
+  EXPECT_EQ("HY003", state());
+}
+
+TEST_F(FixedBookmarkTest, RealBookmarkArrayColumnWiseAndNonzeroUpperHalves) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+
+  // Verify real BOOKMARK array binding column-wise with nonzero upper halves.
+  // On 64-bit architectures, BOOKMARK is 8 bytes; column-wise stride must be 8 bytes
+  // and the upper half must be fully overwritten with the row index token.
+  BOOKMARK bookmarks[3]{
+      static_cast<BOOKMARK>(0xAAAAAAAAAAAAAAAAULL),
+      static_cast<BOOKMARK>(0xBBBBBBBBBBBBBBBBULL),
+      static_cast<BOOKMARK>(0xCCCCCCCCCCCCCCCCULL)};
+  SQLLEN bookmark_lens[3]{-1, -1, -1};
+
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, bookmarks, sizeof(BOOKMARK), bookmark_lens));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(3u, fetched);
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<BOOKMARK>(row + 1), bookmarks[row]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), bookmark_lens[row]);
+  }
+
+  // Unbind col 0, position on row 2, and test SQLGetData with nonzero upper half.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt, 2, SQL_POSITION, SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+
+  BOOKMARK single_bookmark = static_cast<BOOKMARK>(0xFEEDBEEFCAFEBABEULL);
+  SQLLEN single_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_BOOKMARK, &single_bookmark, sizeof(single_bookmark), &single_len));
+  EXPECT_EQ(static_cast<BOOKMARK>(2), single_bookmark);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), single_len);
+}
+
+TEST_F(FixedBookmarkTest, RowWiseBindingAndBindingOffset) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+
+  // Define a row-wise record structure containing BOOKMARK and length.
+  struct RowwiseBookmarkRecord {
+    BOOKMARK bookmark{static_cast<BOOKMARK>(0x7777777777777777ULL)};
+    SQLLEN bookmark_len{-1};
+    SQLINTEGER value{0};
+    SQLLEN value_len{-1};
+  };
+
+  RowwiseBookmarkRecord all_rows[6]{};
+
+  // Configure row-wise binding stride.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE,
+                                        reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(sizeof(RowwiseBookmarkRecord))), 0));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_BOOKMARK, &all_rows[0].bookmark, sizeof(BOOKMARK), &all_rows[0].bookmark_len));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_SLONG, &all_rows[0].value, sizeof(SQLINTEGER), &all_rows[0].value_len));
+
+  // 1. Fetch with zero offset.
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(3u, fetched);
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<BOOKMARK>(row + 1), all_rows[row].bookmark);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), all_rows[row].bookmark_len);
+    EXPECT_EQ(static_cast<SQLINTEGER>(row + 1), all_rows[row].value);
+  }
+
+  // 2. Reposition and fetch with row binding offset pointing to second half of array.
+  SQLULEN bind_offset = 3 * sizeof(RowwiseBookmarkRecord);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &bind_offset, 0));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ(3u, fetched);
+
+  for (std::size_t row = 0; row < 3; ++row) {
+    EXPECT_EQ(static_cast<BOOKMARK>(row + 1), all_rows[row + 3].bookmark);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(BOOKMARK)), all_rows[row + 3].bookmark_len);
+    EXPECT_EQ(static_cast<SQLINTEGER>(row + 1), all_rows[row + 3].value);
+  }
+}
+
+TEST_F(FixedBookmarkTest, FetchScrollByFixedBookmarkWithOffsets) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(3u, fetched);
+
+  // Target bookmark pointing to row 2.
+  saved = 2;
+  ASSERT_NO_FATAL_FAILURE(fetch_saved(0));
+  ASSERT_NO_FATAL_FAILURE(row_number(2));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &output.values[0], 0, &lengths.values[0]));
+  EXPECT_EQ(2, output.values[0]);
+
+  // Offset +1 positions on row 3.
+  ASSERT_NO_FATAL_FAILURE(fetch_saved(1));
+  ASSERT_NO_FATAL_FAILURE(row_number(3));
+
+  // Offset -1 positions on row 1.
+  ASSERT_NO_FATAL_FAILURE(fetch_saved(-1));
+  ASSERT_NO_FATAL_FAILURE(row_number(1));
+
+  // Large offset positions after end (returns SQL_NO_DATA).
+  ASSERT_EQ(SQL_NO_DATA, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 100));
+
+  // Invalid bookmark token (0 or out of range) returns HY111.
+  saved = 0;
+  EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
+  EXPECT_EQ("HY111", state());
+
+  saved = 999;
+  EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
+  EXPECT_EQ("HY111", state());
+
+  // 64-bit invalid input tokens (nonzero upper 32 bits or huge values) return HY111.
+  if constexpr (sizeof(BOOKMARK) == 8) {
+    saved = static_cast<BOOKMARK>(0x0000000100000002ULL);
+    EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
+    EXPECT_EQ("HY111", state());
+
+    saved = static_cast<BOOKMARK>(0xFFFFFFFFFFFFFFFFULL);
+    EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0));
+    EXPECT_EQ("HY111", state());
+  }
+}
+
 
 // Bounded scalar DAE is adapter-owned materialization, never wire streaming.
 // All borrowed buffers/indicators survive fatal fixture teardown.
@@ -10282,6 +10754,119 @@ TEST_F(PreparedSelectArrayTest, IncrementalOwningMaskedResultsIdleCancelAndDirec
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
   ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
 }
+
+// SQL transaction control under autocommit is outside ODBC's transaction model.
+// Array dispatch must follow the same ownership rule as scalar execution.
+class AutocommitArrayTransactionTest : public PreparedSelectArrayTest,
+    public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+ protected:
+  void transaction_sql(const char* sql) {
+    if (!recovery_sibling) {
+      ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &recovery_sibling));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(recovery_sibling, (SQLCHAR*)sql, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(recovery_sibling, SQL_CLOSE));
+  }
+  void disconnect_without_odbc_transaction() {
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_COMMIT));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+    EXPECT_TRUE(seen->transaction_calls.empty());
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+    stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, recovery_sibling));
+    recovery_sibling = nullptr;
+    const auto disconnected = SQLDisconnect(dbc);
+    EXPECT_EQ(SQL_SUCCESS, disconnected);
+    // Preserve the original failure while allowing cleanup on an unfixed driver.
+    if (disconnected != SQL_SUCCESS) {
+      EXPECT_EQ("25000", state(SQL_HANDLE_DBC, dbc));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+          (SQLPOINTER)SQL_AUTOCOMMIT_OFF, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+      ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    }
+  }
+};
+
+TEST_P(AutocommitArrayTransactionTest, SqlOpenedTransactionNeverBecomesOdbcOwned) {
+  const auto [select, failure, sql_rollback] = GetParam();
+  seen->advertised_transactions = true;
+  seen->isolation_mode = 1;
+  if (select) {
+    ASSERT_NO_FATAL_FAILURE(select_ready());
+  } else {
+    ASSERT_NO_FATAL_FAILURE(ready());
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_NO_FATAL_FAILURE(transaction_sql("BEGIN"));
+  ASSERT_EQ(SessionState::Transaction, seen->transaction_state);
+  const SessionSnapshot open{SessionState::Transaction, SessionDisposition::ResetRequired};
+  if (select) {
+    QueryResult first;
+    first.columns = seen->select_description->columns;
+    first.rows = {{"11"}};
+    first.execution_result_shape = ExecutionResultShape::ResultSet;
+    auto second = first;
+    second.rows = {{"22"}};
+    seen->command_outcomes = {BackendResult<QueryResult>{first, open},
+                             BackendResult<QueryResult>{second, open}};
+  } else {
+    seen->command_outcomes = {command(1, open), command(2, open)};
+  }
+  if (failure) {
+    BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "array transaction failure"};
+    error.operation = BackendOperation::ExecutePrepared;
+    error.native_state = "42501";
+    error.session_state = SessionState::FailedTransaction;
+    error.disposition = SessionDisposition::ResetRequired;
+    seen->command_outcomes[1] = error;
+  }
+  ASSERT_EQ(!select && failure ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS, SQLExecute(stmt));
+  if (select) {
+    ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+  } else {
+    SQLLEN count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count));
+    EXPECT_EQ(1, count);
+  }
+  ASSERT_EQ(failure ? SQL_ERROR : SQL_SUCCESS, SQLMoreResults(stmt));
+  if (failure) {
+    EXPECT_EQ("42501", state());
+    SQLLEN ordinal = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1,
+        SQL_DIAG_ROW_NUMBER, &ordinal, 0, nullptr));
+    EXPECT_EQ(2, ordinal);
+  }
+  if (!failure && select) {
+    ASSERT_NO_FATAL_FAILURE(fetch_literal(22));
+  }
+  if (!failure && !select) {
+    SQLLEN count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count));
+    EXPECT_EQ(2, count);
+  }
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+  EXPECT_EQ(2u, processed);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]);
+  EXPECT_EQ(failure ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status[1]);
+  EXPECT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(failure ? SessionState::FailedTransaction : SessionState::Transaction,
+            seen->transaction_state);
+  if (sql_rollback) {
+    ASSERT_NO_FATAL_FAILURE(transaction_sql("ROLLBACK"));
+    EXPECT_EQ(SessionState::Idle, seen->transaction_state);
+  }
+  ASSERT_NO_FATAL_FAILURE(disconnect_without_odbc_transaction());
+}
+
+INSTANTIATE_TEST_SUITE_P(SelectAndCommand, AutocommitArrayTransactionTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Bool(), ::testing::Bool()),
+    ([](const ::testing::TestParamInfo<AutocommitArrayTransactionTest::ParamType>& info) {
+      const auto [select, failure, rollback] = info.param;
+      return std::string(select ? "Select" : "Command") + (failure ? "Failure" : "Success") +
+          (rollback ? "WithSqlRollback" : "WithoutSqlRollback");
+    }));
+
 TEST_F(PreparedSelectArrayTest, ZeroFieldEmptyResultReplacementPrebufferAndAllIgnoredNoEffects) {
   ASSERT_NO_FATAL_FAILURE(select_ready(false));
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); SQLSMALLINT columns = -1;
@@ -12290,6 +12875,10 @@ TEST_F(ConnectedMetadataTimeoutTest, NeedDataAdmissionAndCountOnlyDescriptorCall
   SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(0,seen->descriptions);
   char token[8]{};SQLLEN indicator=SQL_DATA_AT_EXEC;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,token,sizeof(token),&indicator));ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
   EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HY010",state());EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(77,type);
+  SQLCHAR cursor_buf[32]{};SQLSMALLINT cursor_len = 0;
+  EXPECT_EQ(SQL_ERROR, SQLGetCursorName(stmt, cursor_buf, sizeof(cursor_buf), &cursor_len));EXPECT_EQ("HY010", state());
+  SQLCHAR new_cur[] = "my_cur";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(stmt, new_cur, SQL_NTS));EXPECT_EQ("HY010", state());
   ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));indicator=3;std::memcpy(token,"abc",4);ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(std::optional<std::string>{"abc"},seen->parameters[0].value);
 }
 
@@ -12472,6 +13061,13 @@ TEST_F(LoginTimeoutOptionsTest, FailedConnectAndSetupNeverPublishAndExplicitRefi
   input[0] = 1;
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
   EXPECT_EQ(std::optional<std::string>{std::string("\1\xff\\", 3)}, seen->parameters[0].value);
+}
+
+// Native IdP keywords are parsed by the driver, so they must not be reported
+// as unrecognized connection keywords (01S00).
+TEST_F(BackendContractTest, NativeIdpKeywordsAreRecognized) {
+  connect_with("SERVER=fake;SSL=0;PluginName=IdpTokenAuthPlugin;ProviderName=p;"
+               "TokenType=ACCESS_TOKEN;IdentityNamespace=n;Token=t");
 }
 
 TEST_F(LoginTimeoutOptionsTest, RecognizedKeysKeepUnknownWarningAndTruncationAfterSuccessfulPublication) {
@@ -15934,6 +16530,74 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterIgnoresAnsiCapacityAndRe
   EXPECT_EQ(descriptions, seen->descriptions);
 }
 
+TEST_F(BackendContractTest, ColumnAttributeNameFieldsReturnEmptyStringsAndAgreeWithGetDescField) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+
+  // Executed statement cannot set cursor name (ODBC spec: SQLSTATE 24000)
+  SQLCHAR new_cursor[] = "executed_cursor";
+  EXPECT_EQ(SQL_ERROR, SQLSetCursorName(stmt, new_cursor, SQL_NTS));
+  EXPECT_EQ("24000", state());
+
+  SQLHDESC ird{nullptr};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, SQL_IS_POINTER, nullptr));
+  ASSERT_NE(nullptr, ird);
+
+  const struct FieldPair {
+    SQLUSMALLINT col_attr;
+    SQLSMALLINT desc_field;
+  } fields[] = {
+      {SQL_DESC_BASE_COLUMN_NAME, SQL_DESC_BASE_COLUMN_NAME},
+      {SQL_DESC_BASE_TABLE_NAME, SQL_DESC_BASE_TABLE_NAME},
+      {SQL_DESC_CATALOG_NAME, SQL_DESC_CATALOG_NAME},
+      {SQL_COLUMN_QUALIFIER_NAME, SQL_DESC_CATALOG_NAME},
+      {SQL_DESC_SCHEMA_NAME, SQL_DESC_SCHEMA_NAME},
+      {SQL_COLUMN_OWNER_NAME, SQL_DESC_SCHEMA_NAME},
+      {SQL_DESC_TABLE_NAME, SQL_DESC_TABLE_NAME},
+      {SQL_COLUMN_TABLE_NAME, SQL_DESC_TABLE_NAME},
+  };
+
+  for (const auto& pair : fields) {
+    SCOPED_TRACE(pair.col_attr);
+
+    // Narrow SQLColAttribute
+    char narrow[32]{};
+    narrow[0] = 'X';
+    SQLSMALLINT narrow_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        stmt, 1, pair.col_attr, narrow, sizeof(narrow), &narrow_len, nullptr));
+    EXPECT_EQ(0, narrow_len);
+    EXPECT_STREQ("", narrow);
+
+    // Wide SQLColAttributeW
+    SQLWCHAR wide[32]{};
+    wide[0] = static_cast<SQLWCHAR>('X');
+    SQLSMALLINT wide_bytes = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(
+        stmt, 1, pair.col_attr, wide, sizeof(wide), &wide_bytes, nullptr));
+    EXPECT_EQ(0, wide_bytes);
+    EXPECT_EQ(SQLWCHAR{0}, wide[0]);
+
+    // Narrow SQLGetDescField
+    char desc_narrow[32]{};
+    desc_narrow[0] = 'X';
+    SQLINTEGER desc_narrow_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        ird, 1, pair.desc_field, desc_narrow, sizeof(desc_narrow), &desc_narrow_len));
+    EXPECT_EQ(0, desc_narrow_len);
+    EXPECT_STREQ("", desc_narrow);
+
+    // Wide SQLGetDescFieldW
+    SQLWCHAR desc_wide[32]{};
+    desc_wide[0] = static_cast<SQLWCHAR>('X');
+    SQLINTEGER desc_wide_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescFieldW(
+        ird, 1, pair.desc_field, desc_wide, sizeof(desc_wide), &desc_wide_len));
+    EXPECT_EQ(0, desc_wide_len);
+    EXPECT_EQ(SQLWCHAR{0}, desc_wide[0]);
+  }
+}
+
 TEST_F(BackendContractTest, ColumnAttributeNullCharacterKeepsWideByteUnits) {
   ASSERT_NO_FATAL_FAILURE(connect());
   for (const int name_kind : {8, 9}) {
@@ -16101,13 +16765,13 @@ TEST_F(BackendContractTest, ColumnAttributeNullCharacterPreservesValidationAndNu
     }
     EXPECT_EQ(SQL_ERROR, attribute(1, 65535, nullptr, -1, &length, &unused_numeric));
     EXPECT_EQ("HY091", state());
-    EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_BASE_TABLE_NAME, nullptr, -1, &length, &unused_numeric));
-    EXPECT_EQ("HYC00", state());
-    EXPECT_EQ(-73, length);
+    EXPECT_EQ(SQL_SUCCESS, attribute(1, SQL_DESC_BASE_TABLE_NAME, nullptr, -1, &length, &unused_numeric));
+    EXPECT_EQ(0, length);
     EXPECT_EQ(79, unused_numeric);
     alignas(SQLWCHAR) std::array<unsigned char, 9 * sizeof(SQLWCHAR)> output{};
     output.fill(0xa5);
     const auto before = output;
+    length = -73;
     EXPECT_EQ(SQL_ERROR, attribute(1, SQL_DESC_NAME, output.data(), -1, &length, &unused_numeric));
     EXPECT_EQ("HY090", state());
     EXPECT_EQ(-73, length);

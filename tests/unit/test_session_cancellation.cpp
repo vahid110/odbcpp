@@ -477,8 +477,8 @@ TEST_P(PublicCancellationTest, AllFunctionInventoriesAgreeAndWrongHandleNeverTar
   EXPECT_EQ(SQL_INVALID_HANDLE,cancel_statement(reinterpret_cast<SQLHSTMT>(dbc)));
   EXPECT_EQ(SQL_INVALID_HANDLE,cancel_statement(nullptr));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
 #ifdef SQL_API_SQLCANCELHANDLE
-  scalar=SQL_TRUE;
-  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_SQLCANCELHANDLE,&scalar));EXPECT_EQ(SQL_FALSE,scalar);
+  scalar=SQL_FALSE;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_SQLCANCELHANDLE,&scalar));EXPECT_EQ(SQL_TRUE,scalar);
 #endif
   EXPECT_EQ(0,script->secondary_connects);EXPECT_EQ(0,script->queries);
 }

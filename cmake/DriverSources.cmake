@@ -17,11 +17,8 @@ file(GLOB CORE_BASE_SOURCES
   "${_root}/sdk/src/security/*.cpp"
   "${_root}/sdk/internal/odbcpp/security/*.h"
   "${_root}/sdk/internal/odbcpp/util/*.h"
-  "${_root}/sdk/src/util/*.cpp"
 )
 
-# Prototype pooling is test/example scaffolding, never a production artifact.
-list(FILTER CORE_BASE_SOURCES EXCLUDE REGEX "/connection_pool\\.(cpp|h)$")
 set(CORE_SOURCES ${CORE_BASE_SOURCES})
 list(APPEND CORE_SOURCES "${_root}/product/compiled_backend.cpp")
 
@@ -30,15 +27,6 @@ if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
   # Core database protocol
   file(GLOB DB_SOURCES "${_root}/core/database/postgres/*.cpp" "${_root}/core/database/postgres/*.h")
   list(APPEND CORE_SOURCES ${DB_SOURCES})
-  
-  # Database-specific ODBC layer
-  if(TARGET_DATABASE STREQUAL "REDSHIFT")
-    file(GLOB ODBC_DB_SOURCES "${_root}/odbc/redshift/*.cpp" "${_root}/odbc/redshift/*.h")
-    list(APPEND CORE_SOURCES ${ODBC_DB_SOURCES})
-  else()
-    file(GLOB ODBC_DB_SOURCES "${_root}/odbc/postgresql/*.cpp" "${_root}/odbc/postgresql/*.h")
-    list(APPEND CORE_SOURCES ${ODBC_DB_SOURCES})
-  endif()
   
 elseif(TARGET_DATABASE STREQUAL "MYSQL")
   file(GLOB DB_SOURCES "${_root}/core/database/mysql/*.cpp" "${_root}/core/database/mysql/*.h")
@@ -86,7 +74,20 @@ if(WIN32)
   list(APPEND CORE_SOURCES "${_root}/odbc/windows_registry.cpp" "${_root}/odbc/windows_registry.h")
 endif()
 
-  include("${_root}/cmake/PrototypePool.cmake")
-  odbcpp_check_prototype_quarantine(${CORE_SOURCES})
   set(${output} "${CORE_SOURCES}" PARENT_SCOPE)
+endfunction()
+
+# Sources of each product library (ADR 0002), shared by cmake/Libraries.cmake and
+# drivers built outside the main graph (tests/security/awslc/DriverProof.cmake).
+function(odbcpp_library_sources library output)
+  get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+  if(library STREQUAL "odbcpp_base")
+    set(_sources "${_root}/sdk/src/util/base64.cpp" "${_root}/sdk/src/util/scaled_decimal.cpp"
+      "${_root}/sdk/src/util/utf8.cpp")
+  elseif(library STREQUAL "odbcpp_logging")
+    set(_sources "${_root}/sdk/src/util/driver_logging.cpp")
+  else()
+    message(FATAL_ERROR "Unknown product library: ${library}")
+  endif()
+  set(${output} "${_sources}" PARENT_SCOPE)
 endfunction()

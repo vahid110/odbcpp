@@ -4,6 +4,7 @@
 #include "odbc/connection_string.h"
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
+#include "tests/support/scoped_driver_config.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,7 @@
 #include <process.h>
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 namespace {
@@ -67,20 +69,39 @@ TEST(DriverLoggingOptionsTest, AppliesDriverDsnAndConnectionPrecedence) {
       {"LogLevel", "Debug"}, {"LogFile", "dsn.log"},
       {"LogSink", "File,Stderr"}, {"LogQueries", "yes"}};
   const std::map<std::string, std::string> connection{
-      {"LogFormat", "Json"}, {"LogAsync", "false"},
-      {"LogMaxSize", "2048"}};
+      {"LogLevel", "Info"}, {"LogFormat", "Json"}, {"LogAsync", "false"}};
 
   const auto options = LoggingOptions::resolve(driver, dsn, connection);
-  EXPECT_EQ(LogLevel::Debug, options.level);
+  EXPECT_EQ(LogLevel::Info, options.level);
   EXPECT_EQ(LogFormat::Json, options.format);
   EXPECT_EQ("dsn.log", options.file);
-  EXPECT_EQ(2048u, options.max_file_size);
+  EXPECT_EQ(1024u, options.max_file_size);
   EXPECT_EQ(2u, options.max_files);
   EXPECT_FALSE(options.asynchronous);
   EXPECT_TRUE(options.log_queries);
   ASSERT_EQ(2u, options.sinks.size());
   EXPECT_EQ(LogSink::File, options.sinks[0]);
   EXPECT_EQ(LogSink::Stderr, options.sinks[1]);
+}
+
+// A connection string comes from the application; it must not choose log file
+// paths, sinks, rotation or query logging. The DSN and driver section can.
+TEST(DriverLoggingOptionsTest, ConnectionStringCannotSetAdministratorKeys) {
+  for (const auto& [key, value] : std::map<std::string, std::string>{
+           {"LogFile", "/tmp/odbcpp-hostile.log"}, {"logsink", "Stderr,File"},
+           {"LogQueries", "true"}, {"LogMaxSize", "1"}, {"LogMaxFiles", "9"}}) {
+    EXPECT_THROW(LoggingOptions::resolve({}, {}, {{key, value}}), std::invalid_argument) << key;
+    EXPECT_NO_THROW(LoggingOptions::resolve({{key, value}}, {}, {})) << key;
+    EXPECT_NO_THROW(LoggingOptions::resolve({}, {{key, value}}, {})) << key;
+  }
+  // Values that cannot reach the file system or expose query text stay
+  // available to applications.
+  const auto harmless = LoggingOptions::resolve({}, {}, {
+      {"LogLevel", "Warn"}, {"LogSink", "Stderr"}, {"LogQueries", "false"}});
+  EXPECT_EQ(LogLevel::Warn, harmless.level);
+  EXPECT_FALSE(harmless.log_queries);
+  ASSERT_EQ(1u, harmless.sinks.size());
+  EXPECT_EQ(LogSink::Stderr, harmless.sinks[0]);
 }
 
 TEST(DriverLoggingOptionsTest, RejectsInvalidConfiguration) {
@@ -165,16 +186,172 @@ TEST(DriverLoggerTest, WritesEscapedStructuredJson) {
   std::filesystem::remove_all(directory);
 }
 
+#ifndef _WIN32
+// A configured log path that is a symbolic link is refused before the rotating
+// sink can append to or rename its target; a new file is owner-only.
+TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
+  const auto directory = temporary_directory("odbcpp-log-symlink");
+  const auto target = directory / "target.txt";
+  {
+    std::ofstream file(target);
+    file << "keep";
+  }
+  const auto link = directory / "driver.log";
+  std::filesystem::create_symlink(target, link);
+  const auto linked = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", link.string()}}, {}, {});
+  EXPECT_THROW(DriverLogger::create(linked, 1), std::runtime_error);
+  EXPECT_EQ("keep", read_file(target));
+  // A new file is owner-only, and an existing broader file is tightened.
+  const auto fresh = directory / "fresh.log";
+  const auto created = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", fresh.string()}}, {}, {});
+  { const auto logger = DriverLogger::create(created, 1); }
+  struct stat info {};
+  ASSERT_EQ(0, ::stat(fresh.c_str(), &info));
+  EXPECT_EQ(0600, info.st_mode & 0777);
+  const auto existing = directory / "existing.log";
+  {
+    std::ofstream file(existing);
+  }
+  ASSERT_EQ(0, ::chmod(existing.c_str(), 0644));
+  const auto reused = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", existing.string()}}, {}, {});
+  { const auto logger = DriverLogger::create(reused, 1); }
+  ASSERT_EQ(0, ::stat(existing.c_str(), &info));
+  EXPECT_EQ(0600, info.st_mode & 0777);
+  // Files re-created by rotation get the same treatment.
+  const auto rotating = directory / "rotating.log";
+  const auto small = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", rotating.string()},
+       {"LogMaxSize", "64"}, {"LogMaxFiles", "2"}, {"LogAsync", "false"}}, {}, {});
+  {
+    const auto logger = DriverLogger::create(small, 1);
+    for (int i = 0; i < 20; ++i) {
+      logger->log(LogLevel::Info, "rotation_probe", "A message long enough to force rotation");
+    }
+  }
+  ASSERT_TRUE(std::filesystem::exists(directory / "rotating.1.log"));
+  ASSERT_EQ(0, ::stat(rotating.c_str(), &info));
+  EXPECT_EQ(0600, info.st_mode & 0777);
+  // A directory other users can write to (where a link could be planted
+  // before rotation re-creates the file) is refused; group write suffices.
+  const auto shared = directory / "shared";
+  std::filesystem::create_directories(shared);
+  ASSERT_EQ(0, ::chmod(shared.c_str(), 0770));
+  const auto exposed = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", (shared / "driver.log").string()}}, {}, {});
+  EXPECT_THROW(DriverLogger::create(exposed, 1), std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(shared / "driver.log"));
+
+  // An attacker-owned-0755 immediate parent (no group/other write, wrong
+  // owner) must be rejected.  We cannot chown in an unprivileged test, so we
+  // detect the case indirectly: if /tmp is owned by a different user (root on
+  // most systems) and is not our temp base, a path directly in /tmp fails the
+  // ownership check.  When /tmp IS ours (running as root or a private-tmp
+  // container) we skip rather than false-fail.
+  {
+    struct stat tmp_stat {};
+    ASSERT_EQ(0, ::stat("/tmp", &tmp_stat));
+    if (tmp_stat.st_uid != ::geteuid()) {
+      // /tmp is owned by someone else.  Create a path directly inside it so
+      // the immediate parent is /tmp (wrong owner).
+      const auto direct_path = std::filesystem::path("/tmp") /
+          ("odbcpp-owner-check-" + std::to_string(::getpid()) + ".log");
+      const auto direct_opts = LoggingOptions::resolve(
+          {{"LogLevel", "Info"}, {"LogSink", "File"},
+           {"LogFile", direct_path.string()}}, {}, {});
+      EXPECT_THROW(DriverLogger::create(direct_opts, 1), std::runtime_error)
+          << "immediate parent owned by another user must be rejected";
+      // Victim must be untouched.
+      EXPECT_FALSE(std::filesystem::exists(direct_path));
+    }
+  }
+
+  std::filesystem::remove_all(directory);
+}
+
+// A sentinel victim file's content and mode must remain unchanged when an
+// attempted log-open fails because the configured path is a symlink to the
+// victim.  This is the core TOCTOU content-preservation check: O_NOFOLLOW in
+// prepare_log_file must prevent the open from reaching the victim at all, so
+// spdlog's fopen("wb") is never reached.
+TEST(DriverLoggerTest, VictimContentAndModePreservedWhenLogPathIsSymlink) {
+  const auto directory = temporary_directory("odbcpp-victim-preserve");
+  const auto victim = directory / "victim.txt";
+  const std::string sentinel = "VICTIM_SENTINEL_MUST_SURVIVE_9283746";
+  {
+    std::ofstream f(victim);
+    f << sentinel;
+  }
+  ASSERT_EQ(0, ::chmod(victim.c_str(), 0644));
+
+  const auto link = directory / "driver.log";
+  std::filesystem::create_symlink(victim, link);
+
+  const auto opts = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", link.string()}},
+      {}, {});
+  EXPECT_THROW(DriverLogger::create(opts, 1), std::runtime_error);
+
+  // Content must be byte-for-byte unchanged.
+  EXPECT_EQ(sentinel, read_file(victim));
+  // Mode must be unchanged (no chmod from our side).
+  struct stat info {};
+  ASSERT_EQ(0, ::stat(victim.c_str(), &info));
+  EXPECT_EQ(0644, info.st_mode & 0777);
+
+  std::filesystem::remove_all(directory);
+}
+
+// The immediate parent directory must be owned by the effective user.
+// An attacker-owned directory with mode 0755 (not group/other writable) passes
+// the old write-bit check but must be rejected by the new ownership check.
+// We test the rejection message using a path whose parent we know is not ours,
+// and the positive case (our own tight directory) to confirm it still works.
+TEST(DriverLoggerTest, LogFileDirectoryOwnershipIsEnforced) {
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "Running as root; ownership check cannot be meaningfully tested";
+  }
+
+  // Positive: our own 0700 directory is accepted.
+  const auto directory = temporary_directory("odbcpp-log-dir-owner");
+  ASSERT_EQ(0, ::chmod(directory.c_str(), 0700));
+  const auto good_path = directory / "driver.log";
+  const auto good_opts = LoggingOptions::resolve(
+      {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", good_path.string()}},
+      {}, {});
+  EXPECT_NO_THROW(DriverLogger::create(good_opts, 1));
+
+  // Negative: path directly under /tmp when /tmp is not owned by us.
+  struct stat tmp_stat {};
+  ASSERT_EQ(0, ::stat("/tmp", &tmp_stat));
+  if (tmp_stat.st_uid != ::geteuid()) {
+    const auto bad_path = std::filesystem::path("/tmp") /
+        ("odbcpp-dir-owner-" + std::to_string(::getpid()) + ".log");
+    const auto bad_opts = LoggingOptions::resolve(
+        {{"LogLevel", "Info"}, {"LogSink", "File"}, {"LogFile", bad_path.string()}},
+        {}, {});
+    EXPECT_THROW(DriverLogger::create(bad_opts, 1), std::runtime_error)
+        << "parent owned by root must be rejected";
+    EXPECT_FALSE(std::filesystem::exists(bad_path));
+  }
+
+  std::filesystem::remove_all(directory);
+}
+#endif
+
 TEST(DriverLoggerTest, ConnectionLoggingNeverWritesPassword) {
   const auto directory = temporary_directory("odbcpp-connection-log");
   const auto path = directory / "driver.log";
   {
+    const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+        {{"LogSink", "File"}, {"LogFile", path.string()}, {"LogQueries", "true"}});
     rs::odbc::ODBCConnection connection(nullptr);
     ASSERT_EQ(SQL_SUCCESS, connection.set_attribute(SQL_ATTR_LOGIN_TIMEOUT, 1));
-    const auto result = connection.connect(
+    const auto result = connection.connect(config.connection_prefix() +
         "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
-        "TransportMode=Sync;LogLevel=Debug;LogSink=File;LogFile=" +
-            path.string() + ";LogAsync=false;LogQueries=true");
+        "TransportMode=Sync;LogLevel=Debug;LogAsync=false");
     EXPECT_EQ(SQL_ERROR, result);
     connection.disconnect();
   }
@@ -198,10 +375,11 @@ TEST(DriverLoggerTest, ApiFailuresIncludeOperationAndDiagnosticContext) {
                           reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  const std::string connection_string =
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}});
+  const std::string connection_string = config.connection_prefix() +
       "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
-      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogSink=File;LogFile=" +
-      path.string() + ";LogAsync=false";
+      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogAsync=false";
   EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
       connection, nullptr,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string.c_str())),
@@ -255,10 +433,11 @@ TEST(DriverLoggerTest, DiagnosticRetrievalLogsWithoutChangingDiagnostics) {
                           reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  const std::string connection_string =
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}});
+  const std::string connection_string = config.connection_prefix() +
       "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
-      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogSink=File;LogFile=" +
-      path.string() + ";LogAsync=false";
+      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogAsync=false";
   ASSERT_EQ(SQL_ERROR, SQLDriverConnect(
       connection, nullptr,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string.c_str())),
@@ -439,8 +618,9 @@ TEST(DriverLoggerTest, FailureSummaryKeepsSensitiveDsnOnlyInOdbcDiagnostic) {
       reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
   const std::string marker = "odbcpp-secret-dsn-928174";
-  const std::string input = "DSN=" + marker + ";LogLevel=Trace;LogSink=File;LogFile=" +
-      path.string() + ";LogAsync=false";
+  const odbcpp::test::ScopedDriverConfig config(directory, "OdbcppLogTest",
+      {{"LogSink", "File"}, {"LogFile", path.string()}});
+  const std::string input = config.connection_prefix() + "DSN=" + marker + ";LogLevel=Trace;LogAsync=false";
   EXPECT_EQ(SQL_ERROR, SQLDriverConnect(connection, nullptr,
       reinterpret_cast<SQLCHAR*>(const_cast<char*>(input.c_str())), SQL_NTS,
       nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));

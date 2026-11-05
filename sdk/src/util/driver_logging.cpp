@@ -8,9 +8,15 @@
 #ifndef _WIN32
 #include <spdlog/sinks/syslog_sink.h>
 #include <syslog.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <atomic>
 #include <cctype>
 #include <limits>
@@ -108,16 +114,34 @@ std::vector<LogSink> parse_sinks(const std::string& value) {
   return result;
 }
 
+// Choosing a log file, its rotation, or recording query text belongs to
+// whoever configures the driver or DSN. An application connection string may
+// not do it: a file path there could create, append to or rotate (rename)
+// arbitrary files in the host process. Stderr/syslog sinks and turning query
+// logging off stay available to applications.
+[[noreturn]] void administrator_only(const std::string& key) {
+  throw std::invalid_argument(key + " can only be set in the DSN or driver configuration");
+}
+
 void apply(LoggingOptions& options,
-           const std::map<std::string, std::string>& parameters) {
+           const std::map<std::string, std::string>& parameters,
+           bool administrator_layer) {
   for (const auto& [raw_key, value] : parameters) {
     const auto key = uppercase(raw_key);
+    if (!administrator_layer &&
+        (key == "LOGFILE" || key == "LOGMAXSIZE" || key == "LOGMAXFILES")) {
+      administrator_only(raw_key);
+    }
     if (key == "LOGLEVEL") {
       options.level = parse_level(value);
     } else if (key == "LOGFORMAT") {
       options.format = parse_format(value);
     } else if (key == "LOGSINK") {
       options.sinks = parse_sinks(value);
+      if (!administrator_layer &&
+          std::find(options.sinks.begin(), options.sinks.end(), LogSink::File) != options.sinks.end()) {
+        administrator_only(raw_key + "=File");
+      }
     } else if (key == "LOGFILE") {
       options.file = value;
     } else if (key == "LOGMAXSIZE") {
@@ -128,9 +152,134 @@ void apply(LoggingOptions& options,
       options.asynchronous = parse_flag("LogAsync", value);
     } else if (key == "LOGQUERIES") {
       options.log_queries = parse_flag("LogQueries", value);
+      if (!administrator_layer && options.log_queries) administrator_only(raw_key + "=true");
     }
   }
 }
+
+#ifndef _WIN32
+// Returns true when a directory is trusted as an immediate parent for a log
+// file: we must own it (attacker-owned 0755 passes the write-bit check but
+// an attacker can plant entries there at will) and it must not be writable
+// by group or others.
+static bool directory_is_owned_and_tight(const struct stat& st) noexcept {
+  return st.st_uid == ::geteuid() &&
+         (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+// Returns true when an ancestor directory above the immediate parent is safe
+// to traverse: either we own it, or the sticky bit prevents non-owners from
+// replacing entries, or nobody else can write to it at all.  An ancestor that
+// is world-writable, not sticky, and not ours lets an attacker rename away
+// and replace the immediate parent directory itself.
+static bool ancestor_is_safe(const struct stat& st) noexcept {
+  if (st.st_uid == ::geteuid()) return true;          // we own it
+  if (st.st_mode & S_ISVTX)    return true;           // sticky bit
+  if ((st.st_mode & (S_IWGRP | S_IWOTH)) == 0) return true; // others cannot write
+  return false;
+}
+
+// Run by the rotating sink around every open, including re-creation after
+// rotation.
+//
+// Security invariants enforced here (before_open):
+//   1. The immediate parent directory must be owned by our effective user and
+//      not be writable by group or others.  An attacker-owned 0755 directory
+//      passes the write-bit check but allows the owner to plant symlinks or
+//      replace entries between our validation and spdlog's reopen.
+//   2. Every ancestor above the immediate parent must be either owned by us,
+//      sticky, or not writable by others.  A non-sticky, non-owned, world-
+//      writable ancestor lets an attacker replace the parent directory itself.
+//   3. The log file is pre-created and pre-truncated through O_NOFOLLOW so
+//      that (a) symlinks are refused immediately and (b) spdlog's subsequent
+//      fopen("wb") truncation is a no-op on an already-empty file.  Any path
+//      substitution that occurs after we return is caught by after_open, which
+//      redirects the stream to /dev/null and throws.
+//
+// After opening, secure_opened_log_file validates the open descriptor: the
+// file must be regular, singly linked, owned by our user, and is tightened to
+// 0600.  A path swapped between the two steps never receives log text.
+void prepare_log_file(const spdlog::filename_t& path) {
+  // --- 1. Validate the immediate parent directory ---
+  const auto separator = path.find_last_of('/');
+  const spdlog::filename_t directory =
+      separator == spdlog::filename_t::npos ? spdlog::filename_t(".")
+      : separator == 0                      ? spdlog::filename_t("/")
+                                            : path.substr(0, separator);
+
+  struct stat parent {};
+  if (::stat(directory.c_str(), &parent) != 0) {
+    throw std::runtime_error("LogFile directory cannot be inspected: " +
+                             std::string(std::strerror(errno)));
+  }
+  if (!directory_is_owned_and_tight(parent)) {
+    if (parent.st_uid != ::geteuid()) {
+      throw std::runtime_error(
+          "LogFile directory must be owned by the driver's user");
+    }
+    throw std::runtime_error(
+        "LogFile directory must not be writable by other users");
+  }
+
+  // --- 2. Validate ancestor directories ---
+  // Walk upward until we reach the root or an ancestor we own.  If any
+  // ancestor is world-writable (or group-writable) without the sticky bit and
+  // not owned by us, the parent directory can be replaced by an attacker.
+  {
+    spdlog::filename_t current = directory;
+    for (int depth = 0; depth < 64; ++depth) {
+      const auto sep = current.rfind('/');
+      // At the filesystem root: both "/" and "." terminate the walk.
+      const spdlog::filename_t ancestor =
+          sep == spdlog::filename_t::npos ? spdlog::filename_t(".")
+          : sep == 0                      ? spdlog::filename_t("/")
+                                          : current.substr(0, sep);
+      if (ancestor == current) break;  // reached root
+
+      struct stat anc {};
+      if (::stat(ancestor.c_str(), &anc) != 0) break;  // cannot inspect — stop
+      if (!ancestor_is_safe(anc)) {
+        throw std::runtime_error(
+            "LogFile path has a replaceable ancestor directory: " + ancestor);
+      }
+      if (anc.st_uid == ::geteuid()) break;  // we own this level — safe above
+      current = ancestor;
+    }
+  }
+
+  // --- 3. Pre-create and pre-truncate through O_NOFOLLOW ---
+  // Using O_TRUNC ensures the file is empty before spdlog's fopen("wb") runs,
+  // so a victim file cannot be truncated by spdlog if the path is swapped
+  // after we return (after_open will reject the substituted file).
+  // O_NOFOLLOW rejects a symlink at the final path component immediately.
+  const int fd = ::open(path.c_str(),
+                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                        0600);
+  if (fd < 0) {
+    throw std::runtime_error("LogFile cannot be opened: " +
+                             std::string(std::strerror(errno)));
+  }
+  struct stat info {};
+  const bool regular = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
+  ::close(fd);
+  if (!regular) throw std::runtime_error("LogFile must be a regular file");
+}
+
+void secure_opened_log_file(const spdlog::filename_t&, std::FILE* stream) {
+  const int fd = ::fileno(stream);
+  struct stat info {};
+  if (::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_nlink == 1 &&
+      info.st_uid == ::geteuid() && ::fchmod(fd, 0600) == 0) {
+    return;
+  }
+  const int null = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+  if (null >= 0) {
+    ::dup2(null, fd);
+    ::close(null);
+  }
+  throw std::runtime_error("LogFile must be a regular file owned by the driver's user");
+}
+#endif
 
 spdlog::level::level_enum spdlog_level(LogLevel level) noexcept {
   switch (level) {
@@ -267,9 +416,9 @@ LoggingOptions LoggingOptions::resolve(
     const std::map<std::string, std::string>& dsn_parameters,
     const std::map<std::string, std::string>& connection_parameters) {
   LoggingOptions options;
-  apply(options, driver_parameters);
-  apply(options, dsn_parameters);
-  apply(options, connection_parameters);
+  apply(options, driver_parameters, true);
+  apply(options, dsn_parameters, true);
+  apply(options, connection_parameters, false);
 
   if (options.level != LogLevel::Off && options.sinks.empty()) {
     options.sinks.push_back(options.file.empty() ? LogSink::Stderr
@@ -313,11 +462,17 @@ std::shared_ptr<DriverLogger> DriverLogger::create(
   sinks.reserve(options.sinks.size());
   for (const auto sink : options.sinks) {
     switch (sink) {
-      case LogSink::File:
+      case LogSink::File: {
+        spdlog::file_event_handlers handlers;
+#ifndef _WIN32
+        handlers.before_open = prepare_log_file;
+        handlers.after_open = secure_opened_log_file;
+#endif
         sinks.push_back(
             std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-                options.file, options.max_file_size, options.max_files));
+                options.file, options.max_file_size, options.max_files, false, handlers));
         break;
+      }
       case LogSink::Stderr:
         sinks.push_back(std::make_shared<spdlog::sinks::stderr_sink_mt>());
         break;

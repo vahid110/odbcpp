@@ -100,6 +100,8 @@ $runtimeDependencies = @($artifactEvidence.runtimeDependencies)
 Assert ($runtimeDependencies.Count -eq 2) 'Crypto artifact evidence must identify exactly two runtime dependencies'
 Assert (@($runtimeDependencies | Where-Object role -eq 'ssl').Count -eq 1) 'Crypto artifact evidence must identify one SSL runtime'
 Assert (@($runtimeDependencies | Where-Object role -eq 'crypto').Count -eq 1) 'Crypto artifact evidence must identify one Crypto runtime'
+. (Join-Path $PSScriptRoot 'logging-inputs.ps1')
+$loggingInputs = Read-LoggingPackageInputs $build
 New-Item $OutputDirectory -ItemType Directory -Force | Out-Null
 $output = (Resolve-Path $OutputDirectory).Path
 $stage = Join-Path $output "payload-$Version"
@@ -146,21 +148,20 @@ Get-ChildItem $crt.FullName -Filter *.dll | ForEach-Object { Assert-X64 $_.FullN
 $license = @(Get-ChildItem $OpenSslRoot -Recurse -File | Where-Object { $_.Name -match '^(LICENSE|LICENSE\.txt|LICENSE\.md|LICENSE\.html)$' })
 if (!$license) { throw 'OpenSSL license file is required for packaging' }
 Copy-Item $license[0].FullName (Join-Path $stage 'OpenSSL-LICENSE.txt')
-Copy-Item "$build/_deps/spdlog-src/LICENSE" (Join-Path $stage 'spdlog-LICENSE.txt')
-Copy-Item "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/fmt.license.rst" (Join-Path $stage 'fmt-LICENSE.txt')
+foreach ($notice in @(
+    @{ member = 'LICENSE'; destination = 'spdlog-LICENSE.txt' },
+    @{ member = 'include/spdlog/fmt/bundled/fmt.license.rst'; destination = 'fmt-LICENSE.txt' }
+)) {
+    $destination = Join-Path $stage $notice.destination
+    Copy-Item -LiteralPath (Join-Path $loggingInputs.sourceDirectory $notice.member) -Destination $destination
+    Assert ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ieq
+        $loggingInputs.evidence.files.($notice.member)) 'Staged logging license differs from its configured input'
+}
 Copy-Item (Join-Path $configuredSource 'LICENSE') (Join-Path $stage 'LICENSE')
 Copy-Item $versionPath (Join-Path $stage 'odbcpp-version.json')
 Copy-Item "$PSScriptRoot/README.md" (Join-Path $stage 'README.txt')
 Copy-Item $manifestPath (Join-Path $stage 'odbcpp-crypto-manifest.json')
 Copy-Item $artifactEvidencePath (Join-Path $stage 'odbcpp-crypto-artifact-evidence.json')
-function Macro([string]$Path, [string]$Name) {
-    $match = [regex]::Match((Get-Content $Path -Raw), '(?m)^#define ' + [regex]::Escape($Name) + '\s+(\d+)\s*$')
-    if (!$match.Success) { throw "Missing dependency version macro $Name" }
-    return [int]$match.Groups[1].Value
-}
-$spdlogVersion = (@('MAJOR','MINOR','PATCH') | ForEach-Object { Macro "$build/_deps/spdlog-src/include/spdlog/version.h" "SPDLOG_VER_$_" }) -join '.'
-$fmtNumber = Macro "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/base.h" 'FMT_VERSION'
-$fmtVersion = '{0}.{1}.{2}' -f [math]::Floor($fmtNumber / 10000), [math]::Floor(($fmtNumber % 10000) / 100), ($fmtNumber % 100)
 $inventory = @(Get-ChildItem $stage -Filter *.dll | Sort-Object Name | ForEach-Object {
     @{ file = $_.Name; version = $_.VersionInfo.FileVersion; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
 })
@@ -176,7 +177,9 @@ $artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evide
     packagingRecipeSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
     installerRecipeSha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'Product.wxs') -Algorithm SHA256).Hash
     buildCacheSha256 = (Get-FileHash -LiteralPath (Join-Path $build 'CMakeCache.txt') -Algorithm SHA256).Hash
-    headerOnlyDependencies = @{ spdlog = $spdlogVersion; fmt = $fmtVersion }
+    headerOnlyDependencies = $loggingInputs.versions
+    headerOnlyDependencyInputs = $loggingInputs.evidence
+    loggingInputRecipeSha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'logging-inputs.ps1') -Algorithm SHA256).Hash
     runnerImageVersion = $env:ImageVersion
     cryptoManifest = @{
         file = $cryptoEvidence.Name
