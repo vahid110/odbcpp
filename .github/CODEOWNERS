@@ -24,3 +24,7 @@ CLAUDE.local.md                   @vahid110
 /tests/security/                  @vahid110
 /cmake/LiveSuite.cmake            @vahid110
 /DEVELOPMENT_WORKFLOW.md          @vahid110
+# Architecture documents AGENTS.md binds agents to (#216).
+/ARCHITECTURE.md                  @vahid110
+/SDK_ARCHITECTURE.md              @vahid110
+/SECURITY_MODEL.md                @vahid110
