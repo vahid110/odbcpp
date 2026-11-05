@@ -1,4 +1,3 @@
-core/database/connection_pool.h
 core/database/database_factory.h
 core/database/generic_database_connection.h
 core/database/i_protocol_parser.h

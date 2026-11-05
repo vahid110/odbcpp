@@ -524,6 +524,11 @@ namespace {
       case SQL_API_SQLSPECIALCOLUMNS:
       case SQL_API_SQLSTATISTICS:
       case SQL_API_SQLTABLES:
+#ifdef SQL_API_SQLCANCELHANDLE
+      case SQL_API_SQLCANCELHANDLE:
+#endif
+      case SQL_API_SQLGETCURSORNAME:
+      case SQL_API_SQLSETCURSORNAME:
         return true;
       default:
         return false;
@@ -539,9 +544,6 @@ namespace {
       case SQL_API_SQLBINDPARAM:
       case SQL_API_SQLBROWSECONNECT:
       case SQL_API_SQLCANCEL:
-#ifdef SQL_API_SQLCANCELHANDLE
-      case SQL_API_SQLCANCELHANDLE:
-#endif
       case SQL_API_SQLCOLATTRIBUTES:
       case SQL_API_SQLCOLUMNPRIVILEGES:
       case SQL_API_SQLDATASOURCES:
@@ -550,12 +552,10 @@ namespace {
       case SQL_API_SQLFREECONNECT:
       case SQL_API_SQLFREEENV:
       case SQL_API_SQLGETCONNECTOPTION:
-      case SQL_API_SQLGETCURSORNAME:
       case SQL_API_SQLGETSTMTOPTION:
       case SQL_API_SQLPARAMDATA:
       case SQL_API_SQLPUTDATA:
       case SQL_API_SQLSETCONNECTOPTION:
-      case SQL_API_SQLSETCURSORNAME:
       case SQL_API_SQLSETPARAM:
       case SQL_API_SQLSETSTMTOPTION:
       case SQL_API_SQLTABLEPRIVILEGES:
@@ -3327,6 +3327,141 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
   return target->copy_from(*source);
 }
 
+static SQLRETURN SQLGetCursorName_impl(
+    SQLHSTMT statement_handle, SQLCHAR* cursor_name, SQLSMALLINT buffer_length,
+    SQLSMALLINT* name_length_ptr) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  const auto name = stmt->get_cursor_name();
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output buffer length");
+    return SQL_ERROR;
+  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          name.size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
+  if (!cursor_name) {
+    return SQL_SUCCESS;
+  }
+  if (buffer_length == 0) {
+    if (!name.empty()) {
+      stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Cursor name was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+  const auto copied = std::min<std::size_t>(
+      name.size(), static_cast<std::size_t>(buffer_length - 1));
+  if (copied > 0) {
+    std::memcpy(cursor_name, name.data(), copied);
+  }
+  cursor_name[copied] = '\0';
+  if (copied < name.size()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Cursor name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
+}
+
+static SQLRETURN SQLGetCursorNameW_impl(
+    SQLHSTMT statement_handle, SQLWCHAR* cursor_name, SQLSMALLINT buffer_length,
+    SQLSMALLINT* name_length_ptr) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  const auto name = stmt->get_cursor_name();
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output buffer length");
+    return SQL_ERROR;
+  }
+  const auto wide = utf8_to_wide(name);
+  if (!wide) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid UTF-8 output text");
+    return SQL_ERROR;
+  }
+  store_output_value(
+      name_length_ptr,
+      static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          wide->size(), static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max()))));
+  if (!cursor_name) {
+    return SQL_SUCCESS;
+  }
+  if (buffer_length == 0) {
+    if (!wide->empty()) {
+      stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                      "Cursor name was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+  auto copied = std::min<std::size_t>(
+      wide->size(), static_cast<std::size_t>(buffer_length - 1));
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    if (copied < wide->size() && copied > 0 &&
+        (*wide)[copied - 1] >= 0xd800 &&
+        (*wide)[copied - 1] <= 0xdbff) {
+      --copied;
+    }
+  }
+  if (copied > 0) {
+    std::memcpy(cursor_name, wide->data(), copied * sizeof(SQLWCHAR));
+  }
+  cursor_name[copied] = 0;
+  if (copied < wide->size()) {
+    stmt->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Cursor name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
+}
+
+static SQLRETURN SQLSetCursorName_impl(
+    SQLHSTMT statement_handle, SQLCHAR* cursor_name, SQLSMALLINT name_length) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!cursor_name) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "Cursor name is null");
+    return SQL_ERROR;
+  }
+  if (name_length < 0 && name_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid cursor name length");
+    return SQL_ERROR;
+  }
+  const auto len = (name_length == SQL_NTS)
+                       ? std::strlen(reinterpret_cast<const char*>(cursor_name))
+                       : static_cast<std::size_t>(name_length);
+  std::string name(reinterpret_cast<const char*>(cursor_name), len);
+  return stmt->set_cursor_name(name);
+}
+
+static SQLRETURN SQLSetCursorNameW_impl(
+    SQLHSTMT statement_handle, SQLWCHAR* cursor_name, SQLSMALLINT name_length) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!cursor_name) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "Cursor name is null");
+    return SQL_ERROR;
+  }
+  if (name_length < 0 && name_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid cursor name length");
+    return SQL_ERROR;
+  }
+  const auto utf8 = sqlwchar_to_utf8(cursor_name, name_length);
+  if (!utf8) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character cursor name");
+    return SQL_ERROR;
+  }
+  return stmt->set_cursor_name(*utf8);
+}
+
 } // extern "C"
 
 // Every exported entry point is intercepted once, outside its handle guard, so
@@ -3499,6 +3634,12 @@ ODBCPP_API_5(SQLGetStmtAttrW, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER,
              SQLINTEGER, SQLINTEGER*)
 ODBCPP_API_1(SQLCloseCursor, a1, SQLHSTMT)
 ODBCPP_API_2(SQLFreeStmt, a1, SQLHSTMT, SQLUSMALLINT)
+ODBCPP_API_4(SQLGetCursorName, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_4(SQLGetCursorNameW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_3(SQLSetCursorName, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_3(SQLSetCursorNameW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT)
 ODBCPP_DIAG_API_8(SQLGetDiagRec, a2, SQLSMALLINT, SQLHANDLE,
              SQLSMALLINT, SQLCHAR*, SQLINTEGER*, SQLCHAR*, SQLSMALLINT,
              SQLSMALLINT*)

@@ -3,9 +3,23 @@
 # required CI checks and the agent reviews instead.
 
 /.github/                         @vahid110
-/AGENTS.md                        @vahid110
 /docs/adr/                        @vahid110
-/.agents/                         @vahid110
+/.mcp.json                        @vahid110
+# Agent instructions and settings at any depth (nested files are loaded too).
+# CODEOWNERS is case-sensitive; the review gate's process rule also
+# matches case variants (.github/review/review_gate.py). The names without a
+# trailing slash also match a symlink, which git stores as a file; a pattern
+# ending in / matches only directories.
+.agents/                          @vahid110
+.agents                           @vahid110
+.codex/                           @vahid110
+.codex                            @vahid110
+AGENTS.md                         @vahid110
+AGENTS.override.md                @vahid110
+CLAUDE.md                         @vahid110
+CLAUDE.local.md                   @vahid110
+.claude/                          @vahid110
+.claude                           @vahid110
 /tools/                           @vahid110
 /tests/security/                  @vahid110
 /cmake/LiveSuite.cmake            @vahid110

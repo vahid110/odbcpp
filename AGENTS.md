@@ -68,13 +68,24 @@ the required checks are green; only changes to the files in `.github/CODEOWNERS`
 wait for the owner.
 
 Authors act on GitHub only as `odbcpp-agent[bot]`
-(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`). Reviewers post their verdict
-as a PR review (approve or request changes) by `odbcpp-reviewer[bot]`
-(`GH_TOKEN=$(~/.config/odbcpp-reviewer/token.sh)`), and use that identity for
-nothing else. Each review starts with its role (`[correctness reviewer]` or
-`[red-team reviewer]`). Never use the owner's login. GitHub does not enforce
-the verdict and shows only the latest review per identity, so never merge
-unless every reviewer's latest review of the head commit approves. The owner
+(`GH_TOKEN=$(~/.config/odbcpp-agent/token.sh)`); never use the owner's login.
+The `open-pr` and `pr-evidence` skills in `.agents/skills/` (also found by
+Claude Code through `.claude/skills`) give the exact steps for opening a PR
+and assembling its evidence.
+Reviews are posted as `odbcpp-reviewer[bot]` only by the automated review
+(`.github/workflows/agent-review.yml`), which also adds the high-risk labels
+and sets the required `agent review` check: green only when every required
+reviewer's latest review of the head commit approves. Branch protection must
+pin that check to the odbcpp-reviewer App, so no other job can satisfy it.
+A high-risk label, once added by anyone (or required by the changed paths),
+keeps the red-team review required even if the label is removed; the red-team
+review then runs and must approve. Its key and the Claude
+token live only in the main-only `agent-review` environment; no machine holds
+them. The review runs once the owner has enabled it after a passing canary.
+Until then, session reviews are PR comments by `odbcpp-agent[bot]`; never
+merge unless every reviewer's latest review of the head commit approves.
+Each review starts with its role (`[correctness reviewer]` or
+`[red-team reviewer]`). The owner
 does not author PRs that touch owned files, because GitHub does not let an
 author approve their own PR.
 

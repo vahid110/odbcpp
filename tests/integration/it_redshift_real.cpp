@@ -9468,7 +9468,7 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
   ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, sibling_));
   ASSERT_EQ(SQL_ERROR, SQLCancelHandle(SQL_HANDLE_DBC, hdbc_));
   EXPECT_EQ("IM001", get_error(SQL_HANDLE_DBC, hdbc_));
-  SQLUSMALLINT supported = SQL_TRUE;
+  SQLUSMALLINT supported = SQL_FALSE;
   if (odbcpp::test::dm::deviates(odbcpp::test::dm::Deviation::GetFunctionsRefusesOdbc38Id)) {
     // The manager refuses an individual ODBC 3.8 function ID itself; its
     // ODBC 3 bitmap still carries the driver's answer.
@@ -9481,7 +9481,7 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
   } else {
     ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(hdbc_, SQL_API_SQLCANCELHANDLE, &supported));
   }
-  EXPECT_EQ(SQL_FALSE, supported);
+  EXPECT_EQ(SQL_TRUE, supported);
   ASSERT_NO_FATAL_FAILURE(cap_sibling());
   if (odbcpp::test::dm::stops_case(odbcpp::test::dm::Deviation::CancelClosesIdleCursor)) {
     // The manager treats SQLCancelHandle on the idle sibling as closing its

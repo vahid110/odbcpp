@@ -4,6 +4,7 @@ include(CMakePackageConfigHelpers)
 
 # Install the library
 install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver odbcpp_auth_core
+  odbcpp_base odbcpp_logging
   EXPORT ${PROJECT_NAME}Targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -53,7 +54,6 @@ if(BUILD_EXAMPLES)
   install(DIRECTORY examples/
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples
       FILES_MATCHING PATTERN "*.cpp"
-    PATTERN "connection_pool_example.cpp" EXCLUDE
   )
 endif()
 
