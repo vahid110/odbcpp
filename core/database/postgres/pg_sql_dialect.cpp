@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace rs::core::database::postgres {
 namespace {
@@ -239,6 +240,210 @@ std::optional<std::size_t> skip_trivia(std::string_view value, std::size_t posit
     }
   }
   return position;
+}
+
+// Split only the outer call. Preserve raw expression slices, including the
+// newline ending a line comment, and leave expression typing to the server.
+template <std::size_t Count>
+std::optional<std::array<std::string_view, Count>> call_arguments(
+    std::string_view function, std::size_t name_end) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(') return std::nullopt;
+  std::array<std::string_view, Count> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::vector<char> closers{')'};
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> end;
+    bool lexical_body = false;
+    if (function[i] == '\'' || function[i] == '"') {
+      lexical_body = true;
+      end = quoted_end(function, i);
+    } else if (function.substr(i, 2) == "--" || function.substr(i, 2) == "/*") {
+      lexical_body = true;
+      end = comment_end(function, i);
+    } else if (function[i] == '$' && dollar_tag_at(function, i)) {
+      lexical_body = true;
+      end = dollar_end(function, i);
+    }
+    if (lexical_body) {
+      if (!end) return std::nullopt;
+      i = *end;
+      continue;
+    }
+    const auto ch = function[i];
+    if (ch == '(' || ch == '[') {
+      closers.push_back(ch == '(' ? ')' : ']');
+      ++i;
+      continue;
+    }
+    const bool close = ch == ')' && closers.size() == 1;
+    if ((ch == ',' && closers.size() == 1) || close) {
+      const auto argument = function.substr(begin, i - begin);
+      const auto first = skip_trivia(argument, 0);
+      if (!first || *first == argument.size() || count == Count) return std::nullopt;
+      arguments[count++] = argument;
+      if (close) {
+        const auto trailing = skip_trivia(function, i + 1);
+        if (!trailing || *trailing != function.size() || count != Count) return std::nullopt;
+        return arguments;
+      }
+      begin = ++i;
+      continue;
+    }
+    if (ch == ')' || ch == ']') {
+      if (closers.back() != ch) return std::nullopt;
+      closers.pop_back();
+    }
+    ++i;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string_view> keyword_argument(std::string_view value) {
+  const auto start = skip_trivia(value, 0);
+  if (!start || *start == value.size()) return std::nullopt;
+  auto end = *start;
+  while (end < value.size() &&
+         ((value[end] >= 'A' && value[end] <= 'Z') ||
+          (value[end] >= 'a' && value[end] <= 'z') || value[end] == '_')) ++end;
+  if (end == *start) return std::nullopt;
+  const auto trailing = skip_trivia(value, end);
+  if (!trailing || *trailing != value.size()) return std::nullopt;
+  return value.substr(*start, end - *start);
+}
+
+SqlTranslationResult translate_convert(std::string_view function, std::size_t name_end,
+                                       SqlDialectProfile profile) {
+  const auto arguments = call_arguments<2>(function, name_end);
+  if (!arguments) return failure(SqlTranslationError::InvalidSyntax, "CONVERT requires two arguments");
+  const auto target = keyword_argument((*arguments)[1]);
+  if (!target) return failure(SqlTranslationError::InvalidSyntax, "CONVERT requires one type keyword");
+  struct Target { std::string_view keyword, postgres, redshift; };
+  constexpr std::array targets{
+      Target{"SQL_SMALLINT", "SMALLINT", "SMALLINT"},
+      Target{"SQL_INTEGER", "INTEGER", "INTEGER"},
+      Target{"SQL_BIGINT", "BIGINT", "BIGINT"},
+      Target{"SQL_REAL", "REAL", "REAL"},
+      Target{"SQL_FLOAT", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_DOUBLE", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_NUMERIC", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_DECIMAL", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_BIT", "BOOLEAN", "BOOLEAN"},
+      Target{"SQL_DATE", "DATE", "DATE"},
+      Target{"SQL_TIME", "TIME", "TIME"},
+      Target{"SQL_TIMESTAMP", "TIMESTAMP", "TIMESTAMP"},
+      Target{"SQL_CHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_VARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_LONGVARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_WCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_WVARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_WLONGVARCHAR", "TEXT", "VARCHAR(65535)"},
+      Target{"SQL_BINARY", "BYTEA", "VARBYTE"},
+      Target{"SQL_VARBINARY", "BYTEA", "VARBYTE"},
+      Target{"SQL_LONGVARBINARY", "BYTEA", "VARBYTE"},
+      Target{"SQL_GUID", "UUID", ""}};
+  for (const auto& type : targets) {
+    if (ascii_word_equal(*target, type.keyword)) {
+      const auto native = profile == SqlDialectProfile::PostgreSql ? type.postgres : type.redshift;
+      if (native.empty()) break;
+      std::string result{"CAST("};
+      result.append((*arguments)[0]);
+      result += " AS ";
+      result.append(native);
+      result += ')';
+      return {std::move(result), SqlTranslationError::None, {}};
+    }
+  }
+  return failure(SqlTranslationError::Unsupported, "CONVERT target is not supported by this profile");
+}
+
+// ODBC supplies today's date for a TIME operand. A textual round trip also
+// handles typed DATE/TIMESTAMP and bound parameters without repeating them or
+// introducing a cast from TIME directly to TIMESTAMP (unsupported by PG).
+// Timestamp extensions use local wall-clock fields, not timezone arithmetic.
+std::string timestamp_operand(std::string_view argument, SqlDialectProfile profile) {
+  std::string result{"CAST(REGEXP_REPLACE(BTRIM(CAST(("};
+  result.append(argument);
+  if (profile == SqlDialectProfile::PostgreSql) {
+    result += ") AS TEXT)) COLLATE \"C\", '^(?=[0-9]{2}:)', CAST(CURRENT_DATE AS TEXT) || ' ') AS TIMESTAMP)";
+  } else {
+    result += ") AS VARCHAR(MAX))), '^(?=[0-9]{2}:)', CAST(CURRENT_DATE AS VARCHAR(10)) || ' ', 1, 'p') AS TIMESTAMP)";
+  }
+  return result;
+}
+
+struct TimestampUnit {
+  std::string_view keyword;
+  std::string_view native;
+  std::string_view pg_interval;
+  unsigned seconds;
+};
+
+std::string pg_boundary_ordinal(std::string_view argument, const TimestampUnit& unit) {
+  const auto timestamp = timestamp_operand(argument, SqlDialectProfile::PostgreSql);
+  if (unit.seconds != 0) {
+    return "(EXTRACT(EPOCH FROM DATE_TRUNC('" + std::string(unit.native) + "', " +
+        timestamp + ")) / " + std::to_string(unit.seconds) + ")";
+  }
+  // Truncate both sides to calendar boundaries before AGE: its interval then
+  // contains whole months only. Multiplying those stored months by 12 (month)
+  // or 4 (quarter) makes EXTRACT(YEAR) the signed boundary ordinal. The epoch
+  // cancels in the difference, including across PostgreSQL's missing year zero.
+  // This stays in the caller's expression scope (window/aggregate operands)
+  // and evaluates the application's operand exactly once.
+  const auto scale = unit.native == "month" ? "12" : unit.native == "quarter" ? "4" : "1";
+  return "EXTRACT(YEAR FROM (AGE(DATE_TRUNC('" + std::string(unit.native) + "', " +
+      timestamp + "), TIMESTAMP '2000-01-01') * " + scale + "))";
+}
+
+SqlTranslationResult translate_timestamp(std::string_view function, std::size_t name_end,
+                                         SqlDialectProfile profile, bool addition) {
+  const auto arguments = call_arguments<3>(function, name_end);
+  if (!arguments) return failure(SqlTranslationError::InvalidSyntax, "Timestamp escape requires three arguments");
+  const auto keyword = keyword_argument((*arguments)[0]);
+  if (!keyword) return failure(SqlTranslationError::InvalidSyntax, "Timestamp escape requires one interval keyword");
+  constexpr std::array units{
+      TimestampUnit{"SQL_TSI_SECOND", "second", "1 second", 1},
+      TimestampUnit{"SQL_TSI_MINUTE", "minute", "1 minute", 60},
+      TimestampUnit{"SQL_TSI_HOUR", "hour", "1 hour", 3600},
+      TimestampUnit{"SQL_TSI_DAY", "day", "1 day", 86400},
+      TimestampUnit{"SQL_TSI_WEEK", "week", "7 days", 604800},
+      TimestampUnit{"SQL_TSI_MONTH", "month", "1 month", 0},
+      TimestampUnit{"SQL_TSI_QUARTER", "quarter", "3 months", 0},
+      TimestampUnit{"SQL_TSI_YEAR", "year", "1 year", 0}};
+  for (const auto& unit : units) {
+    if (!ascii_word_equal(*keyword, unit.keyword)) continue;
+    if (!addition && unit.native == "week") break;
+    std::string result;
+    if (profile == SqlDialectProfile::Redshift) {
+      result = addition ? "DATEADD(" : "DATEDIFF(";
+      result.append(unit.native);
+      result += ", ";
+      if (addition) {
+        result += "CAST((";
+        result.append((*arguments)[1]);
+        result += ") AS INTEGER)";
+      } else {
+        result += timestamp_operand((*arguments)[1], profile);
+      }
+      result += ", " + timestamp_operand((*arguments)[2], profile) + ')';
+    } else if (addition) {
+      result = "(CAST((";
+      result.append((*arguments)[1]);
+      result += ") AS BIGINT) * INTERVAL '";
+      result.append(unit.pg_interval);
+      result += "' + " + timestamp_operand((*arguments)[2], profile) + ')';
+    } else {
+      // Negate start-minus-end to preserve the application's marker order.
+      result = "CAST(-(" + pg_boundary_ordinal((*arguments)[1], unit) + " - " +
+          pg_boundary_ordinal((*arguments)[2], unit) + ") AS BIGINT)";
+    }
+    return {std::move(result), SqlTranslationError::None, {}};
+  }
+  // FRAC_SECOND means nanoseconds, not the native microsecond interval.
+  // WEEK difference has no agreed cross-product week-origin contract yet.
+  return failure(SqlTranslationError::Unsupported, "Timestamp interval is not supported by this profile");
 }
 
 // Extract only the outer call's argument slices. Expressions remain native
@@ -577,6 +782,21 @@ SqlTranslationResult translate_escape(std::string_view body, SqlDialectProfile p
     auto translated = translate_fragment(trim(body.substr(2)), profile);
     if (!translated) return translated;
     auto function = trim(translated.sql);
+    const auto first = skip_trivia(function, 0);
+    if (first) {
+      auto name_end = *first;
+      while (name_end < function.size() && identifier_continue(
+          static_cast<unsigned char>(function[name_end]))) ++name_end;
+      if (ascii_word_equal(function.substr(*first, name_end - *first), "CONVERT")) {
+        return translate_convert(function, name_end, profile);
+      }
+      if (ascii_word_equal(function.substr(*first, name_end - *first), "TIMESTAMPADD")) {
+        return translate_timestamp(function, name_end, profile, true);
+      }
+      if (ascii_word_equal(function.substr(*first, name_end - *first), "TIMESTAMPDIFF")) {
+        return translate_timestamp(function, name_end, profile, false);
+      }
+    }
     if (profile == SqlDialectProfile::Redshift) {
       const auto start = skip_trivia(function, 0);
       if (start) {
