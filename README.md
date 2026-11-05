@@ -18,6 +18,7 @@ reports. Third-party components retain their own licenses.
 - **Unicode SQL and Data**: Strict UTF-8/SQLWCHAR conversion for wide connections, execution, preparation, diagnostics, native SQL, results, and parameters
 - **ODBC Descriptors**: IRD, APD, ARD, and IPD storage plus explicit descriptor handles and field APIs
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
+- **SQL Escape Translation**: [Conversion and timestamp functions](docs/sql-escape-functions.md), with explicit per-product limits and capability reporting
 - **Column Binding**: SQLBindCol with automatic data population during fetch
 - **Null-Aware Results**: PostgreSQL NULL values remain distinct from empty strings through SQLFetch and SQLGetData
 - **Typed Results**: PostgreSQL metadata drives SQL_C_DEFAULT and validated C-type conversions
