@@ -106,7 +106,15 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
-  set_sql_conversion_capabilities(result, true);
+  // CONVERT and TIMESTAMPADD/TIMESTAMPDIFF are translated for Redshift too,
+  // but no Redshift statement behind them has run live yet (the generated SQL
+  // uses REGEXP_REPLACE with a lookahead, VARCHAR(MAX) and VARBYTE casts).
+  // Report them only after the Redshift live acceptance passes (#144); until
+  // then applications see no support and do not emit these escapes. The
+  // PostgreSQL capabilities this starts from report them, so clear them here.
+  result.conversions.targets.fill(0);
+  result.timestamp_add_intervals = 0;
+  result.timestamp_diff_intervals = 0;
   return result;
 }
 

@@ -552,26 +552,29 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
       character_targets |= SQL_CVT_GUID;
 #endif
     }
+    // Redshift reports none of these until its live acceptance passes (#144):
+    // the translations exist, but no Redshift statement behind them has run.
+    const auto pg_only = [&](SQLUINTEGER value) -> SQLUINTEGER { return redshift_profile_ ? 0u : value; };
     const std::pair<SQLUSMALLINT, SQLUINTEGER> cases[]{
-        {SQL_CONVERT_FUNCTIONS, SQL_FN_CVT_CONVERT},
-        {SQL_CONVERT_SMALLINT, numeric | characters}, {SQL_CONVERT_INTEGER, numeric | characters},
-        {SQL_CONVERT_BIGINT, numeric | characters}, {SQL_CONVERT_REAL, numeric | characters},
-        {SQL_CONVERT_FLOAT, numeric | characters}, {SQL_CONVERT_DOUBLE, numeric | characters},
-        {SQL_CONVERT_NUMERIC, numeric | characters}, {SQL_CONVERT_DECIMAL, numeric | characters},
-        {SQL_CONVERT_BIT, SQL_CVT_BIT | (redshift_profile_ ? 0u : characters)},
-        {SQL_CONVERT_CHAR, character_targets}, {SQL_CONVERT_VARCHAR, character_targets},
-        {SQL_CONVERT_LONGVARCHAR, character_targets}, {SQL_CONVERT_WCHAR, character_targets},
-        {SQL_CONVERT_WVARCHAR, character_targets}, {SQL_CONVERT_WLONGVARCHAR, character_targets},
-        {SQL_CONVERT_BINARY, binary | characters}, {SQL_CONVERT_VARBINARY, binary | characters},
-        {SQL_CONVERT_LONGVARBINARY, binary | characters},
-        {SQL_CONVERT_DATE, SQL_CVT_DATE | SQL_CVT_TIMESTAMP | characters},
-        {SQL_CONVERT_TIME, SQL_CVT_TIME | characters},
-        {SQL_CONVERT_TIMESTAMP, SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters},
-        {SQL_CONVERT_TINYINT, 0}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, 0}, {SQL_CONVERT_INTERVAL_DAY_TIME, 0},
-        {SQL_TIMEDATE_ADD_INTERVALS, add}, {SQL_TIMEDATE_DIFF_INTERVALS, add & ~SQL_FN_TSI_WEEK},
-        {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF},
+        {SQL_CONVERT_FUNCTIONS, pg_only(SQL_FN_CVT_CONVERT)},
+        {SQL_CONVERT_SMALLINT, pg_only(numeric | characters)}, {SQL_CONVERT_INTEGER, pg_only(numeric | characters)},
+        {SQL_CONVERT_BIGINT, pg_only(numeric | characters)}, {SQL_CONVERT_REAL, pg_only(numeric | characters)},
+        {SQL_CONVERT_FLOAT, pg_only(numeric | characters)}, {SQL_CONVERT_DOUBLE, pg_only(numeric | characters)},
+        {SQL_CONVERT_NUMERIC, pg_only(numeric | characters)}, {SQL_CONVERT_DECIMAL, pg_only(numeric | characters)},
+        {SQL_CONVERT_BIT, pg_only(SQL_CVT_BIT | (redshift_profile_ ? 0u : characters))},
+        {SQL_CONVERT_CHAR, pg_only(character_targets)}, {SQL_CONVERT_VARCHAR, pg_only(character_targets)},
+        {SQL_CONVERT_LONGVARCHAR, pg_only(character_targets)}, {SQL_CONVERT_WCHAR, pg_only(character_targets)},
+        {SQL_CONVERT_WVARCHAR, pg_only(character_targets)}, {SQL_CONVERT_WLONGVARCHAR, pg_only(character_targets)},
+        {SQL_CONVERT_BINARY, pg_only(binary | characters)}, {SQL_CONVERT_VARBINARY, pg_only(binary | characters)},
+        {SQL_CONVERT_LONGVARBINARY, pg_only(binary | characters)},
+        {SQL_CONVERT_DATE, pg_only(SQL_CVT_DATE | SQL_CVT_TIMESTAMP | characters)},
+        {SQL_CONVERT_TIME, pg_only(SQL_CVT_TIME | characters)},
+        {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
+        {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
+        {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
-        {SQL_CONVERT_GUID, redshift_profile_ ? 0u : SQL_CVT_GUID | characters},
+        {SQL_CONVERT_GUID, pg_only(redshift_profile_ ? 0u : SQL_CVT_GUID | characters)},
 #endif
     };
   for (const auto& [type, expected] : cases) {

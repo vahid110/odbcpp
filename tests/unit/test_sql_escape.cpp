@@ -4,6 +4,7 @@
 #include <array>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 #include "core/database/postgres/pg_sql_dialect.h"
 #include "core/database/postgres/pg_backend_provider.h"
@@ -557,4 +558,51 @@ TEST(RedshiftLogarithmEscapeTest, PostgresNativeLogAndUnknownPrefixesAndPriorFam
   EXPECT_EQ("SELECT LOG(?),LOG10(?)",translate_odbc_sql("SELECT {fn LOG(?)},{fn LOG10(?)}").sql);
   EXPECT_EQ("SELECT LOG(2,100),LN(x),LOG_EXTRA(?),'LOG10(?)'",translate_odbc_sql("SELECT LOG(2,100),LN(x),{fn LOG_EXTRA(?)},'LOG10(?)'",SqlDialectProfile::Redshift).sql);
   EXPECT_EQ("(EXTRACT(dow FROM ?)+1),EXTRACT(doy FROM ?),CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER)",translate_odbc_sql("{fn DAYOFWEEK(?)},{fn DAYOFYEAR(?)},{fn SECOND(?)}",SqlDialectProfile::Redshift).sql);
+}
+
+// Golden SQL for one second-based and one calendar unit per product (#144
+// review), so a wrong unit scale or operand order fails here and not only in
+// a live run. PostgreSQL counts unit boundaries as f(b) - f(a) over values
+// truncated to the unit; month and quarter use AGE from 2000-01-01, whose
+// total months times 12 (or 4) are read back exactly as the YEAR field.
+TEST(SqlTimestampEscapeTest, GoldenSqlPerProduct) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  const auto pg_ts = [](const std::string& x) {
+    return "CAST(REGEXP_REPLACE(BTRIM(CAST(( " + x + ") AS TEXT)) COLLATE \"C\", '^(?=[0-9]{2}:)', "
+           "CAST(CURRENT_DATE AS TEXT) || ' ') AS TIMESTAMP)";
+  };
+  const auto rs_ts = [](const std::string& x) {
+    return "CAST(REGEXP_REPLACE(BTRIM(CAST(( " + x + ") AS VARCHAR(MAX))), '^(?=[0-9]{2}:)', "
+           "CAST(CURRENT_DATE AS VARCHAR(10)) || ' ', 1, 'p') AS TIMESTAMP)";
+  };
+  const auto pg_months = [&](const std::string& unit, const std::string& x, const char* factor) {
+    return "EXTRACT(YEAR FROM (AGE(DATE_TRUNC('" + unit + "', " + pg_ts(x) + "), TIMESTAMP '2000-01-01') * " +
+           factor + "))";
+  };
+  const std::tuple<SqlDialectProfile, const char*, std::string> cases[]{
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND, a, b)}",
+       "SELECT CAST(-((EXTRACT(EPOCH FROM DATE_TRUNC('second', " + pg_ts("a") + ")) / 1) - (EXTRACT(EPOCH FROM "
+       "DATE_TRUNC('second', " + pg_ts("b") + ")) / 1)) AS BIGINT)"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH, a, b)}",
+       "SELECT CAST(-(" + pg_months("month", "a", "12") + " - " + pg_months("month", "b", "12") + ") AS BIGINT)"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_QUARTER, a, b)}",
+       "SELECT CAST(-(" + pg_months("quarter", "a", "4") + " - " + pg_months("quarter", "b", "4") + ") AS BIGINT)"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPADD(SQL_TSI_SECOND, n, t)}",
+       "SELECT (CAST(( n) AS BIGINT) * INTERVAL '1 second' + " + pg_ts("t") + ")"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPADD(SQL_TSI_QUARTER, n, t)}",
+       "SELECT (CAST(( n) AS BIGINT) * INTERVAL '3 months' + " + pg_ts("t") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND, a, b)}",
+       "SELECT DATEDIFF(second, " + rs_ts("a") + ", " + rs_ts("b") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_QUARTER, a, b)}",
+       "SELECT DATEDIFF(quarter, " + rs_ts("a") + ", " + rs_ts("b") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPADD(SQL_TSI_SECOND, n, t)}",
+       "SELECT DATEADD(second, CAST(( n) AS INTEGER), " + rs_ts("t") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPADD(SQL_TSI_QUARTER, n, t)}",
+       "SELECT DATEADD(quarter, CAST(( n) AS INTEGER), " + rs_ts("t") + ")"},
+  };
+  for (const auto& [profile, sql, expected] : cases) {
+    const auto result = translate_odbc_sql(sql, profile);
+    ASSERT_TRUE(result) << result.message << sql;
+    EXPECT_EQ(expected, result.sql) << sql;
+  }
 }

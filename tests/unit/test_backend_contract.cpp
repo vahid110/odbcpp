@@ -12284,7 +12284,8 @@ TEST_F(CalendarEscapeApiTest, RequiredOutputsSiblingSnapshotAndDiscoveryClaimsSu
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER year=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&year,sizeof(year),&bytes));EXPECT_EQ(2024,year);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF),functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions)  // #144: Redshift reports TIMESTAMPADD/DIFF only after its live acceptance
+     ;
   std::string good="SELECT {fn YEAR({d '2000-01-01'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(2024,year);
 }
 }
@@ -12358,7 +12359,8 @@ TEST_F(ClockEscapeApiTest, LocalErrorPreservesOutputsSiblingSnapshotAndDiscovery
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
   SQLINTEGER second=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&second,sizeof(second),&bytes));EXPECT_EQ(59,second);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF),functions);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions)  // #144: Redshift reports TIMESTAMPADD/DIFF only after its live acceptance
+     ;
   std::string good="SELECT {fn SECOND({ts '2000-01-01 12:08:43.101000'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(59,second);
 }
 }
@@ -12544,7 +12546,8 @@ TEST_F(DayOrdinalEscapeApiTest, SiblingSnapshotAndCapabilityMasksSurviveLocalRef
   EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
-  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF),mask);
+  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask)  // #144: Redshift reports TIMESTAMPADD/DIFF only after its live acceptance
+     ;
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace

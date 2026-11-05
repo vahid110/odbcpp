@@ -5,6 +5,14 @@ direct statements, prepared statements and `SQLNativeSql`. `SQL_ATTR_NOSCAN`
 continues to bypass escape translation. Native SQL type checking, range errors
 and NULL propagation remain server behavior.
 
+> **Redshift capability reporting.** The Redshift product translates these
+> escapes, but reports none of them in `SQLGetInfo` (`SQL_CONVERT_FUNCTIONS`,
+> the `SQL_CONVERT_*` pairs, `SQL_TIMEDATE_ADD_INTERVALS`,
+> `SQL_TIMEDATE_DIFF_INTERVALS`, and the TIMESTAMPADD/TIMESTAMPDIFF bits of
+> `SQL_TIMEDATE_FUNCTIONS`) until the generated SQL passes a Redshift live
+> acceptance (#144). Applications that check capabilities first therefore
+> do not emit them on Redshift yet.
+
 ## CONVERT
 
 `{fn CONVERT(expression, SQL_type)}` uses a native cast with the following
@@ -44,6 +52,14 @@ conversion is not advertised. DATE exposes DATE, TIMESTAMP and characters; TIME 
 and characters; TIMESTAMP exposes all three temporal targets and characters.
 PostgreSQL UUID exposes UUID and characters. Other pairs remain unadvertised.
 Valid conversion support does not mean every input value is representable.
+
+**Character and binary conversions differ by product.** On PostgreSQL, a
+character value converted to a binary target is parsed as `bytea` input
+syntax: `\x41` becomes one byte, and a lone backslash is an error. A binary
+value converted to a character target is rendered in the session's
+`bytea_output` format, hexadecimal `\x...` by default. On Redshift, VARBYTE
+to and from VARCHAR follows Redshift's own casts. Do not rely on
+byte-for-byte round trips between the products.
 
 ## TIMESTAMPADD and TIMESTAMPDIFF
 
