@@ -15,8 +15,10 @@ os.environ["PR_NUMBER"] = PR
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 
 
-def review(role, state, sha=HEAD, at="2026-11-03T10:00:00Z", user=g.REVIEWER, bold=False, body_tail="ok"):
-    header = f"[{role} reviewer] {state.lower()} at {sha[:7]}"
+def review(role, state, sha=HEAD, at="2026-11-03T10:00:00Z", user=g.REVIEWER, bold=False, body_tail="ok",
+           header_sha=None):
+    # The workflow names the full reviewed commit in the header (#210).
+    header = f"[{role} reviewer] {state.lower()} at {header_sha or sha}"
     return {"user": {"login": user}, "commit_id": sha, "state": state, "submitted_at": at,
             "body": (f"**{header}**" if bold else header) + "\n\n" + body_tail}
 
@@ -89,7 +91,7 @@ class Plan(unittest.TestCase):
 
     def test_withheld_red_team_review_does_not_count_as_done(self):
         done = [review("red-team", "CHANGES_REQUESTED", body_tail="x")]
-        done[0]["body"] = "[red-team reviewer] verdict withheld at aaaaaaa\n\n..."
+        done[0]["body"] = f"[red-team reviewer] verdict withheld at {HEAD}\n\n..."
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], done, HEAD)[1], True)
 
     def test_oversized_file_list_is_high_risk(self):
@@ -239,6 +241,26 @@ class Status(unittest.TestCase):
     def test_approval_of_another_commit_does_not_count(self):
         self.assertEqual(g.status_([review("correctness", "APPROVED", sha=OLD)], [], [], HEAD)[0], "pending")
 
+    def test_review_migrated_to_the_head_by_a_force_push_does_not_count(self):
+        # GitHub re-points commit_id to the new head once the reviewed commit
+        # leaves the PR; the header still names the commit actually reviewed.
+        migrated = review("correctness", "APPROVED", sha=HEAD, header_sha=OLD)
+        self.assertEqual(g.status_([migrated], [], [], HEAD)[0], "pending")
+        reviews = [review("correctness", "APPROVED"), review("red-team", "APPROVED", sha=HEAD, header_sha=OLD)]
+        self.assertEqual(g.status_(reviews, ["auth"], [], HEAD)[0], "pending")
+
+    def test_short_sha_header_does_not_count(self):
+        # A 7-character prefix can be ground out; only the full SHA counts.
+        short = review("correctness", "APPROVED", header_sha=HEAD[:7])
+        self.assertEqual(g.status_([short], [], [], HEAD)[0], "pending")
+        prefix_only = review("correctness", "APPROVED", header_sha=HEAD[:7] + "f" * 33)
+        self.assertEqual(g.status_([prefix_only], [], [], HEAD)[0], "pending")
+
+    def test_migrated_red_team_review_does_not_stop_a_new_red_team_run(self):
+        events = [labeled("auth")]
+        reviews = [review("red-team", "APPROVED", sha=HEAD, header_sha=OLD)]
+        self.assertTrue(plan_("labeled", "auth", ["auth"], [], events, reviews, HEAD)[1])
+
     def test_approval_by_another_identity_does_not_count(self):
         self.assertEqual(g.status_([review("correctness", "APPROVED", user="odbcpp-agent[bot]")], [], [], HEAD)[0],
                          "pending")
@@ -265,7 +287,7 @@ class Status(unittest.TestCase):
 
     def test_withheld_verdict_blocks(self):
         r = review("correctness", "APPROVED")
-        r["body"] = "[correctness reviewer] verdict withheld at aaaaaaa\n\n..."
+        r["body"] = f"[correctness reviewer] verdict withheld at {HEAD}\n\n..."
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "failure")
 
 
