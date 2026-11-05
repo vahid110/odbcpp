@@ -48,6 +48,24 @@ PATH_RULES = {
 }
 
 
+# Plain documentation: files that cannot change what the product, CI or an
+# agent does. A PR that changes only these gets the correctness review alone;
+# any other path also requires the red-team review, so a prompt injection
+# that keeps the correctness reviewer from adding a high-risk label no longer
+# skips it (#204). Almost any other document can bind agents once something
+# points at it (AGENTS.md names SDK_ARCHITECTURE.md and an architecture
+# review; DEVELOPMENT_WORKFLOW.md links docs/history/), so only the two
+# top-level files below count, by exact name.
+LOW_RISK = r"^(README\.md|CHANGELOG\.md)$"
+
+
+def red_team_by_path(files):
+    """Whether the changed paths require the red-team review (#204). An empty
+    list fails closed."""
+    return not files or any(
+        ".." in f or not re.fullmatch(LOW_RISK, f) or path_labels([f]) for f in files)
+
+
 def path_labels(files):
     wanted = {label for label, rx in PATH_RULES.items() if any(re.search(rx, f) for f in files)}
     if len(files) >= FILE_LIST_LIMIT:
@@ -104,8 +122,10 @@ def latest_reviews(reviews, head_sha):
     return latest
 
 
-def required_roles(labels):
-    return ["correctness"] + (["red-team"] if set(labels) & set(HIGH_RISK) else [])
+def required_roles(labels, files=None):
+    """The roles that must approve. <files> None means unknown: fail closed."""
+    red = bool(set(labels) & set(HIGH_RISK)) or red_team_by_path(files or [])
+    return ["correctness"] + (["red-team"] if red else [])
 
 
 def _time(stamp):
@@ -146,8 +166,12 @@ def plan(event_action, added_label, labels, files, events, reviews, head_sha, no
     if event_action == "labeled":
         return False, added_label in HIGH_RISK and not red_done and red_budget, add
     # Labels added here start the red-team review through their own labeled
-    # event, so only labels already on the PR start it now.
-    return correctness_budget, bool(present & set(HIGH_RISK)) and not red_done and red_budget, add
+    # event, so only labels already on the PR start it now; any path that is
+    # not plain documentation starts it too (#204).
+    # Sticky labels count too, as in status(): a removed label must not
+    # leave the check waiting for a review that never starts.
+    red_needed = bool((present | sticky_labels(events)) & set(HIGH_RISK)) or red_team_by_path(files)
+    return correctness_budget, red_needed and not red_done and red_budget, add
 
 
 def status(reviews, labels, files, events, head_sha, now=None, runs=()):
@@ -157,7 +181,7 @@ def status(reviews, labels, files, events, head_sha, now=None, runs=()):
     labels = risk_labels(labels, files, events)
     latest = latest_reviews(reviews, head_sha)
     missing, blocking = [], []
-    for role in required_roles(labels):
+    for role in required_roles(labels, files):
         r = latest.get(role)
         if r is None:
             missing.append(role)
@@ -172,7 +196,7 @@ def status(reviews, labels, files, events, head_sha, now=None, runs=()):
                            "a commit or re-run this workflow. An owner review cannot satisfy this check.")
     if missing:
         return "pending", "Waiting for: " + ", ".join(missing)
-    return "success", "Approved by: " + ", ".join(required_roles(labels))
+    return "success", "Approved by: " + ", ".join(required_roles(labels, files))
 
 
 def _load(name, default):
