@@ -91,7 +91,7 @@ class Plan(unittest.TestCase):
 
     def test_withheld_red_team_review_does_not_count_as_done(self):
         done = [review("red-team", "CHANGES_REQUESTED", body_tail="x")]
-        done[0]["body"] = "[red-team reviewer] verdict withheld at aaaaaaa\n\n..."
+        done[0]["body"] = f"[red-team reviewer] verdict withheld at {HEAD}\n\n..."
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], done, HEAD)[1], True)
 
     def test_oversized_file_list_is_high_risk(self):
