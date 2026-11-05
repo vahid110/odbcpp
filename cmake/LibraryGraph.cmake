@@ -84,6 +84,49 @@ set(ODBCPP_LIBRARY_ALLOWED_GENEX LINK_ONLY BUILD_INTERFACE INSTALL_INTERFACE CON
 # However, their link properties are still tokenized to ensure they do not depend
 # on non-imported product targets. Any other imported target is refused.
 set(ODBCPP_LIBRARY_ALLOWED_IMPORTED Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+# Generator expressions on those imported targets may only choose whether
+# plain text is used; none may build or change text (#190). Conditions always
+# evaluate to 0 or 1, whatever their arguments, and may nest inside each
+# other. Each condition needs ":" ($<CONFIG> alone is the configuration name).
+set(ODBCPP_LIBRARY_IMPORTED_CONDITIONS CONFIG PLATFORM_ID COMPILE_LANG_AND_ID
+  LINK_LANG_AND_ID BOOL NOT AND OR)
+
+# Sets <out> to the problem with one dependency entry <value> of an allowed
+# imported target, or to "". Accepted: plain text; a bare condition (0 or 1);
+# $<C:text>, $<0:text>,
+# $<1:text> or $<LINK_ONLY:text> where C is a condition and text is plain;
+# and $<LINK_ONLY:...> around one of those.
+function(odbcpp_library_imported_genex_problem value out)
+  string(FIND "${value}" "$<" _genex)
+  if(_genex EQUAL -1)
+    set(${out} "" PARENT_SCOPE)
+    return()
+  endif()
+  # The placeholder cannot occur in a real value: "@" never appears in one
+  # of the forms accepted below, and is refused in the input.
+  if(value MATCHES "@")
+    set(${out} "Imported target dependency may not contain '@' with a generator expression: ${value}" PARENT_SCOPE)
+    return()
+  endif()
+  list(JOIN ODBCPP_LIBRARY_IMPORTED_CONDITIONS "|" _heads)
+  set(_reduced "${value}")
+  while(TRUE)
+    # Innermost conditions first: their arguments hold no "$", "<" or ">".
+    string(REGEX REPLACE "\\$<(${_heads}):[^$<>]*>" "@C@" _next "${_reduced}")
+    if(_next STREQUAL _reduced)
+      break()
+    endif()
+    set(_reduced "${_next}")
+  endwhile()
+  set(_text "[^$<>@]*")
+  if(_reduced STREQUAL "@C@"
+      OR _reduced MATCHES "^\\$<(@C@|0|1|LINK_ONLY):${_text}>$"
+      OR _reduced MATCHES "^\\$<LINK_ONLY:\\$<(@C@|0|1):${_text}>>$")
+    set(${out} "" PARENT_SCOPE)
+    return()
+  endif()
+  set(${out} "Imported target dependency may only choose plain text with conditions (${ODBCPP_LIBRARY_IMPORTED_CONDITIONS}): ${value}" PARENT_SCOPE)
+endfunction()
 
 # Sets <out> to the problem with one dependency entry <value>, or to "".
 function(odbcpp_library_genex_problem value out)
@@ -147,7 +190,8 @@ function(odbcpp_library_dependencies target products out problem)
         foreach(_value IN LISTS _values)
           # Any reference to a product target (direct, namespaced, or assembled)
           # inside an allowed imported target's properties is forbidden.
-          if(_value MATCHES "odbcpp")
+          string(TOLOWER "${_value}" _lower)
+          if(_lower MATCHES "odbcpp")
             set(${problem} "Imported target ${_current} may not depend on product target: ${_value}" PARENT_SCOPE)
             return()
           endif()
@@ -157,11 +201,12 @@ function(odbcpp_library_dependencies target products out problem)
             set(${problem} "Imported target ${_current} may not use dynamic generator expressions: ${_value}" PARENT_SCOPE)
             return()
           endif()
-          # Multi-part or assembled generator expressions (e.g. $<1:odb><1:cpp_tls>,
-          # $<1:odb>$<1:cpp_tls>, odb$<1:cpp_tls>, or $<1:odb>_tls) evade tokenization
-          # and are forbidden on imported targets.
-          if(_value MATCHES "\\$<" AND (NOT _value MATCHES "^\\$<" OR NOT _value MATCHES ">$" OR _value MATCHES ">[^;]*<"))
-            set(${problem} "Imported target ${_current} may not use concatenated generator expressions: ${_value}" PARENT_SCOPE)
+          # Assembled names ($<1:odb>$<1:cpp_tls>, odb$<1:cpp_tls>,
+          # $<1:odb$<1:cpp_tls>>) and text-changing expressions ($<LOWER_CASE:...>)
+          # evade tokenization; only conditions choosing plain text are allowed.
+          odbcpp_library_imported_genex_problem("${_value}" _genex)
+          if(_genex)
+            set(${problem} "Imported target ${_current} may not use this generator expression. ${_genex}" PARENT_SCOPE)
             return()
           endif()
           # Split on generator-expression syntax and whitespace, so paths stay whole
