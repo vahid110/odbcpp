@@ -16,6 +16,7 @@ odbcpp/auth/redshift_withiam_response.h|sdk/internal/odbcpp/auth/redshift_withia
 odbcpp/auth/response_operation.h|sdk/internal/odbcpp/auth/response_operation.h
 odbcpp/auth/sts_assume_role_response.h|sdk/internal/odbcpp/auth/sts_assume_role_response.h
 odbcpp/auth/temporary_db_validity.h|sdk/internal/odbcpp/auth/temporary_db_validity.h
+odbcpp/auth/trusted_clock_sample.h|sdk/internal/odbcpp/auth/trusted_clock_sample.h
 odbcpp/database/backend_capabilities.h|sdk/include/odbcpp/database/backend_capabilities.h
 odbcpp/database/backend_provider.h|sdk/include/odbcpp/database/backend_provider.h
 odbcpp/database/backend_result.h|sdk/include/odbcpp/database/backend_result.h
