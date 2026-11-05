@@ -352,6 +352,29 @@ class SplitJobs(unittest.TestCase):
         self.assertNotIn("anthropics/claude-code-action@", jobs["post"])
 
 
+class PinnedClaudeCode(unittest.TestCase):
+    """The Claude Code binary is a pinned, checksummed release, not the
+    action's run-time `curl | bash` install (#205)."""
+
+    def test_release_file_names_one_version_and_checksum(self):
+        import re as _re
+        with open(os.path.join(ROOT, ".github", "review", "claude-code-release"), encoding="utf-8") as f:
+            lines = [l for l in f.read().splitlines() if l and not l.startswith("#")]
+        self.assertEqual(1, len(lines))
+        self.assertRegex(lines[0], r"^[0-9]+\.[0-9]+\.[0-9]+ [0-9a-f]{64}$")
+
+    def test_every_claude_action_step_uses_the_pinned_binary(self):
+        for name in ("agent-review-run.yml", "agent-review-canary.yml"):
+            with open(os.path.join(ROOT, ".github", "workflows", name), encoding="utf-8") as f:
+                text = f.read()
+            with self.subTest(workflow=name):
+                uses = text.count("uses: anthropics/claude-code-action@")
+                self.assertEqual(1, uses)
+                self.assertEqual(1, text.count("path_to_claude_code_executable: ${{ steps.claude.outputs.path }}"))
+                self.assertIn(".github/review/claude-code-release", text)
+                self.assertIn("sha256sum -c", text)
+
+
 class Status(unittest.TestCase):
     def test_ordinary_pr_needs_correctness_approval(self):
         # Changed for #204: correctness alone suffices only for documentation.
