@@ -97,10 +97,11 @@ jobs:
           # other role's reviews stay hidden (independent reviews). The
           # reviewed commit comes from each header, not commit_id, which
           # GitHub re-points to the new head after a force-push (#210).
+          # gh's --jq uses Go regular expressions: no lookahead.
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --jq ".[] | select(.user.login == \"odbcpp-reviewer[bot]\")
                       | select(.body | ltrimstr(\"**\") | startswith(\"[$ROLE reviewer]\"))
-                      | {reviewed_commit: ((.body | split(\"\\n\")[0] | capture(\" at (?<s>[0-9a-f]{40})(?![0-9a-f])\") | .s) // \"unknown\"),
+                      | {reviewed_commit: ((.body | split(\"\\n\")[0] | capture(\" at (?<s>[0-9a-f]{40})($|[^0-9a-f])\") | .s) // \"unknown\"),
                          state, body}" > review-context/previous-reviews.jsonl
           ls -l review-context
 
