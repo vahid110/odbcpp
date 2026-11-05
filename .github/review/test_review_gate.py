@@ -55,7 +55,9 @@ class Plan(unittest.TestCase):
                      "sdk/.claude",
                      # Case-insensitive file systems (macOS) load these as the gated names.
                      "odbc/Agents.md", "odbc/claude.md", ".Claude/settings.json",
-                     ".Agents/skills/x/SKILL.md", "Tools/x.py", ".GitHub/workflows/x.yml"):
+                     ".Agents/skills/x/SKILL.md", "Tools/x.py", ".GitHub/workflows/x.yml",
+                     # U+017F (long s) case-folds to "s"; APFS loads this as AGENTS.md.
+                     "odbc/AGENT\u017f.md", "odbc/.\u017fkills/AGENT\u017f.md"):
             with self.subTest(path=path):
                 self.assertEqual(g.path_labels([path]), {"process"})
         for path in ("docs/AGENTS.md.txt", "odbc/my_claude.cpp", "sdk/.mcp.json.example",
@@ -99,6 +101,85 @@ def _status(reviews, labels, events, head, files=()):
 
 
 g.status_ = _status
+
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def codeowners_patterns():
+    with open(os.path.join(ROOT, ".github", "CODEOWNERS"), encoding="utf-8") as f:
+        return [line.split()[0] for line in f if line.strip() and not line.startswith("#")]
+
+
+def owned(path, patterns):
+    """Whether <path> matches a CODEOWNERS pattern, case-sensitively as GitHub
+    does. Supports only the forms the file uses (asserted in the tests):
+    /anchored, /anchored/, bare names and bare names ending in /."""
+    parts = path.split("/")
+    for p in patterns:
+        if p.startswith("/"):
+            body = p[1:].rstrip("/")
+            if (path == body and not p.endswith("/")) or path.startswith(body + "/"):
+                return True
+        elif p.endswith("/"):
+            if p[:-1] in parts[:-1]:
+                return True
+        elif p in parts:
+            return True
+    return False
+
+
+class Owners(unittest.TestCase):
+    def test_codeowners_uses_only_forms_the_matcher_understands(self):
+        for p in codeowners_patterns():
+            with self.subTest(pattern=p):
+                self.assertNotRegex(p, r"[*?\[\]!\\]")
+                if not p.startswith("/"):
+                    self.assertNotIn("/", p.rstrip("/"), "bare names only, or root-anchored paths")
+
+    def test_owned_matches_case_sensitively(self):
+        pats = codeowners_patterns()
+        for path in (".claude", "sdk/.claude", "sdk/.claude/settings.json", "tools/x.py", "docs/adr/0001.md",
+                     "tests/security/x", "odbc/AGENTS.md", ".github/review/x"):
+            with self.subTest(path=path):
+                self.assertTrue(owned(path, pats))
+        for path in ("Tools/x.py", "sdk/.Claude/settings.json", "Docs/adr/x", "odbc/claude.md", "x/tools/y",
+                     "docs/adrx/y", "sdk/cfg"):
+            with self.subTest(path=path):
+                self.assertFalse(owned(path, pats))
+
+    def test_agent_config_names_are_owned_as_files_too(self):
+        # A pattern ending in "/" matches only directories; git stores a
+        # symlink as a file, so sdk/.claude -> elsewhere needs the bare name.
+        rules = set(codeowners_patterns())
+        for name in (".agents", ".codex", ".claude", "AGENTS.md", "AGENTS.override.md",
+                     "CLAUDE.md", "CLAUDE.local.md"):
+            with self.subTest(name=name):
+                self.assertIn(name, rules)
+
+    def test_symlinks_into_gated_paths_point_at_owned_paths(self):
+        # Owning the link is not enough: later edits land in its target. So a
+        # symlink the gate marks process (case-insensitively, which is
+        # broader) must resolve, inside the repository, to a path CODEOWNERS
+        # owns (case-sensitively, as GitHub matches). Links at other paths
+        # load nothing and git does not write through them.
+        import posixpath
+        import subprocess
+        pats = codeowners_patterns()
+        out = subprocess.run(["git", "-C", ROOT, "ls-files", "-s", "-z"], check=True,
+                             capture_output=True).stdout.decode("utf-8")
+        links = [e.split("\t", 1)[1] for e in out.split("\0") if e.startswith("120000 ")]
+        for link in links:
+            if not (g.path_labels([link]) & {"process"} or owned(link, pats)):
+                continue
+            blob = subprocess.run(["git", "-C", ROOT, "cat-file", "blob", f":{link}"], check=True,
+                                  capture_output=True).stdout.decode("utf-8")
+            with self.subTest(link=link, target=blob):
+                # Windows resolves "\\" and drive letters; posixpath would not.
+                self.assertNotRegex(blob, r"[\\:]")
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(link), blob))
+                self.assertFalse(target == ".." or target.startswith("../") or target.startswith("/"))
+                self.assertTrue(owned(target, pats), target)
 
 
 class Status(unittest.TestCase):
@@ -180,6 +261,28 @@ class Budget(unittest.TestCase):
         conclusion, summary = g.status([], [], [], [], HEAD, now=NOW, runs=runs)
         self.assertEqual(conclusion, "failure")
         self.assertIn("Reviews resume 24 hours after", summary)
+
+
+class BudgetInputs(unittest.TestCase):
+    def test_empty_pr_number_fails_instead_of_counting_nothing(self):
+        # With no PR number every run's name misses, so the budget would never
+        # be reached; fail closed instead.
+        for pr in ("", " ", "7 "):
+            with self.subTest(pr=pr):
+                with self.assertRaises(ValueError):
+                    g.over_budget([run("correctness")] * g.DAILY_REVIEW_BUDGET, "correctness", NOW, pr=pr)
+
+    def test_reviewer_app_id_is_kept_in_one_place(self):
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        with open(os.path.join(root, ".github", "review", "reviewer-app-id"), encoding="utf-8") as f:
+            self.assertEqual(g.REVIEWER_APP_ID, int(f.read().strip()))
+        literal = str(g.REVIEWER_APP_ID)
+        for rel in (".github/review/list-runs.sh", ".github/review/review_gate.py",
+                    ".github/workflows/agent-review.yml", ".github/workflows/agent-review-run.yml",
+                    ".github/workflows/agent-review-canary.yml", ".github/review/post-check.sh"):
+            with self.subTest(file=rel):
+                with open(os.path.join(root, rel), encoding="utf-8") as f:
+                    self.assertNotIn(literal, f.read())
 
 
 class Command(unittest.TestCase):
