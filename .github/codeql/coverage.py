@@ -41,7 +41,7 @@ STATIC_ASSERT_SOURCE = "tests/unit/test_session_owner.cpp"
 STATIC_ASSERT_BINDINGS = {
     STATIC_ASSERT_SOURCE: "7e7a00907d36a26a7e9d87ae8d142fa396d1c8e4e3b008dd0eef64be18bc4161",
     "sdk/internal/odbcpp/session/session_owner.h":
-        "776d5a62bf86240671a47203ac35440b7d87c17458fd15ac4f6df1501b01b771",
+        "9df45dec40965383ba4381382c714e1d5e74b7dfae424f0b1f2fafba175c75d5",
 }
 
 

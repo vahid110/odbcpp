@@ -21,6 +21,15 @@ struct ResultColumnMetadata {
   std::optional<NativeTypeInfo> normalized_type{};
 };
 
+// Owning normalized column provenance. Native protocol IDs remain inside the backend.
+struct ResultColumnOrigin {
+  std::string catalog_name;
+  std::string schema_name;
+  std::string table_name;
+  std::string base_table_name;
+  std::string base_column_name;
+};
+
 // Owning canonical bytes: nullopt is SQL NULL; an engaged empty string is a
 // non-NULL empty value. Binary is raw bytes, Boolean is "0"/"1";
 // text is valid UTF-8, including embedded NULs. Malformed native binary/Boolean
@@ -67,6 +76,8 @@ struct QueryResult {
   std::optional<DescribedResultShape> described_result_shape;
   // Present only for completed execution; missing is not inferred from fields.
   std::optional<ExecutionResultShape> execution_result_shape;
+  // Opaque backend result identity for lazy metadata resolution.
+  std::uint64_t result_id{0};
 
 };
 

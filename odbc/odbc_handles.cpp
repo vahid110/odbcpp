@@ -1800,8 +1800,8 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
       SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
       SQL_DESC_BASE_COLUMN_NAME,
       SQL_DESC_BASE_TABLE_NAME,
-      SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
       SQL_DESC_CASE_SENSITIVE, SQL_COLUMN_CASE_SENSITIVE,
+      SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
       SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
       SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
       SQL_DESC_NAME, SQL_COLUMN_NAME,
@@ -1826,7 +1826,7 @@ bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
 }
 
 bool is_known_column_attribute(SQLUSMALLINT field_identifier) {
-  static constexpr std::array<SQLUSMALLINT, 47> attributes{
+  static constexpr std::array<SQLUSMALLINT, 48> attributes{
       SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
       SQL_DESC_BASE_COLUMN_NAME,
       SQL_DESC_BASE_TABLE_NAME,
@@ -1834,6 +1834,7 @@ bool is_known_column_attribute(SQLUSMALLINT field_identifier) {
       SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
       SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
       SQL_DESC_COUNT, SQL_COLUMN_COUNT,
+      SQL_DESC_DATETIME_INTERVAL_PRECISION,
       SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
       SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
       SQL_DESC_LABEL, SQL_COLUMN_LABEL,
@@ -1954,6 +1955,7 @@ ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     app_param_descriptor_ = automatic_app_param_descriptor_;
     imp_row_descriptor_ = create_implicit_descriptor(
         DescriptorKind::ImplementationRow);
+    descriptor(imp_row_descriptor_)->set_statement(this);
     imp_param_descriptor_ = create_implicit_descriptor(
         DescriptorKind::ImplementationParameter);
   } catch (...) {
@@ -1996,7 +1998,14 @@ struct ODBCStatement::PendingInput {
 };
 
 ODBCStatement::~ODBCStatement() {
+  clear_current_result();
+  clear_pending_results();
   abandon_pending_input();
+  if (imp_row_descriptor_) {
+    if (auto desc = descriptor(imp_row_descriptor_)) {
+      desc->set_statement(nullptr);
+    }
+  }
   for (const auto descriptor : {
            automatic_app_row_descriptor_, automatic_app_param_descriptor_,
            imp_row_descriptor_, imp_param_descriptor_}) {
@@ -2692,6 +2701,18 @@ rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnectio
   return local_backend_error(LocalFailure::Unsupported, "Data source does not support statement description",
       BackendOperation::Describe, SessionState::Disconnected);
 }
+rs::core::database::BackendResult<std::vector<rs::core::database::ResultColumnOrigin>>
+ODBCConnection::backend_resolve_column_origins(std::uint64_t result_id, rs::util::Deadline deadline) {
+  using namespace rs::core::database;
+  if (backend_lease_) return backend_lease_->resolve_column_origins(result_id, deadline);
+  return local_backend_error(LocalFailure::Unsupported, "Column origin resolution is unavailable",
+      BackendOperation::Describe, SessionState::Disconnected);
+}
+void ODBCConnection::backend_release_result_provenance(std::uint64_t result_id) noexcept {
+  if (backend_lease_ && *backend_lease_ && result_id != 0) {
+    backend_lease_->release_result_provenance(result_id);
+  }
+}
 rs::core::database::BackendResult<rs::core::database::PreparedCommandPlan>
 ODBCConnection::backend_prepare_command_batch(std::string_view sql,
     std::vector<rs::core::database::PreparedCommandSet> sets, rs::util::Deadline deadline) {
@@ -2953,6 +2974,18 @@ SQLRETURN ODBCDescriptor::get_field(
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
               "Invalid descriptor record number");
     return SQL_ERROR;
+  }
+  const bool is_origin = (field_identifier == SQL_DESC_BASE_COLUMN_NAME ||
+                          field_identifier == SQL_DESC_BASE_TABLE_NAME ||
+                          field_identifier == SQL_DESC_CATALOG_NAME ||
+                          field_identifier == SQL_DESC_SCHEMA_NAME ||
+                          field_identifier == SQL_DESC_TABLE_NAME);
+  if (is_origin && statement_) {
+    const auto origin_result = statement_->ensure_column_origins();
+    if (origin_result != SQL_SUCCESS && origin_result != SQL_SUCCESS_WITH_INFO) {
+      copy_diagnostics_from(*statement_);
+      return origin_result;
+    }
   }
   if (static_cast<std::size_t>(record_number) > records_.size()) {
     return SQL_NO_DATA;
@@ -3560,7 +3593,7 @@ class ODBCStatement::ExecutionCancellation {
     }
     if (outcome_.claimed) {
       statement_.clear_current_result();
-      statement_.pending_results_.clear();
+      statement_.clear_pending_results();
     }
     if (outcome_.retire) { try { statement_.conn_->close_connection(); } catch (...) {} }
     {
@@ -3783,7 +3816,7 @@ std::optional<SQLRETURN> ODBCStatement::start_pending_input(
     { std::lock_guard lock(input->cancellation->ledger_->mutex);
       input->cancellation->ledger_->local_need_data=true; }
     { std::lock_guard lock(cancellation_mutex_); pending_input_=input; }
-    clear_current_result(); pending_results_.clear();
+    clear_current_result(); clear_pending_results();
     for (std::size_t i=0; i<count; ++i) {
       if (input->pieces[i].deferred) continue;
       const auto& a=input->application[i];
@@ -4056,7 +4089,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
   }
   
   clear_current_result();
-  pending_results_.clear();
+  clear_pending_results();
   prepared_ = false;
   prepared_sql_.clear();
   parameter_count_ = 0;
@@ -4130,7 +4163,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
           present_catalog_character_metadata(*result, *catalog_presentation, conn_->character_metadata_policy(), conn_->table_type_presentation_policy());
         } catch (...) {
           clear_current_result();
-          pending_results_.clear();
+          clear_pending_results();
           conn_->close_connection();
           set_error(SQLSTATE_GENERAL_ERROR, "Invalid catalog execution result");
           return SQL_ERROR;
@@ -4599,7 +4632,7 @@ SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
   }
   result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
   clear_current_result();
-  pending_results_.clear();
+  clear_pending_results();
   return SQL_SUCCESS;
 }
 
@@ -5439,7 +5472,7 @@ SQLRETURN ODBCStatement::more_results() {
       next.parameter_diagnostic.has_value();
   try {
     if (next.value.error) {
-      pending_results_.clear();
+      clear_pending_results();
       if (next.parameter_diagnostic) {
         // Already normalized during the same array execution. Preserve its
         // owning SQLSTATE/ordinal; do not remap as a scalar syntax failure.
@@ -5462,7 +5495,7 @@ SQLRETURN ODBCStatement::more_results() {
     if (array_delivery) {
       // Even a diagnostic-mutex failure cannot leave a partially published
       // count or later array results visible when c_api_guard reports an error.
-      pending_results_.clear(); executed_ = false; affected_rows_ = 0;
+      clear_pending_results(); executed_ = false; affected_rows_ = 0;
       row_positioned_ = false; current_row_ = 0;
       fetch_failed_ = false;
       try { clear_current_result(); } catch (...) {}
@@ -5984,7 +6017,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   param_metadata_.clear();
   clear_current_result();
-  pending_results_.clear();
+  clear_pending_results();
   prepared_ = false;
   if (enable_auto_ipd_ && parameter_count_ != 0) {
     if (!conn_->supports_auto_ipd()) {
@@ -7098,7 +7131,7 @@ SQLRETURN ODBCStatement::advance_parameter_result(bool initial) {
     return SQL_SUCCESS;
   } catch (...) {
     result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
-    pending_results_.clear(); executed_ = false; parameter_result_cursor_ = false;
+    clear_pending_results(); executed_ = false; parameter_result_cursor_ = false;
     try { clear_current_result(); } catch (...) {}
     try { conn_->close_connection(); } catch (...) {}
     throw;
@@ -7277,7 +7310,7 @@ std::optional<SQLRETURN> ODBCStatement::start_pending_array(std::uintptr_t offse
       cancellation->ledger_->available = false; cancellation->ledger_->local_need_data = true;
     }
     { std::lock_guard lock(cancellation_mutex_); pending_input_ = input; }
-    clear_current_result(); pending_results_.clear();
+    clear_current_result(); clear_pending_results();
     if (!pending_call_ready(input)) return SQL_ERROR;
     while (input->ordinal < input->pieces.size() && !input->pieces[input->ordinal].deferred) ++input->ordinal;
     bool claimed;
@@ -7310,7 +7343,7 @@ SQLRETURN ODBCStatement::publish_deferred_result(rs::core::database::PreparedCom
   using namespace rs::core::database;
   const auto discard = [&]() noexcept {
     result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
-    pending_results_.clear(); executed_ = false; parameter_result_cursor_ = false;
+    clear_pending_results(); executed_ = false; parameter_result_cursor_ = false;
     try { clear_current_result(); } catch (...) {}
   };
   bool local_authority_refusal = false;
@@ -7373,7 +7406,7 @@ SQLRETURN ODBCStatement::publish_deferred_result(rs::core::database::PreparedCom
           SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),transaction.error_message());
       return complete_parameter_set(SQL_ERROR,input);
     }
-    clear_current_result(); pending_results_.clear();
+    clear_current_result(); clear_pending_results();
     result_sequence_.emplace(std::move(*sequence));
     sequence_statuses_ = input->status; sequence_processed_ = input->processed;
     sequence_max_rows_ = input->result_max_rows;
@@ -7430,7 +7463,7 @@ SQLRETURN ODBCStatement::publish_command_batch(rs::core::database::PreparedComma
     if (terminal) conn_->close_connection();
     else conn_->reconcile_transaction_state(snapshot);
     if (batch.has_error()) {
-      clear_current_result(); pending_results_.clear();
+      clear_current_result(); clear_pending_results();
       set_error(query_failure_sqlstate(conn_->backend_provider(), batch.backend_error(),
           SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), batch.error_message());
       return SQL_ERROR;
@@ -7476,11 +7509,11 @@ SQLRETURN ODBCStatement::publish_command_batch(rs::core::database::PreparedComma
       }
     }
     if (terminal) {
-      clear_current_result(); pending_results_.clear();
+      clear_current_result(); clear_pending_results();
       if (!failed) set_error(SQLSTATE_GENERAL_ERROR, "Command array session was retired");
       return SQL_ERROR;
     }
-    clear_current_result(); pending_results_.clear();
+    clear_current_result(); clear_pending_results();
     if (!successful) return failed ? SQL_ERROR : SQL_SUCCESS;
     // All owning storage is staged; publication moves without allocating.
     auto first = std::move(staged_results.front());
@@ -7494,10 +7527,10 @@ SQLRETURN ODBCStatement::publish_command_batch(rs::core::database::PreparedComma
     // searched zero-row DML. Keep all counts, including the first, published.
     return deferred && all_zero_searched ? SQL_NO_DATA : SQL_SUCCESS;
   } catch (const std::bad_alloc&) {
-    clear_current_result(); pending_results_.clear(); conn_->close_connection();
+    clear_current_result(); clear_pending_results(); conn_->close_connection();
     set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR, "Unable to publish command array"); return SQL_ERROR;
   } catch (...) {
-    clear_current_result(); pending_results_.clear(); conn_->close_connection();
+    clear_current_result(); clear_pending_results(); conn_->close_connection();
     set_error(SQLSTATE_GENERAL_ERROR, "Invalid command array outcome"); return SQL_ERROR;
   }
 }
@@ -7590,7 +7623,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
     }
     if (!proceeding) {
       // Every original ordinal is examined, unlike the retained scalar IGNORE0.
-      clear_current_result(); pending_results_.clear(); executed_ = true;
+      clear_current_result(); clear_pending_results(); executed_ = true;
       for (std::size_t slot = 0; slot < size; ++slot) output_status(slot, SQL_PARAM_UNUSED);
       output_processed(size);
       return SQL_SUCCESS;
@@ -7654,7 +7687,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
       return SQL_ERROR;
     }
     if (select_sequence) {
-      clear_current_result(); pending_results_.clear();
+      clear_current_result(); clear_pending_results();
       result_sequence_ = std::move(staged_sequence);
       sequence_statuses_ = statuses; sequence_processed_ = processed; sequence_max_rows_ = max_rows_;
       return advance_parameter_result(true);
@@ -7662,11 +7695,11 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
     return publish_command_batch(std::move(*plan), statuses, processed, size,
         original_deadline, false, std::move(staged_results));
   } catch (const std::bad_alloc&) {
-    clear_current_result(); pending_results_.clear(); conn_->close_connection();
+    clear_current_result(); clear_pending_results(); conn_->close_connection();
     set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR, "Unable to materialize command array");
     return SQL_ERROR;
   } catch (...) {
-    clear_current_result(); pending_results_.clear(); conn_->close_connection();
+    clear_current_result(); clear_pending_results(); conn_->close_connection();
     set_error(SQLSTATE_GENERAL_ERROR, "Invalid command array outcome");
     return SQL_ERROR;
   }
@@ -7761,7 +7794,7 @@ SQLRETURN ODBCStatement::execute() {
     // Explicit executed-set policy: skipped is UNUSED/processed0, not a
     // fabricated successful backend execution. Keep bindings/preparation.
     clear_current_result();
-    pending_results_.clear();
+    clear_pending_results();
     executed_ = true; // Local completion exposes row count0, never a result cursor.
     if (mask_processed) store_application_value(mask_processed, static_cast<SQLULEN>(0));
     if (mask_status) store_application_value(mask_status,
@@ -7897,7 +7930,7 @@ SQLRETURN ODBCStatement::execute() {
   }
   
   clear_current_result();
-  pending_results_.clear();
+  clear_pending_results();
   try {
     std::size_t parameter_bytes = 0;
     auto materialized = materialize_parameter_set(input_offset, 0, false, SQL_PARAM_BIND_BY_COLUMN, {}, parameter_bytes);
@@ -7997,7 +8030,7 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
     
   } catch (const std::bad_alloc&) {
     if (!input) throw;
-    clear_current_result(); pending_results_.clear();
+    clear_current_result(); clear_pending_results();
     set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR,"Unable to publish deferred execution");
     return complete_parameter_set(SQL_ERROR,input);
   } catch (const std::exception& e) {
@@ -8236,6 +8269,11 @@ bool ODBCStatement::apply_result_metadata(
     bool include_parameter_metadata, bool parameter_result_publication,
     const MetadataRequestBudget* metadata_budget) {
 
+  if (conn_ && current_result_id_ != 0 && current_result_id_ != result.result_id) {
+    conn_->backend_release_result_provenance(current_result_id_);
+  }
+  current_result_id_ = result.result_id;
+  origins_resolved_ = false;
   require_normalized_columns(result);
   std::vector<ColumnInfo> staged_columns;
   staged_columns.reserve(result.columns.size());
@@ -8322,7 +8360,7 @@ bool ODBCStatement::apply_result_metadata(
 void ODBCStatement::invalidate_eager_prepare() noexcept {
   prepared_ = false;
   clear_current_result();
-  pending_results_.clear();
+  clear_pending_results();
   param_metadata_.clear();
   const auto ipd = descriptor(imp_param_descriptor_);
   std::size_t retained = 0;
@@ -8354,16 +8392,23 @@ void ODBCStatement::invalidate_eager_prepare() noexcept {
 }
 
 void ODBCStatement::clear_current_result() {
+  if (conn_ && current_result_id_ != 0) {
+    conn_->backend_release_result_provenance(current_result_id_);
+  }
+  current_result_id_ = 0;
+  origins_resolved_ = false;
   parameter_result_cursor_ = false;
   active_bookmark_generation_ = 0;
-  descriptor(imp_row_descriptor_)->bookmark_record_.reset();
+  if (auto row_desc = descriptor(imp_row_descriptor_)) {
+    row_desc->bookmark_record_.reset();
+    row_desc->replace_records({});
+  }
   // A closed cursor cannot reuse this allocation: refill moves a new owning
   // row vector. Release the old outer row storage at invalidation, not on
   // physical-session retirement (which can leave a usable buffered cursor).
   rs::core::database::ResultRows{}.swap(result_rows_);
   result_cell_errors_.clear();
   column_info_.clear();
-  descriptor(imp_row_descriptor_)->replace_records({});
   get_data_column_ = 0;
   get_data_offset_ = 0;
   get_data_target_type_ = 0;
@@ -8382,6 +8427,17 @@ void ODBCStatement::clear_current_result() {
   prepared_metadata_available_ = false;
   prepared_metadata_ipd_revision_ = 0;
   prepared_metadata_epoch_.reset();
+}
+
+void ODBCStatement::clear_pending_results() {
+  if (conn_) {
+    for (const auto& pending : pending_results_) {
+      if (pending.value.result_id != 0) {
+        conn_->backend_release_result_provenance(pending.value.result_id);
+      }
+    }
+  }
+  pending_results_.clear();
 }
 
 // Column binding implementation
@@ -8552,14 +8608,80 @@ SQLRETURN ODBCStatement::describe_prepared_metadata(
   return SQL_SUCCESS;
 }
 
-SQLRETURN ODBCStatement::ensure_result_metadata() {
+SQLRETURN ODBCStatement::ensure_result_metadata(
+    std::optional<MetadataRequestBudget> original_budget) {
   if (executed_) return SQL_SUCCESS;
   if (!prepared_) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
               "Statement has not been prepared or executed");
     return SQL_ERROR;
   }
-  return describe_prepared_metadata();
+  return describe_prepared_metadata(original_budget);
+}
+
+SQLRETURN ODBCStatement::ensure_column_origins(
+    std::optional<MetadataRequestBudget> original_budget) {
+  if (origins_resolved_) return SQL_SUCCESS;
+  const auto entry = rs::util::Clock::now();
+  const auto budget = original_budget.value_or(metadata_request_budget(entry));
+  const auto meta_res = ensure_result_metadata(budget);
+  if (meta_res != SQL_SUCCESS && meta_res != SQL_SUCCESS_WITH_INFO) return meta_res;
+  if (!current_result_id_ || !conn_->is_connected()) {
+    origins_resolved_ = true;
+    return SQL_SUCCESS;
+  }
+
+  if (rs::util::Clock::now() >= budget.deadline) {
+    return expire_metadata_request(budget);
+  }
+
+  ExecutionCancellation cancellation(*this, conn_->supports_server_cancellation());
+  if (!cancellation.before_transaction()) {
+    set_error("HY008", "Statement cancelled");
+    return SQL_ERROR;
+  }
+  cancellation.arm(budget.deadline);
+  auto origins = conn_->backend_resolve_column_origins(current_result_id_, budget.deadline);
+  const auto cancellation_outcome = cancellation.finish();
+  if (cancellation_outcome.confirmed && origins.backend_error().error_class == rs::core::database::BackendErrorClass::Server) {
+    set_error("HY008", "Statement cancelled");
+    return SQL_ERROR;
+  }
+  if (cancellation_outcome.claimed) {
+    set_error("HY008", "Statement cancelled");
+    return SQL_ERROR;
+  }
+  if (origins.has_error()) {
+    const auto timeout = is_timeout_error(origins.error());
+    if (timeout) conn_->close_connection();
+    if (timeout && origins.backend_error().error_class !=
+        rs::core::database::BackendErrorClass::InvalidMetadata) {
+      set_error(budget.connection_origin ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_TIMEOUT,
+                origins.error_message());
+    } else {
+      set_error(query_failure_sqlstate(conn_->backend_provider(),
+                                       origins.backend_error(), SQLSTATE_GENERAL_ERROR,
+                                       SQL_DIAG_UNKNOWN_STATEMENT),
+                origins.error_message());
+    }
+    return SQL_ERROR;
+  }
+
+  origins_resolved_ = true;
+  conn_->backend_release_result_provenance(current_result_id_);
+  const auto row_desc = descriptor(imp_row_descriptor_);
+  if (!row_desc) return SQL_SUCCESS;
+  for (std::size_t i = 0; i < origins->size() && i < row_desc->record_count() &&
+                          i < static_cast<std::size_t>((std::numeric_limits<SQLSMALLINT>::max)()); ++i) {
+    auto* rec = row_desc->numbered_record(static_cast<SQLSMALLINT>(i + 1));
+    if (!rec) continue;
+    rec->catalog_name = std::move((*origins)[i].catalog_name);
+    rec->schema_name = std::move((*origins)[i].schema_name);
+    rec->table_name = std::move((*origins)[i].table_name);
+    rec->base_table_name = std::move((*origins)[i].base_table_name);
+    rec->base_column_name = std::move((*origins)[i].base_column_name);
+  }
+  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
@@ -8818,7 +8940,7 @@ SQLRETURN ODBCStatement::execute_catalog(
         return SQL_ERROR;
       }
       clear_current_result();
-      pending_results_.clear();
+      clear_pending_results();
       prepared_ = false;
       prepared_sql_.clear();
       parameter_count_ = 0;
@@ -8846,7 +8968,7 @@ SQLRETURN ODBCStatement::execute_catalog(
       return SQL_SUCCESS;
     } catch (...) {
       clear_current_result();
-      pending_results_.clear();
+      clear_pending_results();
       conn_->log(rs::core::logging::LogLevel::Error, "catalog_failed",
                  "Catalog execution result could not be published",
                  {{"sqlstate", SQLSTATE_GENERAL_ERROR, rs::core::logging::FieldSensitivity::Public},
@@ -8860,7 +8982,7 @@ SQLRETURN ODBCStatement::execute_catalog(
   if (query.has_error()) {
     set_error(request_sqlstate(query.error(), SQLSTATE_GENERAL_ERROR), query.error_message());
     if (query.session_snapshot().disposition == rs::core::database::SessionDisposition::Retire) {
-      clear_current_result(); pending_results_.clear();
+      clear_current_result(); clear_pending_results();
       conn_->close_connection();
     }
     return SQL_ERROR;
@@ -9092,7 +9214,9 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
               "Column attribute is not supported");
     return SQL_ERROR;
   }
-  const auto metadata_result = ensure_result_metadata();
+  const auto entry = rs::util::Clock::now();
+  const auto budget = metadata_request_budget(entry);
+  const auto metadata_result = ensure_result_metadata(budget);
   if (metadata_result != SQL_SUCCESS) return metadata_result;
   if (is_count_column_attribute(field_identifier)) {
     if (numeric_attribute) {
@@ -9111,6 +9235,21 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
     return SQL_ERROR;
   }
   
+  const bool is_origin = (field_identifier == SQL_DESC_BASE_COLUMN_NAME ||
+                          field_identifier == SQL_DESC_BASE_TABLE_NAME ||
+                          field_identifier == SQL_DESC_TABLE_NAME ||
+                          field_identifier == SQL_COLUMN_TABLE_NAME ||
+                          field_identifier == SQL_DESC_SCHEMA_NAME ||
+                          field_identifier == SQL_COLUMN_OWNER_NAME ||
+                          field_identifier == SQL_DESC_CATALOG_NAME ||
+                          field_identifier == SQL_COLUMN_QUALIFIER_NAME);
+  if (is_origin) {
+    const auto origin_result = ensure_column_origins();
+    if (origin_result != SQL_SUCCESS && origin_result != SQL_SUCCESS_WITH_INFO) {
+      return origin_result;
+    }
+  }
+
   const ColumnInfo fixed_bookmark_column{"", SQL_INTEGER, 10, 0, SQL_NO_NULLS};
   const ColumnInfo variable_bookmark_column{"", SQL_BINARY, bookmark_bytes, 0, SQL_NO_NULLS};
   const auto& col = column_number == 0
@@ -9143,15 +9282,15 @@ SQLRETURN ODBCStatement::col_attribute_impl(SQLUSMALLINT column_number, SQLUSMAL
     text = &record->base_column_name;
   } else if (field_identifier == SQL_DESC_BASE_TABLE_NAME) {
     text = &record->base_table_name;
-  } else if (field_identifier == SQL_DESC_CATALOG_NAME ||
-             field_identifier == SQL_COLUMN_QUALIFIER_NAME) {
-    text = &record->catalog_name;
-  } else if (field_identifier == SQL_DESC_SCHEMA_NAME ||
-             field_identifier == SQL_COLUMN_OWNER_NAME) {
-    text = &record->schema_name;
   } else if (field_identifier == SQL_DESC_TABLE_NAME ||
              field_identifier == SQL_COLUMN_TABLE_NAME) {
     text = &record->table_name;
+  } else if (field_identifier == SQL_DESC_SCHEMA_NAME ||
+             field_identifier == SQL_COLUMN_OWNER_NAME) {
+    text = &record->schema_name;
+  } else if (field_identifier == SQL_DESC_CATALOG_NAME ||
+             field_identifier == SQL_COLUMN_QUALIFIER_NAME) {
+    text = &record->catalog_name;
   }
   if (text) {
     if (character_attribute && buffer_length > 0) {
