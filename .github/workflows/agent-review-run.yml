@@ -6,8 +6,11 @@ name: agent review run
 # what it needs about the PR is written to review-context/ first, the
 # workspace is cleaned by .github/review/prepare-workspace.sh, and reads are
 # limited to the workspace (.github/review/claude-args.txt, proven by the
-# canary). The verdict and the required check are posted by later steps as
-# odbcpp-reviewer[bot]; the model never holds that key.
+# canary). Three jobs (#205): start records the run with a token that can
+# only write check runs; model runs Claude Code and holds no reviewer token;
+# post mints a fresh token after the model has finished, validates the output
+# (review_gate.prepare_review) and posts the verdict and the required check
+# as odbcpp-reviewer[bot].
 
 on:
   workflow_call:
@@ -29,10 +32,13 @@ on:
 permissions: {}
 
 jobs:
-  review:
-    name: agent review (${{ inputs.role }})
+  start:
+    # Finds the head and records the run, so every run counts toward the daily
+    # budget however it ends. Its reviewer token can only write check runs and
+    # is gone before the model starts (#205).
+    name: agent review start ({{ inputs.role }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
     # Secrets come from this environment, which only main may use.
     environment: agent-review
     permissions:
@@ -43,7 +49,10 @@ jobs:
       ROLE: ${{ inputs.role }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    outputs:
+      skip: ${{ steps.head.outputs.skip }}
+      head_sha: ${{ steps.head.outputs.head_sha }}
+      base_sha: ${{ steps.head.outputs.base_sha }}
     steps:
       - name: Find the head to review
         id: head
@@ -70,17 +79,85 @@ jobs:
             echo "Nothing to review: PR state $(jq -r .state "$raw"), $done existing review(s) of ${head:0:7}."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "HEAD_SHA=$head" >> "$GITHUB_ENV"
-          echo "BASE_SHA=$(jq -r .base.sha "$raw")" >> "$GITHUB_ENV"
+          echo "head_sha=$head" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r .base.sha "$raw")" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the review configuration from main
+        if: steps.head.outputs.skip != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Get a reviewer token that can only record the run
+        id: reviewer
+        if: steps.head.outputs.skip != 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liLzexEhszs2AHlm
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+
+      - name: Record this review run
+        # Before the model starts, so every run counts toward the daily review
+        # budget, however it ends (review_gate.py over_budget). Recorded on
+        # the fixed commit in .github/review/run-anchor, so a force-push does
+        # not drop it from the count.
+        if: steps.head.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+        run: |
+          jq -n --arg sha "$(cat .github/review/run-anchor)" --arg name "agent review run ($ROLE) #$PR_NUMBER" \
+            '{name: $name, head_sha: $sha, status: "completed", conclusion: "neutral",
+              output: {title: "Review run started", summary: "Counts toward the daily review budget."}}' |
+            gh api -X POST "repos/$REPO/check-runs" --input - --jq .app.id > recorded-app-id.txt
+          # The budget counts only this App's runs; a mismatch would make it
+          # count nothing, so stop here instead.
+          expected=$(cat .github/review/reviewer-app-id)
+          if [[ "$(cat recorded-app-id.txt)" != "$expected" ]]; then
+            echo "::error::Review runs are recorded by App $(cat recorded-app-id.txt), not $expected (.github/review/reviewer-app-id)."
+            exit 1
+          fi
+
+
+  model:
+    # Runs the model. No step here mints or references the reviewer key, so a
+    # break in the read rules or in the action's runtime cannot reach a token
+    # that approves pull requests (#205). Its only result is the structured
+    # output, which the post job validates before publishing anything.
+    name: agent review ({{ inputs.role }})
+    needs: start
+    if: needs.start.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: agent-review
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    env:
+      ROLE: ${{ inputs.role }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ needs.start.outputs.head_sha }}
+      BASE_SHA: ${{ needs.start.outputs.base_sha }}
+    outputs:
+      result: ${{ steps.review.outputs.structured_output }}
+    steps:
+      - name: Save the pull request for the review context
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr-raw.json"
 
       - name: Check out main
-        if: steps.head.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check out the PR head for reading only
-        if: steps.head.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.HEAD_SHA }}
@@ -88,7 +165,6 @@ jobs:
           persist-credentials: false
 
       - name: Prepare the review context
-        if: steps.head.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,17 +192,16 @@ jobs:
 
       - name: Load the reviewer's tool rules
         id: args
-        if: steps.head.outputs.skip != 'true'
         shell: bash
         # Shared with agent-review-canary.yml, which proves these rules hold.
         run: echo "args=$(tr '\n' ' ' < .github/review/claude-args.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Install bubblewrap and socat for subprocess isolation
         # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it, and Claude Code refuses to
-        # start without it. Before the run is recorded, so a failure here
-        # does not use up the daily review budget. The smoke test fails here, clearly, if the runner
-        # does not allow it (for example an AppArmor user-namespace rule).
-        if: steps.head.outputs.skip != 'true'
+        # start without it. The run is already recorded (start job), so a
+        # failure here counts toward the daily budget, which fails closed. The
+        # smoke test fails here, clearly, if the runner does not allow it (for
+        # example an AppArmor user-namespace rule).
         shell: bash
         run: |
           # As the pinned action installs them for its own isolated mode.
@@ -145,43 +220,8 @@ jobs:
           bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc true
           echo "bubblewrap $(bwrap --version)"
 
-      - name: Get the reviewer identity
-        id: reviewer
-        if: steps.head.outputs.skip != 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: Iv23liLzexEhszs2AHlm
-          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-pull-requests: write
-          permission-checks: write
-
-      - name: Record this review run
-        # Before the model starts, so every run counts toward the daily review
-        # budget, however it ends (review_gate.py over_budget). Recorded on
-        # the fixed commit in .github/review/run-anchor, so a force-push does
-        # not drop it from the count.
-        if: steps.head.outputs.skip != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-        run: |
-          jq -n --arg sha "$(cat .github/review/run-anchor)" --arg name "agent review run ($ROLE) #$PR_NUMBER" \
-            '{name: $name, head_sha: $sha, status: "completed", conclusion: "neutral",
-              output: {title: "Review run started", summary: "Counts toward the daily review budget."}}' |
-            gh api -X POST "repos/$REPO/check-runs" --input - --jq .app.id > recorded-app-id.txt
-          # The budget counts only this App's runs; a mismatch would make it
-          # count nothing, so stop here instead.
-          expected=$(cat .github/review/reviewer-app-id)
-          if [[ "$(cat recorded-app-id.txt)" != "$expected" ]]; then
-            echo "::error::Review runs are recorded by App $(cat recorded-app-id.txt), not $expected (.github/review/reviewer-app-id)."
-            exit 1
-          fi
-
       - name: Review
         id: review
-        if: steps.head.outputs.skip != 'true'
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
@@ -199,47 +239,59 @@ jobs:
             ${{ steps.args.outputs.args }}
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","body","labels"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string","enum":["security","auth","protocol","transactions","process"]}}}}'
 
+
+  post:
+    # Publishes the validated verdict and updates the required check with a
+    # fresh reviewer token, minted only after the model has finished (#205).
+    name: agent review post ({{ inputs.role }})
+    needs: [start, model]
+    if: ${{ !cancelled() && needs.start.outputs.skip != 'true' && needs.start.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: agent-review
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    env:
+      ROLE: ${{ inputs.role }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ needs.start.outputs.head_sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out the review configuration from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+
+      - name: Get the reviewer identity
+        id: reviewer
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liLzexEhszs2AHlm
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+          permission-checks: write
+
       - name: Post the verdict as odbcpp-reviewer[bot]
-        if: steps.head.outputs.skip != 'true'
+        if: needs.model.result == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-          RESULT: ${{ steps.review.outputs.structured_output }}
+          RESULT: ${{ needs.model.outputs.result }}
         run: |
           current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
           if [[ "$current" != "$HEAD_SHA" ]]; then
             echo "PR moved from $HEAD_SHA to $current; a queued run reviews it."
             exit 0
           fi
-          python3 -I - <<'EOF'
-          import json, os, re
-          result = json.loads(os.environ["RESULT"])
-          text = json.dumps(result)
-          # Never publish anything that looks like a credential.
-          secret = re.compile(
-              r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|sk-ant-|eyJ[A-Za-z0-9_-]{10,}\.|"
-              r"-----BEGIN [A-Z ]*KEY|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN|"
-              r"CLAUDE_CODE_OAUTH_TOKEN\s*[=:]")
-          suspicious = bool(secret.search(text))
-          tag = f"[{os.environ['ROLE']} reviewer]"
-          # The full SHA: the gate counts a review only for the commit its
-          # header names (#210).
-          head_sha = os.environ["HEAD_SHA"]
-          if suspicious:
-              review = {"event": "REQUEST_CHANGES",
-                        "body": f"{tag} verdict withheld at {head_sha}\n\nThe review "
-                                "output matched a credential pattern and was not published. "
-                                f"See {os.environ['RUN_URL']}."}
-          else:
-              event = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES"}[result["verdict"]]
-              review = {"event": event,
-                        "body": f"{tag} {result['verdict'].replace('_', ' ')} at {head_sha}\n\n{result['body']}"}
-          review["commit_id"] = os.environ["HEAD_SHA"]
-          json.dump(review, open("review.json", "w"))
-          labels = result.get("labels", []) if os.environ["ROLE"] == "correctness" and not suspicious else []
-          json.dump({"labels": labels}, open("labels-to-add.json", "w"))
-          open("withheld", "w").write("1" if suspicious else "")
-          EOF
+          # Validates the untrusted output and writes review.json,
+          # labels-to-add.json and withheld (review_gate.prepare_review).
+          python3 -I -B .github/review/review_gate.py prepare
           gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null
           # The reviewer, not the author, adds high-risk labels; a new one
           # starts the red-team review.
@@ -247,7 +299,7 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" --input labels-to-add.json > /dev/null
           fi
           if [[ -s withheld ]]; then
-            echo "::error::Review output matched a credential pattern and was withheld."
+            echo "::error::The review output was withheld (malformed, or matched a credential pattern)."
             exit 1
           fi
 
@@ -255,7 +307,7 @@ jobs:
         # Read, decide and post in one step, so the check reflects the
         # reviews as late as possible (both roles may post at about the
         # same time; a later event or a re-run settles any stale result).
-        if: ${{ !cancelled() && steps.head.outputs.skip != 'true' && steps.reviewer.outputs.token != '' }}
+        if: ${{ !cancelled() && steps.reviewer.outputs.token != '' }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
