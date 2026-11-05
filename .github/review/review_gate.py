@@ -200,15 +200,20 @@ def status(reviews, labels, files, events, head_sha, now=None, runs=()):
 
 
 # The model's structured output is untrusted. The post job publishes only
-# what prepare_review returns (#205): a known verdict, a bounded body with
-# mentions neutralised, and allow-listed labels from the correctness role.
-# Anything else, and anything that looks like a credential, becomes a
-# withheld verdict, which never approves and lets the review run again.
+# what prepare_review returns (#205): exactly the schema's three keys, a
+# known verdict, a bounded body with mentions neutralised, and allow-listed
+# labels from the correctness role. Anything else becomes a withheld
+# verdict, which never approves and lets the review run again. The
+# credential scan is defence in depth only: it catches accidental leaks, not
+# a model that encodes or splits a secret.
 SECRET = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|sk-ant-|eyJ[A-Za-z0-9_-]{10,}\.|"
     r"-----BEGIN [A-Z ]*KEY|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN|"
     r"CLAUDE_CODE_OAUTH_TOKEN\s*[=:]")
 MENTION = re.compile(r"@(?=[A-Za-z0-9_-])")
+# Character references that render as "@": escape their "&" so they show as
+# text instead of possibly becoming a mention.
+AT_ENTITY = re.compile(r"&(?=#0*64;|#[xX]0*40;|commat;)")
 MAX_REVIEW_BODY = 60000
 VERDICTS = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES"}
 
@@ -220,7 +225,8 @@ def prepare_review(result_text, role, head_sha, run_url):
         result = json.loads(result_text)
     except (TypeError, ValueError):
         result = None
-    valid = (isinstance(result, dict) and result.get("verdict") in VERDICTS
+    valid = (isinstance(result, dict) and set(result) == {"verdict", "body", "labels"}
+             and result.get("verdict") in VERDICTS
              and isinstance(result.get("body"), str) and isinstance(result.get("labels"), list))
     if not valid or SECRET.search(json.dumps(result)):
         reason = ("matched a credential pattern" if valid else "was missing or malformed")
@@ -228,7 +234,7 @@ def prepare_review(result_text, role, head_sha, run_url):
                   "body": f"{tag} verdict withheld at {head_sha}\n\nThe review output {reason} "
                           f"and was not published. See {run_url}."}
         return review, [], True
-    body = MENTION.sub("@\u200d", result["body"])
+    body = MENTION.sub("@\u200d", AT_ENTITY.sub("&amp;", result["body"]))
     if len(body) > MAX_REVIEW_BODY:
         body = body[:MAX_REVIEW_BODY] + "\n\n[truncated]"
     header = f"{tag} {result['verdict'].replace('_', ' ')} at {head_sha}"

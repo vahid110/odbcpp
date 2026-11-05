@@ -36,7 +36,7 @@ jobs:
     # Finds the head and records the run, so every run counts toward the daily
     # budget however it ends. Its reviewer token can only write check runs and
     # is gone before the model starts (#205).
-    name: agent review start ({{ inputs.role }})
+    name: agent review start (${{ inputs.role }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Secrets come from this environment, which only main may use.
@@ -123,11 +123,14 @@ jobs:
 
 
   model:
-    # Runs the model. No step here mints or references the reviewer key, so a
-    # break in the read rules or in the action's runtime cannot reach a token
-    # that approves pull requests (#205). Its only result is the structured
-    # output, which the post job validates before publishing anything.
-    name: agent review ({{ inputs.role }})
+    # Runs the model. No step here mints or references the reviewer key, so no
+    # reviewer token exists while the model runs (#205). The job still uses the
+    # agent-review environment for the Claude token; keeping the reviewer key
+    # out of the runner then relies on GitHub sending a job only the secrets
+    # it references, until the key moves to an environment of its own (#222).
+    # Its only result is the structured output, which the post job validates
+    # before publishing anything.
+    name: agent review (${{ inputs.role }})
     needs: start
     if: needs.start.outputs.skip != 'true'
     runs-on: ubuntu-24.04
@@ -171,8 +174,10 @@ jobs:
         run: |
           .github/review/prepare-workspace.sh
           mkdir review-context
-          jq '{number, title, body, user: .user.login, labels: [.labels[].name],
-               base: .base.ref, head_sha: .head.sha}' "$RUNNER_TEMP/pr-raw.json" > review-context/pr.json
+          # head_sha is the commit the start job chose and the prompt names,
+          # even if the pull request moved since (post then discards the result).
+          jq --arg h "$HEAD_SHA" '{number, title, body, user: .user.login, labels: [.labels[].name],
+               base: .base.ref, head_sha: $h}' "$RUNNER_TEMP/pr-raw.json" > review-context/pr.json
           # The exact diff of the reviewed commit against its merge base.
           gh api -H "Accept: application/vnd.github.diff" \
             "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" > review-context/pr.diff
@@ -243,7 +248,7 @@ jobs:
   post:
     # Publishes the validated verdict and updates the required check with a
     # fresh reviewer token, minted only after the model has finished (#205).
-    name: agent review post ({{ inputs.role }})
+    name: agent review post (${{ inputs.role }})
     needs: [start, model]
     if: ${{ !cancelled() && needs.start.outputs.skip != 'true' && needs.start.result == 'success' }}
     runs-on: ubuntu-24.04

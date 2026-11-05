@@ -288,6 +288,11 @@ class PrepareReview(unittest.TestCase):
         self.assertNotIn("@vahid110", review["body"])
         self.assertNotIn("@org", review["body"])
         self.assertIn("vahid110", review["body"])
+        review, _, _ = self.prep({"verdict": "approve", "labels": [],
+                                  "body": "&#64;octocat &#064;a &#x40;b &#X0040;c &commat;d &amp; &&"})
+        for entity in ("&#64;octocat", "&#064;a", "&#x40;b", "&#X0040;c", "&commat;d"):
+            self.assertIn("&amp;" + entity[1:], review["body"])
+        self.assertIn("&amp; &&", review["body"])
 
     def test_body_is_bounded(self):
         review, _, _ = self.prep({"verdict": "approve", "body": "x" * 200000, "labels": []})
@@ -296,7 +301,8 @@ class PrepareReview(unittest.TestCase):
     def test_malformed_or_unknown_output_is_withheld_not_published(self):
         for bad in ("not json", '"a string"', {"verdict": "merge", "body": "x", "labels": []},
                     {"verdict": "approve", "body": 3, "labels": []}, {"verdict": "approve", "labels": []},
-                    {"verdict": "approve", "body": "x", "labels": "auth"}):
+                    {"verdict": "approve", "body": "x", "labels": "auth"},
+                    {"verdict": "approve", "body": "x", "labels": [], "extra": "y"}):
             with self.subTest(bad=bad):
                 review, labels, withheld = self.prep(bad)
                 self.assertTrue(withheld)
@@ -330,6 +336,14 @@ class SplitJobs(unittest.TestCase):
         self.assertIn("anthropics/claude-code-action@", model)
         self.assertNotIn("ODBCPP_REVIEWER_PRIVATE_KEY", model)
         self.assertNotIn("create-github-app-token", model)
+
+    def test_job_names_substitute_the_role(self):
+        for name, job in self.jobs().items():
+            with self.subTest(job=name):
+                self.assertNotIn("({{ inputs.role }})", job)
+                names = [l for l in job.splitlines() if l.startswith("    name: ")]
+                self.assertEqual(1, len(names), job[:120])
+                self.assertTrue(names[0].endswith("(${{ inputs.role }})"), names[0])
 
     def test_reviews_are_posted_only_after_validation(self):
         jobs = self.jobs()
