@@ -7,6 +7,8 @@ set(ODBCPP_PARTITION_auth
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/checked_response_boundary.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/checked_response_stream.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/temporary_db_validity.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/trusted_clock_sample.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/system_trusted_clock.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/issuer_timestamp.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/aws_db_response_fields.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/bounded_response_stream.cpp"

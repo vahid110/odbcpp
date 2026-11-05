@@ -1,6 +1,7 @@
 #pragma once
 #include "odbcpp/auth/response_operation.h"
 #include "odbcpp/auth/aws_db_response_fields.h"
+#include "odbcpp/auth/trusted_clock_sample.h"
 #include <aws/core/auth/AWSCredentials.h>
 #include <atomic>
 namespace rs::core::auth::aws::provisioned_native {
@@ -31,10 +32,12 @@ class FrozenNamedSource final {
  private:
   friend class NativeOwner;friend class ProvisionedSdkRuntime;friend struct FixedFixture;friend struct detail::State;
   friend class detail::NamedSourceAcquisitionOwner; // Future protected load, NOT implemented.
-  FrozenNamedSource(Aws::Auth::AWSCredentials,std::string,std::string,std::optional<rs::util::Deadline> expires=std::nullopt);
+  FrozenNamedSource(Aws::Auth::AWSCredentials,std::string,std::string,std::optional<rs::util::Deadline> expires=std::nullopt,
+      std::shared_ptr<TrustedClockGuard> guard={});
   // Explicit reset destroys SDK-allocated strings before ShutdownAPI.
   std::optional<Aws::Auth::AWSCredentials> value_;std::string identity_,generation_;bool owns_{true};
   std::optional<rs::util::Deadline> expires;
+  std::shared_ptr<TrustedClockGuard> clock_guard;
 };
 class WorkerCancellation final {
  public: void cancel() noexcept { cancelled_.store(true); }
@@ -57,7 +60,7 @@ struct Counts {
   unsigned error_diagnostic_bytes{};
 
   unsigned named_provider_loads{};bool named_source_ready{},named_stage_released{};
-  bool signed_with_session_token{};
+  bool signed_with_session_token{},signed_with_frozen_key{};
   unsigned initializations{},shutdowns{},bootstrap_factories{},clients{},destroyed_clients{},
       requests{},selected_sends{},foreign_requests{},null_requests{},safe_refusals{},
       frozen_provider_reads{},delegate_returns{},delegate_destructions{},active{},
@@ -90,7 +93,8 @@ class NativeOwner final {
   static CreateOutcome create(Context,Request,std::shared_ptr<ResponseObservationSource>,
       std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>,FrozenNamedSource&&);
   static CreateOutcome create_from_named_source(Context,Request,std::shared_ptr<ResponseObservationSource>,
-      std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>,ProtectedNamedSourceSpec);
+      std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>,ProtectedNamedSourceSpec,
+      std::shared_ptr<TrustedUtcSource> clock = {});
   NativeOwner(const NativeOwner&)=delete;NativeOwner& operator=(const NativeOwner&)=delete;
   ~NativeOwner();
   Outcome acquire_observation();bool close() noexcept;Counts counts() const noexcept;
@@ -115,7 +119,8 @@ struct FixedFixture final {
   static Request request(const Context&, rs::util::Deadline deadline = rs::util::Deadline{std::chrono::seconds{20}});
   static CreateOutcome create_named(ProtectedNamedSourceSpec,std::shared_ptr<ResponseObservationSource>,
       std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>,
-      rs::util::Deadline deadline = rs::util::Deadline{std::chrono::seconds{20}});
+      rs::util::Deadline deadline = rs::util::Deadline{std::chrono::seconds{20}},
+      std::shared_ptr<TrustedUtcSource> clock = {});
   // Closed fake-only bridge tests: same fixed context/body/source, finite D.
   static CreateOutcome create_for_connector(FixedCase,rs::util::Deadline,
       std::shared_ptr<ResponseObservationSource>,std::shared_ptr<ResponseSourceGeneration>,
