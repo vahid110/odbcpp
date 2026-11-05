@@ -225,6 +225,23 @@ jobs:
           bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc true
           echo "bubblewrap $(bwrap --version)"
 
+      - name: Install the pinned Claude Code binary
+        id: claude
+        # The action would otherwise run `curl https://claude.ai/install.sh |
+        # bash` at run time, outside the reviewed configuration (#205). Fetch
+        # the exact release named in .github/review/claude-code-release and
+        # check its SHA-256 before anything runs it.
+        shell: bash
+        run: |
+          read -r version sha256 < <(grep -v '^#' .github/review/claude-code-release)
+          dest="$RUNNER_TEMP/claude-code/claude"
+          mkdir -p "$(dirname "$dest")"
+          curl -fsSL --retry 3 \
+            "https://downloads.claude.ai/claude-code-releases/${version}/linux-x64/claude" -o "$dest"
+          echo "${sha256}  ${dest}" | sha256sum -c -
+          chmod +x "$dest"
+          echo "path=$dest" >> "$GITHUB_OUTPUT"
+
       - name: Review
         id: review
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
@@ -232,6 +249,7 @@ jobs:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          path_to_claude_code_executable: ${{ steps.claude.outputs.path }}
           github_token: ${{ github.token }}
           # Agents push as odbcpp-agent; labels come from odbcpp-reviewer.
           allowed_bots: odbcpp-agent,odbcpp-reviewer
