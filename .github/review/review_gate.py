@@ -78,11 +78,25 @@ def withheld(body):
     return "verdict withheld" in (body or "").split("\n", 1)[0]
 
 
+def names_commit(body, sha):
+    """Whether the review's first line names exactly this full commit. GitHub
+    re-points a review's commit_id to the PR's new head once the reviewed
+    commit leaves the PR (a force-push), so commit_id alone would carry an old
+    approval over to new code (#210). The workflow writes the full SHA it
+    reviewed; a prefix does not count, because one can be ground out."""
+    first = (body or "").split("\n", 1)[0].strip().strip("*").strip()
+    return bool(re.fullmatch(r"[0-9a-f]{40}", sha or "")) and re.search(
+        rf"(?<![0-9a-f]){re.escape(sha)}(?![0-9a-f])", first) is not None
+
+
 def latest_reviews(reviews, head_sha):
-    """Latest reviewer-bot review per role for exactly this commit."""
+    """Latest reviewer-bot review per role for exactly this commit: its
+    commit_id and its header must both name the head."""
     latest = {}
     for r in sorted(reviews, key=lambda r: r.get("submitted_at") or ""):
         if (r.get("user") or {}).get("login") != REVIEWER or r.get("commit_id") != head_sha:
+            continue
+        if not names_commit(r.get("body"), head_sha):
             continue
         role = role_of(r.get("body"))
         if role:
