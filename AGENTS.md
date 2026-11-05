@@ -56,9 +56,8 @@ new skip, or a no-op sanitizer option) is blocking unless the PR explains
 it.
 
 The reviewer, not the author, assigns the high-risk labels. Every PR also
-gets a second, independent red-team reviewer unless it changes only plain
-documentation (`README.md`, `CHANGELOG.md`, or Markdown under `docs/` outside
-`docs/adr/`, `docs/plans/` and `docs/handoffs/`). Any PR carrying a high-risk label
+gets a second, independent red-team reviewer unless it changes only
+`README.md` and `CHANGELOG.md`. Any PR carrying a high-risk label
 (`security`, `auth`, `protocol`, `transactions`, `process`) gets it too. The
 red-team reviewer tries to break the change
 (hostile input, misuse, races, downgrade, resource exhaustion, bypassing the

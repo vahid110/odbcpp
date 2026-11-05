@@ -52,12 +52,11 @@ PATH_RULES = {
 # agent does. A PR that changes only these gets the correctness review alone;
 # any other path also requires the red-team review, so a prompt injection
 # that keeps the correctness reviewer from adding a high-risk label no longer
-# skips it (#204). Most top-level Markdown here is a plan, an architecture or
-# a workflow that agents follow (AGENTS.md names SDK_ARCHITECTURE.md), so
-# only README.md and CHANGELOG.md count; under docs/, ADRs, plans and
-# handoffs are excluded for the same reason. Anything matching a path rule,
-# "..", backslashes and anything else fall outside.
-LOW_RISK = r"^(docs/(?!(adr|plans|handoffs)/)[A-Za-z0-9_][A-Za-z0-9_./-]*\.md|README\.md|CHANGELOG\.md)$"
+# skips it (#204). Almost any other document can bind agents once something
+# points at it (AGENTS.md names SDK_ARCHITECTURE.md and an architecture
+# review; DEVELOPMENT_WORKFLOW.md links docs/history/), so only the two
+# top-level files below count, by exact name.
+LOW_RISK = r"^(README\.md|CHANGELOG\.md)$"
 
 
 def red_team_by_path(files):

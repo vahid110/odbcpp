@@ -10,7 +10,7 @@ import review_gate as g  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 HEAD, OLD = "a" * 40, "b" * 40
-DOCS = ["docs/notes.md"]
+DOCS = ["README.md"]
 PR = "7"
 os.environ["PR_NUMBER"] = PR
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
@@ -41,7 +41,7 @@ class Plan(unittest.TestCase):
     def test_documentation_push_runs_correctness_only(self):
         # Changed for #204: a code push now also starts the red-team review
         # (test_code_change_starts_red_team_without_a_label).
-        self.assertEqual(plan_("synchronize", "", [], ["docs/odbc-cursor.md"], [], [], HEAD),
+        self.assertEqual(plan_("synchronize", "", [], ["README.md"], [], [], HEAD),
                          (True, False, []))
 
     def test_path_rule_adds_label_and_lets_its_event_start_red_team(self):
@@ -80,8 +80,7 @@ class Plan(unittest.TestCase):
         self.assertEqual(plan_("opened", "", [], ["tests/unit/test_x.cpp"], [], [], HEAD)[:2], (True, True))
 
     def test_documentation_only_change_runs_correctness_only(self):
-        for files in (["docs/notes.md"], ["README.md", "docs/guide/x.md"], ["CHANGELOG.md"],
-                      ["docs/history/x.md"]):
+        for files in (["README.md"], ["README.md", "CHANGELOG.md"], ["CHANGELOG.md"]):
             with self.subTest(files=files):
                 self.assertEqual(plan_("synchronize", "", [], files, [], [], HEAD), (True, False, []))
 
@@ -92,7 +91,11 @@ class Plan(unittest.TestCase):
                      # Top-level plans and architecture that agents follow.
                      "SDK_ARCHITECTURE.md", "ARCHITECTURE.md", "SECURITY_MODEL.md", "PARALLEL_WORKFLOW.md",
                      "CONTRIBUTING.md", "GEMINI.md", "ROADMAP.md",
-                     "docs/plans/x.md", "docs/handoffs/x.md"):
+                     "docs/plans/x.md", "docs/handoffs/x.md", "docs/Plans/x.md",
+                     # Any document can become binding once referenced.
+                     "docs/notes.md", "docs/architecture-review-2026-10-28.md",
+                     "docs/history/workflow-2026-10-19/README.md", "docs/security-verification.md",
+                     "README.MD", "readme.md"):
             with self.subTest(path=path):
                 self.assertTrue(g.red_team_by_path([path]))
 
@@ -290,7 +293,7 @@ class Status(unittest.TestCase):
         self.assertEqual(g.status_(reviews, [], [], HEAD, files=["odbc/x.cpp"])[0], "success")
 
     def test_documentation_only_change_needs_correctness_only(self):
-        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD, files=["docs/x.md"])[0],
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD, files=["CHANGELOG.md"])[0],
                          "success")
 
     def test_path_rule_requires_red_team_even_without_the_label(self):
