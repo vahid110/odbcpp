@@ -135,9 +135,10 @@ jobs:
       pull-requests: read
       checks: read
     uses: ./.github/workflows/agent-review-run.yml
-    # The called job reads these from the agent-review environment. A caller
-    # must still pass each secret, or it resolves to an empty string (#213);
-    # passing them by name hands over only these two, not every secret.
+    # The caller names the secrets; the values come from the agent-review
+    # environment of the called job, which GitHub gives precedence (this job
+    # has no environment, so here they are empty). Unnamed, they would be
+    # empty strings there too (#213). Do not add repository secrets for them.
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -155,9 +156,10 @@ jobs:
       pull-requests: read
       checks: read
     uses: ./.github/workflows/agent-review-run.yml
-    # The called job reads these from the agent-review environment. A caller
-    # must still pass each secret, or it resolves to an empty string (#213);
-    # passing them by name hands over only these two, not every secret.
+    # The caller names the secrets; the values come from the agent-review
+    # environment of the called job, which GitHub gives precedence (this job
+    # has no environment, so here they are empty). Unnamed, they would be
+    # empty strings there too (#213). Do not add repository secrets for them.
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -16,9 +16,10 @@ on:
         description: correctness or red-team
         required: true
         type: string
-    # Values come from the agent-review environment of the job below; the
-    # caller must pass them by name. Required, so a missing pass fails the
-    # run instead of resolving to an empty string (#213).
+    # The caller passes these by name only; the values come from the
+    # agent-review environment of the job below, which takes precedence over
+    # anything passed in. Required, so a caller that does not name them fails
+    # instead of the job getting empty strings (#213).
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY:
         required: true
