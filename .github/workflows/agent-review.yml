@@ -135,6 +135,11 @@ jobs:
       pull-requests: read
       checks: read
     uses: ./.github/workflows/agent-review-run.yml
+    # The called job reads the reviewer key and the Claude token from the
+    # agent-review environment; a reusable workflow resolves environment
+    # secrets only when its caller inherits secrets (#213). There are no
+    # repository or organisation secrets to pass along.
+    secrets: inherit
     with:
       role: correctness
 
@@ -149,6 +154,11 @@ jobs:
       pull-requests: read
       checks: read
     uses: ./.github/workflows/agent-review-run.yml
+    # The called job reads the reviewer key and the Claude token from the
+    # agent-review environment; a reusable workflow resolves environment
+    # secrets only when its caller inherits secrets (#213). There are no
+    # repository or organisation secrets to pass along.
+    secrets: inherit
     with:
       role: red-team
 
