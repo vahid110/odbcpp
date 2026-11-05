@@ -35,7 +35,8 @@ PATH_RULES = {
     # (macOS) odbc/Agents.md is loaded as odbc/AGENTS.md; CODEOWNERS cannot
     # fold case, so this rule is what forces the red-team review for those.
     "process": r"(?i)^(\.github/|docs/adr/|tools/|\.mcp\.json$|DEVELOPMENT_WORKFLOW\.md$|cmake/LiveSuite\.cmake$"
-               r"|(SDK_)?ARCHITECTURE\.md$|SECURITY_MODEL\.md$)"
+               r"|(SDK_)?ARCHITECTURE\.md$|SECURITY_MODEL\.md$"
+               r"|CONNECTION_POOLING\.md$|CRYPTO_PROVIDER_PLAN\.md$|AUTH_LIBRARY_ARCHITECTURE\.md$)"
                r"|(^|/)(\.agents|\.codex|\.claude)(/|$)|(^|/)(AGENTS|AGENTS\.override|CLAUDE|CLAUDE\.local)\.md$",
     "auth": r"^(sdk/src/auth/|sdk/internal/odbcpp/auth/|sdk/src/adapters/|sdk/src/session/|"
             r"sdk/internal/odbcpp/session/|odbc/connection_string\.|cmake/[^/]*Auth[^/]*\.cmake$)",

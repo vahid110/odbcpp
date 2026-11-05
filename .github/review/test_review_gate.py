@@ -113,11 +113,14 @@ class Plan(unittest.TestCase):
     def test_binding_architecture_documents_require_process(self):
         # AGENTS.md binds agents to these; changing them changes the rules (#216).
         for path in ("ARCHITECTURE.md", "SDK_ARCHITECTURE.md", "SECURITY_MODEL.md",
-                     "docs/adr/reviews/2026-10-28-architecture-review.md", "sdk_architecture.md"):
+                     "docs/adr/reviews/2026-10-28-architecture-review.md", "sdk_architecture.md",
+                     # Bound in by SDK_ARCHITECTURE.md (A7, A10, auth direction).
+                     "CONNECTION_POOLING.md", "CRYPTO_PROVIDER_PLAN.md", "AUTH_LIBRARY_ARCHITECTURE.md"):
             with self.subTest(path=path):
                 self.assertIn("process", g.path_labels([path]))
         rules = set(codeowners_patterns())
-        for path in ("/ARCHITECTURE.md", "/SDK_ARCHITECTURE.md", "/SECURITY_MODEL.md"):
+        for path in ("/ARCHITECTURE.md", "/SDK_ARCHITECTURE.md", "/SECURITY_MODEL.md",
+                     "/CONNECTION_POOLING.md", "/CRYPTO_PROVIDER_PLAN.md", "/AUTH_LIBRARY_ARCHITECTURE.md"):
             with self.subTest(owned=path):
                 self.assertIn(path, rules)
 
