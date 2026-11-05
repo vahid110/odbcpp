@@ -164,6 +164,85 @@ function(odbcpp_library_genex_problem value out)
   set(${out} "" PARENT_SCOPE)
 endfunction()
 
+# Sets <links> and <files> to the properties of the imported target <target>
+# that can add link items or files to a link line, including the ones CMake
+# falls back to when INTERFACE_LINK_LIBRARIES is unset, each also with the
+# suffix of every configuration this build could select (#202). A suffix none
+# of these lists name is not judged.
+function(odbcpp_library_imported_properties target links files)
+  set(_configs NOCONFIG DEBUG RELEASE RELWITHDEBINFO MINSIZEREL ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
+  get_target_property(_imported_configs ${target} IMPORTED_CONFIGURATIONS)
+  if(_imported_configs)
+    list(APPEND _configs ${_imported_configs})
+  endif()
+  set(_mapped "")
+  foreach(_config IN LISTS _configs)
+    string(TOUPPER "${_config}" _upper)
+    get_target_property(_map ${target} MAP_IMPORTED_CONFIG_${_upper})
+    if(_map)
+      list(APPEND _mapped ${_map})
+    endif()
+    if(DEFINED CMAKE_MAP_IMPORTED_CONFIG_${_upper})
+      list(APPEND _mapped ${CMAKE_MAP_IMPORTED_CONFIG_${_upper}})
+    endif()
+  endforeach()
+  set(_suffixes "")
+  foreach(_config IN LISTS _configs _mapped)
+    # CMake allows any characters in a configuration name (Rel-Asan, my.cfg),
+    # and its property suffix is the name upper-cased, so judge every one.
+    if(NOT _config STREQUAL "")
+      string(TOUPPER "${_config}" _upper)
+      list(APPEND _suffixes "_${_upper}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _suffixes)
+  set(_links ${ODBCPP_LIBRARY_LINK_PROPERTIES})
+  set(_files "")
+  foreach(_suffix IN ITEMS "" ${_suffixes})
+    list(APPEND _links IMPORTED_LINK_INTERFACE_LIBRARIES${_suffix}
+      IMPORTED_LINK_DEPENDENT_LIBRARIES${_suffix} LINK_INTERFACE_LIBRARIES${_suffix})
+    list(APPEND _files IMPORTED_LOCATION${_suffix} IMPORTED_IMPLIB${_suffix}
+      IMPORTED_OBJECTS${_suffix} IMPORTED_LIBNAME${_suffix})
+  endforeach()
+  set(${links} "${_links}" PARENT_SCOPE)
+  set(${files} "${_files}" PARENT_SCOPE)
+endfunction()
+
+# Sets <out> to TRUE if the link item <token>, which is not a target where
+# the check runs (the top directory), may still be one where it is used: an
+# imported target created without GLOBAL in a subdirectory is visible only
+# there, so its properties cannot be judged. Namespaced names ("x::y") are
+# always targets in CMake; other names count if any directory imports them,
+# even when the top directory means a system library by that name (fails
+# closed). Without IMPORTED_TARGETS (CMake 3.20) only namespaced names count.
+# "::@(...)" markers, which CMake adds around items linked from another
+# directory, are not targets.
+function(odbcpp_library_hidden_target token out)
+  get_property(_imported GLOBAL PROPERTY ODBCPP_LIBRARY_ALL_IMPORTED)
+  if(token STREQUAL "")
+    set(${out} FALSE PARENT_SCOPE)
+  elseif(token IN_LIST _imported OR (token MATCHES "::" AND NOT token MATCHES "^::@"))
+    set(${out} TRUE PARENT_SCOPE)
+  else()
+    set(${out} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+# Sets <out> to the imported targets of <dir> and all its subdirectories.
+function(odbcpp_library_imported_targets dir out)
+  set(_all "")
+  if(NOT CMAKE_VERSION VERSION_LESS 3.21)
+    get_directory_property(_here DIRECTORY "${dir}" IMPORTED_TARGETS)
+    list(APPEND _all ${_here})
+  endif()
+  get_directory_property(_subdirs DIRECTORY "${dir}" SUBDIRECTORIES)
+  foreach(_sub IN LISTS _subdirs)
+    odbcpp_library_imported_targets("${_sub}" _more)
+    list(APPEND _all ${_more})
+  endforeach()
+  set(${out} "${_all}" PARENT_SCOPE)
+endfunction()
+
 # Sets <out> to every target <target> depends on through any of those
 # properties, aliases resolved and wrapper targets followed transitively, stopping
 # at product libraries (whose own links the check judges separately). Names in
@@ -182,7 +261,34 @@ function(odbcpp_library_dependencies target products out problem)
         set(${problem} "Imported target ${_current} is not allowed in a product library dependency" PARENT_SCOPE)
         return()
       endif()
-      foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
+      # Names in an imported target's links resolve in the directory that
+      # created it; only the top directory is the one the check sees.
+      if(NOT CMAKE_VERSION VERSION_LESS 3.21)
+        get_directory_property(_top_imported DIRECTORY "${CMAKE_SOURCE_DIR}" IMPORTED_TARGETS)
+        if(NOT _current IN_LIST _top_imported)
+          set(${problem} "Imported target ${_current} must be created in the top directory, where the library graph check runs" PARENT_SCOPE)
+          return()
+        endif()
+      endif()
+      odbcpp_library_imported_properties(${_current} _link_properties _file_properties)
+      foreach(_property IN LISTS _file_properties)
+        get_target_property(_values ${_current} ${_property})
+        if(NOT _values)
+          continue()
+        endif()
+        foreach(_value IN LISTS _values)
+          # The file itself may not be a product library. Only its name is
+          # judged: in-tree crypto builds live under the build directory, whose
+          # path may contain "odbcpp".
+          get_filename_component(_name "${_value}" NAME)
+          string(TOLOWER "${_name}" _lower)
+          if(_value MATCHES "\\$<" OR _lower MATCHES "odbcpp")
+            set(${problem} "Imported target ${_current} may not use this file (${_property}): ${_value}" PARENT_SCOPE)
+            return()
+          endif()
+        endforeach()
+      endforeach()
+      foreach(_property IN LISTS _link_properties)
         get_target_property(_values ${_current} ${_property})
         if(NOT _values)
           continue()
@@ -190,6 +296,9 @@ function(odbcpp_library_dependencies target products out problem)
         foreach(_value IN LISTS _values)
           # Any reference to a product target (direct, namespaced, or assembled)
           # inside an allowed imported target's properties is forbidden.
+          # The whole value is judged, so a link item that is a path under a
+          # directory named odbcpp is refused too (fails closed); imported
+          # files below judge only the file name.
           string(TOLOWER "${_value}" _lower)
           if(_lower MATCHES "odbcpp")
             set(${problem} "Imported target ${_current} may not depend on product target: ${_value}" PARENT_SCOPE)
@@ -216,6 +325,11 @@ function(odbcpp_library_dependencies target products out problem)
           string(REPLACE "@NS@" "::" _tokens "${_text}")
           foreach(_token IN LISTS _tokens)
             if(NOT TARGET "${_token}")
+              odbcpp_library_hidden_target("${_token}" _hidden)
+              if(_hidden)
+                set(${problem} "Imported target ${_current} links ${_token}, a target the check cannot see (create imported targets GLOBAL or in the top directory)" PARENT_SCOPE)
+                return()
+              endif()
               continue()
             endif()
             get_target_property(_aliased "${_token}" ALIASED_TARGET)
@@ -240,12 +354,25 @@ function(odbcpp_library_dependencies target products out problem)
       endforeach()
       continue()
     endif()
+    # Link names resolve in the directory that declared them. The check sees
+    # only the top directory, so every target it walks must be defined there
+    # and linked from there; otherwise an imported target or alias local to a
+    # subdirectory could hide behind a plain name.
+    get_target_property(_source_dir ${_current} SOURCE_DIR)
+    if(NOT _source_dir STREQUAL CMAKE_SOURCE_DIR)
+      set(${problem} "${_current} must be defined in the top directory, where the library graph check runs (it is defined in ${_source_dir})" PARENT_SCOPE)
+      return()
+    endif()
     foreach(_property IN LISTS ODBCPP_LIBRARY_LINK_PROPERTIES)
       get_target_property(_values ${_current} ${_property})
       if(NOT _values)
         continue()
       endif()
       foreach(_value IN LISTS _values)
+        if(_value MATCHES "^::@")
+          set(${problem} "${_current} has links declared in another directory; declare them in the top directory, where the library graph check runs" PARENT_SCOPE)
+          return()
+        endif()
         odbcpp_library_genex_problem("${_value}" _genex)
         if(_genex)
           set(${problem} "${_current}: ${_genex}" PARENT_SCOPE)
@@ -258,6 +385,11 @@ function(odbcpp_library_dependencies target products out problem)
         string(REPLACE "@NS@" "::" _tokens "${_text}")
         foreach(_token IN LISTS _tokens)
           if(NOT TARGET "${_token}")
+            odbcpp_library_hidden_target("${_token}" _hidden)
+            if(_hidden)
+              set(${problem} "${_current} links ${_token}, a target the check cannot see (create imported targets GLOBAL or in the top directory)" PARENT_SCOPE)
+              return()
+            endif()
             continue()
           endif()
           get_target_property(_aliased "${_token}" ALIASED_TARGET)
@@ -290,6 +422,8 @@ function(odbcpp_check_library_graph)
     message(FATAL_ERROR "${_problem}")
   endif()
   get_property(_libraries GLOBAL PROPERTY ODBCPP_LIBRARIES)
+  odbcpp_library_imported_targets("${CMAKE_SOURCE_DIR}" _all_imported)
+  set_property(GLOBAL PROPERTY ODBCPP_LIBRARY_ALL_IMPORTED "${_all_imported}")
   foreach(_entry IN LISTS ODBCPP_LIBRARY_GRAPH)
     string(REGEX REPLACE "=.*$" "" _name "${_entry}")
     if(NOT _name IN_LIST _libraries)
