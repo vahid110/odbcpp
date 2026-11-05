@@ -122,7 +122,8 @@ replace hand-made evidence and custom ceremony.
     `.github/` (CI, CODEOWNERS), `docs/adr/`, `.mcp.json`, agent
     instructions and settings at any depth (`AGENTS.md`,
     `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `.agents/`,
-    `.claude/`, `.codex/`; the review gate also matches case variants),
+    `.claude/`, `.codex/`, also as symlinks, which must point at owned
+    paths; the review gate also matches case variants),
     `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
     `DEVELOPMENT_WORKFLOW.md` while its live rules apply. Release tags
     (`v*`) can be created only by the owner, so nothing reaches users without
