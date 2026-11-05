@@ -73,10 +73,30 @@ Do not copy these remediations from `references/action-profiles.md`:
 
 ## Verifying this copy
 
-Run it with bash from this directory. It prints `PASS` and exits 0 only if every check
-passes:
+Run it with bash from this directory, in a checkout of a reviewed commit. It
+prints `PASS` and exits 0 only if every check passes. The exit code is what
+counts: the files are untrusted, so the output of checks that show their text
+goes through `cat -v`, which makes terminal control sequences visible instead
+of running them.
 
-```sh
+What a PASS shows: the files here, as they are on disk, are the upstream files
+at the pinned commit, apart from the one local change, with the hashes and the
+character allowlist this file states. What it does not show:
+- That this file is right. The script, the hashes and the allowlist live in
+  it, so anyone who edits it can make the script pass. A change to it is
+  checked by reviewing its diff, and `.agents/` needs the owner's approval.
+- That the checkout is the reviewed commit; check `git rev-parse HEAD`.
+- That nothing else shadows the skill: another skill with the same `name:`
+  elsewhere (for example under `.claude/skills/`), or a repository
+  `.gitattributes` that changes what git writes to disk (check 5 still sees
+  the bytes).
+- That the tools are honest: `git`, `gh` (and its host and configuration,
+  such as `GH_HOST`), `python3`, `shasum` and `PATH` are trusted.
+- That no text is hidden from a reader. Check 6 limits characters and refuses
+  HTML comments; other markdown that a renderer hides still passes, so read
+  the files as plain text.
+
+```bash
 C=711af095215ad4ecde5b90cd1d0124b3f1c4ca9e
 P=plugins/agentic-actions-auditor/skills/agentic-actions-auditor
 R=repos/trailofbits/skills
@@ -86,39 +106,60 @@ U=$(mktemp); trap 'rm -f "$U"' EXIT; bad=0
 #    compare/$C...main is "identical" or "ahead" only if $C is an ancestor of main.
 case "$(gh api "$R/compare/$C...main" --jq .status)" in identical|ahead) ;; *) echo "FAIL not on main"; bad=1;; esac
 [ "$(gh api "$R/commits/$C" --jq .commit.verification.verified)" = true ] || { echo "FAIL unverified"; bad=1; }
-# 2. Exactly the expected files, so an added script or config is caught.
+# 2. Exactly the expected files, and on disk exactly what is committed: each
+#    a regular, non-executable file (index mode 100644, and on disk no symlink
+#    and no execute bit), with no change, untracked or ignored file here, so
+#    an added script or config, or a swapped-in symlink, is caught.
 printf '%s\n' LICENSE PROVENANCE.md SKILL.md references/action-profiles.md \
   references/cross-file-resolution.md references/foundations.md \
   references/vector-{a-env-var-intermediary,b-direct-expression-injection,c-cli-data-fetch,d-pr-target-checkout,e-error-log-injection,f-subshell-expansion,g-eval-of-ai-output,h-dangerous-sandbox-configs,i-wildcard-allowlists}.md \
   | sort | diff - <(git ls-files . | sort) >/dev/null || { echo "FAIL file set"; bad=1; }
+s=$(git ls-files -s .) || { echo "FAIL git ls-files"; bad=1; }
+m=$(printf '%s\n' "$s" | awk '$1 != "100644"')
+[ -z "$m" ] || { printf 'FAIL mode\n%s\n' "$m" | cat -v; bad=1; }
+st=$(git status --porcelain --ignored --untracked-files=all -- .) || { echo "FAIL git status"; bad=1; }
+[ -z "$st" ] || { printf 'FAIL working tree\n%s\n' "$st" | cat -v; bad=1; }
+while IFS= read -r f; do
+  if [ -L "$f" ] || [ -x "$f" ] || [ ! -f "$f" ]; then echo "FAIL on disk $f" | cat -v; bad=1; fi
+done < <(git ls-files .)
 # 3. Every unmodified file's blob id is in the upstream tree at its path.
 gh api "$R/git/trees/$C?recursive=1" --jq '.tree[] | select(.type=="blob") | "\(.sha)  \(.path)"' > "$U"
 for f in LICENSE references/*.md; do
   u=$P/$f; [ "$f" = LICENSE ] && u=LICENSE
-  grep -qxF "$(git hash-object "$f")  $u" "$U" || { echo "FAIL blob $f"; bad=1; }
+  grep -qxF "$(git hash-object "$f")  $u" "$U" || { echo "FAIL blob $f" | cat -v; bad=1; }
 done
 # 4. SKILL.md: upstream's blob is the listed one, and only line 4 differs, as
 #    the local change. allowed-tools must stay within Read Grep Glob.
 grep -qxF "efdeacdf470d5bd1d714ca231d6276f086214971  $P/SKILL.md" "$U" || { echo "FAIL upstream SKILL.md"; bad=1; }
 d=$(gh api "$R/git/blobs/efdeacdf470d5bd1d714ca231d6276f086214971" --jq .content | base64 -d | diff - SKILL.md | cat -v)
 [ "$d" = "$(printf '4c4\n< allowed-tools: Read Grep Glob Bash\n---\n> allowed-tools: Read Grep Glob')" ] || { echo "FAIL SKILL.md diff"; bad=1; }
-# 5. The local SHA-256 list.
-sed -n '/^## SHA-256/,$p' PROVENANCE.md | grep -E '^[0-9a-f]{64}  ' | shasum -a 256 -c --quiet || bad=1
-# 6. Hidden content, per character: only the listed non-ASCII characters, and
-#    no control characters other than tab and newline, no CR and no HTML
-#    comments. ('<!-''-' keeps this file from matching itself.)
+# 5. The local SHA-256 list: one line for every file but this one, and each
+#    matches. (A deleted line would otherwise drop that file's check.)
+l=$(sed -n '/^## SHA-256/,$p' PROVENANCE.md | grep -E '^[0-9a-f]{64}  ')
+[ "$(printf '%s\n' "$l" | cut -c67- | sort)" = "$(git ls-files . | grep -vx PROVENANCE.md | sort)" ] \
+  || { echo "FAIL sha256 list"; bad=1; }
+h=$(printf '%s\n' "$l" | shasum -a 256 -c --quiet 2>&1) \
+  || { printf 'FAIL sha256\n%s\n' "$h" | cat -v; bad=1; }
+# 6. Characters, per file. Each file may contain only the non-ASCII
+#    characters listed for it (the allowlist is per file, not per line), and
+#    no control characters other than tab and newline: no CR (the bytes are
+#    decoded directly, so a CR is not turned into a newline first) and no
+#    HTML comments. ('<!-''-' keeps this file from matching itself.)
 python3 -I -c '
 import pathlib, sys
 allowed = {"LICENSE": {"\u201c", "\u201d"}, "PROVENANCE.md": {"\u00f3"}}
 bad = 0
 for f in sorted(pathlib.Path(".").rglob("*")):
     if f.is_file():
-        for n, line in enumerate(f.read_text(encoding="utf-8").split("\n"), 1):
+        text = f.read_bytes().decode("utf-8")
+        for n, line in enumerate(text.split("\n"), 1):
             for ch in line:
                 if (ord(ch) > 126 and ch not in allowed.get(str(f), ())) or (ord(ch) < 32 and ch != "\t"):
-                    print(f"FAIL {f}:{n} U+{ord(ch):04X}"); bad = 1
+                    print(f"FAIL {ascii(str(f))}:{n} U+{ord(ch):04X}"); bad = 1
 sys.exit(bad)' || bad=1
-! grep -rn '<!-''-' . || bad=1
+# grep exits 1 when nothing matches, 0 on a match and 2 on an error; only 1 passes.
+c=$(grep -rn '<!-''-' . 2>&1); rc=$?
+[ $rc = 1 ] || { printf 'FAIL html comment or grep error (%s)\n%s\n' "$rc" "$c" | cat -v; bad=1; }
 [ $bad = 0 ] && echo PASS || { echo FAIL; false; }
 ```
 
