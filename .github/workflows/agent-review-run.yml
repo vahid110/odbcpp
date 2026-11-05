@@ -16,6 +16,15 @@ on:
         description: correctness or red-team
         required: true
         type: string
+    # The caller passes these by name only; the values come from the
+    # agent-review environment of the job below, which takes precedence over
+    # anything passed in. Required, so a caller that does not name them fails
+    # instead of the job getting empty strings (#213).
+    secrets:
+      ODBCPP_REVIEWER_PRIVATE_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
 
 permissions: {}
 
