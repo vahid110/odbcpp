@@ -255,7 +255,7 @@ class Status(unittest.TestCase):
 
     def test_withheld_verdict_blocks(self):
         r = review("correctness", "APPROVED")
-        r["body"] = "[correctness reviewer] verdict withheld at aaaaaaa\n\n..."
+        r["body"] = f"[correctness reviewer] verdict withheld at {HEAD}\n\n..."
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "failure")
 
 

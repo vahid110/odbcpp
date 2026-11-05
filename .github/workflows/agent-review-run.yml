@@ -48,10 +48,13 @@ jobs:
           head=$(jq -r .head.sha "$raw")
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > "$RUNNER_TEMP/reviews.json"
           # Skip if this role already reviewed this exact head (a duplicate
-          # event); a withheld verdict does not count as a review.
+          # event); a withheld verdict does not count as a review. GitHub
+          # re-points commit_id to a new head after a force-push, so the
+          # header must also name the full head SHA (review_gate.names_commit).
           done=$(jq --arg h "$head" --arg role "[$ROLE reviewer]" '[.[]
                    | select(.user.login == "odbcpp-reviewer[bot]" and .commit_id == $h)
                    | select(.body | ltrimstr("**") | startswith($role))
+                   | select(.body | split("\n")[0] | contains(" at " + $h))
                    | select(.body | split("\n")[0] | contains("verdict withheld") | not)] | length' \
                  "$RUNNER_TEMP/reviews.json")
           if [[ "$(jq -r .state "$raw")" != open || "$done" != 0 ]]; then
@@ -206,7 +209,9 @@ jobs:
               r"CLAUDE_CODE_OAUTH_TOKEN\s*[=:]")
           suspicious = bool(secret.search(text))
           tag = f"[{os.environ['ROLE']} reviewer]"
-          short = os.environ["HEAD_SHA"][:7]
+          # The full SHA: the gate counts a review only for the commit its
+          # header names (#210).
+          short = os.environ["HEAD_SHA"]
           if suspicious:
               review = {"event": "REQUEST_CHANGES",
                         "body": f"{tag} verdict withheld at {short}\n\nThe review "
