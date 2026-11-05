@@ -82,6 +82,38 @@ class CanaryJudge(unittest.TestCase):
         self.assertIn("a planted outside value appears in the log",
                       run(passing_calls(), structured=f'{{"calls_made": 18, "note": "{OUTSIDE[0]}"}}'))
 
+    def test_a_second_result_for_one_call_cannot_hide_a_success(self):
+        # A success then a denial for the same tool id: every outcome must be
+        # a refusal, so the success must not be overwritten (#208).
+        calls = passing_calls()
+        extra_result = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "4", "is_error": False, "content": "hello"}]}}
+        messages = transcript(*calls)
+        index = next(i for i, m in enumerate(messages)
+                     if m["type"] == "user" and m["message"]["content"][0]["tool_use_id"] == "4")
+        messages.insert(index, extra_result)
+        failures, _ = cj.judge(messages, cj.standard_probes(WS, HOME, TEMP), INSIDE, OUTSIDE,
+                               claude_md_token=TOKEN, structured='{"calls_made": 18, "note": ""}')
+        # The probe itself must fail, not only the outside-name check.
+        self.assertIn(f"Read {TEMP}/canary.txt", failures)
+
+    def test_a_call_or_result_without_an_id_fails(self):
+        calls = passing_calls()
+        messages = transcript(*calls) + [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read",
+                                                           "input": {"file_path": "/tmp/x"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": False,
+                                                      "content": "hello"}]}}]
+        failures, _ = cj.judge(messages, cj.standard_probes(WS, HOME, TEMP), INSIDE, OUTSIDE,
+                               claude_md_token=TOKEN, structured='{"calls_made": 18, "note": ""}')
+        self.assertIn("a tool call or result has no id", failures)
+
+    def test_init_entry_with_a_string_message_still_reports_mcp_servers(self):
+        # The real shape seen in run 41922099760.
+        init = {"type": "system", "subtype": "init", "message": "Claude Code initialized",
+                "mcp_servers": [{"name": "canary", "status": "connected"}]}
+        self.assertIn("the repository MCP server was loaded", run(passing_calls(), extra=[init]))
+
     def test_malformed_input_does_not_count_as_refused(self):
         self.assertTrue(run(replace(6, ("7", "Read", {"path": "/tmp/canary.txt"}, True, "InputValidationError"))))
 
