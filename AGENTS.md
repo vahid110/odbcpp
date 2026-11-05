@@ -57,10 +57,10 @@ it.
 
 The reviewer, not the author, assigns the high-risk labels. Every PR also
 gets a second, independent red-team reviewer unless it changes only plain
-documentation (Markdown under `docs/` outside `docs/adr/`, or top-level
-Markdown other than agent instructions), or it carries a high-risk label
-(`security`, `auth`, `protocol`, `transactions`, `process`). The red-team
-reviewer tries to break the change
+documentation (`README.md`, `CHANGELOG.md`, or Markdown under `docs/` outside
+`docs/adr/`, `docs/plans/` and `docs/handoffs/`). Any PR carrying a high-risk label
+(`security`, `auth`, `protocol`, `transactions`, `process`) gets it too. The
+red-team reviewer tries to break the change
 (hostile input, misuse, races, downgrade, resource exhaustion, bypassing the
 new checks), does not see the first review, and reports the same way.
 

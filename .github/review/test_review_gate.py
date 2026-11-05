@@ -47,8 +47,8 @@ class Plan(unittest.TestCase):
     def test_path_rule_adds_label_and_lets_its_event_start_red_team(self):
         c, r, add = plan_("opened", "", [], ["sdk/src/auth/x.cpp"], [], [], HEAD)
         # Changed for #204: a code path starts the red-team review at once; the
-        # label is still added, and its own event does not start a second one
-        # once the review is done.
+        # label is still added. Its own event starts the review again only if
+        # it is not done yet (a queued duplicate is skipped at run start).
         self.assertEqual((c, r, add), (True, True, ["auth"]))
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], [], HEAD)[:2], (False, True))
 
@@ -80,16 +80,28 @@ class Plan(unittest.TestCase):
         self.assertEqual(plan_("opened", "", [], ["tests/unit/test_x.cpp"], [], [], HEAD)[:2], (True, True))
 
     def test_documentation_only_change_runs_correctness_only(self):
-        for files in (["docs/notes.md"], ["README.md", "docs/guide/x.md"], ["CHANGELOG.md"]):
+        for files in (["docs/notes.md"], ["README.md", "docs/guide/x.md"], ["CHANGELOG.md"],
+                      ["docs/history/x.md"]):
             with self.subTest(files=files):
                 self.assertEqual(plan_("synchronize", "", [], files, [], [], HEAD), (True, False, []))
 
     def test_documentation_lookalikes_are_not_low_risk(self):
         # ADRs and agent instructions define the gates; other paths may run.
         for path in ("docs/adr/0003-x.md", "AGENTS.md", "CLAUDE.md", "docs/x.sh", "docs/x.py",
-                     "odbc/README.md", "SECURITY.md", "docs/../odbc/x.cpp"):
+                     "odbc/README.md", "SECURITY.md", "docs/../odbc/x.cpp",
+                     # Top-level plans and architecture that agents follow.
+                     "SDK_ARCHITECTURE.md", "ARCHITECTURE.md", "SECURITY_MODEL.md", "PARALLEL_WORKFLOW.md",
+                     "CONTRIBUTING.md", "GEMINI.md", "ROADMAP.md",
+                     "docs/plans/x.md", "docs/handoffs/x.md"):
             with self.subTest(path=path):
                 self.assertTrue(g.red_team_by_path([path]))
+
+    def test_sticky_label_on_a_documentation_pr_starts_red_team(self):
+        # A label added once and removed keeps the red-team review required
+        # (status); plan must start it too, or the check waits forever.
+        events = [labeled("security"), {"event": "unlabeled", "label": {"name": "security"}}]
+        self.assertTrue(plan_("synchronize", "", [], DOCS, events, [], HEAD)[1])
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], events, HEAD, files=DOCS)[0], "pending")
 
     def test_empty_file_list_requires_red_team(self):
         # Fail closed: an empty or missing file list is not "documentation only".

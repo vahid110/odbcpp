@@ -52,9 +52,12 @@ PATH_RULES = {
 # agent does. A PR that changes only these gets the correctness review alone;
 # any other path also requires the red-team review, so a prompt injection
 # that keeps the correctness reviewer from adding a high-risk label no longer
-# skips it (#204). Agent instructions and ADRs match a path rule and so are
-# never low-risk; "..", backslashes and anything else fall outside.
-LOW_RISK = r"^(docs/(?!adr/)[A-Za-z0-9_][A-Za-z0-9_./-]*\.md|[A-Za-z0-9_][A-Za-z0-9_.-]*\.md)$"
+# skips it (#204). Most top-level Markdown here is a plan, an architecture or
+# a workflow that agents follow (AGENTS.md names SDK_ARCHITECTURE.md), so
+# only README.md and CHANGELOG.md count; under docs/, ADRs, plans and
+# handoffs are excluded for the same reason. Anything matching a path rule,
+# "..", backslashes and anything else fall outside.
+LOW_RISK = r"^(docs/(?!(adr|plans|handoffs)/)[A-Za-z0-9_][A-Za-z0-9_./-]*\.md|README\.md|CHANGELOG\.md)$"
 
 
 def red_team_by_path(files):
@@ -166,7 +169,9 @@ def plan(event_action, added_label, labels, files, events, reviews, head_sha, no
     # Labels added here start the red-team review through their own labeled
     # event, so only labels already on the PR start it now; any path that is
     # not plain documentation starts it too (#204).
-    red_needed = bool(present & set(HIGH_RISK)) or red_team_by_path(files)
+    # Sticky labels count too, as in status(): a removed label must not
+    # leave the check waiting for a review that never starts.
+    red_needed = bool((present | sticky_labels(events)) & set(HIGH_RISK)) or red_team_by_path(files)
     return correctness_budget, red_needed and not red_done and red_budget, add
 
 
