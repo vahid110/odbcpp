@@ -10773,6 +10773,13 @@ class PreparedSelectArrayTest : public PreparedCommandArrayTest {
 };
 TEST_F(PreparedSelectArrayTest, IncrementalOwningMaskedResultsIdleCancelAndDirectPreparedRefill) {
   ASSERT_NO_FATAL_FAILURE(select_ready()); operations[1] = SQL_PARAM_IGNORE;
+  // Parameter arrays provide multiple results independently of semicolon batches.
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+  SQLUINTEGER batch_support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &batch_support, sizeof(batch_support), nullptr));
+  EXPECT_EQ(0u, batch_support);
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(1u, seen->command_inputs.size());
   EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]); EXPECT_EQ(SQL_PARAM_UNUSED, status[1]);
   EXPECT_EQ(SQL_PARAM_UNUSED, status[2]); input[2] = 999;
@@ -17563,14 +17570,15 @@ class SqlCapabilityMaskTest : public BackendContractTest {
   }
 
   void exact_masks(bool redshift) {
+    const auto pg_only = [&](SQLUINTEGER value) { return redshift ? 0u : value; };
     const SQLUINTEGER outer = SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
         SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER;
     const SQLUINTEGER predicates = SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
         SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON;
     const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
-        {SQL_OJ_CAPABILITIES, outer},
-        {SQL_AGGREGATE_FUNCTIONS, SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
-            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL},
+        {SQL_OJ_CAPABILITIES, pg_only(outer)},
+        {SQL_AGGREGATE_FUNCTIONS, pg_only(SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
+            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL)},
         {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE | SQL_FN_STR_LCASE |
             (redshift ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2 : 0)},
         {SQL_NUMERIC_FUNCTIONS, redshift ? SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10 : 0},
@@ -17580,26 +17588,26 @@ class SqlCapabilityMaskTest : public BackendContractTest {
                 SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND :
                 SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
         {SQL_SYSTEM_FUNCTIONS, SQL_FN_SYS_IFNULL},
-        {SQL_DATETIME_LITERALS, SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP},
-        {SQL_SUBQUERIES, SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
-            (redshift ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES)},
-        {SQL_SQL92_PREDICATES, predicates |
-            (redshift ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON)},
-        {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF},
-        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, redshift ? 0 :
-            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY},
-        {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
-            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING},
-        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
+        {SQL_DATETIME_LITERALS, pg_only(SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP)},
+        {SQL_SUBQUERIES, pg_only(SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
+            (redshift ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES))},
+        {SQL_SQL92_PREDICATES, pg_only(predicates |
+            (redshift ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON))},
+        {SQL_SQL92_VALUE_EXPRESSIONS, pg_only(SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF)},
+        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(redshift ? 0 :
+            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
+        {SQL_SQL92_STRING_FUNCTIONS, pg_only(SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
+            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING)},
+        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, pg_only(SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
             SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
-            (redshift ? 0 : SQL_SNVF_BIT_LENGTH)},
-        {SQL_SQL92_DATETIME_FUNCTIONS, SQL_SDF_CURRENT_DATE |
-            (redshift ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP)},
-        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
+            (redshift ? 0 : SQL_SNVF_BIT_LENGTH))},
+        {SQL_SQL92_DATETIME_FUNCTIONS, pg_only(SQL_SDF_CURRENT_DATE |
+            (redshift ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP))},
+        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, pg_only(SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
             SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
-            SQL_SRJO_RIGHT_OUTER_JOIN},
-        {SQL_BATCH_SUPPORT, SQL_BS_SELECT_EXPLICIT | SQL_BS_ROW_COUNT_EXPLICIT},
-        {SQL_BATCH_ROW_COUNT, SQL_BRC_EXPLICIT},
+            SQL_SRJO_RIGHT_OUTER_JOIN)},
+        {SQL_BATCH_SUPPORT, 0},
+        {SQL_BATCH_ROW_COUNT, 0},
     };
     for (const auto& [type, mask] : expected) {
       SCOPED_TRACE(type);
@@ -17619,7 +17627,7 @@ class SqlCapabilityMaskTest : public BackendContractTest {
     for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
       SQLCHAR value[2]{};
       ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
-      EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
+      EXPECT_STREQ(redshift ? "N" : "Y", reinterpret_cast<const char*>(value));
     }
   }
 };
@@ -17652,6 +17660,37 @@ TEST_F(SqlCapabilityMaskTest, RedshiftUnqualifiedSqlClaimsRemainWithheld) {
   SQLCHAR joins[2]{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_OUTER_JOINS, joins, sizeof(joins), nullptr));
   EXPECT_STREQ("N", reinterpret_cast<const char*>(joins));
+}
+
+TEST_F(SqlCapabilityMaskTest, DirectResultSequencesRemainUsableWithoutPreparedBatchClaims) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(false));
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+  SQLUINTEGER support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  EXPECT_EQ(0u, support);
+  QueryResult first;
+  first.columns = {{"value", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  first.rows = {{"7"}};
+  first.statement_kind = StatementKind::SelectCursor;
+  first.result_id = 1;
+  QueryResult second = first;
+  second.rows = {{"9"}};
+  second.result_id = 2;
+  first.additional_results.push_back(std::move(second));
+  seen->date_result = std::move(first);
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 7; SELECT 9"));
+  for (const SQLINTEGER expected : {7, 9}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    SQLINTEGER actual = 0;
+    SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &actual, sizeof(actual), &length));
+    EXPECT_EQ(expected, actual);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(actual)), length);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    EXPECT_EQ(expected == 7 ? SQL_SUCCESS : SQL_NO_DATA, SQLMoreResults(stmt));
+  }
 }
 
 TEST_F(SqlCapabilityMaskTest, PostgreSqlExactMasksAndConsistency) {

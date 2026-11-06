@@ -608,11 +608,12 @@ TEST(SqlCapabilityEscapeProof, EveryAdvertisedScalarHasAnExactProfileTranslation
   }
 }
 
-TEST(SqlCapabilityEscapeProof, AdvertisedJoinFormsStripOnlyTheEscapeWrapper) {
+TEST(SqlCapabilityEscapeProof, JoinTranslationFormsStripOnlyTheEscapeWrapper) {
   using rs::core::database::postgres::SqlDialectProfile;
   for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
     for (const auto* native : {
         "a LEFT OUTER JOIN b ON a.x=b.y",
+        "a LEFT JOIN b ON a.x=b.y",
         "a RIGHT OUTER JOIN b ON a.x=b.y",
         "a FULL OUTER JOIN b ON a.x=b.y",
         "a LEFT OUTER JOIN b ON b.y=a.x",

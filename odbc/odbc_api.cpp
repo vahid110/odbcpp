@@ -431,7 +431,7 @@ namespace {
         return backend.sql.join_left || backend.sql.join_right || backend.sql.join_full ? "Y" : "N";
       case SQL_PROCEDURES: return backend.procedures ? "Y" : "N";
       case SQL_MULT_RESULT_SETS:
-        return backend.sql.batch_select || select_parameter_arrays ? "Y" : "N";
+        return backend.sql.direct_result_sequences || select_parameter_arrays ? "Y" : "N";
       case SQL_DATA_SOURCE_READ_ONLY: return backend.read_only || read_only_session ? "Y" : "N";
       case SQL_ORDER_BY_COLUMNS_IN_SELECT: return backend.order_by_requires_select ? "Y" : "N";
       case SQL_ACCESSIBLE_TABLES:

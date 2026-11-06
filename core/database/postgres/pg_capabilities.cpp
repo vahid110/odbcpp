@@ -2,7 +2,7 @@
 
 namespace rs::core::database::postgres {
 namespace {
-SqlCapabilities common_sql_capabilities() noexcept {
+SqlCapabilities qualified_postgres_sql_capabilities() noexcept {
   SqlCapabilities result;
   result.aggregate_all = true;
   result.aggregate_average = true;
@@ -11,9 +11,9 @@ SqlCapabilities common_sql_capabilities() noexcept {
   result.aggregate_maximum = true;
   result.aggregate_minimum = true;
   result.aggregate_sum = true;
-  result.batch_command = true;
-  result.batch_individual_counts = true;
-  result.batch_select = true;
+  // Simple-query sequences do not qualify prepared/parameterized batches.
+  // Keep all explicit-batch claims false until both execution paths work.
+  result.direct_result_sequences = true;
   result.date_literal = true;
   result.datetime_current_date = true;
   result.join_cross = true;
@@ -132,7 +132,7 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   result.schema_in_dml = result.schema_in_procedures = true;
   result.schema_in_table_definitions = result.schema_in_index_definitions = true;
   result.schema_in_privileges = true;
-  result.sql = common_sql_capabilities();
+  result.sql = qualified_postgres_sql_capabilities();
   result.sql.datetime_current_time = true;
   result.sql.datetime_current_timestamp = true;
   result.sql.numeric_bit_length = true;
@@ -174,9 +174,16 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
-  // Start from the common table, not PostgreSQL-only claims. Native pass-through
-  // is not proof of a scalar escape; Redshift translations are declared below.
-  result.sql = common_sql_capabilities();
+  // No PostgreSQL SQL92/join/aggregate/literal/batch claims carry into
+  // Redshift without connected qualification (#142). Preserve the existing
+  // scalar translations only; their output SQL is covered independently.
+  result.sql = {};
+  result.sql.scalar_current_date = true;
+  result.sql.scalar_current_time = true;
+  result.sql.scalar_current_timestamp = true;
+  result.sql.scalar_if_null = true;
+  result.sql.scalar_lower = true;
+  result.sql.scalar_upper = true;
   result.sql.scalar_day = true;
   result.sql.scalar_hour = true;
   result.sql.scalar_locate_two_arguments = true;

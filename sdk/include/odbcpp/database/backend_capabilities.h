@@ -104,7 +104,10 @@ struct SqlCapabilities {
   bool join_cross{false};
   bool join_inner{false};
   bool join_natural{false};
-  // Explicit batches.
+  // Multiple results from a direct query are narrower than full batch support.
+  bool direct_result_sequences{false};
+  // Explicit batches must work through direct and prepared execution,
+  // including parameters; simple-query sequences alone do not qualify.
   bool batch_select{false};
   bool batch_command{false};
   // Per-statement batch counts.
