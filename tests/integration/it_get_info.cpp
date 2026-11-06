@@ -847,7 +847,13 @@ TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
           "LEFT OUTER JOIN odbcpp_get_info_capabilities right_side "
           "ON left_side.id = right_side.id");
   execute("SELECT 1 UNION ALL SELECT 2");
+  // Use a portable explicit escape character and fetch both the positive and
+  // negative result. Preserve the existing PostgreSQL backslash-literal probe.
+  ASSERT_NO_FATAL_FAILURE(verify_predicate(
+      "'a_b' LIKE 'a!_b' ESCAPE '!' AND NOT ('axb' LIKE 'a!_b' ESCAPE '!')"));
+  if (!redshift_profile_) {
   execute("SELECT 'a_b' LIKE 'a\\_b' ESCAPE '\\'");
+  }
   execute("SELECT 1 AS id INTO TEMP TABLE odbcpp_get_info_select_into");
 }
 
