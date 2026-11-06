@@ -127,6 +127,10 @@ replace hand-made evidence and custom ceremony.
     `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `.agents/`,
     `.claude/`, `.codex/`, also as symlinks, which must point at owned
     paths; the review gate also matches case variants),
+    the architecture documents agents must follow (`ARCHITECTURE.md`,
+    `SDK_ARCHITECTURE.md`, `SECURITY_MODEL.md`, `docs/adr/reviews/`, and
+    the documents `SDK_ARCHITECTURE.md` defers to: `CONNECTION_POOLING.md`,
+    `CRYPTO_PROVIDER_PLAN.md`, `AUTH_LIBRARY_ARCHITECTURE.md`),
     `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
     `DEVELOPMENT_WORKFLOW.md` while its live rules apply. Release tags
     (`v*`) can be created only by the owner, so nothing reaches users without

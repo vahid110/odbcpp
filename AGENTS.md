@@ -23,7 +23,8 @@ authority beyond them.
 ## Architecture
 
 - Follow `ARCHITECTURE.md` (until it exists: `SDK_ARCHITECTURE.md` and the
-  2026-10-28 architecture review) and `SECURITY_MODEL.md`. Provider-neutral
+  2026-10-28 architecture review,
+  `docs/adr/reviews/2026-10-28-architecture-review.md`) and `SECURITY_MODEL.md`. Provider-neutral
   contracts and reusable transport, security, deadline and lifecycle code
   live in the SDK; wire protocol, framing and backend state stay in the
   backend; ODBC handles, diagnostics and keyword spelling stay in the
