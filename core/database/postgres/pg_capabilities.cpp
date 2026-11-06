@@ -178,12 +178,10 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // translations remain usable, but advertising new capability bits awaits
   // connected qualification under #142. Offline goldens alone are insufficient.
   result.sql = {};
-  // CONVERT and TIMESTAMPADD/TIMESTAMPDIFF are translated for Redshift too,
-  // but no Redshift statement behind them has run live yet (the generated SQL
-  // uses REGEXP_REPLACE with a lookahead, VARCHAR(MAX) and VARBYTE casts).
-  // Report them only after the Redshift live acceptance passes (#144); until
-  // then applications see no support and do not emit these escapes. The
-  // PostgreSQL capabilities this starts from report them, so clear them here.
+  // CONVERT and TIMESTAMPADD/TIMESTAMPDIFF translations remain callable even
+  // when an application ignores SQLGetInfo. Keep their capability masks clear
+  // until the complete Redshift source/target and interval matrix passes #220;
+  // a partial connected run or offline goldens do not qualify the whole matrix.
   result.conversions.targets.fill(0);
   result.timestamp_add_intervals = 0;
   result.timestamp_diff_intervals = 0;

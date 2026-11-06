@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -24,10 +25,10 @@ namespace {
 // timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
 constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
   if (left <= 0) return 0;
-  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  const auto cap = static_cast<SQLULEN>(left);
   return requested == 0 ? cap : std::min(cap, requested);
 }
-static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(40) == 40);
 static_assert(fixture_timeout_seconds(4) == 4);
 static_assert(fixture_timeout_seconds(1) == 1);
 static_assert(fixture_timeout_seconds(0) == 0);
@@ -143,6 +144,46 @@ class NativeSqlIntegrationTest : public ::testing::Test {
           ? ::SQLPrepareW(statement, statement_text, text_length) : SQL_ERROR;
     }
 
+  std::string connection_diagnostics() {
+    std::string result;
+    for (SQLINTEGER record = 1; record <= std::numeric_limits<SQLSMALLINT>::max(); ++record) {
+      SQLCHAR state[6]{}, message[1024]{};
+      SQLINTEGER native = 0;
+      const auto rc = ::SQLGetDiagRec(SQL_HANDLE_DBC, connection_,
+          static_cast<SQLSMALLINT>(record), state, &native, message, sizeof(message), nullptr);
+      if (rc == SQL_NO_DATA) {
+        break;
+      }
+      if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+        result += " diagnostic_read_failed=" + std::to_string(rc);
+        break;
+      }
+      message[sizeof(message) - 1] = 0;
+      std::string lowered(reinterpret_cast<const char*>(message));
+      std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) {
+        return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch);
+      });
+      const std::string sqlstate(reinterpret_cast<const char*>(state));
+      const char* category = "unknown";
+      if (lowered.find("too many connections") != std::string::npos ||
+          lowered.find("connection limit exceeded") != std::string::npos) {
+        category = "connection_limit";
+      } else if (sqlstate == "28000") {
+        category = "authentication";
+      } else if (sqlstate == "HYT00" || sqlstate == "HYT01") {
+        category = "timeout";
+      } else if (lowered.find("certificate verify failed") != std::string::npos ||
+                 lowered.find("certificate verification failed") != std::string::npos) {
+        category = "tls_certificate";
+      }
+      // Startup text may contain a principal or private endpoint. Preserve all
+      // record codes and a fixed category, never arbitrary server text in XML.
+      result += " [record=" + std::to_string(record) + " state=" + sqlstate +
+          " native=" + std::to_string(native) + " category=" + category + "]";
+    }
+    return result.empty() ? "no diagnostic records" : result;
+  }
+
   void SetUp() override {
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment_));
@@ -154,19 +195,31 @@ class NativeSqlIntegrationTest : public ::testing::Test {
     if (SQLConnect(connection_,
                    odbcpp::test::configured_server_name_data(), SQL_NTS,
                    nullptr, 0, nullptr, 0) != SQL_SUCCESS) {
-      GTEST_SKIP() << "Database connection failed";
+      GTEST_SKIP() << "Database connection failed: " << connection_diagnostics();
     }
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
   }
 
   void TearDown() override {
-    if (statement_) SQLFreeHandle(SQL_HANDLE_STMT, statement_);
-    if (connection_) {
-      SQLDisconnect(connection_);
-      SQLFreeHandle(SQL_HANDLE_DBC, connection_);
+    if (statement_) {
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement_));
+      statement_ = SQL_NULL_HSTMT;
     }
-    if (environment_) SQLFreeHandle(SQL_HANDLE_ENV, environment_);
+    if (connection_) {
+      const auto disconnected = SQLDisconnect(connection_);
+      if (disconnected != SQL_SUCCESS) {
+        // Failed login or a deliberately retired timeout/COPY connection is closed.
+        EXPECT_EQ(SQL_ERROR, disconnected);
+        EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+      }
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+      connection_ = SQL_NULL_HDBC;
+    }
+    if (environment_) {
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment_));
+      environment_ = SQL_NULL_HENV;
+    }
   }
 
   void expect_scalar(const std::string& sql, const char* expected) {
@@ -217,6 +270,17 @@ class NativeSqlIntegrationTest : public ::testing::Test {
 
 } // namespace
 
+TEST(NativeSqlFixtureBudgetTest, UsesRemainingWindowAndHonorsExplicitShortTimeouts) {
+  EXPECT_EQ(40u, fixture_timeout_seconds(40));
+  EXPECT_EQ(9u, fixture_timeout_seconds(9));
+  EXPECT_EQ(4u, fixture_timeout_seconds(4));
+  EXPECT_EQ(0u, fixture_timeout_seconds(0));
+  EXPECT_EQ(0u, fixture_timeout_seconds(-1));
+  EXPECT_EQ(2u, fixture_timeout_seconds(40, 2));
+  EXPECT_EQ(1u, fixture_timeout_seconds(1, 2));
+  EXPECT_EQ(9u, fixture_timeout_seconds(9, 40));
+}
+
 TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
   std::string sql("SELECT 1\0;SELECT 2", sizeof("SELECT 1\0;SELECT 2") - 1);
   auto* narrow = reinterpret_cast<SQLCHAR*>(sql.data());
@@ -253,12 +317,20 @@ TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
 TEST_F(NativeSqlIntegrationTest, CopyOutReportsUnsupportedWithoutHanging) {
   SQLCHAR sql[] = "COPY (SELECT 1) TO STDOUT";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, sql, SQL_NTS));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  // Redshift rejects PostgreSQL COPY STDIN/STDOUT syntax before entering
+  // COPY wire mode; PostgreSQL enters that unsupported mode and is closed.
+  // https://docs.aws.amazon.com/redshift/latest/dg/r_COPY.html
+  const bool redshift = odbcpp::test::compiled_redshift_product();
+  EXPECT_EQ(redshift ? "42000" : "HYC00",
+            diagnostic_state(SQL_HANDLE_STMT, statement_));
   SQLUINTEGER dead = SQL_CD_FALSE;
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
                               sizeof(dead), nullptr));
-  EXPECT_EQ(SQL_CD_TRUE, dead);
+  EXPECT_EQ(redshift ? SQL_CD_FALSE : SQL_CD_TRUE, dead);
+  if (redshift) {
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT 42", "42"));
+  }
 }
 
 TEST_F(NativeSqlIntegrationTest, CopyInReportsUnsupportedBeforeTimeout) {
@@ -270,12 +342,20 @@ TEST_F(NativeSqlIntegrationTest, CopyInReportsUnsupportedBeforeTimeout) {
 
   SQLCHAR sql[] = "COPY odbcpp_copy_input_probe FROM STDIN";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, sql, SQL_NTS));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  // Redshift rejects PostgreSQL COPY STDIN/STDOUT syntax before entering
+  // COPY wire mode; PostgreSQL enters that unsupported mode and is closed.
+  // https://docs.aws.amazon.com/redshift/latest/dg/r_COPY.html
+  const bool redshift = odbcpp::test::compiled_redshift_product();
+  EXPECT_EQ(redshift ? "42000" : "HYC00",
+            diagnostic_state(SQL_HANDLE_STMT, statement_));
   SQLUINTEGER dead = SQL_CD_FALSE;
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
                               sizeof(dead), nullptr));
-  EXPECT_EQ(SQL_CD_TRUE, dead);
+  EXPECT_EQ(redshift ? SQL_CD_FALSE : SQL_CD_TRUE, dead);
+  if (redshift) {
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT 42", "42"));
+  }
 }
 
 TEST_F(NativeSqlIntegrationTest, BinaryCursorResultsAreNotReadAsText) {
@@ -579,6 +659,49 @@ TEST_F(NativeSqlIntegrationTest, ConvertCharacterBinaryAndTemporalEscapes) {
   }
 }
 
+// Exercise every numeric source/target family, not only character-to-number.
+// Literal 42 is exactly representable in every supported numeric type.
+TEST_F(NativeSqlIntegrationTest, ConvertNumericSourceTargetMatrix) {
+  for (const auto* source : {"SMALLINT", "INTEGER", "BIGINT", "REAL", "DOUBLE PRECISION", "DECIMAL(10,2)"}) {
+    for (const auto* target : {"SQL_SMALLINT", "SQL_INTEGER", "SQL_BIGINT", "SQL_REAL", "SQL_FLOAT",
+                             "SQL_DOUBLE", "SQL_NUMERIC", "SQL_DECIMAL"}) {
+      SCOPED_TRACE(std::string(source) + " -> " + target);
+      const auto prefix = "SELECT CASE WHEN {fn CONVERT(CAST(";
+      const auto suffix = " AS " + std::string(source) + ")," + target + ")}";
+      ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + std::string("42") + suffix + " = 42 THEN 'ok' ELSE 'bad' END", "ok"));
+      ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + std::string("NULL") + suffix + " IS NULL THEN 'ok' ELSE 'bad' END", "ok"));
+    }
+    const auto converted = "{fn CONVERT(CAST(42 AS " + std::string(source) + "),SQL_VARCHAR)}";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN CAST(" + converted + " AS DECIMAL(10,2)) = 42 THEN 'ok' ELSE 'bad' END", "ok"));
+  }
+}
+
+TEST_F(NativeSqlIntegrationTest, ConvertBinaryAndTemporalIdentityAndCharacterPairs) {
+  const bool redshift = odbcpp::test::compiled_redshift_product();
+  const auto binary = redshift ? "CAST('ab' AS VARBYTE)" : "CAST('ab' AS BYTEA)";
+  for (const auto* target : {"SQL_BINARY", "SQL_VARBINARY", "SQL_LONGVARBINARY"}) {
+    SCOPED_TRACE(target);
+    const auto expression = "{fn CONVERT(" + std::string(binary) + "," + target + ")}";
+    const auto query = redshift ? "SELECT FROM_VARBYTE(" + expression + ", 'hex')"
+                               : "SELECT encode(" + expression + ", 'hex')";
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(query, "6162"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", nullptr));
+  }
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(" + std::string(binary) + ",SQL_VARCHAR)}",
+      redshift ? "ab" : "\\x6162"));
+  const std::array<std::array<const char*, 3>, 3> temporal{{
+      {{"DATE '2024-02-29'", "SQL_DATE", "2024-02-29"}},
+      {{"TIME '12:34:56'", "SQL_TIME", "12:34:56"}},
+      {{"TIMESTAMP '2024-02-29 12:34:56'", "SQL_TIMESTAMP", "2024-02-29 12:34:56"}}}};
+  for (const auto& [value, target, expected] : temporal) {
+    SCOPED_TRACE(target);
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(" + std::string(value) + "," + target + ")}", expected));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(" + std::string(value) + ",SQL_VARCHAR)}", expected));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", nullptr));
+  }
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL,SQL_BIT)}", nullptr));
+}
+
 TEST_F(NativeSqlIntegrationTest, TimestampAddEverySupportedUnitAndCalendarEdges) {
   const std::array<std::pair<const char*, const char*>, 8> cases{{
       {"SECOND", "2024-01-01 00:00:01"}, {"MINUTE", "2024-01-01 00:01:00"},
@@ -586,10 +709,19 @@ TEST_F(NativeSqlIntegrationTest, TimestampAddEverySupportedUnitAndCalendarEdges)
       {"WEEK", "2024-01-08 00:00:00"}, {"MONTH", "2024-02-01 00:00:00"},
       {"QUARTER", "2024-04-01 00:00:00"}, {"YEAR", "2025-01-01 00:00:00"}}};
   for (const auto& [unit, expected] : cases) {
+    SCOPED_TRACE(unit);
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
         ",1,{ts '2024-01-01 00:00:00'})}", expected));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
+        ",-1,TIMESTAMP '" + expected + "')}", "2024-01-01 00:00:00"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
+        ",NULL,TIMESTAMP '2024-01-01')}", nullptr));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) + ",1,NULL)}", nullptr));
   }
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_MONTH,1,{d '2024-01-31'})}", "2024-02-29 00:00:00"));
+  // AWS DATEADD documents YEAR vs MONTH leap-day behavior explicitly:
+  // https://docs.aws.amazon.com/redshift/latest/dg/r_DATEADD_function.html
+  // This is a native calendar difference, not cross-product result parity.
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_YEAR,1,{d '2024-02-29'})}",
       odbcpp::test::compiled_redshift_product() ? "2025-03-01 00:00:00" : "2025-02-28 00:00:00"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_MONTH,12,{d '2024-02-29'})}", "2025-02-28 00:00:00"));
@@ -602,6 +734,8 @@ TEST_F(NativeSqlIntegrationTest, TimestampDiffCountsSignedBoundariesRatherThanRo
     const auto prefix = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) + ",";
     ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + "{ts '2023-12-31 23:59:59.999999'},{ts '2024-01-01 00:00:00'})}", "1"));
     ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + "{ts '2024-01-01 00:00:00'},{ts '2023-12-31 23:59:59.999999'})}", "-1"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + "NULL,TIMESTAMP '2024-01-01')}", nullptr));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + "TIMESTAMP '2024-01-01',NULL)}", nullptr));
   }
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND,{ts '1969-12-31 23:59:59.1'},{ts '1969-12-31 23:59:59.9'})}", "0"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND,{ts '1969-12-31 23:59:59.9'},{ts '1970-01-01 00:00:00.1'})}", "1"));
@@ -622,6 +756,18 @@ TEST_F(NativeSqlIntegrationTest, TimestampEscapesNormalizeTimeDateAndNullOperand
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH,{d '2024-01-01'},NULL)}", nullptr));
 }
 
+TEST_F(NativeSqlIntegrationTest, TimestampEscapesUseWallClockFieldsAcrossDst) {
+  SQLCHAR timezone[] = "SET TIMEZONE TO 'America/New_York'";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, timezone, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  // ODBC timestamp operands carry local fields, not a timezone. Do not turn
+  // this into elapsed-instant arithmetic across the missing/repeated hour.
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_HOUR,1,TIMESTAMP '2024-03-10 01:30:00')}", "2024-03-10 02:30:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_HOUR,TIMESTAMP '2024-03-10 01:30:00',TIMESTAMP '2024-03-10 03:30:00')}", "2"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_HOUR,TIMESTAMP '2024-11-03 00:30:00',TIMESTAMP '2024-11-03 02:30:00')}", "2"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY,1,TIMESTAMP '2024-03-09 12:00:00')}", "2024-03-10 12:00:00"));
+}
+
 TEST_F(NativeSqlIntegrationTest, TimestampAddPreparedTypedTimePreservesParameterOrder) {
   SQLCHAR sql[] = "SELECT CASE WHEN {fn TIMESTAMPADD(SQL_TSI_DAY,?,?)} = "
       "CAST(CAST(CURRENT_DATE AS VARCHAR(10)) || ' 12:34:56' AS TIMESTAMP) + INTERVAL '2 days' THEN 'ok' ELSE 'bad' END";
@@ -640,9 +786,10 @@ TEST_F(NativeSqlIntegrationTest, TimestampAddPreparedTypedTimePreservesParameter
 TEST_F(NativeSqlIntegrationTest, TimestampCalendarDifferencePreservesWindowScopeAndEraBoundary) {
   for (const auto* unit : {"MONTH", "QUARTER", "YEAR"}) {
     SCOPED_TRACE(unit);
-    const auto query = "SELECT delta FROM (SELECT ts, {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
-        ",LAG(ts) OVER (ORDER BY ts),ts)} AS delta FROM (SELECT TIMESTAMP '2023-12-31' AS ts "
-        "UNION ALL SELECT TIMESTAMP '2024-01-01') AS events) AS differences WHERE delta IS NOT NULL";
+    // DELTA is reserved on Redshift; keep the window-expression assertion portable.
+    const auto query = "SELECT interval_count FROM (SELECT ts, {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
+        ",LAG(ts) OVER (ORDER BY ts),ts)} AS interval_count FROM (SELECT TIMESTAMP '2023-12-31' AS ts "
+        "UNION ALL SELECT TIMESTAMP '2024-01-01') AS events) AS differences WHERE interval_count IS NOT NULL";
     ASSERT_NO_FATAL_FAILURE(expect_scalar(query, "1"));
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) +
         ",MIN(ts),MAX(ts))} FROM (SELECT TIMESTAMP '2023-12-31' AS ts "
