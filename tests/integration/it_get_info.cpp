@@ -879,9 +879,11 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
 }
 
 TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
-  execute("CREATE TEMP TABLE odbcpp_get_info_capabilities "
-          "(id integer PRIMARY KEY, value integer)");
-  execute("INSERT INTO odbcpp_get_info_capabilities VALUES (1, 10), (2, 20)");
+  ASSERT_NO_FATAL_FAILURE(execute(
+      "CREATE TEMP TABLE odbcpp_get_info_capabilities "
+      "(id integer PRIMARY KEY, value integer)"));
+  ASSERT_NO_FATAL_FAILURE(execute(
+      "INSERT INTO odbcpp_get_info_capabilities VALUES (1, 10), (2, 20)"));
   SQLUINTEGER index_support = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_DDL_INDEX,
       &index_support, sizeof(index_support), nullptr));
@@ -890,9 +892,11 @@ TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
   ASSERT_EQ(redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_DI_CREATE_INDEX | SQL_DI_DROP_INDEX),
       index_support);
   if (!redshift_profile_) {
-    execute("CREATE INDEX odbcpp_get_info_capabilities_value_idx "
-            "ON odbcpp_get_info_capabilities (value)");
-    execute("DROP INDEX odbcpp_get_info_capabilities_value_idx");
+    ASSERT_NO_FATAL_FAILURE(execute(
+        "CREATE INDEX odbcpp_get_info_capabilities_value_idx "
+        "ON odbcpp_get_info_capabilities (value)"));
+    ASSERT_NO_FATAL_FAILURE(execute(
+        "DROP INDEX odbcpp_get_info_capabilities_value_idx"));
   } else {
     SQLHSTMT statement = SQL_NULL_HSTMT;
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
@@ -904,25 +908,28 @@ TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
                             "ON odbcpp_get_info_capabilities (value)";
     ASSERT_EQ(SQL_ERROR, SQLExecDirect(statement, unsupported, SQL_NTS));
     SQLCHAR state[6]{};
-    ASSERT_EQ(SQL_SUCCESS, ::SQLGetDiagRec(SQL_HANDLE_STMT, statement, 1,
+    ASSERT_EQ(SQL_SUCCESS, odbcpp::test::diag_rec(SQL_HANDLE_STMT, statement, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("42000", reinterpret_cast<const char*>(state));
     ASSERT_NO_FATAL_FAILURE(verify_predicate("1=1"));
   }
-  execute("SELECT count(*) AS total FROM odbcpp_get_info_capabilities "
-          "GROUP BY value ORDER BY value + 1");
-  execute("SELECT left_side.id FROM odbcpp_get_info_capabilities left_side "
-          "LEFT OUTER JOIN odbcpp_get_info_capabilities right_side "
-          "ON left_side.id = right_side.id");
-  execute("SELECT 1 UNION ALL SELECT 2");
+  ASSERT_NO_FATAL_FAILURE(execute(
+      "SELECT count(*) AS total FROM odbcpp_get_info_capabilities "
+      "GROUP BY value ORDER BY value + 1"));
+  ASSERT_NO_FATAL_FAILURE(execute(
+      "SELECT left_side.id FROM odbcpp_get_info_capabilities left_side "
+      "LEFT OUTER JOIN odbcpp_get_info_capabilities right_side "
+      "ON left_side.id = right_side.id"));
+  ASSERT_NO_FATAL_FAILURE(execute("SELECT 1 UNION ALL SELECT 2"));
   // Use a portable explicit escape character and fetch both the positive and
   // negative result. Preserve the existing PostgreSQL backslash-literal probe.
   ASSERT_NO_FATAL_FAILURE(verify_predicate(
       "'a_b' LIKE 'a!_b' ESCAPE '!' AND NOT ('axb' LIKE 'a!_b' ESCAPE '!')"));
   if (!redshift_profile_) {
-    execute("SELECT 'a_b' LIKE 'a\\_b' ESCAPE '\\'");
+    ASSERT_NO_FATAL_FAILURE(execute("SELECT 'a_b' LIKE 'a\\_b' ESCAPE '\\'"));
   }
-  execute("SELECT 1 AS id INTO TEMP TABLE odbcpp_get_info_select_into");
+  ASSERT_NO_FATAL_FAILURE(execute(
+      "SELECT 1 AS id INTO TEMP TABLE odbcpp_get_info_select_into"));
 }
 
 TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
