@@ -17624,6 +17624,36 @@ class SqlCapabilityMaskTest : public BackendContractTest {
   }
 };
 
+// SQL_BATCH_SUPPORT also covers prepared and parameterized explicit batches.
+// A simple-query sequence alone is insufficient for these capability claims.
+TEST_F(SqlCapabilityMaskTest, ExplicitBatchMasksStayWithheldForBothProfiles) {
+  for (const bool redshift : {false, true}) {
+    SCOPED_TRACE(redshift);
+    ASSERT_NO_FATAL_FAILURE(use_profile(redshift));
+    for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_BATCH_SUPPORT, SQL_BATCH_ROW_COUNT}) {
+      SQLUINTEGER mask = 97;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+      EXPECT_EQ(0u, mask) << type;
+    }
+  }
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftUnqualifiedSqlClaimsRemainWithheld) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  for (const auto type : std::array<SQLUSMALLINT, 11>{SQL_OJ_CAPABILITIES,
+      SQL_AGGREGATE_FUNCTIONS, SQL_DATETIME_LITERALS, SQL_SUBQUERIES,
+      SQL_SQL92_PREDICATES, SQL_SQL92_VALUE_EXPRESSIONS, SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+      SQL_SQL92_STRING_FUNCTIONS, SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
+      SQL_SQL92_DATETIME_FUNCTIONS, SQL_SQL92_RELATIONAL_JOIN_OPERATORS}) {
+    SQLUINTEGER mask = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(0u, mask) << type;
+  }
+  SQLCHAR joins[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_OUTER_JOINS, joins, sizeof(joins), nullptr));
+  EXPECT_STREQ("N", reinterpret_cast<const char*>(joins));
+}
+
 TEST_F(SqlCapabilityMaskTest, PostgreSqlExactMasksAndConsistency) {
   ASSERT_NO_FATAL_FAILURE(use_profile(false));
   ASSERT_NO_FATAL_FAILURE(exact_masks(false));
