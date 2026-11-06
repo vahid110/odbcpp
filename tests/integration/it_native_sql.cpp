@@ -709,9 +709,9 @@ TEST_F(NativeSqlIntegrationTest, TimestampAddEverySupportedUnitAndCalendarEdges)
       {"WEEK", "2024-01-08 00:00:00"}, {"MONTH", "2024-02-01 00:00:00"},
       {"QUARTER", "2024-04-01 00:00:00"}, {"YEAR", "2025-01-01 00:00:00"}}};
   for (const auto& [unit, expected] : cases) {
+    SCOPED_TRACE(unit);
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
         ",1,{ts '2024-01-01 00:00:00'})}", expected));
-    SCOPED_TRACE(unit);
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
         ",-1,TIMESTAMP '" + expected + "')}", "2024-01-01 00:00:00"));
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) +
