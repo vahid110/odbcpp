@@ -6,6 +6,7 @@
 
 #ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 #include "odbc/odbc_api.h"
+#include "odbc/odbc_handles.h"
 #include "core/database/database_factory.h"
 #endif
 #include "tests/test_connection_config.h"
@@ -1350,6 +1351,7 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
   ASSERT_NO_FATAL_FAILURE(execute("DROP TABLE odbcpp_scalar_capabilities"));
 }
 
+#ifndef ODBCPP_TEST_VIA_DRIVER_MANAGER
 TEST_F(GetInfoIntegrationTest, ExecuteAssertionFailureReleasesItsStatement) {
   ::testing::TestPartResultArray failures;
   {
@@ -1360,9 +1362,10 @@ TEST_F(GetInfoIntegrationTest, ExecuteAssertionFailureReleasesItsStatement) {
   }
   ASSERT_EQ(1, failures.size());
   ASSERT_TRUE(failures.GetTestPartResult(0).fatally_failed());
-  // A failed helper assertion must release its child statement. Disconnect
-  // does not free child handles; freeing the connection proves none leaked.
-  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
-  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
-  connection_ = SQL_NULL_HDBC;
+  // Successful disconnect also unregisters children, so inspect ownership
+  // before disconnect. On a timed-out connection SQLDisconnect instead returns
+  // 08003 and cannot hide a helper leak. This is a direct-carrier fixture check,
+  // not a claim about Driver Manager-owned handles.
+  EXPECT_FALSE(rs::odbc::HandleRegistry::instance().has_children(connection_));
 }
+#endif
