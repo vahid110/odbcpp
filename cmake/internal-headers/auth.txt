@@ -1,5 +1,6 @@
 odbcpp/auth/auth_core.h
 odbcpp/auth/temporary_db_validity.h
+odbcpp/auth/trusted_clock_sample.h
 odbcpp/util/deadline.h
 odbcpp/auth/issuer_timestamp.h
 odbcpp/auth/aws_db_response_fields.h

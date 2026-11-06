@@ -23,7 +23,8 @@ authority beyond them.
 ## Architecture
 
 - Follow `ARCHITECTURE.md` (until it exists: `SDK_ARCHITECTURE.md` and the
-  2026-10-28 architecture review) and `SECURITY_MODEL.md`. Provider-neutral
+  2026-10-28 architecture review,
+  `docs/adr/reviews/2026-10-28-architecture-review.md`) and `SECURITY_MODEL.md`. Provider-neutral
   contracts and reusable transport, security, deadline and lifecycle code
   live in the SDK; wire protocol, framing and backend state stay in the
   backend; ODBC handles, diagnostics and keyword spelling stay in the
@@ -55,9 +56,11 @@ from a required run (dropping its `unit` label, `WILL_FAIL`, `DISABLED`, a
 new skip, or a no-op sanitizer option) is blocking unless the PR explains
 it.
 
-The reviewer, not the author, assigns the high-risk labels. PRs labelled
-`security`, `auth`, `protocol`, `transactions` or `process` also get a second,
-independent red-team reviewer: it tries to break the change
+The reviewer, not the author, assigns the high-risk labels. Every PR also
+gets a second, independent red-team reviewer unless it changes only
+`README.md` and `CHANGELOG.md`. Any PR carrying a high-risk label
+(`security`, `auth`, `protocol`, `transactions`, `process`) gets it too. The
+red-team reviewer tries to break the change
 (hostile input, misuse, races, downgrade, resource exhaustion, bypassing the
 new checks), does not see the first review, and reports the same way.
 

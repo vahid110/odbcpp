@@ -1835,4 +1835,103 @@ BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
   return resolved;
 }
 
+BackendResult<std::vector<ResultColumnOrigin>> PgDatabaseConnection::resolve_column_origins_impl(
+    std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline deadline) {
+  const auto snapshot = SessionSnapshot{session_state(),
+      session_state() == SessionState::Disconnected ? SessionDisposition::Retire :
+      session_state() == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+  std::vector<ResultColumnOrigin> origins(provenance.size());
+  std::vector<std::uint32_t> distinct_table_oids;
+  for (const auto& item : provenance) {
+    if (item.table_oid != 0) {
+      distinct_table_oids.push_back(item.table_oid);
+    }
+  }
+  if (distinct_table_oids.empty()) {
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins), snapshot};
+  }
+  std::sort(distinct_table_oids.begin(), distinct_table_oids.end());
+  distinct_table_oids.erase(
+      std::unique(distinct_table_oids.begin(), distinct_table_oids.end()),
+      distinct_table_oids.end());
+
+  const auto cancellation = cancellation_resolver_endpoint();
+  if (cancellation && !cancellation->enter_resolver()) {
+    return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins), snapshot};
+  }
+  struct ResolverPhase {
+    std::shared_ptr<SessionCancellationWire> endpoint;
+    ~ResolverPhase() { if (endpoint) endpoint->leave_resolver(); }
+  } phase{cancellation};
+
+  std::string query =
+      "SELECT c.oid, current_database()::text, n.nspname::text, c.relname::text, "
+      "a.attnum, a.attname::text "
+      "FROM pg_catalog.pg_class c "
+      "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+      "LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+      "WHERE c.oid IN (";
+  for (std::size_t i = 0; i < distinct_table_oids.size(); ++i) {
+    if (i != 0) {
+      query += ',';
+    }
+    query += std::to_string(distinct_table_oids[i]);
+  }
+  query += ") ORDER BY c.oid, a.attnum";
+
+  auto catalog_result = execute_query(query, deadline);
+  if (catalog_result.has_error()) {
+    auto error = std::move(catalog_result.backend_error());
+    error.operation = BackendOperation::Describe;
+    return error;
+  }
+
+  const auto parse_number = [](const std::string& value, auto& number) {
+    const auto [end, error] = std::from_chars(
+        value.data(), value.data() + value.size(), number);
+    return error == std::errc{} && end == value.data() + value.size();
+  };
+
+  std::map<std::uint32_t, ResultColumnOrigin> table_map;
+  std::map<std::pair<std::uint32_t, std::int16_t>, ResultColumnOrigin> table_col_map;
+
+  for (const auto& row : catalog_result->rows) {
+    if (row.size() < 4 || !row[0] || !row[1] || !row[2] || !row[3]) {
+      continue;
+    }
+    std::uint32_t oid = 0;
+    if (!parse_number(*row[0], oid)) {
+      continue;
+    }
+    table_map.try_emplace(oid, ResultColumnOrigin{
+        *row[1], *row[2], *row[3], *row[3], ""});
+
+    if (row.size() >= 6 && row[4] && row[5]) {
+      std::int16_t attnum = 0;
+      if (parse_number(*row[4], attnum)) {
+        table_col_map.emplace(std::make_pair(oid, attnum), ResultColumnOrigin{
+            *row[1], *row[2], *row[3], *row[3], *row[5]});
+      }
+    }
+  }
+
+  for (std::size_t i = 0; i < provenance.size(); ++i) {
+    const auto& item = provenance[i];
+    if (item.table_oid == 0) {
+      continue;
+    }
+    auto col_it = table_col_map.find({item.table_oid, item.column_attribute_number});
+    if (col_it != table_col_map.end()) {
+      origins[i] = col_it->second;
+    } else {
+      auto tbl_it = table_map.find(item.table_oid);
+      if (tbl_it != table_map.end()) {
+        origins[i] = tbl_it->second;
+      }
+    }
+  }
+
+  return BackendResult<std::vector<ResultColumnOrigin>>{std::move(origins), snapshot};
+}
+
 } // namespace rs::core::database::postgres

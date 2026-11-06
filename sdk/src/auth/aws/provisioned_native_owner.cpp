@@ -59,10 +59,10 @@ std::variant<Context,Failure> Context::create(std::string a,std::string r,std::s
    !name(c)||!name(d)||!name(u)||!name(e)||!name(s)||!name(g)) return Failure::InvalidContext;
  return Context{std::move(a),std::move(r),std::move(c),std::move(d),std::move(u),std::move(e),std::move(s),std::move(g),false};
 }
-FrozenNamedSource::FrozenNamedSource(Aws::Auth::AWSCredentials value,std::string identity,std::string generation,std::optional<rs::util::Deadline> expires)
- :value_(std::move(value)),identity_(std::move(identity)),generation_(std::move(generation)),expires(expires){}
+FrozenNamedSource::FrozenNamedSource(Aws::Auth::AWSCredentials value,std::string identity,std::string generation,std::optional<rs::util::Deadline> expires,std::shared_ptr<TrustedClockGuard> guard)
+ :value_(std::move(value)),identity_(std::move(identity)),generation_(std::move(generation)),expires(expires),clock_guard(std::move(guard)){}
 FrozenNamedSource::FrozenNamedSource(FrozenNamedSource&& other) noexcept
- :value_(std::move(other.value_)),identity_(std::move(other.identity_)),generation_(std::move(other.generation_)),owns_(std::exchange(other.owns_,false)),expires(other.expires){other.value_.reset();}
+ :value_(std::move(other.value_)),identity_(std::move(other.identity_)),generation_(std::move(other.generation_)),owns_(std::exchange(other.owns_,false)),expires(other.expires),clock_guard(std::move(other.clock_guard)){other.value_.reset();}
 namespace detail {
 bool take_sdk_scope() noexcept {return !occupied.exchange(true);}
 void release_sdk_scope() noexcept {occupied.store(false);}
@@ -74,9 +74,12 @@ TransportBoundaryLease State::lease(){auto result=operation->transport_lease(req
 bool State::check() noexcept {
  if(creator!=std::this_thread::get_id())std::terminate();
  if(!dispatch)return false;
+ if(source.expires && (rs::util::Clock::now() >= *source.expires || !source.clock_guard || !source.clock_guard->valid())){reject();return false;}
  if(runtime && !runtime_usable(runtime)){reject();return false;}
  if(initialized && (!bootstrap || !*bootstrap || Aws::GetDefaultClientBootstrap()!=bootstrap.get())){reject();return false;}
  const auto result=dispatch->check();if(auto* f=std::get_if<BoundaryFailure>(&result))metrics.boundary=*f;
+ // Observer callbacks may take time or cross suspend. Recheck after them too.
+ if(source.expires && (rs::util::Clock::now() >= *source.expires || !source.clock_guard || !source.clock_guard->valid())){reject();return false;}
  return std::holds_alternative<std::monostate>(result);
 }
 void State::reject() noexcept {
@@ -112,7 +115,7 @@ void State::cleanup() noexcept {
 State::~State(){cleanup();}
 class FrozenProvider final:public Aws::Auth::AWSCredentialsProvider {
  public:explicit FrozenProvider(State& s):state_(s){}
- Aws::Auth::AWSCredentials GetAWSCredentials()override{++state_.metrics.frozen_provider_reads;return state_.source_value();}
+ Aws::Auth::AWSCredentials GetAWSCredentials()override{++state_.metrics.frozen_provider_reads;if(!state_.check())return {};return state_.source_value();}
  private:State& state_;
 };
 Aws::Auth::AWSCredentials State::source_value()const{if(!source_ready||!source.value_)std::terminate();return *source.value_;}
@@ -186,7 +189,7 @@ CreateOutcome NativeOwner::create(Context c,Request r,std::shared_ptr<ResponseOb
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
 CreateOutcome NativeOwner::create_from_named_source(Context c,Request r,std::shared_ptr<ResponseObservationSource> read,
- std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,ProtectedNamedSourceSpec spec){
+ std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,ProtectedNamedSourceSpec spec,std::shared_ptr<TrustedUtcSource> clock){
  CreateOutcome out;
  try{
   // Establish the bound operation (full admission: generation identity, monotonic
@@ -199,7 +202,8 @@ CreateOutcome NativeOwner::create_from_named_source(Context c,Request r,std::sha
   auto op_result=ResponseOperation::begin(r,combined,gen);
   if(!std::holds_alternative<std::unique_ptr<ResponseOperation>>(op_result)){out.failure=Failure::Refused;return out;}
   auto op=std::get<std::unique_ptr<ResponseOperation>>(std::move(op_result));
-  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel);Failure failure=Failure::LocalFailure;
+  if(!clock)clock=system_trusted_utc_source();
+  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel,clock.get());Failure failure=Failure::LocalFailure;
   if(resolved){
    auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(*resolved),{},failure,{},&out.counts,std::move(op));
    if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
@@ -210,7 +214,7 @@ CreateOutcome NativeOwner::create_from_named_source(Context c,Request r,std::sha
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
 CreateOutcome FixedFixture::create_named(ProtectedNamedSourceSpec spec,std::shared_ptr<ResponseObservationSource> read,
- std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,rs::util::Deadline deadline){
+ std::shared_ptr<ResponseSourceGeneration> gen,std::shared_ptr<WorkerCancellation> cancel,rs::util::Deadline deadline,std::shared_ptr<TrustedUtcSource> clock){
  CreateOutcome out;const char* marker=::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
  if(!marker||std::string_view(marker)!="synthetic-fake-http-only"){out.failure=Failure::Unavailable;return out;}
  try{auto c=context();auto r=request(c,deadline);
@@ -220,7 +224,7 @@ CreateOutcome FixedFixture::create_named(ProtectedNamedSourceSpec spec,std::shar
   auto op_result=ResponseOperation::begin(r,combined,gen);
   if(!std::holds_alternative<std::unique_ptr<ResponseOperation>>(op_result)){out.failure=Failure::Refused;return out;}
   auto op=std::get<std::unique_ptr<ResponseOperation>>(std::move(op_result));
-  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel);Failure failure=Failure::LocalFailure;
+  auto resolved=detail::NamedSourceAcquisitionOwner::resolve(spec,c,r,cancel,clock.get());Failure failure=Failure::LocalFailure;
   if(resolved){
    auto state=prepare(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(*resolved),FixedCase::Happy,failure,{},&out.counts,std::move(op));
    if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;

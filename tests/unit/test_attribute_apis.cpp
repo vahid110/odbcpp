@@ -45,10 +45,12 @@ class DriverNameMetadataProvider final : public rs::core::database::IBackendProv
 public:
   explicit DriverNameMetadataProvider(
       std::size_t& queries,
-      rs::core::database::TransactionCapabilities transactions = {})
+      rs::core::database::TransactionCapabilities transactions = {},
+      rs::core::database::postgres::PgCatalogProfile profile =
+          rs::core::database::postgres::PgCatalogProfile::PostgreSQL)
       : queries_(queries),
         profile_({"metadata", "MetadataDB", "ODBCPP"},
-                 {"fixture", 5439, std::nullopt, false}),
+                 {"fixture", 5439, std::nullopt, false}, std::nullopt, profile),
         transactions_(transactions) {}
   const rs::core::database::BackendIdentity& identity() const noexcept override { return profile_.identity(); }
   const rs::core::database::BackendConnectionDefaults& connection_defaults() const noexcept override { return profile_.connection_defaults(); }
@@ -137,6 +139,82 @@ protected:
   SQLHDBC connection_{nullptr};
   SQLHSTMT statement_{nullptr};
 };
+
+TEST_F(AttributeApisTest, ConversionAndTimestampMasksMatchTheExplicitProductContract) {
+  using namespace rs::core::database;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement_));
+  statement_ = nullptr;
+  constexpr SQLUINTEGER characters = SQL_CVT_CHAR | SQL_CVT_VARCHAR | SQL_CVT_LONGVARCHAR |
+      SQL_CVT_WCHAR | SQL_CVT_WVARCHAR | SQL_CVT_WLONGVARCHAR;
+  constexpr SQLUINTEGER numeric = SQL_CVT_SMALLINT | SQL_CVT_INTEGER | SQL_CVT_BIGINT |
+      SQL_CVT_REAL | SQL_CVT_FLOAT | SQL_CVT_DOUBLE | SQL_CVT_NUMERIC | SQL_CVT_DECIMAL;
+  constexpr SQLUINTEGER binary = SQL_CVT_BINARY | SQL_CVT_VARBINARY | SQL_CVT_LONGVARBINARY;
+  constexpr SQLUINTEGER add = SQL_FN_TSI_SECOND | SQL_FN_TSI_MINUTE | SQL_FN_TSI_HOUR |
+      SQL_FN_TSI_DAY | SQL_FN_TSI_WEEK | SQL_FN_TSI_MONTH | SQL_FN_TSI_QUARTER | SQL_FN_TSI_YEAR;
+  for (const auto profile : {postgres::PgCatalogProfile::PostgreSQL, postgres::PgCatalogProfile::Redshift}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+    connection_ = nullptr;
+    const bool redshift = profile == postgres::PgCatalogProfile::Redshift;
+    auto provider = std::make_shared<DriverNameMetadataProvider>(
+        metadata_queries_, TransactionCapabilities{}, profile);
+    auto connection = std::make_unique<rs::odbc::ODBCConnection>(nullptr, provider);
+    connection_ = reinterpret_cast<SQLHDBC>(connection.get());
+    rs::odbc::HandleRegistry::instance().register_handle(connection_, std::move(connection), environment_);
+    SQLCHAR input[] = "SERVER=fixture;DATABASE=fixture;UID=fixture;SSL=0";
+    ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(connection_, nullptr, input, SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+    SQLUINTEGER character_targets = characters | numeric | binary | SQL_CVT_DATE | SQL_CVT_TIME | SQL_CVT_TIMESTAMP;
+    if (!redshift) {
+      character_targets |= SQL_CVT_BIT;
+#ifdef SQL_CVT_GUID
+      character_targets |= SQL_CVT_GUID;
+#endif
+    }
+    // Redshift reports none of these until its live acceptance passes (#144):
+    // the translations exist, but no Redshift statement behind them has run.
+    const auto pg_only = [&](SQLUINTEGER value) -> SQLUINTEGER { return redshift ? 0u : value; };
+    const std::pair<SQLUSMALLINT, SQLUINTEGER> cases[]{
+        {SQL_CONVERT_FUNCTIONS, pg_only(SQL_FN_CVT_CONVERT)},
+        {SQL_CONVERT_SMALLINT, pg_only(numeric | characters)}, {SQL_CONVERT_INTEGER, pg_only(numeric | characters)},
+        {SQL_CONVERT_BIGINT, pg_only(numeric | characters)}, {SQL_CONVERT_REAL, pg_only(numeric | characters)},
+        {SQL_CONVERT_FLOAT, pg_only(numeric | characters)}, {SQL_CONVERT_DOUBLE, pg_only(numeric | characters)},
+        {SQL_CONVERT_NUMERIC, pg_only(numeric | characters)}, {SQL_CONVERT_DECIMAL, pg_only(numeric | characters)},
+        {SQL_CONVERT_BIT, pg_only(SQL_CVT_BIT | (redshift ? 0u : characters))},
+        {SQL_CONVERT_CHAR, pg_only(character_targets)}, {SQL_CONVERT_VARCHAR, pg_only(character_targets)},
+        {SQL_CONVERT_LONGVARCHAR, pg_only(character_targets)}, {SQL_CONVERT_WCHAR, pg_only(character_targets)},
+        {SQL_CONVERT_WVARCHAR, pg_only(character_targets)}, {SQL_CONVERT_WLONGVARCHAR, pg_only(character_targets)},
+        {SQL_CONVERT_BINARY, pg_only(binary | characters)}, {SQL_CONVERT_VARBINARY, pg_only(binary | characters)},
+        {SQL_CONVERT_LONGVARBINARY, pg_only(binary | characters)},
+        {SQL_CONVERT_DATE, pg_only(SQL_CVT_DATE | SQL_CVT_TIMESTAMP | characters)},
+        {SQL_CONVERT_TIME, pg_only(SQL_CVT_TIME | characters)},
+        {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
+        {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
+        {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
+        {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+            (redshift ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
+                SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR |
+                SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND :
+                SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+#if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
+        {SQL_CONVERT_GUID, pg_only(redshift ? 0u : SQL_CVT_GUID | characters)},
+#endif
+    };
+    for (const auto& [type, expected] : cases) {
+      for (const bool wide : {false, true}) {
+        SQLUINTEGER actual = 0xfefefefe;
+        SQLSMALLINT length = -1;
+        const auto rc = wide
+            ? SQLGetInfoW(connection_, type, &actual, sizeof(actual), &length)
+            : SQLGetInfo(connection_, type, &actual, sizeof(actual), &length);
+        ASSERT_EQ(SQL_SUCCESS, rc) << type;
+        EXPECT_EQ(expected, actual) << type << " redshift=" << redshift << " wide=" << wide;
+        EXPECT_EQ(sizeof(actual), static_cast<std::size_t>(length));
+      }
+    }
+    EXPECT_EQ(0u, metadata_queries_);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+  }
+}
 
 TEST_F(AttributeApisTest, StoresLoginTimeout) {
   SQLUINTEGER value = 0;

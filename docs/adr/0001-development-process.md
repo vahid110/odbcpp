@@ -41,9 +41,12 @@ replace hand-made evidence and custom ceremony.
 4. **Independent review.** The author attaches the evidence to the PR (see
    `AGENTS.md`). Every PR gets a reviewer agent that did not write it; it reads
    the code and the evidence but does not build or run anything, and treats an
-   unsupported claim as a finding. PRs labelled `security`, `auth`, `protocol`,
-   `transactions` or `process` also get a second, independent red-team
+   unsupported claim as a finding. Every PR that changes more than
+   `README.md` and `CHANGELOG.md`, and every PR labelled `security`, `auth`, `protocol`,
+   `transactions` or `process`, also gets a second, independent red-team
    reviewer that tries to break the change and does not see the first review.
+   (Default since #204: a prompt injection that keeps the first reviewer from
+   adding a label must not also skip the second.)
    Findings are posted on the PR; the author fixes and pushes, and the
    reviewers review again, until every reviewer approves. Approval covers one
    commit: any new push needs a new review. Agents merge their own PRs once
@@ -124,6 +127,10 @@ replace hand-made evidence and custom ceremony.
     `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `.agents/`,
     `.claude/`, `.codex/`, also as symlinks, which must point at owned
     paths; the review gate also matches case variants),
+    the architecture documents agents must follow (`ARCHITECTURE.md`,
+    `SDK_ARCHITECTURE.md`, `SECURITY_MODEL.md`, `docs/adr/reviews/`, and
+    the documents `SDK_ARCHITECTURE.md` defers to: `CONNECTION_POOLING.md`,
+    `CRYPTO_PROVIDER_PLAN.md`, `AUTH_LIBRARY_ARCHITECTURE.md`),
     `tools/`, `tests/security/`, the live suite (`cmake/LiveSuite.cmake`) and
     `DEVELOPMENT_WORKFLOW.md` while its live rules apply. Release tags
     (`v*`) can be created only by the owner, so nothing reaches users without

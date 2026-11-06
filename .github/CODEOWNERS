@@ -24,3 +24,11 @@ CLAUDE.local.md                   @vahid110
 /tests/security/                  @vahid110
 /cmake/LiveSuite.cmake            @vahid110
 /DEVELOPMENT_WORKFLOW.md          @vahid110
+# Architecture documents AGENTS.md binds agents to (#216).
+/ARCHITECTURE.md                  @vahid110
+/SDK_ARCHITECTURE.md              @vahid110
+/SECURITY_MODEL.md                @vahid110
+# Bound in by SDK_ARCHITECTURE.md (A7 pooling, A10 crypto, auth direction).
+/CONNECTION_POOLING.md            @vahid110
+/CRYPTO_PROVIDER_PLAN.md          @vahid110
+/AUTH_LIBRARY_ARCHITECTURE.md     @vahid110

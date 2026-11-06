@@ -334,6 +334,72 @@ namespace {
     return index < N ? mapping[index] : mapping[0];
   }
 
+  std::optional<rs::core::database::SqlConversionType> conversion_source(SQLUSMALLINT info) {
+    using Type = rs::core::database::SqlConversionType;
+    switch (info) {
+      case SQL_CONVERT_SMALLINT: return Type::SmallInteger;
+      case SQL_CONVERT_INTEGER: return Type::Integer;
+      case SQL_CONVERT_BIGINT: return Type::BigInteger;
+      case SQL_CONVERT_REAL: return Type::Real;
+      case SQL_CONVERT_FLOAT:
+      case SQL_CONVERT_DOUBLE: return Type::Double;
+      case SQL_CONVERT_NUMERIC:
+      case SQL_CONVERT_DECIMAL: return Type::Numeric;
+      case SQL_CONVERT_BIT: return Type::Boolean;
+      case SQL_CONVERT_CHAR:
+      case SQL_CONVERT_VARCHAR:
+      case SQL_CONVERT_LONGVARCHAR:
+      case SQL_CONVERT_WCHAR:
+      case SQL_CONVERT_WVARCHAR:
+      case SQL_CONVERT_WLONGVARCHAR: return Type::Character;
+      case SQL_CONVERT_BINARY:
+      case SQL_CONVERT_VARBINARY:
+      case SQL_CONVERT_LONGVARBINARY: return Type::Binary;
+      case SQL_CONVERT_DATE: return Type::Date;
+      case SQL_CONVERT_TIME: return Type::Time;
+      case SQL_CONVERT_TIMESTAMP: return Type::Timestamp;
+#ifdef SQL_CONVERT_GUID
+      case SQL_CONVERT_GUID: return Type::Uuid;
+#endif
+      default: return std::nullopt;
+    }
+  }
+
+  SQLUINTEGER conversion_target_mask(std::uint32_t targets) {
+    using Type = rs::core::database::SqlConversionType;
+    const std::pair<Type, SQLUINTEGER> mapping[]{
+        {Type::SmallInteger, SQL_CVT_SMALLINT}, {Type::Integer, SQL_CVT_INTEGER},
+        {Type::BigInteger, SQL_CVT_BIGINT}, {Type::Real, SQL_CVT_REAL},
+        {Type::Double, SQL_CVT_FLOAT | SQL_CVT_DOUBLE}, {Type::Numeric, SQL_CVT_NUMERIC | SQL_CVT_DECIMAL},
+        {Type::Boolean, SQL_CVT_BIT},
+        {Type::Character, SQL_CVT_CHAR | SQL_CVT_VARCHAR | SQL_CVT_LONGVARCHAR | SQL_CVT_WCHAR | SQL_CVT_WVARCHAR | SQL_CVT_WLONGVARCHAR},
+        {Type::Binary, SQL_CVT_BINARY | SQL_CVT_VARBINARY | SQL_CVT_LONGVARBINARY},
+        {Type::Date, SQL_CVT_DATE}, {Type::Time, SQL_CVT_TIME}, {Type::Timestamp, SQL_CVT_TIMESTAMP},
+#ifdef SQL_CVT_GUID
+        {Type::Uuid, SQL_CVT_GUID},
+#endif
+    };
+    SQLUINTEGER result = 0;
+    for (const auto& [type, mask] : mapping) {
+      if ((targets & rs::core::database::sql_conversion_bit(type)) != 0) result |= mask;
+    }
+    return result;
+  }
+
+  SQLUINTEGER timestamp_interval_mask(std::uint16_t units) {
+    using Unit = rs::core::database::SqlIntervalUnit;
+    const std::pair<Unit, SQLUINTEGER> mapping[]{
+        {Unit::Nanosecond, SQL_FN_TSI_FRAC_SECOND}, {Unit::Second, SQL_FN_TSI_SECOND},
+        {Unit::Minute, SQL_FN_TSI_MINUTE}, {Unit::Hour, SQL_FN_TSI_HOUR}, {Unit::Day, SQL_FN_TSI_DAY},
+        {Unit::Week, SQL_FN_TSI_WEEK}, {Unit::Month, SQL_FN_TSI_MONTH}, {Unit::Quarter, SQL_FN_TSI_QUARTER},
+        {Unit::Year, SQL_FN_TSI_YEAR}};
+    SQLUINTEGER result = 0;
+    for (const auto& [unit, mask] : mapping) {
+      if ((units & rs::core::database::sql_interval_bit(unit)) != 0) result |= mask;
+    }
+    return result;
+  }
+
   std::optional<std::string_view> string_info_value(
       SQLUSMALLINT info_type,
       const rs::core::database::BackendCapabilities& backend,
@@ -1691,6 +1757,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   };
   
   const auto backend = conn->capabilities();
+  if (const auto source = conversion_source(info_type)) {
+    return write_uinteger(conversion_target_mask(backend.conversions.from(*source)));
+  }
   switch (info_type) {
     case SQL_ACTIVE_ENVIRONMENTS:
     case SQL_MAX_CONCURRENT_ACTIVITIES:
@@ -1792,6 +1861,13 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
           (backend.sql.join_unordered_columns ? SQL_OJ_NOT_ORDERED : 0) |
           (backend.sql.join_inner_with_outer ? SQL_OJ_INNER : 0) |
           (backend.sql.join_all_comparisons ? SQL_OJ_ALL_COMPARISON_OPS : 0));
+    case SQL_CONVERT_FUNCTIONS:
+      return write_uinteger(std::any_of(backend.conversions.targets.begin(), backend.conversions.targets.end(),
+          [](auto targets) { return targets != 0; }) ? SQL_FN_CVT_CONVERT : 0);
+    case SQL_TIMEDATE_ADD_INTERVALS:
+      return write_uinteger(timestamp_interval_mask(backend.timestamp_add_intervals));
+    case SQL_TIMEDATE_DIFF_INTERVALS:
+      return write_uinteger(timestamp_interval_mask(backend.timestamp_diff_intervals));
     case SQL_AGGREGATE_FUNCTIONS:
       return write_uinteger(
           (backend.sql.aggregate_average ? SQL_AF_AVG : 0) |
@@ -1823,7 +1899,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
           (backend.sql.scalar_yearday ? SQL_FN_TD_DAYOFYEAR : 0) |
           (backend.sql.scalar_hour ? SQL_FN_TD_HOUR : 0) |
           (backend.sql.scalar_minute ? SQL_FN_TD_MINUTE : 0) |
-          (backend.sql.scalar_second ? SQL_FN_TD_SECOND : 0));
+          (backend.sql.scalar_second ? SQL_FN_TD_SECOND : 0) |
+          (backend.timestamp_add_intervals ? SQL_FN_TD_TIMESTAMPADD : 0) |
+          (backend.timestamp_diff_intervals ? SQL_FN_TD_TIMESTAMPDIFF : 0));
     case SQL_SYSTEM_FUNCTIONS:
       return write_uinteger(
           (backend.sql.scalar_if_null ? SQL_FN_SYS_IFNULL : 0));
@@ -1902,34 +1980,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_CREATE_COLLATION:
     case SQL_CREATE_DOMAIN:
     case SQL_CREATE_TRANSLATION:
-    case SQL_CONVERT_FUNCTIONS:
-    case SQL_CONVERT_BIGINT:
-    case SQL_CONVERT_BINARY:
-    case SQL_CONVERT_BIT:
-    case SQL_CONVERT_CHAR:
-    case SQL_CONVERT_DATE:
-    case SQL_CONVERT_DECIMAL:
-    case SQL_CONVERT_DOUBLE:
-    case SQL_CONVERT_FLOAT:
-    case SQL_CONVERT_INTEGER:
     case SQL_CONVERT_INTERVAL_DAY_TIME:
     case SQL_CONVERT_INTERVAL_YEAR_MONTH:
-    case SQL_CONVERT_LONGVARBINARY:
-    case SQL_CONVERT_LONGVARCHAR:
-    case SQL_CONVERT_NUMERIC:
-    case SQL_CONVERT_REAL:
-    case SQL_CONVERT_SMALLINT:
-    case SQL_CONVERT_TIME:
-    case SQL_CONVERT_TIMESTAMP:
     case SQL_CONVERT_TINYINT:
-    case SQL_CONVERT_VARBINARY:
-    case SQL_CONVERT_VARCHAR:
-    case SQL_CONVERT_WCHAR:
-    case SQL_CONVERT_WLONGVARCHAR:
-    case SQL_CONVERT_WVARCHAR:
-#ifdef SQL_CONVERT_GUID
-    case SQL_CONVERT_GUID:
-#endif
     case SQL_DYNAMIC_CURSOR_ATTRIBUTES1:
     case SQL_DYNAMIC_CURSOR_ATTRIBUTES2:
     case SQL_DROP_ASSERTION:
@@ -1951,8 +2004,6 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_SQL92_GRANT:
     case SQL_SQL92_REVOKE:
     case SQL_STATIC_SENSITIVITY:
-    case SQL_TIMEDATE_ADD_INTERVALS:
-    case SQL_TIMEDATE_DIFF_INTERVALS:
       return write_uinteger(0);
     case SQL_CREATE_TABLE:
       return write_uinteger(static_cast<SQLUINTEGER>(

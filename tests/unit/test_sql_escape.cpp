@@ -1,10 +1,175 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <string>
+#include <string_view>
+#include <tuple>
+
 #include "core/database/postgres/pg_sql_dialect.h"
 #include "core/database/postgres/pg_backend_provider.h"
 
 using rs::core::database::SqlTranslationError;
 using rs::core::database::postgres::translate_odbc_sql;
+
+TEST(SqlConvertEscapeTest, NumericTemporalAndBooleanTargetsUseNativeCasts) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  struct Target { const char* odbc; const char* pg; const char* redshift; };
+  const std::array targets{
+      Target{"SQL_SMALLINT", "SMALLINT", "SMALLINT"},
+      Target{"SQL_INTEGER", "INTEGER", "INTEGER"},
+      Target{"SQL_BIGINT", "BIGINT", "BIGINT"},
+      Target{"SQL_REAL", "REAL", "REAL"},
+      Target{"SQL_FLOAT", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_DOUBLE", "DOUBLE PRECISION", "DOUBLE PRECISION"},
+      Target{"SQL_NUMERIC", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_DECIMAL", "NUMERIC", "DECIMAL(38,18)"},
+      Target{"SQL_BIT", "BOOLEAN", "BOOLEAN"},
+      Target{"SQL_DATE", "DATE", "DATE"},
+      Target{"SQL_TIME", "TIME", "TIME"},
+      Target{"SQL_TIMESTAMP", "TIMESTAMP", "TIMESTAMP"}};
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto& target : targets) {
+      const auto sql = "SELECT {fn CONVERT(?, " + std::string(target.odbc) + ")}";
+      const auto result = translate_odbc_sql(sql, profile);
+      ASSERT_TRUE(result) << result.message << sql;
+      EXPECT_EQ("SELECT CAST(? AS " + std::string(
+          profile == SqlDialectProfile::PostgreSql ? target.pg : target.redshift) + ")", result.sql);
+      const auto null_result = translate_odbc_sql(
+          "SELECT {fn CONVERT(NULL, " + std::string(target.odbc) + ")}", profile);
+      ASSERT_TRUE(null_result) << null_result.message;
+      EXPECT_EQ("SELECT CAST(NULL AS " + std::string(
+          profile == SqlDialectProfile::PostgreSql ? target.pg : target.redshift) + ")", null_result.sql);
+    }
+  }
+}
+
+TEST(SqlConvertEscapeTest, NestedCallsAndLexicalBodiesPreserveEachExpressionOnce) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    EXPECT_EQ("SELECT CAST(COALESCE(?, CAST(? AS INTEGER))-- value\n AS BIGINT)",
+        translate_odbc_sql("SELECT {fn cOnVeRt /* call */ ({fn IFNULL(?, {fn CONVERT(?, SQL_INTEGER)})}-- value\n, /* type */ sql_bigint /* end */)}", profile).sql);
+    EXPECT_EQ("SELECT CAST(COALESCE($tag$a,b){}$tag$, E'a\\'b,c', \"name,comma\") AS INTEGER)",
+        translate_odbc_sql("SELECT {fn CONVERT(COALESCE($tag$a,b){}$tag$, E'a\\'b,c', \"name,comma\"), SQL_INTEGER)}", profile).sql);
+    EXPECT_EQ("SELECT CAST(next_value() AS BIGINT)",
+        translate_odbc_sql("SELECT {fn CONVERT(next_value(), SQL_BIGINT)}", profile).sql);
+  }
+}
+
+TEST(SqlConvertEscapeTest, MalformedCallsAndUnsupportedTargetsRefuseBeforeDispatch) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* sql : {"{fn CONVERT}", "{fn CONVERT()}", "{fn CONVERT(x)}",
+         "{fn CONVERT(,SQL_INTEGER)}", "{fn CONVERT(x,/* empty */)}",
+         "{fn CONVERT(x,SQL_INTEGER,1)}", "{fn CONVERT(x,SQL_INTEGER) + 1}",
+         "{fn CONVERT(x,SQL_INTEGER); SELECT 1}", "{fn CONVERT(x,SQL_INTEGER(2))}",
+         "{fn CONVERT(x,SQL_INTEGER -- no closer)}"}) {
+      const auto result = translate_odbc_sql(sql, profile);
+      EXPECT_EQ(SqlTranslationError::InvalidSyntax, result.error) << sql;
+      EXPECT_TRUE(result.sql.empty()) << sql;
+    }
+    for (const auto* target : {"SQL_TINYINT", "SQL_UNKNOWN", "SQL_INTEGER_EXTRA"}) {
+      const auto result = translate_odbc_sql("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", profile);
+      EXPECT_EQ(SqlTranslationError::Unsupported, result.error) << target;
+      EXPECT_TRUE(result.sql.empty());
+    }
+    EXPECT_EQ("SELECT CAST(1 AS INTEGER)", translate_odbc_sql("SELECT {fn CONVERT(1,SQL_INTEGER)}", profile).sql);
+    EXPECT_EQ("SELECT '{fn CONVERT(1,SQL_INTEGER)}', CONVERTX(1,SQL_INTEGER)",
+        translate_odbc_sql("SELECT '{fn CONVERT(1,SQL_INTEGER)}', {fn CONVERTX(1,SQL_INTEGER)}", profile).sql);
+  }
+}
+
+TEST(SqlConvertEscapeTest, CharacterBinaryAndUuidPoliciesAreExplicitPerProduct) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto* target : {"SQL_CHAR", "SQL_VARCHAR", "SQL_LONGVARCHAR",
+                           "SQL_WCHAR", "SQL_WVARCHAR", "SQL_WLONGVARCHAR"}) {
+    const auto sql = "SELECT {fn CONVERT('Grüße'," + std::string(target) + ")}";
+    EXPECT_EQ("SELECT CAST('Grüße' AS TEXT)", translate_odbc_sql(sql).sql);
+    EXPECT_EQ("SELECT CAST('Grüße' AS VARCHAR(65535))",
+        translate_odbc_sql(sql, SqlDialectProfile::Redshift).sql);
+  }
+  for (const auto* target : {"SQL_BINARY", "SQL_VARBINARY", "SQL_LONGVARBINARY"}) {
+    const auto sql = "SELECT {fn CONVERT(NULL," + std::string(target) + ")}";
+    EXPECT_EQ("SELECT CAST(NULL AS BYTEA)", translate_odbc_sql(sql).sql);
+    EXPECT_EQ("SELECT CAST(NULL AS VARBYTE)", translate_odbc_sql(sql, SqlDialectProfile::Redshift).sql);
+  }
+  EXPECT_EQ("SELECT CAST(NULL AS UUID)", translate_odbc_sql("SELECT {fn CONVERT(NULL,SQL_GUID)}").sql);
+  EXPECT_EQ(SqlTranslationError::Unsupported,
+      translate_odbc_sql("SELECT {fn CONVERT(NULL,SQL_GUID)}", SqlDialectProfile::Redshift).error);
+  EXPECT_EQ("SELECT CAST((ARRAY[1,2])[1] AS INTEGER)",
+      translate_odbc_sql("SELECT {fn CONVERT((ARRAY[1,2])[1],SQL_INTEGER)}").sql);
+  for (const auto* target : {"SQL_INTERVAL_YEAR", "SQL_INTERVAL_MONTH", "SQL_INTERVAL_YEAR_TO_MONTH",
+                           "SQL_INTERVAL_DAY", "SQL_INTERVAL_HOUR", "SQL_INTERVAL_MINUTE",
+                           "SQL_INTERVAL_SECOND", "SQL_INTERVAL_DAY_TO_HOUR", "SQL_INTERVAL_DAY_TO_MINUTE",
+                           "SQL_INTERVAL_DAY_TO_SECOND", "SQL_INTERVAL_HOUR_TO_MINUTE",
+                           "SQL_INTERVAL_HOUR_TO_SECOND", "SQL_INTERVAL_MINUTE_TO_SECOND"}) {
+    for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+      const auto result = translate_odbc_sql("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", profile);
+      EXPECT_EQ(SqlTranslationError::Unsupported, result.error) << target;
+      EXPECT_TRUE(result.sql.empty());
+    }
+  }
+}
+
+TEST(SqlTimestampEscapeTest, SupportedUnitsTranslateAndKeepMarkerAssociation) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  rs::core::database::postgres::PgBackendProvider parser{
+      {"postgresql", "PostgreSQL", "synthetic"}, {"synthetic.invalid", 5432, "synthetic", false}};
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}) {
+      const auto sql = "SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) + ", ?, ?)}";
+      const auto result = translate_odbc_sql(sql, profile);
+      ASSERT_TRUE(result) << result.message << sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("TIMESTAMPADD")) << result.sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("SQL_TSI_")) << result.sql;
+      EXPECT_EQ(2u, parser.sql_dialect().count_parameter_markers(result.sql)) << result.sql;
+    }
+    for (const auto* unit : {"SECOND", "MINUTE", "HOUR", "DAY", "MONTH", "QUARTER", "YEAR"}) {
+      const auto sql = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit) + ", first_value(), second_value())}";
+      const auto result = translate_odbc_sql(sql, profile);
+      ASSERT_TRUE(result) << result.message << sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("TIMESTAMPDIFF")) << result.sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("SQL_TSI_")) << result.sql;
+      const auto first = result.sql.find("first_value()");
+      const auto second = result.sql.find("second_value()");
+      ASSERT_NE(std::string::npos, first);
+      ASSERT_NE(std::string::npos, second);
+      EXPECT_LT(first, second) << result.sql;
+      EXPECT_EQ(std::string::npos, result.sql.find("first_value()", first + 1));
+      EXPECT_EQ(std::string::npos, result.sql.find("second_value()", second + 1));
+    }
+  }
+}
+
+TEST(SqlTimestampEscapeTest, FractionalAdditionAndAmbiguousWeekDifferenceRefuseExplicitly) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* sql : {"{fn TIMESTAMPADD(SQL_TSI_FRAC_SECOND,1,NULL)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_FRAC_SECOND,NULL,NULL)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_WEEK,NULL,NULL)}",
+                           "{fn TIMESTAMPADD(SQL_TSI_UNKNOWN,1,NULL)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_UNKNOWN,NULL,NULL)}"}) {
+      const auto result = translate_odbc_sql(sql, profile);
+      EXPECT_EQ(SqlTranslationError::Unsupported, result.error) << sql;
+      EXPECT_TRUE(result.sql.empty());
+    }
+  }
+}
+
+TEST(SqlTimestampEscapeTest, InvalidArityUnitExpressionAndTrailingSqlNeverPassThrough) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* sql : {"{fn TIMESTAMPADD}", "{fn TIMESTAMPADD()}", "{fn TIMESTAMPADD(SQL_TSI_DAY,1)}",
+                           "{fn TIMESTAMPADD(SQL_TSI_DAY,,x)}", "{fn TIMESTAMPADD(SQL_TSI_DAY,1,x,2)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_DAY,x)}", "{fn TIMESTAMPDIFF(SQL_TSI_DAY,x,/* empty */)}",
+                           "{fn TIMESTAMPDIFF(SQL_TSI_DAY,x,y) + 1}", "{fn TIMESTAMPADD(?,1,x)}",
+                           "{fn TIMESTAMPDIFF('SQL_TSI_DAY',x,y)}", "{fn TIMESTAMPADD(SQL_TSI_DAY+1,1,x)}"}) {
+      const auto result = translate_odbc_sql(sql, profile);
+      EXPECT_EQ(SqlTranslationError::InvalidSyntax, result.error) << sql;
+      EXPECT_TRUE(result.sql.empty());
+    }
+  }
+}
 
 TEST(SqlEscapeTest, TranslatesDatetimeLiterals) {
   EXPECT_EQ("SELECT DATE '2024-02-29'",
@@ -458,5 +623,52 @@ TEST(SqlCapabilityEscapeProof, AdvertisedJoinFormsStripOnlyTheEscapeWrapper) {
       ASSERT_TRUE(result) << result.message;
       EXPECT_EQ(native, result.sql);
     }
+  }
+}
+
+// Golden SQL for one second-based and one calendar unit per product (#144
+// review), so a wrong unit scale or operand order fails here and not only in
+// a live run. PostgreSQL counts unit boundaries as f(b) - f(a) over values
+// truncated to the unit; month and quarter use AGE from 2000-01-01, whose
+// total months times 12 (or 4) are read back exactly as the YEAR field.
+TEST(SqlTimestampEscapeTest, GoldenSqlPerProduct) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  const auto pg_ts = [](const std::string& x) {
+    return "CAST(REGEXP_REPLACE(BTRIM(CAST(( " + x + ") AS TEXT)) COLLATE \"C\", '^(?=[0-9]{2}:)', "
+           "CAST(CURRENT_DATE AS TEXT) || ' ') AS TIMESTAMP)";
+  };
+  const auto rs_ts = [](const std::string& x) {
+    return "CAST(REGEXP_REPLACE(BTRIM(CAST(( " + x + ") AS VARCHAR(MAX))), '^(?=[0-9]{2}:)', "
+           "CAST(CURRENT_DATE AS VARCHAR(10)) || ' ', 1, 'p') AS TIMESTAMP)";
+  };
+  const auto pg_months = [&](const std::string& unit, const std::string& x, const char* factor) {
+    return "EXTRACT(YEAR FROM (AGE(DATE_TRUNC('" + unit + "', " + pg_ts(x) + "), TIMESTAMP '2000-01-01') * " +
+           factor + "))";
+  };
+  const std::tuple<SqlDialectProfile, const char*, std::string> cases[]{
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND, a, b)}",
+       "SELECT CAST(-((EXTRACT(EPOCH FROM DATE_TRUNC('second', " + pg_ts("a") + ")) / 1) - (EXTRACT(EPOCH FROM "
+       "DATE_TRUNC('second', " + pg_ts("b") + ")) / 1)) AS BIGINT)"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_MONTH, a, b)}",
+       "SELECT CAST(-(" + pg_months("month", "a", "12") + " - " + pg_months("month", "b", "12") + ") AS BIGINT)"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_QUARTER, a, b)}",
+       "SELECT CAST(-(" + pg_months("quarter", "a", "4") + " - " + pg_months("quarter", "b", "4") + ") AS BIGINT)"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPADD(SQL_TSI_SECOND, n, t)}",
+       "SELECT (CAST(( n) AS BIGINT) * INTERVAL '1 second' + " + pg_ts("t") + ")"},
+      {SqlDialectProfile::PostgreSql, "SELECT {fn TIMESTAMPADD(SQL_TSI_QUARTER, n, t)}",
+       "SELECT (CAST(( n) AS BIGINT) * INTERVAL '3 months' + " + pg_ts("t") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_SECOND, a, b)}",
+       "SELECT DATEDIFF(second, " + rs_ts("a") + ", " + rs_ts("b") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPDIFF(SQL_TSI_QUARTER, a, b)}",
+       "SELECT DATEDIFF(quarter, " + rs_ts("a") + ", " + rs_ts("b") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPADD(SQL_TSI_SECOND, n, t)}",
+       "SELECT DATEADD(second, CAST(( n) AS INTEGER), " + rs_ts("t") + ")"},
+      {SqlDialectProfile::Redshift, "SELECT {fn TIMESTAMPADD(SQL_TSI_QUARTER, n, t)}",
+       "SELECT DATEADD(quarter, CAST(( n) AS INTEGER), " + rs_ts("t") + ")"},
+  };
+  for (const auto& [profile, sql, expected] : cases) {
+    const auto result = translate_odbc_sql(sql, profile);
+    ASSERT_TRUE(result) << result.message << sql;
+    EXPECT_EQ(expected, result.sql) << sql;
   }
 }

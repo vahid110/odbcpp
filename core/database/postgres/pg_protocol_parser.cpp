@@ -1089,10 +1089,9 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
       for (std::uint16_t i = 0; i < count; ++i) {
         ParsedColumnMetadata column;
         column.name = read_cstring(payload, offset);
-        // Validate/consume native provenance without publishing backend IDs.
-        (void)read_u32(payload, offset);
+        column.table_oid = read_u32(payload, offset);
         offset += 4;
-        (void)read_u16(payload, offset);
+        column.column_attribute_number = static_cast<std::int16_t>(read_u16(payload, offset));
         offset += 2;
         column.type_id = read_u32(payload, offset);
         offset += 4;

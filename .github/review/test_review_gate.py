@@ -10,13 +10,16 @@ import review_gate as g  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 HEAD, OLD = "a" * 40, "b" * 40
+DOCS = ["README.md"]
 PR = "7"
 os.environ["PR_NUMBER"] = PR
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 
 
-def review(role, state, sha=HEAD, at="2026-11-03T10:00:00Z", user=g.REVIEWER, bold=False, body_tail="ok"):
-    header = f"[{role} reviewer] {state.lower()} at {sha[:7]}"
+def review(role, state, sha=HEAD, at="2026-11-03T10:00:00Z", user=g.REVIEWER, bold=False, body_tail="ok",
+           header_sha=None):
+    # The workflow names the full reviewed commit in the header (#210).
+    header = f"[{role} reviewer] {state.lower()} at {header_sha or sha}"
     return {"user": {"login": user}, "commit_id": sha, "state": state, "submitted_at": at,
             "body": (f"**{header}**" if bold else header) + "\n\n" + body_tail}
 
@@ -35,13 +38,18 @@ def plan_(*args, **kwargs):
 
 
 class Plan(unittest.TestCase):
-    def test_ordinary_push_runs_correctness_only(self):
-        self.assertEqual(plan_("synchronize", "", [], ["odbc/odbc_cursor.cpp"], [], [], HEAD),
+    def test_documentation_push_runs_correctness_only(self):
+        # Changed for #204: a code push now also starts the red-team review
+        # (test_code_change_starts_red_team_without_a_label).
+        self.assertEqual(plan_("synchronize", "", [], ["README.md"], [], [], HEAD),
                          (True, False, []))
 
     def test_path_rule_adds_label_and_lets_its_event_start_red_team(self):
         c, r, add = plan_("opened", "", [], ["sdk/src/auth/x.cpp"], [], [], HEAD)
-        self.assertEqual((c, r, add), (True, False, ["auth"]))
+        # Changed for #204: a code path starts the red-team review at once; the
+        # label is still added. Its own event starts the review again only if
+        # it is not done yet (a queued duplicate is skipped at run start).
+        self.assertEqual((c, r, add), (True, True, ["auth"]))
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], [], HEAD)[:2], (False, True))
 
     def test_agent_instruction_paths_require_process(self):
@@ -64,6 +72,57 @@ class Plan(unittest.TestCase):
                      "odbc/.claudex/x", "odbc/x.agents/y"):
             with self.subTest(path=path):
                 self.assertEqual(g.path_labels([path]), set())
+
+    def test_code_change_starts_red_team_without_a_label(self):
+        # #204: the red-team review is the default; a prompt injection that
+        # keeps the correctness reviewer from labelling a PR no longer skips it.
+        self.assertEqual(plan_("synchronize", "", [], ["odbc/odbc_cursor.cpp"], [], [], HEAD)[:2], (True, True))
+        self.assertEqual(plan_("opened", "", [], ["tests/unit/test_x.cpp"], [], [], HEAD)[:2], (True, True))
+
+    def test_documentation_only_change_runs_correctness_only(self):
+        for files in (["README.md"], ["README.md", "CHANGELOG.md"], ["CHANGELOG.md"]):
+            with self.subTest(files=files):
+                self.assertEqual(plan_("synchronize", "", [], files, [], [], HEAD), (True, False, []))
+
+    def test_documentation_lookalikes_are_not_low_risk(self):
+        # ADRs and agent instructions define the gates; other paths may run.
+        for path in ("docs/adr/0003-x.md", "AGENTS.md", "CLAUDE.md", "docs/x.sh", "docs/x.py",
+                     "odbc/README.md", "SECURITY.md", "docs/../odbc/x.cpp",
+                     # Top-level plans and architecture that agents follow.
+                     "SDK_ARCHITECTURE.md", "ARCHITECTURE.md", "SECURITY_MODEL.md", "PARALLEL_WORKFLOW.md",
+                     "CONTRIBUTING.md", "GEMINI.md", "ROADMAP.md",
+                     "docs/plans/x.md", "docs/handoffs/x.md", "docs/Plans/x.md",
+                     # Any document can become binding once referenced.
+                     "docs/notes.md", "docs/architecture-review-2026-10-28.md",
+                     "docs/history/workflow-2026-10-19/README.md", "docs/security-verification.md",
+                     "README.MD", "readme.md"):
+            with self.subTest(path=path):
+                self.assertTrue(g.red_team_by_path([path]))
+
+    def test_sticky_label_on_a_documentation_pr_starts_red_team(self):
+        # A label added once and removed keeps the red-team review required
+        # (status); plan must start it too, or the check waits forever.
+        events = [labeled("security"), {"event": "unlabeled", "label": {"name": "security"}}]
+        self.assertTrue(plan_("synchronize", "", [], DOCS, events, [], HEAD)[1])
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], events, HEAD, files=DOCS)[0], "pending")
+
+    def test_empty_file_list_requires_red_team(self):
+        # Fail closed: an empty or missing file list is not "documentation only".
+        self.assertTrue(g.red_team_by_path([]))
+
+    def test_binding_architecture_documents_require_process(self):
+        # AGENTS.md binds agents to these; changing them changes the rules (#216).
+        for path in ("ARCHITECTURE.md", "SDK_ARCHITECTURE.md", "SECURITY_MODEL.md",
+                     "docs/adr/reviews/2026-10-28-architecture-review.md", "sdk_architecture.md",
+                     # Bound in by SDK_ARCHITECTURE.md (A7, A10, auth direction).
+                     "CONNECTION_POOLING.md", "CRYPTO_PROVIDER_PLAN.md", "AUTH_LIBRARY_ARCHITECTURE.md"):
+            with self.subTest(path=path):
+                self.assertIn("process", g.path_labels([path]))
+        rules = set(codeowners_patterns())
+        for path in ("/ARCHITECTURE.md", "/SDK_ARCHITECTURE.md", "/SECURITY_MODEL.md",
+                     "/CONNECTION_POOLING.md", "/CRYPTO_PROVIDER_PLAN.md", "/AUTH_LIBRARY_ARCHITECTURE.md"):
+            with self.subTest(owned=path):
+                self.assertIn(path, rules)
 
     def test_unrelated_label_starts_nothing(self):
         self.assertEqual(plan_("labeled", "unit", [], [], [], [], HEAD)[:2], (False, False))
@@ -89,7 +148,7 @@ class Plan(unittest.TestCase):
 
     def test_withheld_red_team_review_does_not_count_as_done(self):
         done = [review("red-team", "CHANGES_REQUESTED", body_tail="x")]
-        done[0]["body"] = "[red-team reviewer] verdict withheld at aaaaaaa\n\n..."
+        done[0]["body"] = f"[red-team reviewer] verdict withheld at {HEAD}\n\n..."
         self.assertEqual(plan_("labeled", "auth", ["auth"], [], [], done, HEAD)[1], True)
 
     def test_oversized_file_list_is_high_risk(self):
@@ -182,10 +241,159 @@ class Owners(unittest.TestCase):
                 self.assertTrue(owned(target, pats), target)
 
 
+class Workflows(unittest.TestCase):
+    SECRETS = ("ODBCPP_REVIEWER_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+
+    def read(self, name):
+        with open(os.path.join(ROOT, ".github", "workflows", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_review_callers_pass_exactly_the_review_secrets(self):
+        # The review job reads its secrets from the agent-review environment,
+        # but a caller must still pass each one, or it is an empty string
+        # (#213). By name, so no other secret reaches the model's job.
+        import re as _re
+        text = self.read("agent-review.yml")
+        self.assertNotIn("secrets: inherit", text)
+        jobs = _re.split(r"\n  (?=[A-Za-z0-9_-]+:\n)", text)
+        callers = [j for j in jobs if "uses: ./.github/workflows/agent-review-run.yml" in j]
+        self.assertEqual(len(callers), 2, "expected the correctness and red-team callers")
+        for job in callers:
+            with self.subTest(job=job.split(":", 1)[0]):
+                block = _re.search(r"\n    secrets:\n((?:      [^\n]*\n)+)", job)
+                self.assertIsNotNone(block, "the caller passes no secrets")
+                passed = _re.findall(r"^      ([A-Z_]+): \$\{\{ secrets\.([A-Z_]+) \}\}$", block.group(1), _re.M)
+                self.assertEqual(sorted(passed), sorted((n, n) for n in self.SECRETS))
+
+    def test_review_workflow_requires_its_secrets(self):
+        import re as _re
+        text = self.read("agent-review-run.yml")
+        for name in self.SECRETS:
+            with self.subTest(secret=name):
+                self.assertRegex(text, rf"\n      {name}:\n        required: true\n")
+
+
+class PrepareReview(unittest.TestCase):
+    """The model's structured output is untrusted; the post job publishes only
+    what prepare_review keeps (#205)."""
+
+    def prep(self, result, role="correctness"):
+        import json as _json
+        text = result if isinstance(result, str) else _json.dumps(result)
+        return g.prepare_review(text, role, HEAD, "https://run")
+
+    def test_approval_keeps_verdict_body_and_full_sha_header(self):
+        review, labels, withheld = self.prep({"verdict": "approve", "body": "fine", "labels": ["auth"]})
+        self.assertEqual(review["event"], "APPROVE")
+        self.assertEqual(review["commit_id"], HEAD)
+        self.assertTrue(review["body"].startswith(f"[correctness reviewer] approve at {HEAD}\n"))
+        self.assertEqual(labels, ["auth"])
+        self.assertFalse(withheld)
+
+    def test_only_allow_listed_labels_and_only_from_correctness(self):
+        _, labels, _ = self.prep({"verdict": "approve", "body": "x",
+                                  "labels": ["auth", "good first issue", "auth", 7, "process"]})
+        self.assertEqual(labels, ["auth", "process"])
+        _, labels, _ = self.prep({"verdict": "approve", "body": "x", "labels": ["auth"]}, role="red-team")
+        self.assertEqual(labels, [])
+
+    def test_mentions_are_neutralised(self):
+        review, _, _ = self.prep({"verdict": "approve", "body": "ping @vahid110 and @org/team, a@b", "labels": []})
+        self.assertNotIn("@vahid110", review["body"])
+        self.assertNotIn("@org", review["body"])
+        self.assertIn("vahid110", review["body"])
+        review, _, _ = self.prep({"verdict": "approve", "labels": [],
+                                  "body": "&#64;octocat &#064;a &#x40;b &#X0040;c &commat;d &amp; &&"})
+        for entity in ("&#64;octocat", "&#064;a", "&#x40;b", "&#X0040;c", "&commat;d"):
+            self.assertIn("&amp;" + entity[1:], review["body"])
+        self.assertIn("&amp; &&", review["body"])
+
+    def test_body_is_bounded(self):
+        review, _, _ = self.prep({"verdict": "approve", "body": "x" * 200000, "labels": []})
+        self.assertLess(len(review["body"]), 65536)
+
+    def test_malformed_or_unknown_output_is_withheld_not_published(self):
+        for bad in ("not json", '"a string"', {"verdict": "merge", "body": "x", "labels": []},
+                    {"verdict": "approve", "body": 3, "labels": []}, {"verdict": "approve", "labels": []},
+                    {"verdict": "approve", "body": "x", "labels": "auth"},
+                    {"verdict": "approve", "body": "x", "labels": [], "extra": "y"}):
+            with self.subTest(bad=bad):
+                review, labels, withheld = self.prep(bad)
+                self.assertTrue(withheld)
+                self.assertEqual(review["event"], "REQUEST_CHANGES")
+                self.assertTrue(review["body"].startswith(f"[correctness reviewer] verdict withheld at {HEAD}"))
+                self.assertEqual(labels, [])
+                self.assertTrue(g.withheld(review["body"]))
+
+    def test_credential_like_output_is_withheld(self):
+        review, labels, withheld = self.prep({"verdict": "approve", "body": "ghp_" + "a" * 36, "labels": ["auth"]})
+        self.assertTrue(withheld)
+        self.assertNotIn("ghp_", review["body"])
+        self.assertEqual(labels, [])
+
+
+class SplitJobs(unittest.TestCase):
+    """The App key is used only by the start and post jobs; the job that runs
+    the model never mints or holds a reviewer token (#205)."""
+
+    def jobs(self):
+        import re as _re
+        with open(os.path.join(ROOT, ".github", "workflows", "agent-review-run.yml"), encoding="utf-8") as f:
+            text = f.read()
+        parts = _re.split(r"\n  (?=[A-Za-z0-9_-]+:\n)", text.split("\njobs:\n", 1)[1])
+        return {p.split(":", 1)[0].strip(): p for p in parts}
+
+    def test_model_job_never_touches_the_reviewer_key(self):
+        jobs = self.jobs()
+        self.assertIn("model", jobs)
+        model = jobs["model"]
+        self.assertIn("anthropics/claude-code-action@", model)
+        self.assertNotIn("ODBCPP_REVIEWER_PRIVATE_KEY", model)
+        self.assertNotIn("create-github-app-token", model)
+
+    def test_job_names_substitute_the_role(self):
+        for name, job in self.jobs().items():
+            with self.subTest(job=name):
+                self.assertNotIn("({{ inputs.role }})", job)
+                names = [l for l in job.splitlines() if l.startswith("    name: ")]
+                self.assertEqual(1, len(names), job[:120])
+                self.assertTrue(names[0].endswith("(${{ inputs.role }})"), names[0])
+
+    def test_reviews_are_posted_only_after_validation(self):
+        jobs = self.jobs()
+        self.assertIn("post", jobs)
+        self.assertIn("review_gate.py prepare", jobs["post"])
+        self.assertNotIn("anthropics/claude-code-action@", jobs["post"])
+
+
+class PinnedClaudeCode(unittest.TestCase):
+    """The Claude Code binary is a pinned, checksummed release, not the
+    action's run-time `curl | bash` install (#205)."""
+
+    def test_release_file_names_one_version_and_checksum(self):
+        import re as _re
+        with open(os.path.join(ROOT, ".github", "review", "claude-code-release"), encoding="utf-8") as f:
+            lines = [l for l in f.read().splitlines() if l and not l.startswith("#")]
+        self.assertEqual(1, len(lines))
+        self.assertRegex(lines[0], r"^[0-9]+\.[0-9]+\.[0-9]+ [0-9a-f]{64}$")
+
+    def test_every_claude_action_step_uses_the_pinned_binary(self):
+        for name in ("agent-review-run.yml", "agent-review-canary.yml"):
+            with open(os.path.join(ROOT, ".github", "workflows", name), encoding="utf-8") as f:
+                text = f.read()
+            with self.subTest(workflow=name):
+                uses = text.count("uses: anthropics/claude-code-action@")
+                self.assertEqual(1, uses)
+                self.assertEqual(1, text.count("path_to_claude_code_executable: ${{ steps.claude.outputs.path }}"))
+                self.assertIn(".github/review/claude-code-release", text)
+                self.assertIn("sha256sum -c", text)
+
+
 class Status(unittest.TestCase):
     def test_ordinary_pr_needs_correctness_approval(self):
-        self.assertEqual(g.status_([], [], [], HEAD)[0], "pending")
-        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD)[0], "success")
+        # Changed for #204: correctness alone suffices only for documentation.
+        self.assertEqual(g.status_([], [], [], HEAD, files=DOCS)[0], "pending")
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD, files=DOCS)[0], "success")
 
     def test_high_risk_pr_needs_both_roles(self):
         reviews = [review("correctness", "APPROVED")]
@@ -200,24 +408,55 @@ class Status(unittest.TestCase):
     def test_latest_review_per_role_wins(self):
         reviews = [review("correctness", "APPROVED", at="2026-11-03T10:00:00Z"),
                    review("correctness", "CHANGES_REQUESTED", at="2026-11-03T11:00:00Z")]
-        self.assertEqual(g.status_(reviews, [], [], HEAD)[0], "failure")
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=DOCS)[0], "failure")
         reviews.append(review("correctness", "APPROVED", at="2026-11-03T12:00:00Z"))
-        self.assertEqual(g.status_(reviews, [], [], HEAD)[0], "success")
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=DOCS)[0], "success")
 
     def test_approval_of_another_commit_does_not_count(self):
         self.assertEqual(g.status_([review("correctness", "APPROVED", sha=OLD)], [], [], HEAD)[0], "pending")
+
+    def test_review_migrated_to_the_head_by_a_force_push_does_not_count(self):
+        # GitHub re-points commit_id to the new head once the reviewed commit
+        # leaves the PR; the header still names the commit actually reviewed.
+        migrated = review("correctness", "APPROVED", sha=HEAD, header_sha=OLD)
+        self.assertEqual(g.status_([migrated], [], [], HEAD)[0], "pending")
+        reviews = [review("correctness", "APPROVED"), review("red-team", "APPROVED", sha=HEAD, header_sha=OLD)]
+        self.assertEqual(g.status_(reviews, ["auth"], [], HEAD)[0], "pending")
+
+    def test_short_sha_header_does_not_count(self):
+        # A 7-character prefix can be ground out; only the full SHA counts.
+        short = review("correctness", "APPROVED", header_sha=HEAD[:7])
+        self.assertEqual(g.status_([short], [], [], HEAD)[0], "pending")
+        prefix_only = review("correctness", "APPROVED", header_sha=HEAD[:7] + "f" * 33)
+        self.assertEqual(g.status_([prefix_only], [], [], HEAD)[0], "pending")
+
+    def test_migrated_red_team_review_does_not_stop_a_new_red_team_run(self):
+        events = [labeled("auth")]
+        reviews = [review("red-team", "APPROVED", sha=HEAD, header_sha=OLD)]
+        self.assertTrue(plan_("labeled", "auth", ["auth"], [], events, reviews, HEAD)[1])
 
     def test_approval_by_another_identity_does_not_count(self):
         self.assertEqual(g.status_([review("correctness", "APPROVED", user="odbcpp-agent[bot]")], [], [], HEAD)[0],
                          "pending")
 
     def test_bold_and_plain_headers_are_both_recognised(self):
-        self.assertEqual(g.status_([review("correctness", "APPROVED", bold=True)], [], [], HEAD)[0], "success")
+        self.assertEqual(g.status_([review("correctness", "APPROVED", bold=True)], [], [], HEAD, files=DOCS)[0],
+                         "success")
 
     def test_header_must_lead_the_body(self):
         r = review("correctness", "APPROVED")
         r["body"] = "Looks fine.\n[correctness reviewer] approve"
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "pending")
+
+    def test_code_change_requires_red_team_approval(self):
+        reviews = [review("correctness", "APPROVED")]
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=["odbc/x.cpp"])[0], "pending")
+        reviews.append(review("red-team", "APPROVED"))
+        self.assertEqual(g.status_(reviews, [], [], HEAD, files=["odbc/x.cpp"])[0], "success")
+
+    def test_documentation_only_change_needs_correctness_only(self):
+        self.assertEqual(g.status_([review("correctness", "APPROVED")], [], [], HEAD, files=["CHANGELOG.md"])[0],
+                         "success")
 
     def test_path_rule_requires_red_team_even_without_the_label(self):
         reviews = [review("correctness", "APPROVED")]
@@ -233,7 +472,7 @@ class Status(unittest.TestCase):
 
     def test_withheld_verdict_blocks(self):
         r = review("correctness", "APPROVED")
-        r["body"] = "[correctness reviewer] verdict withheld at aaaaaaa\n\n..."
+        r["body"] = f"[correctness reviewer] verdict withheld at {HEAD}\n\n..."
         self.assertEqual(g.status_([r], [], [], HEAD)[0], "failure")
 
 
@@ -303,10 +542,13 @@ class Command(unittest.TestCase):
 
     def test_plan_prints_only_step_outputs(self):
         stdout, _ = self.run_gate("plan", {"files.json": ["sdk/src/auth/x.cpp"]}, {"EVENT_ACTION": "opened"})
-        self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=false", "add_labels=auth"])
+        # Changed for #204: the code path starts the red-team review at once.
+        self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=true", "add_labels=auth"])
 
     def test_status_writes_the_check_file(self):
-        stdout, status = self.run_gate("status", {"reviews.json": [review("correctness", "APPROVED")]}, {})
+        # Changed for #204: correctness alone suffices only for documentation.
+        stdout, status = self.run_gate("status", {"reviews.json": [review("correctness", "APPROVED")],
+                                                  "files.json": DOCS}, {})
         self.assertEqual(stdout, "")
         self.assertEqual(status.splitlines()[0], "success")
 

@@ -615,6 +615,90 @@ TEST_F(RedshiftRealTest, CurrentUserQuery) {
 
 }
 
+TEST_F(RedshiftRealTest, ResultColumnOriginMetadata) {
+  ASSERT_TRUE(connect()) << "Failed to connect: " << get_error(SQL_HANDLE_DBC, hdbc_);
+
+  SQLCHAR query[] =
+      "SELECT c.relname, t.table_name, 42 AS expr "
+      "FROM pg_catalog.pg_class c "
+      "JOIN information_schema.tables t ON t.table_name = c.relname "
+      "LIMIT 1";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(checkpoint_statement(hstmt_), query, SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+
+  SQLHDESC ird = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  ASSERT_NE(nullptr, ird);
+
+  char text[128]{};
+  SQLSMALLINT len = -1;
+
+  // Column 1: c.relname -> pg_class in pg_catalog
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 1, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("pg_class", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 1, SQL_DESC_BASE_COLUMN_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("relname", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 1, SQL_DESC_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("pg_class", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 1, SQL_DESC_SCHEMA_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("pg_catalog", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 1, SQL_DESC_CATALOG_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STRNE("", text);
+
+  // Column 2: t.table_name -> tables in information_schema
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 2, SQL_DESC_BASE_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("tables", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 2, SQL_DESC_BASE_COLUMN_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("table_name", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 2, SQL_DESC_TABLE_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("tables", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 2, SQL_DESC_SCHEMA_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STREQ("information_schema", text);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 2, SQL_DESC_CATALOG_NAME, text, sizeof(text), &len, nullptr));
+  EXPECT_STRNE("", text);
+
+  // Column 3: 42 AS expr -> expressions have empty origin strings
+  for (const SQLUSMALLINT field_id : {
+           SQLUSMALLINT(SQL_DESC_BASE_TABLE_NAME),
+           SQLUSMALLINT(SQL_DESC_BASE_COLUMN_NAME),
+           SQLUSMALLINT(SQL_DESC_TABLE_NAME),
+           SQLUSMALLINT(SQL_DESC_SCHEMA_NAME),
+           SQLUSMALLINT(SQL_DESC_CATALOG_NAME)}) {
+    std::memset(text, 'x', sizeof(text));
+    len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 3, field_id, text, sizeof(text), &len, nullptr));
+    EXPECT_EQ(0, len);
+    EXPECT_STREQ("", text);
+
+    char desc_text[128]{};
+    SQLINTEGER desc_len = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 3, static_cast<SQLSMALLINT>(field_id), desc_text, sizeof(desc_text), &desc_len));
+    EXPECT_EQ(0, desc_len);
+    EXPECT_STREQ("", desc_text);
+  }
+
+  // IRD direct inspection for Column 1
+  char desc_text[128]{};
+  SQLINTEGER desc_len = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_BASE_TABLE_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("pg_class", desc_text);
+  EXPECT_EQ(static_cast<SQLINTEGER>(std::strlen("pg_class")), desc_len);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 1, SQL_DESC_BASE_COLUMN_NAME, desc_text, sizeof(desc_text), &desc_len));
+  EXPECT_STREQ("relname", desc_text);
+  EXPECT_EQ(static_cast<SQLINTEGER>(std::strlen("relname")), desc_len);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
 TEST_F(RedshiftRealTest, MultipleRowQuery) {
   ASSERT_TRUE(connect());
   
