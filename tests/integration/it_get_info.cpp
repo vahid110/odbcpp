@@ -235,7 +235,8 @@ class GetInfoIntegrationTest : public ::testing::Test {
   }
 
   void verify_predicate(std::string_view predicate, bool prepared = false,
-                        std::string_view from = {}) {
+                        std::string_view from = {}, std::string_view typed_expression = {},
+                        SQLSMALLINT expected_type = 0) {
     SCOPED_TRACE(predicate);
     SCOPED_TRACE(prepared);
     SQLHSTMT statement = SQL_NULL_HSTMT;
@@ -245,7 +246,9 @@ class GetInfoIntegrationTest : public ::testing::Test {
       ~StatementOwner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); }
     } owner{statement};
     const std::string sql = "SELECT CASE WHEN (" + std::string(predicate) +
-        ") THEN 1 ELSE 0 END" + (from.empty() ? "" : " FROM " + std::string(from));
+        ") THEN 1 ELSE 0 END" +
+        (typed_expression.empty() ? "" : ", " + std::string(typed_expression)) +
+        (from.empty() ? "" : " FROM " + std::string(from));
     if (prepared) {
       ASSERT_TRUE(fixture_statement_budget(fixture_end_, statement));
       ASSERT_EQ(SQL_SUCCESS, ::SQLPrepare(statement,
@@ -257,6 +260,13 @@ class GetInfoIntegrationTest : public ::testing::Test {
       ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement,
           reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())),
           static_cast<SQLINTEGER>(sql.size()))) << statement_diagnostic(statement);
+    }
+    if (!typed_expression.empty()) {
+      SQLCHAR name[64]{};
+      SQLSMALLINT type = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(statement, 2, name, sizeof(name),
+          nullptr, &type, nullptr, nullptr, nullptr));
+      EXPECT_EQ(expected_type, type) << typed_expression;
     }
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement));
     SQLINTEGER actual = -1;
@@ -852,7 +862,7 @@ TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
   ASSERT_NO_FATAL_FAILURE(verify_predicate(
       "'a_b' LIKE 'a!_b' ESCAPE '!' AND NOT ('axb' LIKE 'a!_b' ESCAPE '!')"));
   if (!redshift_profile_) {
-  execute("SELECT 'a_b' LIKE 'a\\_b' ESCAPE '\\'");
+    execute("SELECT 'a_b' LIKE 'a\\_b' ESCAPE '\\'");
   }
   execute("SELECT 1 AS id INTO TEMP TABLE odbcpp_get_info_select_into");
 }
@@ -1257,7 +1267,19 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
       "date_value DATE, timestamp_value TIMESTAMP)"));
   ASSERT_NO_FATAL_FAILURE(execute("INSERT INTO odbcpp_scalar_capabilities VALUES "
       "('MiXeD', 'cat   ', 100, DATE '2024-02-29', TIMESTAMP '2024-02-29 23:59:59.875')"));
-  struct Case { SQLUSMALLINT type; SQLUINTEGER bit; const char* predicate; };
+  struct Case {
+    SQLUSMALLINT type;
+    SQLUINTEGER bit;
+    const char* predicate;
+    const char* typed_expression = "";
+    SQLSMALLINT expected_type = 0;
+  };
+  // Clock expectations use another server clock API, not the escape rewrite.
+  // SYSDATE is transaction-start time; clock_timestamp() is wall time. This
+  // autocommit fixture permits at most its existing 40-second statement window
+  // of skew. Date and time comparisons tolerate crossing midnight, and the
+  // uncast result column must independently report the expected ODBC type.
+  // AWS: redshift/latest/dg/r_SYSDATE.html; PostgreSQL: functions-datetime.html.
   const Case common[]{
       {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE,
           "{fn UCASE(text_value)}='MIXED' AND {fn UCASE(CAST(NULL AS VARCHAR(32)))} IS NULL"},
@@ -1265,11 +1287,23 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
           "{fn LCASE(text_value)}='mixed' AND {fn LCASE(CAST(NULL AS VARCHAR(32)))} IS NULL"},
       {SQL_SYSTEM_FUNCTIONS, SQL_FN_SYS_IFNULL,
           "{fn IFNULL(CAST(NULL AS INTEGER),7)}=7 AND {fn IFNULL(9,7)}=9"},
-      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE, "{fn CURDATE()}=CURRENT_DATE"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE,
+          redshift_profile_
+              ? "DATEDIFF(second,CAST({fn CURDATE()} AS TIMESTAMP),SYSDATE) BETWEEN -40 AND 86440"
+              : "EXTRACT(EPOCH FROM (clock_timestamp()-CAST({fn CURDATE()} AS TIMESTAMP))) BETWEEN -40 AND 86440",
+          "{fn CURDATE()}", SQL_TYPE_DATE},
       {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURTIME,
-          redshift_profile_ ? "{fn CURTIME()}=CAST(GETDATE() AS TIME)" : "{fn CURTIME()}=CURRENT_TIME"},
+          redshift_profile_
+              ? "LEAST(ABS(DATEDIFF(second,{fn CURTIME()},CAST(SYSDATE AS TIME))),"
+                "86400-ABS(DATEDIFF(second,{fn CURTIME()},CAST(SYSDATE AS TIME))))<=40"
+              : "LEAST(ABS(EXTRACT(EPOCH FROM (CAST({fn CURTIME()} AS TIME)-CAST(clock_timestamp() AS TIME)))),"
+                "86400-ABS(EXTRACT(EPOCH FROM (CAST({fn CURTIME()} AS TIME)-CAST(clock_timestamp() AS TIME)))))<=40",
+          "{fn CURTIME()}", SQL_TYPE_TIME},
       {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_NOW,
-          redshift_profile_ ? "{fn NOW()}=GETDATE()" : "{fn NOW()}=CURRENT_TIMESTAMP"},
+          redshift_profile_
+              ? "ABS(DATEDIFF(second,{fn NOW()},SYSDATE))<=40"
+              : "ABS(EXTRACT(EPOCH FROM ({fn NOW()}-clock_timestamp())))<=40",
+          "{fn NOW()}", SQL_TYPE_TIMESTAMP},
   };
   const Case redshift_extensions[]{
       {SQL_STRING_FUNCTIONS, SQL_FN_STR_LENGTH,
@@ -1298,7 +1332,8 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, item.type, &mask, sizeof(mask), nullptr));
     EXPECT_EQ(redshift_profile_ ? 0u : item.bit, mask & item.bit);
     for (const bool prepared : {false, true}) {
-      EXPECT_NO_FATAL_FAILURE(verify_predicate(item.predicate, prepared, "odbcpp_scalar_capabilities"));
+      EXPECT_NO_FATAL_FAILURE(verify_predicate(item.predicate, prepared, "odbcpp_scalar_capabilities",
+          item.typed_expression, item.expected_type));
     }
   };
   for (const auto& item : common) {
