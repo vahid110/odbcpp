@@ -135,17 +135,23 @@ and [PostgreSQL extended-query restriction](https://www.postgresql.org/docs/curr
 
 Redshift's newly proposed SQL92, subquery, aggregate, datetime-literal and
 outer/relational-join masks remain zero pending connected qualification under
-#142. Existing scalar escape flags remain available. The connected tests retain
+#142. Seventeen scalar flags are newly advertised using retained connected
+execution evidence plus an unchanged-translation source comparison; see the
+[per-function evidence mapping](evidence/pr172-redshift-scalars.md). These are
+new capability flags for existing translations, not previously advertised flags.
+CURDATE remains zero because no connected receipt was found; its translation
+and offline tests remain available. The connected tests retain
 their SQL behavior assertions, explicitly expect withheld Redshift mask bits,
 and can collect future qualification evidence without advertising those bits
 prematurely. Conversion and timestamp-add/diff claims remain withheld under
 #220. A successful direct-only batch probe cannot qualify the broader batch
 masks; prepared and parameterized support needs separate implementation/proof.
 
-**Public SDK source compatibility:** `BackendCapabilities::outer_joins` has
+**Public SDK source and binary compatibility:** `BackendCapabilities::outer_joins` has
 been replaced by the detailed `BackendCapabilities::sql.join_*` declarations.
 Out-of-tree providers that assigned the old member must migrate and recompile;
-this is a source-breaking change, not an automatic compatibility alias. Declare
+the public aggregate layout also changes, so this is a source and binary ABI
+break, not an automatic compatibility alias. Recompile every SDK consumer. Declare
 only qualified forms; do not mechanically set every new field to true.
 `sql.direct_result_sequences` is separate from `sql.batch_select`,
 `sql.batch_command` and `sql.batch_individual_counts`: the latter require the

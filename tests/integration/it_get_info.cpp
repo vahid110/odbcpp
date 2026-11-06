@@ -589,7 +589,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
         {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
         {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
         {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
-        {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE) | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
             (redshift_profile_ ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
                 SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR |
                 SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND :
@@ -963,7 +963,7 @@ TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
         {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE | SQL_FN_STR_LCASE |
             (redshift_profile_ ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2 : 0)},
         {SQL_NUMERIC_FUNCTIONS, redshift_profile_ ? SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10 : 0},
-        {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE) | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
             (redshift_profile_ ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
                 SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR |
                 SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND :

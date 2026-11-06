@@ -598,7 +598,10 @@ TEST(SqlCapabilityEscapeProof, EveryAdvertisedScalarHasAnExactProfileTranslation
       SCOPED_TRACE(item.escaped);
       SCOPED_TRACE(redshift);
       const auto* expected = redshift ? item.redshift_sql : item.postgres_sql;
-      EXPECT_EQ(expected != nullptr, capabilities.sql.*(item.field));
+      // A translation can remain usable while its SQLGetInfo claim awaits live proof.
+      const bool qualified = expected != nullptr &&
+          !(redshift && item.field == &SqlCapabilities::scalar_current_date);
+      EXPECT_EQ(qualified, capabilities.sql.*(item.field));
       if (expected != nullptr) {
         const auto result = translate_odbc_sql(item.escaped, profile);
         ASSERT_TRUE(result) << result.message;

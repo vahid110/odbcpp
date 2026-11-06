@@ -175,10 +175,10 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
   // No PostgreSQL SQL92/join/aggregate/literal/batch claims carry into
-  // Redshift without connected qualification (#142). Preserve the existing
-  // scalar translations only; their output SQL is covered independently.
+  // Redshift without connected qualification (#142). Advertise only the
+  // scalar claims qualified by the historical execution/source mapping in
+  // docs/evidence/pr172-redshift-scalars.md. CURDATE has no connected receipt.
   result.sql = {};
-  result.sql.scalar_current_date = true;
   result.sql.scalar_current_time = true;
   result.sql.scalar_current_timestamp = true;
   result.sql.scalar_if_null = true;
