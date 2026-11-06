@@ -32,10 +32,14 @@ namespace {
 // timeout values intact. Never restore attributes after a call: its diagnostics belong to the test.
 constexpr SQLULEN fixture_timeout_seconds(std::int64_t left, SQLULEN requested = 0) {
   if (left <= 0) return 0;
-  const auto cap = static_cast<SQLULEN>(std::min<std::int64_t>(left, 5));
+  // The original fixture window is the bound. Valid cold Redshift statements
+  // took 6.84s and 9.56s; an extra five-second clamp cancelled those queries.
+  const auto cap = static_cast<SQLULEN>(left);
   return requested == 0 ? cap : std::min(cap, requested);
 }
-static_assert(fixture_timeout_seconds(40) == 5);
+static_assert(fixture_timeout_seconds(40) == 40);
+static_assert(fixture_timeout_seconds(40, 60) == 40);
+static_assert(fixture_timeout_seconds(4, 2) == 2);
 static_assert(fixture_timeout_seconds(4) == 4);
 static_assert(fixture_timeout_seconds(1) == 1);
 static_assert(fixture_timeout_seconds(0) == 0);
@@ -147,6 +151,46 @@ class GetInfoIntegrationTest : public ::testing::Test {
           ? ::SQLExecDirect(statement, statement_text, text_length) : SQL_ERROR;
     }
 
+  std::string connection_diagnostics() {
+    std::string result;
+    for (SQLINTEGER record = 1; record <= std::numeric_limits<SQLSMALLINT>::max(); ++record) {
+      SQLCHAR state[6]{}, message[1024]{};
+      SQLINTEGER native = 0;
+      const auto rc = ::SQLGetDiagRec(SQL_HANDLE_DBC, connection_,
+          static_cast<SQLSMALLINT>(record), state, &native, message, sizeof(message), nullptr);
+      if (rc == SQL_NO_DATA) {
+        break;
+      }
+      if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+        result += " diagnostic_read_failed=" + std::to_string(rc);
+        break;
+      }
+      message[sizeof(message) - 1] = 0;
+      std::string lowered(reinterpret_cast<const char*>(message));
+      std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) {
+        return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch);
+      });
+      const std::string sqlstate(reinterpret_cast<const char*>(state));
+      const char* category = "unknown";
+      if (lowered.find("too many connections") != std::string::npos ||
+          lowered.find("connection limit exceeded") != std::string::npos) {
+        category = "connection_limit";
+      } else if (sqlstate == "28000") {
+        category = "authentication";
+      } else if (sqlstate == "HYT00" || sqlstate == "HYT01") {
+        category = "timeout";
+      } else if (lowered.find("certificate verify failed") != std::string::npos ||
+                 lowered.find("certificate verification failed") != std::string::npos) {
+        category = "tls_certificate";
+      }
+      // Startup text may contain a principal or private endpoint. Preserve all
+      // record codes and a fixed category, never arbitrary server text in XML.
+      result += " [record=" + std::to_string(record) + " state=" + sqlstate +
+          " native=" + std::to_string(native) + " category=" + category + "]";
+    }
+    return result.empty() ? "no diagnostic records" : result;
+  }
+
   void SetUp() override {
     // Select independent literal expectations by the existing compiled product,
     // never by learning expected capabilities from the SQLGetInfo output.
@@ -190,16 +234,25 @@ class GetInfoIntegrationTest : public ::testing::Test {
     if (SQLConnect(connection_,
                    odbcpp::test::configured_server_name_data(), SQL_NTS,
                    nullptr, 0, nullptr, 0) != SQL_SUCCESS) {
-      GTEST_SKIP() << "Database connection failed";
+      GTEST_SKIP() << "Database connection failed: " << connection_diagnostics();
     }
   }
 
   void TearDown() override {
     if (connection_) {
-      SQLDisconnect(connection_);
-      SQLFreeHandle(SQL_HANDLE_DBC, connection_);
+      const auto disconnected = SQLDisconnect(connection_);
+      if (disconnected != SQL_SUCCESS) {
+        // Failed login or a retired timeout connection is already closed.
+        EXPECT_EQ(SQL_ERROR, disconnected);
+        EXPECT_EQ("08003", diagnostic_state(connection_));
+      }
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+      connection_ = SQL_NULL_HDBC;
     }
-    if (environment_) SQLFreeHandle(SQL_HANDLE_ENV, environment_);
+    if (environment_) {
+      EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment_));
+      environment_ = SQL_NULL_HENV;
+    }
   }
 
   std::string string_info(SQLUSMALLINT type) {
@@ -216,13 +269,16 @@ class GetInfoIntegrationTest : public ::testing::Test {
     SQLHSTMT statement = SQL_NULL_HSTMT;
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
+    struct StatementOwner {
+      SQLHSTMT handle;
+      ~StatementOwner() { EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, handle)); }
+    } owner{statement};
     ASSERT_EQ(SQL_SUCCESS,
               SQLExecDirect(statement,
                             reinterpret_cast<SQLCHAR*>(
                                 const_cast<char*>(sql.data())),
                             static_cast<SQLINTEGER>(sql.size())))
-        << sql;
-    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+        << sql << ": " << statement_diagnostic(statement);
   }
 
 
