@@ -17635,6 +17635,9 @@ TEST_F(SqlCapabilityMaskTest, ExplicitBatchMasksStayWithheldForBothProfiles) {
       ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
       EXPECT_EQ(0u, mask) << type;
     }
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+    stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   }
 }
 
