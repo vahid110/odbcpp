@@ -320,6 +320,7 @@ struct Observations {
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool advertised_transactions{false};
+  bool advertised_select_batches{false};
   std::optional<TransactionCapabilities> transaction_capability_override;
   bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
@@ -807,6 +808,7 @@ class FakeProvider final : public IBackendProvider {
     result.dbms_name = "ContractDB";
     result.read_only = seen_->read_only_capability;
     result.describe_parameters = true;
+    result.sql.batch_select = seen_->advertised_select_batches;
     result.catalog_names = seen_->advertised_catalog_names;
     result.max_identifier_length = 117;
     result.identifier_case = IdentifierCase::Upper;
@@ -17728,6 +17730,17 @@ TEST_F(BackendContractTest, UnknownProviderDeclaresNoSqlFeaturesOrMultipleResult
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
     EXPECT_STREQ("N", reinterpret_cast<const char*>(value));
   }
+}
+
+TEST_F(BackendContractTest, QualifiedSelectBatchSupportAlsoImpliesMultipleResults) {
+  seen->advertised_select_batches = true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLUINTEGER support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_BS_SELECT_EXPLICIT), support);
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
 }
 
 TEST_F(BackendContractTest, SelectArraysAlsoAuthorizeMultipleResultsWithoutExplicitBatches) {
