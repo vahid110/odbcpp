@@ -125,6 +125,7 @@ statements. No automatic splitting, interpolation or fallback is implemented.
 `SQL_MULT_RESULT_SETS` describes available result sequences, not support for
 all batch execution paths. PostgreSQL's direct result sequences and the
 existing prepared-select parameter-array facet independently justify `Y`.
+A provider that genuinely qualifies full SELECT batches also implies `Y`.
 A provider with neither reports `N`; the Redshift SQL declaration makes no
 new direct-sequence claim, while its existing prepared-array facet still
 supplies multiple results. The checked-in direct-sequence and prepared-array
