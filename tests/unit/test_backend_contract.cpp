@@ -17667,6 +17667,17 @@ TEST_F(SqlCapabilityMaskTest, RedshiftUnqualifiedSqlClaimsRemainWithheld) {
   EXPECT_STREQ("N", reinterpret_cast<const char*>(joins));
 }
 
+TEST_F(SqlCapabilityMaskTest, RedshiftScalarMasksWaitForConnectedQualification) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  for (const auto type : std::array<SQLUSMALLINT, 4>{SQL_STRING_FUNCTIONS,
+      SQL_NUMERIC_FUNCTIONS, SQL_TIMEDATE_FUNCTIONS, SQL_SYSTEM_FUNCTIONS}) {
+    SCOPED_TRACE(type);
+    SQLUINTEGER mask = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(0u, mask);
+  }
+}
+
 TEST_F(SqlCapabilityMaskTest, RedshiftCurrentDateClaimWaitsForConnectedEvidence) {
   ASSERT_NO_FATAL_FAILURE(use_profile(true));
   SQLUINTEGER mask = 97;
