@@ -114,7 +114,8 @@ proof of server behavior.
 | column_aliases, describe_parameters | Both true | Selected aliases/prepared scalar only; describe-parameter fidelity pending |
 | order_by_expressions/requires_select, correlation_names, group_by | True/false, any, unrelated | Ordered rows proved; expression/grouping breadth pending |
 | null_collation, concat_null_yields_null, non_nullable_columns | High, true, true | NULL retrieval does not qualify ordering/concatenation/non-null constraints |
-| read_only, integrity, like_escape, outer_joins, procedures | False, true, true, true, true | Escaped discovery partly proved; write/integrity/join/routine semantics pending |
+| read_only, integrity, like_escape, procedures | False, true, true, true | Escaped discovery partly proved; write/integrity/routine semantics pending |
+| sql.join_left/right/full/nested/unordered_columns/inner_with_outer/all_comparisons | All false | SQL_OUTER_JOINS=N and SQL_OJ_CAPABILITIES=0 until connected Redshift acceptance (#142); replaces the removed standalone outer_joins field |
 | create_index, drop_index | Both false | Corrected static reporting, direct ODBC regression |
 | insert_literals/searched, select_into | All true | Inherited; no general ODBC write qualification |
 | sql92_entry, union_distinct/all | All true | UNION DISTINCT in001; broader conformance unqualified |

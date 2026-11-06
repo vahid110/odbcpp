@@ -320,6 +320,7 @@ struct Observations {
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool advertised_transactions{false};
+  bool advertised_select_batches{false};
   std::optional<TransactionCapabilities> transaction_capability_override;
   bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
@@ -807,6 +808,7 @@ class FakeProvider final : public IBackendProvider {
     result.dbms_name = "ContractDB";
     result.read_only = seen_->read_only_capability;
     result.describe_parameters = true;
+    result.sql.batch_select = seen_->advertised_select_batches;
     result.catalog_names = seen_->advertised_catalog_names;
     result.max_identifier_length = 117;
     result.identifier_case = IdentifierCase::Upper;
@@ -10773,6 +10775,13 @@ class PreparedSelectArrayTest : public PreparedCommandArrayTest {
 };
 TEST_F(PreparedSelectArrayTest, IncrementalOwningMaskedResultsIdleCancelAndDirectPreparedRefill) {
   ASSERT_NO_FATAL_FAILURE(select_ready()); operations[1] = SQL_PARAM_IGNORE;
+  // Parameter arrays provide multiple results independently of semicolon batches.
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+  SQLUINTEGER batch_support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &batch_support, sizeof(batch_support), nullptr));
+  EXPECT_EQ(0u, batch_support);
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(1u, seen->command_inputs.size());
   EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]); EXPECT_EQ(SQL_PARAM_UNUSED, status[1]);
   EXPECT_EQ(SQL_PARAM_UNUSED, status[2]); input[2] = 999;
@@ -12284,8 +12293,7 @@ TEST_F(CalendarEscapeApiTest, RequiredOutputsSiblingSnapshotAndDiscoveryClaimsSu
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER year=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&year,sizeof(year),&bytes));EXPECT_EQ(2024,year);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions)  // #144: Redshift reports TIMESTAMPADD/DIFF only after its live acceptance
-     ;
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
   std::string good="SELECT {fn YEAR({d '2000-01-01'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(2024,year);
 }
 }
@@ -12359,8 +12367,7 @@ TEST_F(ClockEscapeApiTest, LocalErrorPreservesOutputsSiblingSnapshotAndDiscovery
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
   SQLINTEGER second=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&second,sizeof(second),&bytes));EXPECT_EQ(59,second);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions)  // #144: Redshift reports TIMESTAMPADD/DIFF only after its live acceptance
-     ;
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
   std::string good="SELECT {fn SECOND({ts '2000-01-01 12:08:43.101000'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(59,second);
 }
 }
@@ -12546,8 +12553,7 @@ TEST_F(DayOrdinalEscapeApiTest, SiblingSnapshotAndCapabilityMasksSurviveLocalRef
   EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
-  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask)  // #144: Redshift reports TIMESTAMPADD/DIFF only after its live acceptance
-     ;
+  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
@@ -17545,3 +17551,274 @@ TEST_F(BackendContractTest, TransactionProfileConformanceUsesLiteralStandardClai
     ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   }
 }
+
+
+namespace {
+class SqlCapabilityMaskTest : public BackendContractTest {
+ protected:
+  void use_profile(bool redshift) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+    dbc = nullptr;
+    auto profile = std::make_shared<postgres::PgBackendProvider>(
+        BackendIdentity{"capability-test", "deliberately misleading", "test"},
+        BackendConnectionDefaults{"synthetic.invalid", 5432, "test", false},
+        std::nullopt, redshift ? postgres::PgCatalogProfile::Redshift
+                              : postgres::PgCatalogProfile::PostgreSQL);
+    auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+        nullptr, std::make_shared<FakeProvider>(seen, profile));
+    dbc = reinterpret_cast<SQLHDBC>(connection.get());
+    rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+    ASSERT_NO_FATAL_FAILURE(connect());
+  }
+
+  void exact_masks(bool redshift) {
+    const auto pg_only = [&](SQLUINTEGER value) { return redshift ? 0u : value; };
+    const SQLUINTEGER outer = SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
+        SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER;
+    const SQLUINTEGER predicates = SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
+        SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON;
+    const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
+        {SQL_OJ_CAPABILITIES, pg_only(outer)},
+        {SQL_AGGREGATE_FUNCTIONS, pg_only(SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
+            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL)},
+        {SQL_STRING_FUNCTIONS, pg_only(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE)},
+        {SQL_NUMERIC_FUNCTIONS, 0},
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+        {SQL_SYSTEM_FUNCTIONS, pg_only(SQL_FN_SYS_IFNULL)},
+        {SQL_DATETIME_LITERALS, pg_only(SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP)},
+        {SQL_SUBQUERIES, pg_only(SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
+            (redshift ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES))},
+        {SQL_SQL92_PREDICATES, pg_only(predicates |
+            (redshift ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON))},
+        {SQL_SQL92_VALUE_EXPRESSIONS, pg_only(SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF)},
+        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(redshift ? 0 :
+            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
+        {SQL_SQL92_STRING_FUNCTIONS, pg_only(SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
+            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING)},
+        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, pg_only(SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
+            SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
+            (redshift ? 0 : SQL_SNVF_BIT_LENGTH))},
+        {SQL_SQL92_DATETIME_FUNCTIONS, pg_only(SQL_SDF_CURRENT_DATE |
+            (redshift ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP))},
+        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, pg_only(SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
+            SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
+            SQL_SRJO_RIGHT_OUTER_JOIN)},
+        {SQL_BATCH_SUPPORT, 0},
+        {SQL_BATCH_ROW_COUNT, 0},
+    };
+    for (const auto& [type, mask] : expected) {
+      SCOPED_TRACE(type);
+      for (const bool wide : {false, true}) {
+        SCOPED_TRACE(wide);
+        struct { SQLUINTEGER before{17}, value{0xffffffff}, after{83}; } out;
+        SQLSMALLINT length = -1;
+        ASSERT_EQ(SQL_SUCCESS, wide
+            ? SQLGetInfoW(dbc, type, &out.value, sizeof(out.value), &length)
+            : SQLGetInfo(dbc, type, &out.value, sizeof(out.value), &length));
+        EXPECT_EQ(mask, out.value);
+        EXPECT_EQ(sizeof(out.value), static_cast<std::size_t>(length));
+        EXPECT_EQ(17u, out.before);
+        EXPECT_EQ(83u, out.after);
+      }
+    }
+    for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
+      SQLCHAR value[2]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
+      EXPECT_STREQ(redshift ? "N" : "Y", reinterpret_cast<const char*>(value));
+    }
+  }
+};
+
+// SQL_BATCH_SUPPORT also covers prepared and parameterized explicit batches.
+// A simple-query sequence alone is insufficient for these capability claims.
+TEST_F(SqlCapabilityMaskTest, ExplicitBatchMasksStayWithheldForBothProfiles) {
+  for (const bool redshift : {false, true}) {
+    SCOPED_TRACE(redshift);
+    ASSERT_NO_FATAL_FAILURE(use_profile(redshift));
+    for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_BATCH_SUPPORT, SQL_BATCH_ROW_COUNT}) {
+      SQLUINTEGER mask = 97;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+      EXPECT_EQ(0u, mask) << type;
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+    stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftUnqualifiedSqlClaimsRemainWithheld) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  for (const auto type : std::array<SQLUSMALLINT, 11>{SQL_OJ_CAPABILITIES,
+      SQL_AGGREGATE_FUNCTIONS, SQL_DATETIME_LITERALS, SQL_SUBQUERIES,
+      SQL_SQL92_PREDICATES, SQL_SQL92_VALUE_EXPRESSIONS, SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+      SQL_SQL92_STRING_FUNCTIONS, SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
+      SQL_SQL92_DATETIME_FUNCTIONS, SQL_SQL92_RELATIONAL_JOIN_OPERATORS}) {
+    SQLUINTEGER mask = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(0u, mask) << type;
+  }
+  SQLCHAR joins[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_OUTER_JOINS, joins, sizeof(joins), nullptr));
+  EXPECT_STREQ("N", reinterpret_cast<const char*>(joins));
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftScalarMasksWaitForConnectedQualification) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  for (const auto type : std::array<SQLUSMALLINT, 4>{SQL_STRING_FUNCTIONS,
+      SQL_NUMERIC_FUNCTIONS, SQL_TIMEDATE_FUNCTIONS, SQL_SYSTEM_FUNCTIONS}) {
+    SCOPED_TRACE(type);
+    SQLUINTEGER mask = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(0u, mask);
+  }
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftCurrentDateClaimWaitsForConnectedEvidence) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  SQLUINTEGER mask = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TIMEDATE_FUNCTIONS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(0u, mask & SQL_FN_TD_CURDATE);
+}
+
+TEST_F(SqlCapabilityMaskTest, NativeRedshiftFacetAndOfflineOdbcMappingAgree) {
+  postgres::PgBackendProvider native(
+      BackendIdentity{"native-redshift", "Redshift", "test"},
+      BackendConnectionDefaults{"synthetic.invalid", 5432, "test", false},
+      std::nullopt, postgres::PgCatalogProfile::Redshift);
+  // Construct the actual native session without connecting or using a transport.
+  auto session = native.create_session(nullptr);
+  ASSERT_NE(nullptr, session);
+  auto* description = session->statement_description();
+  ASSERT_NE(nullptr, description);
+  ASSERT_TRUE(description->supports_prepared_result_sequence());
+  // Separate offline checks: inspect the native facet, then copy its policy
+  // into the fake execution carrier to test ODBC mapping. This is not a
+  // connected or end-to-end native-session execution test.
+  seen->select_array_authority = description->supports_prepared_result_sequence();
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+  SQLUINTEGER support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  EXPECT_EQ(0u, support);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_PARAM_ARRAY_SELECTS, &support, sizeof(support), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PAS_BATCH), support);
+}
+
+TEST_F(SqlCapabilityMaskTest, DirectResultSequencesRemainUsableWithoutPreparedBatchClaims) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(false));
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+  SQLUINTEGER support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  EXPECT_EQ(0u, support);
+  QueryResult first;
+  first.columns = {{"value", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  first.rows = {{"7"}};
+  first.statement_kind = StatementKind::SelectCursor;
+  first.result_id = 1;
+  QueryResult second = first;
+  second.rows = {{"9"}};
+  second.result_id = 2;
+  first.additional_results.push_back(std::move(second));
+  seen->date_result = std::move(first);
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 7; SELECT 9"));
+  for (const SQLINTEGER expected : {7, 9}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    SQLINTEGER actual = 0;
+    SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &actual, sizeof(actual), &length));
+    EXPECT_EQ(expected, actual);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(actual)), length);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    EXPECT_EQ(expected == 7 ? SQL_SUCCESS : SQL_NO_DATA, SQLMoreResults(stmt));
+  }
+}
+
+TEST_F(SqlCapabilityMaskTest, PostgreSqlExactMasksAndConsistency) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(false));
+  ASSERT_NO_FATAL_FAILURE(exact_masks(false));
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftExactMasksAndConsistency) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  ASSERT_NO_FATAL_FAILURE(exact_masks(true));
+}
+}  // namespace
+
+
+namespace {
+TEST_F(BackendContractTest, UnknownProviderDeclaresNoSqlFeaturesOrMultipleResults) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  for (const auto type : std::array<SQLUSMALLINT, 17>{SQL_OJ_CAPABILITIES, SQL_AGGREGATE_FUNCTIONS,
+      SQL_STRING_FUNCTIONS, SQL_NUMERIC_FUNCTIONS, SQL_TIMEDATE_FUNCTIONS,
+      SQL_SYSTEM_FUNCTIONS, SQL_DATETIME_LITERALS, SQL_SUBQUERIES,
+      SQL_SQL92_PREDICATES, SQL_SQL92_VALUE_EXPRESSIONS, SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+      SQL_SQL92_STRING_FUNCTIONS, SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
+      SQL_SQL92_DATETIME_FUNCTIONS, SQL_SQL92_RELATIONAL_JOIN_OPERATORS,
+      SQL_BATCH_SUPPORT, SQL_BATCH_ROW_COUNT}) {
+    SCOPED_TRACE(type);
+    SQLUINTEGER mask = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(0u, mask);
+  }
+  for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
+    SQLCHAR value[2]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
+    EXPECT_STREQ("N", reinterpret_cast<const char*>(value));
+  }
+}
+
+TEST_F(BackendContractTest, QualifiedSelectBatchSupportAlsoImpliesMultipleResults) {
+  seen->advertised_select_batches = true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLUINTEGER support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_BS_SELECT_EXPLICIT), support);
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+}
+
+TEST_F(BackendContractTest, SelectArraysAlsoAuthorizeMultipleResultsWithoutExplicitBatches) {
+  seen->select_array_authority = true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLCHAR value[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, value, sizeof(value), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
+  SQLUINTEGER mask = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(0u, mask);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_PARAM_ARRAY_SELECTS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PAS_BATCH), mask);
+}
+}  // namespace
+
+
+namespace {
+TEST_F(LocateEscapeApiTest, WithholdsLocateClaimButKeepsTranslationAndStartPositionRefusal) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLUINTEGER mask = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_STRING_FUNCTIONS, &mask, sizeof(mask), nullptr));
+  // SQLGetInfo defines LOCATE_2 for two arguments and LOCATE for the optional
+  // start-position form. Both claims await connected qualification; the
+  // latter form is also deliberately refused by this dialect.
+  EXPECT_EQ(0u, mask & SQL_FN_STR_LOCATE_2);
+  EXPECT_EQ(0u, mask & SQL_FN_STR_LOCATE);
+  std::string sql = "SELECT {fn LOCATE('a','cat',2)}";
+  std::array<SQLCHAR, 128> output{};
+  SQLINTEGER length = 0;
+  const auto calls = seen->queries;
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, reinterpret_cast<SQLCHAR*>(sql.data()),
+      SQL_NTS, output.data(), static_cast<SQLINTEGER>(output.size()), &length));
+  EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(calls, seen->queries);
+  sql = "SELECT {fn LOCATE('a','cat')}";
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc, reinterpret_cast<SQLCHAR*>(sql.data()),
+      SQL_NTS, output.data(), static_cast<SQLINTEGER>(output.size()), &length));
+  EXPECT_STREQ("SELECT POSITION('a' IN 'cat')", reinterpret_cast<const char*>(output.data()));
+}
+}  // namespace

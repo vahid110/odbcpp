@@ -560,6 +560,75 @@ TEST(RedshiftLogarithmEscapeTest, PostgresNativeLogAndUnknownPrefixesAndPriorFam
   EXPECT_EQ("(EXTRACT(dow FROM ?)+1),EXTRACT(doy FROM ?),CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER)",translate_odbc_sql("{fn DAYOFWEEK(?)},{fn DAYOFYEAR(?)},{fn SECOND(?)}",SqlDialectProfile::Redshift).sql);
 }
 
+
+TEST(SqlCapabilityEscapeProof, ScalarTranslationsRemainAvailableIndependentlyOfQualifiedClaims) {
+  using namespace rs::core::database;
+  using postgres::SqlDialectProfile;
+  struct Case {
+    bool SqlCapabilities::*field;
+    const char* escaped;
+    const char* postgres_sql;
+    const char* redshift_sql;
+  };
+  const Case cases[]{
+      {&SqlCapabilities::scalar_upper, "{fn UCASE('Ab')}", "UPPER('Ab')", "UPPER('Ab')"},
+      {&SqlCapabilities::scalar_lower, "{fn LCASE('Ab')}", "LOWER('Ab')", "LOWER('Ab')"},
+      {&SqlCapabilities::scalar_if_null, "{fn IFNULL(NULL,7)}", "COALESCE(NULL,7)", "COALESCE(NULL,7)"},
+      {&SqlCapabilities::scalar_current_date, "{fn CURDATE()}", "CURRENT_DATE", "CURRENT_DATE"},
+      {&SqlCapabilities::scalar_current_time, "{fn CURTIME()}", "CURRENT_TIME", "CAST(GETDATE() AS TIME)"},
+      {&SqlCapabilities::scalar_current_timestamp, "{fn NOW()}", "CURRENT_TIMESTAMP", "GETDATE()"},
+      {&SqlCapabilities::scalar_trimmed_length, "{fn LENGTH('cat   ')}", nullptr, "LENGTH(RTRIM('cat   ', ' '))"},
+      {&SqlCapabilities::scalar_locate_two_arguments, "{fn LOCATE('at','cat')}", nullptr, "POSITION('at' IN 'cat')"},
+      {&SqlCapabilities::scalar_natural_log, "{fn LOG(100)}", nullptr, "LN(100)"},
+      {&SqlCapabilities::scalar_log10, "{fn LOG10(100)}", nullptr, "LOG(100)"},
+      {&SqlCapabilities::scalar_year, "{fn YEAR(?)}", nullptr, "CAST(DATE_PART(year, ?) AS INTEGER)"},
+      {&SqlCapabilities::scalar_month, "{fn MONTH(?)}", nullptr, "CAST(DATE_PART(month, ?) AS INTEGER)"},
+      {&SqlCapabilities::scalar_day, "{fn DAYOFMONTH(?)}", nullptr, "CAST(DATE_PART(day, ?) AS INTEGER)"},
+      {&SqlCapabilities::scalar_weekday, "{fn DAYOFWEEK(?)}", nullptr, "(EXTRACT(dow FROM ?)+1)"},
+      {&SqlCapabilities::scalar_yearday, "{fn DAYOFYEAR(?)}", nullptr, "EXTRACT(doy FROM ?)"},
+      {&SqlCapabilities::scalar_hour, "{fn HOUR(?)}", nullptr, "CAST(FLOOR(EXTRACT(hour FROM ?)) AS INTEGER)"},
+      {&SqlCapabilities::scalar_minute, "{fn MINUTE(?)}", nullptr, "CAST(FLOOR(EXTRACT(minute FROM ?)) AS INTEGER)"},
+      {&SqlCapabilities::scalar_second, "{fn SECOND(?)}", nullptr, "CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER)"},
+  };
+  for (const bool redshift : {false, true}) {
+    const auto capabilities = redshift ? postgres::redshift_backend_capabilities("misleading")
+                                      : postgres::pg_backend_capabilities("misleading");
+    const auto profile = redshift ? SqlDialectProfile::Redshift : SqlDialectProfile::PostgreSql;
+    for (const auto& item : cases) {
+      SCOPED_TRACE(item.escaped);
+      SCOPED_TRACE(redshift);
+      const auto* expected = redshift ? item.redshift_sql : item.postgres_sql;
+      // A translation can remain usable while its SQLGetInfo claim awaits live proof.
+      const bool qualified = !redshift && expected != nullptr;
+      EXPECT_EQ(qualified, capabilities.sql.*(item.field));
+      if (expected != nullptr) {
+        const auto result = translate_odbc_sql(item.escaped, profile);
+        ASSERT_TRUE(result) << result.message;
+        EXPECT_EQ(expected, result.sql);
+      }
+    }
+  }
+}
+
+TEST(SqlCapabilityEscapeProof, JoinTranslationFormsStripOnlyTheEscapeWrapper) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    for (const auto* native : {
+        "a LEFT OUTER JOIN b ON a.x=b.y",
+        "a LEFT JOIN b ON a.x=b.y",
+        "a RIGHT OUTER JOIN b ON a.x=b.y",
+        "a FULL OUTER JOIN b ON a.x=b.y",
+        "a LEFT OUTER JOIN b ON b.y=a.x",
+        "a LEFT OUTER JOIN (b LEFT OUTER JOIN c ON b.y=c.z) ON a.x=b.y",
+        "a LEFT OUTER JOIN (b INNER JOIN c ON b.y=c.z) ON a.x=b.y"}) {
+      SCOPED_TRACE(native);
+      const auto result = translate_odbc_sql("{oj " + std::string(native) + "}", profile);
+      ASSERT_TRUE(result) << result.message;
+      EXPECT_EQ(native, result.sql);
+    }
+  }
+}
+
 // Golden SQL for one second-based and one calendar unit per product (#144
 // review), so a wrong unit scale or operand order fails here and not only in
 // a live run. PostgreSQL counts unit boundaries as f(b) - f(a) over values

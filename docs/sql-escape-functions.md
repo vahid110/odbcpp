@@ -112,3 +112,46 @@ and SQL-92 capability reporting is tracked in issue #142.
 Checked-in translation, public capability and connected SQL tests cover these
 contracts. Their presence is not a live acceptance claim: the PR records actual
 results separately for each product, platform and driver-manager profile.
+
+## Capability reporting and provider migration
+
+`SQL_BATCH_SUPPORT` and `SQL_BATCH_ROW_COUNT` are zero for both products.
+A direct, unparameterized `SQLExecDirect` simple-query sequence is narrower
+than ODBC explicit-batch support: `SQLPrepare`/`SQLExecute` and parameterized
+execution use one protocol Parse, which cannot contain multiple commands.
+Prepared and parameterized semicolon batches remain unsupported; use separate
+statements. No automatic splitting, interpolation or fallback is implemented.
+
+`SQL_MULT_RESULT_SETS` describes available result sequences, not support for
+all batch execution paths. PostgreSQL's direct result sequences and the
+existing prepared-select parameter-array facet independently justify `Y`.
+A provider that genuinely qualifies full SELECT batches also implies `Y`.
+A provider with neither reports `N`; the Redshift SQL declaration makes no
+new direct-sequence claim, while its existing prepared-array facet still
+supplies multiple results. The native Redshift facet inspection and fake-carrier ODBC mapping are
+separate offline checks, not an end-to-end native session test. The checked-in
+direct-sequence and prepared-array unit tests exercise `SQLMoreResults` separately from the zero batch masks.
+See the [ODBC SQLGetInfo definitions](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetinfo-function)
+and [PostgreSQL extended-query restriction](https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY).
+
+Redshift's newly proposed scalar, SQL92, subquery, aggregate, datetime-literal
+and outer/relational-join masks remain zero pending connected qualification
+under #142. Existing translations and their offline/connected behavior tests
+remain available; withholding a metadata claim does not remove a translation.
+Historical local receipts are retained privately, but are not current-head CI
+or live acceptance evidence. The connected tests retain their SQL behavior
+assertions and explicitly expect withheld Redshift mask bits, so future
+qualification does not silently skip the behavior. Conversion and
+timestamp-add/diff claims remain withheld under #220.
+A successful direct-only batch probe cannot qualify the broader batch
+masks; prepared and parameterized support needs separate implementation/proof.
+
+**Public SDK source and binary compatibility:** `BackendCapabilities::outer_joins` has
+been replaced by the detailed `BackendCapabilities::sql.join_*` declarations.
+Out-of-tree providers that assigned the old member must migrate and recompile;
+the public aggregate layout also changes, so this is a source and binary ABI
+break, not an automatic compatibility alias. Recompile every SDK consumer. Declare
+only qualified forms; do not mechanically set every new field to true.
+`sql.direct_result_sequences` is separate from `sql.batch_select`,
+`sql.batch_command` and `sql.batch_individual_counts`: the latter require the
+full direct/prepared/parameterized batch contract. All fields default false.

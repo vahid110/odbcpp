@@ -403,7 +403,7 @@ namespace {
   std::optional<std::string_view> string_info_value(
       SQLUSMALLINT info_type,
       const rs::core::database::BackendCapabilities& backend,
-      bool read_only_session) {
+      bool read_only_session, bool select_parameter_arrays) {
     switch (info_type) {
       case SQL_DRIVER_NAME: return ODBCPP_DRIVER_FILENAME;
       case SQL_DRIVER_VER: return ODBCPP_DRIVER_VERSION;
@@ -427,9 +427,12 @@ namespace {
       case SQL_EXPRESSIONS_IN_ORDERBY: return backend.order_by_expressions ? "Y" : "N";
       case SQL_INTEGRITY: return backend.integrity ? "Y" : "N";
       case SQL_LIKE_ESCAPE_CLAUSE: return backend.like_escape ? "Y" : "N";
-      case SQL_OUTER_JOINS: return backend.outer_joins ? "Y" : "N";
+      case SQL_OUTER_JOINS:
+        return backend.sql.join_left || backend.sql.join_right || backend.sql.join_full ? "Y" : "N";
       case SQL_PROCEDURES: return backend.procedures ? "Y" : "N";
-      case SQL_MULT_RESULT_SETS: return "Y";
+      case SQL_MULT_RESULT_SETS:
+        return backend.sql.batch_select || backend.sql.direct_result_sequences ||
+            select_parameter_arrays ? "Y" : "N";
       case SQL_DATA_SOURCE_READ_ONLY: return backend.read_only || read_only_session ? "Y" : "N";
       case SQL_ORDER_BY_COLUMNS_IN_SELECT: return backend.order_by_requires_select ? "Y" : "N";
       case SQL_ACCESSIBLE_TABLES:
@@ -1724,7 +1727,8 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
         string_length, "Driver information was truncated");
   }
 
-  if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session())) {
+  if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session(),
+          conn->supports_select_parameter_arrays())) {
     return write_narrow_output(
         conn, *value, static_cast<SQLCHAR*>(info_value), info_value ? buffer_length : 0,
         string_length, "Driver information was truncated");
@@ -1849,6 +1853,15 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_AM_NONE));
     case SQL_BOOKMARK_PERSISTENCE:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_BP_TRANSACTION));
+    case SQL_OJ_CAPABILITIES:
+      return write_uinteger(
+          (backend.sql.join_left ? SQL_OJ_LEFT : 0) |
+          (backend.sql.join_right ? SQL_OJ_RIGHT : 0) |
+          (backend.sql.join_full ? SQL_OJ_FULL : 0) |
+          (backend.sql.join_nested ? SQL_OJ_NESTED : 0) |
+          (backend.sql.join_unordered_columns ? SQL_OJ_NOT_ORDERED : 0) |
+          (backend.sql.join_inner_with_outer ? SQL_OJ_INNER : 0) |
+          (backend.sql.join_all_comparisons ? SQL_OJ_ALL_COMPARISON_OPS : 0));
     case SQL_CONVERT_FUNCTIONS:
       return write_uinteger(std::any_of(backend.conversions.targets.begin(), backend.conversions.targets.end(),
           [](auto targets) { return targets != 0; }) ? SQL_FN_CVT_CONVERT : 0);
@@ -1856,14 +1869,113 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(timestamp_interval_mask(backend.timestamp_add_intervals));
     case SQL_TIMEDATE_DIFF_INTERVALS:
       return write_uinteger(timestamp_interval_mask(backend.timestamp_diff_intervals));
-    case SQL_TIMEDATE_FUNCTIONS:
-      return write_uinteger((backend.timestamp_add_intervals ? SQL_FN_TD_TIMESTAMPADD : 0) |
-                            (backend.timestamp_diff_intervals ? SQL_FN_TD_TIMESTAMPDIFF : 0));
-    case SQL_BATCH_ROW_COUNT:
-    case SQL_BATCH_SUPPORT:
     case SQL_AGGREGATE_FUNCTIONS:
-    case SQL_ALTER_DOMAIN:
+      return write_uinteger(
+          (backend.sql.aggregate_average ? SQL_AF_AVG : 0) |
+          (backend.sql.aggregate_count ? SQL_AF_COUNT : 0) |
+          (backend.sql.aggregate_maximum ? SQL_AF_MAX : 0) |
+          (backend.sql.aggregate_minimum ? SQL_AF_MIN : 0) |
+          (backend.sql.aggregate_sum ? SQL_AF_SUM : 0) |
+          (backend.sql.aggregate_distinct ? SQL_AF_DISTINCT : 0) |
+          (backend.sql.aggregate_all ? SQL_AF_ALL : 0));
+    case SQL_STRING_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.scalar_upper ? SQL_FN_STR_UCASE : 0) |
+          (backend.sql.scalar_lower ? SQL_FN_STR_LCASE : 0) |
+          (backend.sql.scalar_trimmed_length ? SQL_FN_STR_LENGTH : 0) |
+          (backend.sql.scalar_locate_two_arguments ? SQL_FN_STR_LOCATE_2 : 0));
+    case SQL_NUMERIC_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.scalar_natural_log ? SQL_FN_NUM_LOG : 0) |
+          (backend.sql.scalar_log10 ? SQL_FN_NUM_LOG10 : 0));
+    case SQL_TIMEDATE_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.scalar_current_date ? SQL_FN_TD_CURDATE : 0) |
+          (backend.sql.scalar_current_time ? SQL_FN_TD_CURTIME : 0) |
+          (backend.sql.scalar_current_timestamp ? SQL_FN_TD_NOW : 0) |
+          (backend.sql.scalar_year ? SQL_FN_TD_YEAR : 0) |
+          (backend.sql.scalar_month ? SQL_FN_TD_MONTH : 0) |
+          (backend.sql.scalar_day ? SQL_FN_TD_DAYOFMONTH : 0) |
+          (backend.sql.scalar_weekday ? SQL_FN_TD_DAYOFWEEK : 0) |
+          (backend.sql.scalar_yearday ? SQL_FN_TD_DAYOFYEAR : 0) |
+          (backend.sql.scalar_hour ? SQL_FN_TD_HOUR : 0) |
+          (backend.sql.scalar_minute ? SQL_FN_TD_MINUTE : 0) |
+          (backend.sql.scalar_second ? SQL_FN_TD_SECOND : 0) |
+          (backend.timestamp_add_intervals ? SQL_FN_TD_TIMESTAMPADD : 0) |
+          (backend.timestamp_diff_intervals ? SQL_FN_TD_TIMESTAMPDIFF : 0));
+    case SQL_SYSTEM_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.scalar_if_null ? SQL_FN_SYS_IFNULL : 0));
     case SQL_DATETIME_LITERALS:
+      return write_uinteger(
+          (backend.sql.date_literal ? SQL_DL_SQL92_DATE : 0) |
+          (backend.sql.time_literal ? SQL_DL_SQL92_TIME : 0) |
+          (backend.sql.timestamp_literal ? SQL_DL_SQL92_TIMESTAMP : 0));
+    case SQL_SUBQUERIES:
+      return write_uinteger(
+          (backend.sql.subquery_comparison ? SQL_SQ_COMPARISON : 0) |
+          (backend.sql.subquery_exists ? SQL_SQ_EXISTS : 0) |
+          (backend.sql.subquery_in ? SQL_SQ_IN : 0) |
+          (backend.sql.subquery_quantified ? SQL_SQ_QUANTIFIED : 0) |
+          (backend.sql.subquery_correlated ? SQL_SQ_CORRELATED_SUBQUERIES : 0));
+    case SQL_SQL92_PREDICATES:
+      return write_uinteger(
+          (backend.sql.predicate_exists ? SQL_SP_EXISTS : 0) |
+          (backend.sql.predicate_not_null ? SQL_SP_ISNOTNULL : 0) |
+          (backend.sql.predicate_null ? SQL_SP_ISNULL : 0) |
+          (backend.sql.predicate_like ? SQL_SP_LIKE : 0) |
+          (backend.sql.predicate_in ? SQL_SP_IN : 0) |
+          (backend.sql.predicate_between ? SQL_SP_BETWEEN : 0) |
+          (backend.sql.predicate_comparison ? SQL_SP_COMPARISON : 0) |
+          (backend.sql.predicate_overlaps ? SQL_SP_OVERLAPS : 0) |
+          (backend.sql.predicate_quantified ? SQL_SP_QUANTIFIED_COMPARISON : 0));
+    case SQL_SQL92_VALUE_EXPRESSIONS:
+      return write_uinteger(
+          (backend.sql.value_case ? SQL_SVE_CASE : 0) |
+          (backend.sql.value_cast ? SQL_SVE_CAST : 0) |
+          (backend.sql.value_coalesce ? SQL_SVE_COALESCE : 0) |
+          (backend.sql.value_nullif ? SQL_SVE_NULLIF : 0));
+    case SQL_SQL92_ROW_VALUE_CONSTRUCTOR:
+      return write_uinteger(
+          (backend.sql.row_value ? SQL_SRVC_VALUE_EXPRESSION : 0) |
+          (backend.sql.row_null ? SQL_SRVC_NULL : 0) |
+          (backend.sql.row_subquery ? SQL_SRVC_ROW_SUBQUERY : 0));
+    case SQL_SQL92_STRING_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.string_lower ? SQL_SSF_LOWER : 0) |
+          (backend.sql.string_upper ? SQL_SSF_UPPER : 0) |
+          (backend.sql.string_substring ? SQL_SSF_SUBSTRING : 0) |
+          (backend.sql.string_trim_both ? SQL_SSF_TRIM_BOTH : 0) |
+          (backend.sql.string_trim_leading ? SQL_SSF_TRIM_LEADING : 0) |
+          (backend.sql.string_trim_trailing ? SQL_SSF_TRIM_TRAILING : 0));
+    case SQL_SQL92_NUMERIC_VALUE_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.numeric_character_length ? SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH : 0) |
+          (backend.sql.numeric_extract ? SQL_SNVF_EXTRACT : 0) |
+          (backend.sql.numeric_octet_length ? SQL_SNVF_OCTET_LENGTH : 0) |
+          (backend.sql.numeric_position ? SQL_SNVF_POSITION : 0) |
+          (backend.sql.numeric_bit_length ? SQL_SNVF_BIT_LENGTH : 0));
+    case SQL_SQL92_DATETIME_FUNCTIONS:
+      return write_uinteger(
+          (backend.sql.datetime_current_date ? SQL_SDF_CURRENT_DATE : 0) |
+          (backend.sql.datetime_current_time ? SQL_SDF_CURRENT_TIME : 0) |
+          (backend.sql.datetime_current_timestamp ? SQL_SDF_CURRENT_TIMESTAMP : 0));
+    case SQL_SQL92_RELATIONAL_JOIN_OPERATORS:
+      return write_uinteger(
+          (backend.sql.join_cross ? SQL_SRJO_CROSS_JOIN : 0) |
+          (backend.sql.join_full ? SQL_SRJO_FULL_OUTER_JOIN : 0) |
+          (backend.sql.join_inner ? SQL_SRJO_INNER_JOIN : 0) |
+          (backend.sql.join_left ? SQL_SRJO_LEFT_OUTER_JOIN : 0) |
+          (backend.sql.join_natural ? SQL_SRJO_NATURAL_JOIN : 0) |
+          (backend.sql.join_right ? SQL_SRJO_RIGHT_OUTER_JOIN : 0));
+    case SQL_BATCH_SUPPORT:
+      return write_uinteger(
+          (backend.sql.batch_select ? SQL_BS_SELECT_EXPLICIT : 0) |
+          (backend.sql.batch_command ? SQL_BS_ROW_COUNT_EXPLICIT : 0));
+    case SQL_BATCH_ROW_COUNT:
+      return write_uinteger(
+          (backend.sql.batch_individual_counts ? SQL_BRC_EXPLICIT : 0));
+    case SQL_ALTER_DOMAIN:
     case SQL_CREATE_ASSERTION:
     case SQL_CREATE_CHARACTER_SET:
     case SQL_CREATE_COLLATION:
@@ -1887,24 +1999,12 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_MAX_ROW_SIZE:
     case SQL_MAX_STATEMENT_LEN:
     case SQL_MAX_ASYNC_CONCURRENT_STATEMENTS:
-    case SQL_NUMERIC_FUNCTIONS:
-    case SQL_OJ_CAPABILITIES:
     case SQL_POSITIONED_STATEMENTS:
-    case SQL_SQL92_DATETIME_FUNCTIONS:
     case SQL_SQL92_FOREIGN_KEY_DELETE_RULE:
     case SQL_SQL92_FOREIGN_KEY_UPDATE_RULE:
     case SQL_SQL92_GRANT:
-    case SQL_SQL92_NUMERIC_VALUE_FUNCTIONS:
-    case SQL_SQL92_PREDICATES:
-    case SQL_SQL92_RELATIONAL_JOIN_OPERATORS:
     case SQL_SQL92_REVOKE:
-    case SQL_SQL92_ROW_VALUE_CONSTRUCTOR:
-    case SQL_SQL92_STRING_FUNCTIONS:
-    case SQL_SQL92_VALUE_EXPRESSIONS:
     case SQL_STATIC_SENSITIVITY:
-    case SQL_STRING_FUNCTIONS:
-    case SQL_SUBQUERIES:
-    case SQL_SYSTEM_FUNCTIONS:
       return write_uinteger(0);
     case SQL_CREATE_TABLE:
       return write_uinteger(static_cast<SQLUINTEGER>(
@@ -2088,7 +2188,8 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
         static_cast<SQLWCHAR*>(info_value), info_value ? buffer_length : 0,
         string_length, "Driver information was truncated");
   }
-  if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session())) {
+  if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session(),
+          conn->supports_select_parameter_arrays())) {
     return write_wide_bytes_output(
         conn, *value, static_cast<SQLWCHAR*>(info_value),
         info_value ? buffer_length : 0, string_length, "Driver information was truncated");

@@ -223,6 +223,37 @@ class GetInfoIntegrationTest : public ::testing::Test {
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
   }
 
+
+  void verify_sql_feature(SQLUSMALLINT type, SQLUINTEGER bit, std::string_view predicate) {
+    SCOPED_TRACE(type);
+    SCOPED_TRACE(bit);
+    SCOPED_TRACE(predicate);
+    SQLUINTEGER mask = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, type, &mask, sizeof(mask), nullptr));
+    // Redshift remains a qualification probe: assert the claim is withheld,
+    // then run the same semantic assertion so future acceptance cannot hide
+    // behind a zero capability mask. PostgreSQL must advertise the exact bit.
+    ASSERT_EQ(redshift_profile_ ? 0u : bit, mask & bit);
+    SQLHSTMT statement = SQL_NULL_HSTMT;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
+    struct StatementOwner {
+      SQLHSTMT handle;
+      ~StatementOwner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); }
+    } owner{statement};
+    const std::string sql = "SELECT CASE WHEN (" + std::string(predicate) + ") THEN 1 ELSE 0 END";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())),
+        static_cast<SQLINTEGER>(sql.size()))) << predicate;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement));
+    SQLINTEGER actual = -1;
+    SQLLEN length = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement, 1, SQL_C_SLONG, &actual, sizeof(actual), &length));
+    EXPECT_NE(SQL_NULL_DATA, length);
+    EXPECT_EQ(1, actual);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(statement));
+  }
+
   bool expected_support(SQLUSMALLINT id) const {
     return id == SQL_API_SQLCANCEL ? expect_sqlcancel_
                                    : odbcpp::test::expected_support(id) ||
@@ -259,7 +290,7 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
           {SQL_INTEGRITY, "Y"},
           {SQL_LIKE_ESCAPE_CLAUSE, "Y"},
           {SQL_MULT_RESULT_SETS, "Y"},
-          {SQL_OUTER_JOINS, "Y"},
+          {SQL_OUTER_JOINS, redshift_profile_ ? "N" : "Y"},
           {SQL_PROCEDURES, "Y"},
           {SQL_ACCESSIBLE_TABLES, "N"},
           {SQL_ACCESSIBLE_PROCEDURES, "N"},
@@ -401,7 +432,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_BATCH_ROW_COUNT, 0},
           {SQL_BATCH_SUPPORT, 0},
           {SQL_BOOKMARK_PERSISTENCE, SQL_BP_TRANSACTION},
-          {SQL_CONVERT_FUNCTIONS, SQL_FN_CVT_CONVERT},
+          {SQL_CONVERT_FUNCTIONS, redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_FN_CVT_CONVERT)},
           {SQL_CURSOR_SENSITIVITY, SQL_UNSPECIFIED},
           {SQL_DYNAMIC_CURSOR_ATTRIBUTES1, 0},
           {SQL_DYNAMIC_CURSOR_ATTRIBUTES2, 0},
@@ -498,9 +529,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
 
 
   constexpr SQLUSMALLINT zero_integer_values[]{
-      SQL_AGGREGATE_FUNCTIONS,
       SQL_ALTER_DOMAIN,
-      SQL_DATETIME_LITERALS,
       SQL_CREATE_ASSERTION,
       SQL_CREATE_CHARACTER_SET,
       SQL_CREATE_COLLATION,
@@ -519,22 +548,10 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
       SQL_MAX_INDEX_SIZE,
       SQL_MAX_ROW_SIZE,
       SQL_MAX_STATEMENT_LEN,
-      SQL_NUMERIC_FUNCTIONS,
-      SQL_OJ_CAPABILITIES,
-      SQL_SQL92_DATETIME_FUNCTIONS,
       SQL_SQL92_FOREIGN_KEY_DELETE_RULE,
       SQL_SQL92_FOREIGN_KEY_UPDATE_RULE,
       SQL_SQL92_GRANT,
-      SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
-      SQL_SQL92_PREDICATES,
-      SQL_SQL92_RELATIONAL_JOIN_OPERATORS,
       SQL_SQL92_REVOKE,
-      SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
-      SQL_SQL92_STRING_FUNCTIONS,
-      SQL_SQL92_VALUE_EXPRESSIONS,
-      SQL_STRING_FUNCTIONS,
-      SQL_SUBQUERIES,
-      SQL_SYSTEM_FUNCTIONS,
   };
 
   // #144: supported conversions and interval escapes replace the old zero claims.
@@ -572,7 +589,8 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
         {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
         {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
         {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
         {SQL_CONVERT_GUID, pg_only(redshift_profile_ ? 0u : SQL_CVT_GUID | characters)},
 #endif
@@ -928,3 +946,235 @@ TEST_F(GetInfoIntegrationTest, NullAndSetOperationClaimsMatchServerSemantics) {
 }
 
 }  // namespace
+
+TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
+    const auto pg_only = [&](SQLUINTEGER value) { return redshift_profile_ ? 0u : value; };
+    const SQLUINTEGER outer = SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
+        SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER;
+    const SQLUINTEGER predicates = SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
+        SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON;
+    const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
+        {SQL_OJ_CAPABILITIES, pg_only(outer)},
+        {SQL_AGGREGATE_FUNCTIONS, pg_only(SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
+            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL)},
+        {SQL_STRING_FUNCTIONS, pg_only(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE)},
+        {SQL_NUMERIC_FUNCTIONS, 0},
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+        {SQL_SYSTEM_FUNCTIONS, pg_only(SQL_FN_SYS_IFNULL)},
+        {SQL_DATETIME_LITERALS, pg_only(SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP)},
+        {SQL_SUBQUERIES, pg_only(SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
+            (redshift_profile_ ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES))},
+        {SQL_SQL92_PREDICATES, pg_only(predicates |
+            (redshift_profile_ ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON))},
+        {SQL_SQL92_VALUE_EXPRESSIONS, pg_only(SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF)},
+        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(redshift_profile_ ? 0 :
+            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
+        {SQL_SQL92_STRING_FUNCTIONS, pg_only(SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
+            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING)},
+        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, pg_only(SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
+            SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
+            (redshift_profile_ ? 0 : SQL_SNVF_BIT_LENGTH))},
+        {SQL_SQL92_DATETIME_FUNCTIONS, pg_only(SQL_SDF_CURRENT_DATE |
+            (redshift_profile_ ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP))},
+        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, pg_only(SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
+            SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
+            SQL_SRJO_RIGHT_OUTER_JOIN)},
+        {SQL_BATCH_SUPPORT, 0},
+        {SQL_BATCH_ROW_COUNT, 0},
+    };
+
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  for (const auto& [type, expected_mask] : expected) {
+    SCOPED_TRACE(type);
+    SQLUINTEGER actual = 0xffffffff;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, type, &actual, sizeof(actual), nullptr));
+    EXPECT_EQ(expected_mask, actual);
+  }
+  EXPECT_EQ(redshift_profile_ ? "N" : "Y", string_info(SQL_OUTER_JOINS));
+  EXPECT_EQ("Y", string_info(SQL_MULT_RESULT_SETS));
+}
+
+TEST_F(GetInfoIntegrationTest, Sql92PredicateAndSubqueryClaimsExecute) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  struct Case { SQLUSMALLINT type; SQLUINTEGER bit; const char* predicate; };
+  const Case common[]{
+      {SQL_SUBQUERIES, SQL_SQ_COMPARISON, "1 = (SELECT 1)"},
+      {SQL_SUBQUERIES, SQL_SQ_EXISTS, "EXISTS (SELECT 1)"},
+      {SQL_SUBQUERIES, SQL_SQ_IN, "1 IN (SELECT 1)"},
+      {SQL_SQL92_PREDICATES, SQL_SP_EXISTS, "EXISTS (SELECT 1)"},
+      {SQL_SQL92_PREDICATES, SQL_SP_ISNOTNULL, "1 IS NOT NULL"},
+      {SQL_SQL92_PREDICATES, SQL_SP_ISNULL, "CAST(NULL AS INTEGER) IS NULL"},
+      {SQL_SQL92_PREDICATES, SQL_SP_LIKE, "'cat' LIKE 'c_t' AND 'cat' LIKE 'c%'"},
+      {SQL_SQL92_PREDICATES, SQL_SP_IN, "1 IN (1,2) AND 3 NOT IN (1,2)"},
+      {SQL_SQL92_PREDICATES, SQL_SP_BETWEEN, "2 BETWEEN 1 AND 3"},
+      {SQL_SQL92_PREDICATES, SQL_SP_COMPARISON, "1=1 AND 1<>2 AND 1<2 AND 2>1 AND 1<=1 AND 2>=2"},
+  };
+  for (const auto& item : common) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(item.type, item.bit, item.predicate));
+  }
+  if (!redshift_profile_) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_QUANTIFIED,
+        "2 > ALL (SELECT 1) AND 1 = ANY (SELECT 1) AND 1 = SOME (SELECT 1)"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "EXISTS (SELECT 1 FROM (SELECT 1 AS k) a WHERE EXISTS (SELECT 1 WHERE a.k=1))"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_PREDICATES, SQL_SP_QUANTIFIED_COMPARISON,
+        "2 > ALL (SELECT 1) AND 1 = ANY (SELECT 1) AND 1 = SOME (SELECT 1)"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_PREDICATES, SQL_SP_OVERLAPS,
+        "(DATE '2024-01-01',DATE '2024-01-03') OVERLAPS (DATE '2024-01-02',DATE '2024-01-04')"));
+  }
+}
+
+TEST_F(GetInfoIntegrationTest, Sql92ValueAndStringClaimsExecute) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  struct Case { SQLUSMALLINT type; SQLUINTEGER bit; const char* predicate; };
+  const Case common[]{
+      {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_CASE, "CASE WHEN 1=1 THEN 7 ELSE 8 END = 7"},
+      {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_CAST, "CAST('7' AS INTEGER)=7"},
+      {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_COALESCE, "COALESCE(CAST(NULL AS INTEGER),7)=7"},
+      {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_NULLIF, "NULLIF(7,7) IS NULL AND NULLIF(7,8)=7"},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_LOWER, "LOWER('Cat')='cat'"},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_UPPER, "UPPER('Cat')='CAT'"},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_SUBSTRING, "SUBSTRING('cat' FROM 2 FOR 2)='at'"},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_TRIM_BOTH, "TRIM(BOTH 'x' FROM 'xcatx')='cat'"},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_TRIM_LEADING, "TRIM(LEADING 'x' FROM 'xcat')='cat'"},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_TRIM_TRAILING, "TRIM(TRAILING 'x' FROM 'catx')='cat'"},
+  };
+  for (const auto& item : common) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(item.type, item.bit, item.predicate));
+  }
+  if (!redshift_profile_) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+        SQL_SRVC_VALUE_EXPRESSION, "(1,2)=(1,2)"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+        SQL_SRVC_NULL, "ROW(NULL,NULL) IS NULL"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
+        SQL_SRVC_ROW_SUBQUERY, "(1,2)=(SELECT 1,2)"));
+  }
+}
+
+TEST_F(GetInfoIntegrationTest, Sql92NumericDatetimeAndLiteralClaimsExecute) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  struct Case { SQLUSMALLINT type; SQLUINTEGER bit; const char* predicate; };
+  const Case common[]{
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_CHAR_LENGTH, "CHAR_LENGTH('cat')=3"},
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_CHARACTER_LENGTH, "CHARACTER_LENGTH('cat')=3"},
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_EXTRACT, "EXTRACT(YEAR FROM DATE '2024-02-29')=2024"},
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_OCTET_LENGTH, "OCTET_LENGTH('cat')=3"},
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_POSITION, "POSITION('at' IN 'cat')=2"},
+      {SQL_SQL92_DATETIME_FUNCTIONS, SQL_SDF_CURRENT_DATE, "CURRENT_DATE IS NOT NULL"},
+      {SQL_DATETIME_LITERALS, SQL_DL_SQL92_DATE, "{d '2024-02-29'} = DATE '2024-02-29'"},
+      {SQL_DATETIME_LITERALS, SQL_DL_SQL92_TIME, "{t '12:34:56'} = TIME '12:34:56'"},
+      {SQL_DATETIME_LITERALS, SQL_DL_SQL92_TIMESTAMP, "{ts '2024-02-29 12:34:56'} = TIMESTAMP '2024-02-29 12:34:56'"},
+  };
+  for (const auto& item : common) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(item.type, item.bit, item.predicate));
+  }
+  if (!redshift_profile_) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
+        SQL_SNVF_BIT_LENGTH, "BIT_LENGTH('cat')=24"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_DATETIME_FUNCTIONS,
+        SQL_SDF_CURRENT_TIME, "CURRENT_TIME IS NOT NULL"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_DATETIME_FUNCTIONS,
+        SQL_SDF_CURRENT_TIMESTAMP, "CURRENT_TIMESTAMP IS NOT NULL"));
+  }
+}
+
+TEST_F(GetInfoIntegrationTest, Sql92JoinAndOuterEscapeClaimsExecute) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  struct Case { SQLUSMALLINT type; SQLUINTEGER bit; const char* predicate; };
+  const Case cases[]{
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_CROSS_JOIN,
+          "(SELECT COUNT(*) FROM (SELECT 1 AS x) a CROSS JOIN (SELECT 2 AS y) b)=1"},
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_INNER_JOIN,
+          "(SELECT COUNT(*) FROM (SELECT 1 AS x) a INNER JOIN (SELECT 1 AS y) b ON a.x=b.y)=1"},
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_NATURAL_JOIN,
+          "(SELECT COUNT(*) FROM (SELECT 1 AS x) a NATURAL JOIN (SELECT 1 AS x) b)=1"},
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_LEFT_OUTER_JOIN,
+          "(SELECT COUNT(*) FROM (SELECT 1 AS x) a LEFT JOIN (SELECT 2 AS y) b ON a.x=b.y WHERE b.y IS NULL)=1"},
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_RIGHT_OUTER_JOIN,
+          "(SELECT COUNT(*) FROM (SELECT 1 AS x) a RIGHT JOIN (SELECT 2 AS y) b ON a.x=b.y WHERE a.x IS NULL)=1"},
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_FULL_OUTER_JOIN,
+          "(SELECT COUNT(*) FROM (SELECT 1 AS x) a FULL JOIN (SELECT 2 AS y) b ON a.x=b.y)=2"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_LEFT,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN (SELECT 2 AS y) b ON a.x=b.y})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_LEFT,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT JOIN (SELECT 2 AS y) b ON a.x=b.y})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_RIGHT,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a RIGHT OUTER JOIN (SELECT 2 AS y) b ON a.x=b.y})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_FULL,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a FULL OUTER JOIN (SELECT 2 AS y) b ON a.x=b.y})=2"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_NOT_ORDERED,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN (SELECT 2 AS y) b ON b.y=a.x})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_NESTED,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN ((SELECT 2 AS y) b LEFT OUTER JOIN (SELECT 3 AS z) c ON b.y=c.z) ON a.x=b.y})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_INNER,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN ((SELECT 2 AS y) b INNER JOIN (SELECT 2 AS z) c ON b.y=c.z) ON a.x=b.y})=1"},
+  };
+  for (const auto& item : cases) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(item.type, item.bit, item.predicate));
+  }
+}
+
+TEST_F(GetInfoIntegrationTest, AggregateClaimsExecuteWithDistinctAndAll) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  const std::pair<SQLUINTEGER, const char*> cases[]{
+      {SQL_AF_AVG, "(SELECT AVG(x) FROM (SELECT 1 AS x UNION ALL SELECT 1 UNION ALL SELECT 4) v)=2"},
+      {SQL_AF_COUNT, "(SELECT COUNT(x) FROM (SELECT 1 AS x UNION ALL SELECT NULL) v)=1"},
+      {SQL_AF_MAX, "(SELECT MAX(x) FROM (SELECT 1 AS x UNION ALL SELECT 4) v)=4"},
+      {SQL_AF_MIN, "(SELECT MIN(x) FROM (SELECT 1 AS x UNION ALL SELECT 4) v)=1"},
+      {SQL_AF_SUM, "(SELECT SUM(x) FROM (SELECT 1 AS x UNION ALL SELECT 4) v)=5"},
+      {SQL_AF_DISTINCT, "(SELECT COUNT(DISTINCT x) FROM (SELECT 1 AS x UNION ALL SELECT 1 UNION ALL SELECT 4) v)=2"},
+      {SQL_AF_ALL, "(SELECT SUM(ALL x) FROM (SELECT 1 AS x UNION ALL SELECT 1 UNION ALL SELECT 4) v)=6"},
+  };
+  for (const auto& [bit, predicate] : cases) {
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_AGGREGATE_FUNCTIONS, bit, predicate));
+  }
+}
+
+TEST_F(GetInfoIntegrationTest, DirectSequencesReturnEachResultWithoutClaimingPreparedBatches) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  SQLUINTEGER support = 0, counts = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_BATCH_ROW_COUNT, &counts, sizeof(counts), nullptr));
+  ASSERT_EQ(0u, support);
+  ASSERT_EQ(0u, counts);
+  EXPECT_EQ("Y", string_info(SQL_MULT_RESULT_SETS));
+  SQLHSTMT statement = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
+  struct StatementOwner {
+    SQLHSTMT handle;
+    ~StatementOwner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); }
+  } owner{statement};
+  // This proves only the simple-query path. It must not authorize explicit
+  // batch masks: prepared/parameterized batches are still unsupported.
+  // Temporary objects are private to this connection and disappear at fixture disconnect.
+  std::string create = "CREATE TEMP TABLE odbcpp_capability_batch (value INTEGER)";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(create.data()), SQL_NTS));
+  std::string batch = "SELECT 7; INSERT INTO odbcpp_capability_batch VALUES (1); "
+      "UPDATE odbcpp_capability_batch SET value=2; SELECT value FROM odbcpp_capability_batch";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(batch.data()), SQL_NTS));
+  for (int index = 0; index != 4; ++index) {
+    SCOPED_TRACE(index);
+    SQLSMALLINT columns = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(statement, &columns));
+    if (index == 0 || index == 3) {
+      EXPECT_EQ(1, columns);
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement));
+      SQLINTEGER value = -1;
+      SQLLEN length = SQL_NULL_DATA;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement, 1, SQL_C_SLONG, &value, sizeof(value), &length));
+      EXPECT_EQ(index == 0 ? 7 : 2, value);
+      EXPECT_NE(SQL_NULL_DATA, length);
+      EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement));
+    } else {
+      EXPECT_EQ(0, columns);
+      SQLLEN affected = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLRowCount(statement, &affected));
+      EXPECT_EQ(1, affected);
+    }
+    ASSERT_EQ(index == 3 ? SQL_NO_DATA : SQL_SUCCESS, SQLMoreResults(statement));
+  }
+  std::string drop = "DROP TABLE odbcpp_capability_batch";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(drop.data()), SQL_NTS));
+}
