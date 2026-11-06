@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
@@ -1347,4 +1348,21 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
     }
   }
   ASSERT_NO_FATAL_FAILURE(execute("DROP TABLE odbcpp_scalar_capabilities"));
+}
+
+TEST_F(GetInfoIntegrationTest, ExecuteAssertionFailureReleasesItsStatement) {
+  ::testing::TestPartResultArray failures;
+  {
+    ::testing::ScopedFakeTestPartResultReporter capture(
+        ::testing::ScopedFakeTestPartResultReporter::INTERCEPT_ONLY_CURRENT_THREAD,
+        &failures);
+    execute("SELECT FROM");
+  }
+  ASSERT_EQ(1, failures.size());
+  ASSERT_TRUE(failures.GetTestPartResult(0).fatally_failed());
+  // A failed helper assertion must release its child statement. Disconnect
+  // does not free child handles; freeing the connection proves none leaked.
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection_));
+  connection_ = SQL_NULL_HDBC;
 }
