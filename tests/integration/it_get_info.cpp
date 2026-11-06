@@ -1289,8 +1289,10 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
           "{fn IFNULL(CAST(NULL AS INTEGER),7)}=7 AND {fn IFNULL(9,7)}=9"},
       {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE,
           redshift_profile_
-              ? "DATEDIFF(second,CAST({fn CURDATE()} AS TIMESTAMP),SYSDATE) BETWEEN -40 AND 86440"
-              : "EXTRACT(EPOCH FROM (clock_timestamp()-CAST({fn CURDATE()} AS TIMESTAMP))) BETWEEN -40 AND 86440",
+              ? "{fn CURDATE()} BETWEEN CAST(DATEADD(second,-40,SYSDATE) AS DATE) "
+                "AND CAST(DATEADD(second,40,SYSDATE) AS DATE)"
+              : "{fn CURDATE()} BETWEEN CAST(clock_timestamp()-INTERVAL '40 seconds' AS DATE) "
+                "AND CAST(clock_timestamp()+INTERVAL '40 seconds' AS DATE)",
           "{fn CURDATE()}", SQL_TYPE_DATE},
       {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURTIME,
           redshift_profile_
