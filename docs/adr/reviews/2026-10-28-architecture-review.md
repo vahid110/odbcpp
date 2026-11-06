@@ -1,4 +1,4 @@
-<!-- Checked in for #216 from the coordinator's local copy of the 2026-10-28 review (00-CONSOLIDATED.md), unchanged below this note. The six area reports it cites (01-06) are not in the repository. AGENTS.md treats this file as binding until ARCHITECTURE.md exists. -->
+<!-- Checked in for #216 from the coordinator's local copy of the 2026-10-28 review (00-CONSOLIDATED.md). One edit: four open security findings in "Other notable" (area report 05, M1, M2, M3, M5) are held back from this public copy at the owner's request; S1-S3 are fixed on main. The six area reports it cites (01-06) are not in the repository. AGENTS.md treats this file as binding until ARCHITECTURE.md exists. -->
 
 # ODBCPP architecture review — consolidated (2026-10-28)
 
@@ -55,9 +55,8 @@ registry lock taken ~8–12× per fetch (03 C3); query timeout disconnects inste
 of cancelling (03 M1); unmapped server errors fall back to 42000 (03 M5);
 per-row futures in the epoll/IOCP transport (04 M1); no statement reuse or
 pipelining (04 M2); interval/hllsketch unmapped, timezone offsets dropped (04
-M5); MD5/trust accepted on plaintext, no `require_auth` (05 M1); secrets copied
-unwiped (05 M2); no compiler hardening (05 M3); raw-address handles (ABA, 05
-M5); `SQL_DRIVER_PROMPT` unsupported (03 M4); Redshift defaults port 5432/db
+M5); four security findings from area report 05 (M1, M2, M3, M5), held back from
+this public copy at the owner's request until they are fixed or released; `SQL_DRIVER_PROMPT` unsupported (03 M4); Redshift defaults port 5432/db
 `postgres` (`product/compiled_backend.cpp:24`) ✔.
 
 ## Recommended program
