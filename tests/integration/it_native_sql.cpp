@@ -217,6 +217,17 @@ class NativeSqlIntegrationTest : public ::testing::Test {
 
 } // namespace
 
+TEST(NativeSqlFixtureBudgetTest, UsesRemainingWindowAndHonorsExplicitShortTimeouts) {
+  EXPECT_EQ(40u, fixture_timeout_seconds(40));
+  EXPECT_EQ(9u, fixture_timeout_seconds(9));
+  EXPECT_EQ(4u, fixture_timeout_seconds(4));
+  EXPECT_EQ(0u, fixture_timeout_seconds(0));
+  EXPECT_EQ(0u, fixture_timeout_seconds(-1));
+  EXPECT_EQ(2u, fixture_timeout_seconds(40, 2));
+  EXPECT_EQ(1u, fixture_timeout_seconds(1, 2));
+  EXPECT_EQ(9u, fixture_timeout_seconds(9, 40));
+}
+
 TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
   std::string sql("SELECT 1\0;SELECT 2", sizeof("SELECT 1\0;SELECT 2") - 1);
   auto* narrow = reinterpret_cast<SQLCHAR*>(sql.data());
