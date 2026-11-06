@@ -15,6 +15,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -45,6 +46,22 @@ std::filesystem::path temporary_directory(std::string_view name) {
        std::to_string(sequence.fetch_add(1)));
   std::filesystem::create_directories(directory);
   return directory;
+}
+
+// Removes a test directory. An asynchronous logger (the default) can keep its
+// file open for a moment after its owner is destroyed: spdlog's flush only
+// queues a request, and queued records hold the logger until the worker has
+// written them. POSIX lets the directory go anyway; Windows refuses while the
+// file is open, so retry briefly before reporting a failure (#217).
+void remove_directory(const std::filesystem::path& directory) {
+  std::error_code error;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    error.clear();
+    std::filesystem::remove_all(directory, error);
+    if (!error) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ADD_FAILURE() << "could not remove " << directory.string() << ": " << error.message();
 }
 
 std::string read_file(const std::filesystem::path& path) {
@@ -157,7 +174,7 @@ TEST(DriverLoggingOptionsTest, ReadsDriverWideIodbcConfigurationPath) {
 
   EXPECT_EQ("Debug", parameters.at("LOGLEVEL"));
   EXPECT_EQ("Json", parameters.at("LOGFORMAT"));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, WritesEscapedStructuredJson) {
@@ -183,7 +200,7 @@ TEST(DriverLoggerTest, WritesEscapedStructuredJson) {
             contents.find("line one\\n\\\"line two\\\""));
   EXPECT_NE(std::string::npos,
             contents.find("value\\\\with-tab\\t"));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 #ifndef _WIN32
@@ -268,7 +285,7 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
     }
   }
 
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 // A sentinel victim file's content and mode must remain unchanged when an
@@ -301,7 +318,7 @@ TEST(DriverLoggerTest, VictimContentAndModePreservedWhenLogPathIsSymlink) {
   ASSERT_EQ(0, ::stat(victim.c_str(), &info));
   EXPECT_EQ(0644, info.st_mode & 0777);
 
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 // The immediate parent directory must be owned by the effective user.
@@ -337,7 +354,7 @@ TEST(DriverLoggerTest, LogFileDirectoryOwnershipIsEnforced) {
     EXPECT_FALSE(std::filesystem::exists(bad_path));
   }
 
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 #endif
 
@@ -360,7 +377,7 @@ TEST(DriverLoggerTest, ConnectionLoggingNeverWritesPassword) {
   EXPECT_NE(std::string::npos, contents.find("connection_start"));
   EXPECT_NE(std::string::npos, contents.find("connection_failed"));
   EXPECT_EQ(std::string::npos, contents.find("top-secret"));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, ApiFailuresIncludeOperationAndDiagnosticContext) {
@@ -418,7 +435,7 @@ TEST(DriverLoggerTest, ApiFailuresIncludeOperationAndDiagnosticContext) {
   ASSERT_NE(std::string::npos, first_ansi);
   EXPECT_EQ(std::string::npos,
             contents.find(ansi_operation, first_ansi + ansi_operation.size()));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, DiagnosticRetrievalLogsWithoutChangingDiagnostics) {
@@ -493,7 +510,7 @@ TEST(DriverLoggerTest, DiagnosticRetrievalLogsWithoutChangingDiagnostics) {
   EXPECT_NE(std::string::npos, contents.find(
       "operation=\"SQLGetDiagRec\" return_code=\"-1\" sqlstate=\"\""));
   EXPECT_EQ(std::string::npos, contents.find("top-secret"));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, RotatesFilesAtConfiguredSize) {
@@ -518,7 +535,7 @@ TEST(DriverLoggerTest, RotatesFilesAtConfiguredSize) {
 
   EXPECT_TRUE(std::filesystem::exists(path));
   EXPECT_TRUE(std::filesystem::exists(directory / "driver.1.log"));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, SerializesConcurrentWriters) {
@@ -549,7 +566,7 @@ TEST(DriverLoggerTest, SerializesConcurrentWriters) {
   const auto contents = read_file(path);
   EXPECT_EQ(400, static_cast<int>(
                      std::count(contents.begin(), contents.end(), '\n')));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, DeliversAsynchronousRecords) {
@@ -573,7 +590,7 @@ TEST(DriverLoggerTest, DeliversAsynchronousRecords) {
   }
   EXPECT_NE(std::string::npos, contents.find("async_record"));
   logger.reset();
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 } // namespace
@@ -604,7 +621,7 @@ TEST(DriverLoggerTest, BoundsAndEscapesUntrustedRecordComponents) {
     EXPECT_NE(std::string::npos, contents.find("[truncated]"));
     EXPECT_EQ(1, std::count(contents.begin(), contents.end(), '\n'));
     EXPECT_LT(contents.size(), 3000u);
-    std::filesystem::remove_all(directory);
+    remove_directory(directory);
   }
 }
 
@@ -634,7 +651,7 @@ TEST(DriverLoggerTest, FailureSummaryKeepsSensitiveDsnOnlyInOdbcDiagnostic) {
   const auto contents = read_file(path);
   EXPECT_NE(std::string::npos, contents.find("Database connection failed"));
   EXPECT_EQ(std::string::npos, contents.find(marker));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, JsonBoundsPreserveMultibyteCharacterBoundaries) {
@@ -668,7 +685,7 @@ TEST(DriverLoggerTest, JsonBoundsPreserveMultibyteCharacterBoundaries) {
   }
   RecordProperty("utf8_json", contents);
   EXPECT_EQ(9, std::count(contents.begin(), contents.end(), '\n'));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggerTest, SensitivityIsIndependentOfTraceAndQueryOptIn) {
@@ -699,7 +716,7 @@ TEST(DriverLoggerTest, SensitivityIsIndependentOfTraceAndQueryOptIn) {
       for (const auto* forbidden : {"implicit-sensitive", "sensitive-value", "secret-key", "secret-value"})
         EXPECT_EQ(std::string::npos, contents.find(forbidden));
       EXPECT_EQ(queries, contents.find("query-literal") != std::string::npos);
-      std::filesystem::remove_all(directory);
+      remove_directory(directory);
     }
   }
 }
@@ -728,7 +745,7 @@ TEST(DriverLoggerTest, SensitiveOptInRevealsOnlySensitiveFieldsFromSpans) {
   EXPECT_EQ(std::string::npos, contents.find("[redacted]"));
   EXPECT_EQ(std::string::npos, contents.find("secret"));
   EXPECT_EQ(std::string::npos, contents.find("query-literal"));
-  std::filesystem::remove_all(directory);
+  remove_directory(directory);
 }
 
 TEST(DriverLoggingOptionsTest, PublicLabelsAreBoundedClosedVocabularyOnly) {
@@ -829,6 +846,6 @@ TEST(DriverLoggerTest, EncodedRecordBudgetKeepsJsonCompleteAndDropsExcessFields)
     EXPECT_EQ(std::string::npos, contents.find("count-excess-marker"));
     EXPECT_LT(contents.size(), rs::core::logging::max_log_record_bytes + 512);
     if (format == LogFormat::Json) RecordProperty("budget_json", contents);
-    std::filesystem::remove_all(directory);
+    remove_directory(directory);
   }
 }
