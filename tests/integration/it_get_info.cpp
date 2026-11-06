@@ -224,6 +224,50 @@ class GetInfoIntegrationTest : public ::testing::Test {
   }
 
 
+  std::string statement_diagnostic(SQLHSTMT statement) {
+    SQLCHAR state[6]{}, message[1024]{};
+    if (::SQLGetDiagRec(SQL_HANDLE_STMT, statement, 1, state, nullptr,
+                       message, sizeof(message), nullptr) != SQL_SUCCESS) {
+      return "diagnostic unavailable";
+    }
+    return std::string(reinterpret_cast<const char*>(state)) + " " +
+        reinterpret_cast<const char*>(message);
+  }
+
+  void verify_predicate(std::string_view predicate, bool prepared = false,
+                        std::string_view from = {}) {
+    SCOPED_TRACE(predicate);
+    SCOPED_TRACE(prepared);
+    SQLHSTMT statement = SQL_NULL_HSTMT;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
+    struct StatementOwner {
+      SQLHSTMT handle;
+      ~StatementOwner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); }
+    } owner{statement};
+    const std::string sql = "SELECT CASE WHEN (" + std::string(predicate) +
+        ") THEN 1 ELSE 0 END" + (from.empty() ? "" : " FROM " + std::string(from));
+    if (prepared) {
+      ASSERT_TRUE(fixture_statement_budget(fixture_end_, statement));
+      ASSERT_EQ(SQL_SUCCESS, ::SQLPrepare(statement,
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())),
+          static_cast<SQLINTEGER>(sql.size()))) << statement_diagnostic(statement);
+      ASSERT_TRUE(fixture_statement_budget(fixture_end_, statement));
+      ASSERT_EQ(SQL_SUCCESS, ::SQLExecute(statement)) << statement_diagnostic(statement);
+    } else {
+      ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement,
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())),
+          static_cast<SQLINTEGER>(sql.size()))) << statement_diagnostic(statement);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement));
+    SQLINTEGER actual = -1;
+    SQLLEN length = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement, 1, SQL_C_SLONG, &actual, sizeof(actual), &length));
+    EXPECT_NE(SQL_NULL_DATA, length);
+    EXPECT_EQ(1, actual);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(statement));
+  }
+
   void verify_sql_feature(SQLUSMALLINT type, SQLUINTEGER bit, std::string_view predicate) {
     SCOPED_TRACE(type);
     SCOPED_TRACE(bit);
@@ -234,24 +278,7 @@ class GetInfoIntegrationTest : public ::testing::Test {
     // then run the same semantic assertion so future acceptance cannot hide
     // behind a zero capability mask. PostgreSQL must advertise the exact bit.
     ASSERT_EQ(redshift_profile_ ? 0u : bit, mask & bit);
-    SQLHSTMT statement = SQL_NULL_HSTMT;
-    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
-    struct StatementOwner {
-      SQLHSTMT handle;
-      ~StatementOwner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); }
-    } owner{statement};
-    const std::string sql = "SELECT CASE WHEN (" + std::string(predicate) + ") THEN 1 ELSE 0 END";
-    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement,
-        reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())),
-        static_cast<SQLINTEGER>(sql.size()))) << predicate;
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement));
-    SQLINTEGER actual = -1;
-    SQLLEN length = SQL_NULL_DATA;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement, 1, SQL_C_SLONG, &actual, sizeof(actual), &length));
-    EXPECT_NE(SQL_NULL_DATA, length);
-    EXPECT_EQ(1, actual);
-    EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement));
-    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(statement));
+    ASSERT_NO_FATAL_FAILURE(verify_predicate(predicate));
   }
 
   bool expected_support(SQLUSMALLINT id) const {
@@ -787,9 +814,33 @@ TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
   execute("CREATE TEMP TABLE odbcpp_get_info_capabilities "
           "(id integer PRIMARY KEY, value integer)");
   execute("INSERT INTO odbcpp_get_info_capabilities VALUES (1, 10), (2, 20)");
-  execute("CREATE INDEX odbcpp_get_info_capabilities_value_idx "
-          "ON odbcpp_get_info_capabilities (value)");
-  execute("DROP INDEX odbcpp_get_info_capabilities_value_idx");
+  SQLUINTEGER index_support = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_DDL_INDEX,
+      &index_support, sizeof(index_support), nullptr));
+  // Redshift has no indexes; retain the actual create/drop proof for PostgreSQL.
+  // https://docs.aws.amazon.com/redshift/latest/dg/c_unsupported-postgresql-features.html
+  ASSERT_EQ(redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_DI_CREATE_INDEX | SQL_DI_DROP_INDEX),
+      index_support);
+  if (!redshift_profile_) {
+    execute("CREATE INDEX odbcpp_get_info_capabilities_value_idx "
+            "ON odbcpp_get_info_capabilities (value)");
+    execute("DROP INDEX odbcpp_get_info_capabilities_value_idx");
+  } else {
+    SQLHSTMT statement = SQL_NULL_HSTMT;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement));
+    struct StatementOwner {
+      SQLHSTMT handle;
+      ~StatementOwner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); }
+    } owner{statement};
+    SQLCHAR unsupported[] = "CREATE INDEX odbcpp_get_info_capabilities_value_idx "
+                            "ON odbcpp_get_info_capabilities (value)";
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(statement, unsupported, SQL_NTS));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, ::SQLGetDiagRec(SQL_HANDLE_STMT, statement, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("42000", reinterpret_cast<const char*>(state));
+    ASSERT_NO_FATAL_FAILURE(verify_predicate("1=1"));
+  }
   execute("SELECT count(*) AS total FROM odbcpp_get_info_capabilities "
           "GROUP BY value ORDER BY value + 1");
   execute("SELECT left_side.id FROM odbcpp_get_info_capabilities left_side "
@@ -913,14 +964,17 @@ TEST_F(GetInfoIntegrationTest, IdentifierProfileMatchesQuotedBoundaryNames) {
   SQLUSMALLINT limit = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_MAX_IDENTIFIER_LEN,
       &limit, sizeof(limit), nullptr));
-  ASSERT_EQ(63, limit);
-  const std::string name = "MiXeD_" + std::string(limit - 6, 'x');
+  // Product limits are independent literals, not learned from driver output.
+  // https://docs.aws.amazon.com/redshift/latest/dg/r_names.html
+  const SQLUSMALLINT expected_limit = redshift_profile_ ? 127 : 63;
+  ASSERT_EQ(expected_limit, limit);
+  const std::string name = "MiXeD_" + std::string(expected_limit - 6, 'x');
   const auto quote = string_info(SQL_IDENTIFIER_QUOTE_CHAR);
   ASSERT_EQ("\"", quote);
   execute("CREATE TEMP TABLE " + quote + name + quote + " (UnQuoted integer, \"MiXeD\" integer)");
   execute("INSERT INTO " + quote + name + quote + " (unquoted, \"MiXeD\") VALUES (1, 2)");
-  execute("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM " + quote + name + quote +
-      " WHERE unquoted = 1 AND \"MiXeD\" = 2) THEN RAISE EXCEPTION 'identifier mismatch'; END IF; END $$");
+  ASSERT_NO_FATAL_FAILURE(verify_predicate("EXISTS (SELECT 1 FROM " + quote + name + quote +
+      " WHERE unquoted = 1 AND \"MiXeD\" = 2)"));
   execute("DROP TABLE " + quote + name + quote);
 }
 
@@ -936,13 +990,20 @@ TEST_F(GetInfoIntegrationTest, NullAndSetOperationClaimsMatchServerSemantics) {
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_UNION,
       &unions, sizeof(unions), nullptr));
   ASSERT_EQ(static_cast<SQLUINTEGER>(SQL_U_UNION | SQL_U_UNION_ALL), unions);
-  execute("DO $$ BEGIN "
-      "IF ('value'::text || NULL::text) IS NOT NULL THEN RAISE EXCEPTION 'concat mismatch'; END IF; "
-      "IF (SELECT v FROM (VALUES (NULL::integer), (7)) AS t(v) ORDER BY v DESC LIMIT 1) IS NOT NULL "
-      "THEN RAISE EXCEPTION 'NULL ordering mismatch'; END IF; "
-      "IF (SELECT count(*) FROM (SELECT NULL::integer UNION SELECT NULL::integer) t) <> 1 "
-      "OR (SELECT count(*) FROM (SELECT NULL::integer UNION ALL SELECT NULL::integer) t) <> 2 "
-      "THEN RAISE EXCEPTION 'set operation mismatch'; END IF; END $$");
+  // Ordinary SELECT assertions work on both products; Redshift has neither
+  // PostgreSQL anonymous DO blocks nor VALUES used as constant tables.
+  // NULLs rank high on Redshift too:
+  // https://docs.aws.amazon.com/redshift/latest/dg/r_ORDER_BY_clause.html
+  const char* predicates[]{
+      "('value' || CAST(NULL AS VARCHAR(10))) IS NULL",
+      "(SELECT v FROM (SELECT CAST(NULL AS INTEGER) AS v UNION ALL SELECT 7) t ORDER BY v DESC LIMIT 1) IS NULL",
+      "(SELECT v FROM (SELECT CAST(NULL AS INTEGER) AS v UNION ALL SELECT 7) t ORDER BY v ASC LIMIT 1)=7",
+      "(SELECT count(*) FROM (SELECT CAST(NULL AS INTEGER) UNION SELECT CAST(NULL AS INTEGER)) t)=1",
+      "(SELECT count(*) FROM (SELECT CAST(NULL AS INTEGER) UNION ALL SELECT CAST(NULL AS INTEGER)) t)=2",
+  };
+  for (const auto* predicate : predicates) {
+    EXPECT_NO_FATAL_FAILURE(verify_predicate(predicate));
+  }
 }
 
 }  // namespace
@@ -1177,4 +1238,70 @@ TEST_F(GetInfoIntegrationTest, DirectSequencesReturnEachResultWithoutClaimingPre
   }
   std::string drop = "DROP TABLE odbcpp_capability_batch";
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(drop.data()), SQL_NTS));
+}
+
+
+TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepared) {
+  RecordProperty("server_version", string_info(SQL_DBMS_VER));
+  // A real temporary table exercises compute-node expressions, rather than
+  // accepting a leader-only constant SELECT as qualification. Disconnect also
+  // removes this session-owned table if a fatal assertion interrupts the case.
+  ASSERT_NO_FATAL_FAILURE(execute("CREATE TEMP TABLE odbcpp_scalar_capabilities "
+      "(text_value VARCHAR(32), padded_value VARCHAR(32), number_value DOUBLE PRECISION, "
+      "date_value DATE, timestamp_value TIMESTAMP)"));
+  ASSERT_NO_FATAL_FAILURE(execute("INSERT INTO odbcpp_scalar_capabilities VALUES "
+      "('MiXeD', 'cat   ', 100, DATE '2024-02-29', TIMESTAMP '2024-02-29 23:59:59.875')"));
+  struct Case { SQLUSMALLINT type; SQLUINTEGER bit; const char* predicate; };
+  const Case common[]{
+      {SQL_STRING_FUNCTIONS, SQL_FN_STR_UCASE,
+          "{fn UCASE(text_value)}='MIXED' AND {fn UCASE(CAST(NULL AS VARCHAR(32)))} IS NULL"},
+      {SQL_STRING_FUNCTIONS, SQL_FN_STR_LCASE,
+          "{fn LCASE(text_value)}='mixed' AND {fn LCASE(CAST(NULL AS VARCHAR(32)))} IS NULL"},
+      {SQL_SYSTEM_FUNCTIONS, SQL_FN_SYS_IFNULL,
+          "{fn IFNULL(CAST(NULL AS INTEGER),7)}=7 AND {fn IFNULL(9,7)}=9"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURDATE, "{fn CURDATE()}=CURRENT_DATE"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_CURTIME,
+          redshift_profile_ ? "{fn CURTIME()}=CAST(GETDATE() AS TIME)" : "{fn CURTIME()}=CURRENT_TIME"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_NOW,
+          redshift_profile_ ? "{fn NOW()}=GETDATE()" : "{fn NOW()}=CURRENT_TIMESTAMP"},
+  };
+  const Case redshift_extensions[]{
+      {SQL_STRING_FUNCTIONS, SQL_FN_STR_LENGTH,
+          "{fn LENGTH(padded_value)}=3 AND {fn LENGTH(CAST(NULL AS VARCHAR(32)))} IS NULL"},
+      {SQL_STRING_FUNCTIONS, SQL_FN_STR_LOCATE_2,
+          "{fn LOCATE('Xe',text_value)}=3 AND {fn LOCATE('z',text_value)}=0 "
+          "AND {fn LOCATE(CAST(NULL AS VARCHAR(32)),text_value)} IS NULL"},
+      {SQL_NUMERIC_FUNCTIONS, SQL_FN_NUM_LOG,
+          "ABS({fn LOG(number_value)}-4.605170185988092)<0.000000000001 "
+          "AND {fn LOG(CAST(NULL AS DOUBLE PRECISION))} IS NULL"},
+      {SQL_NUMERIC_FUNCTIONS, SQL_FN_NUM_LOG10,
+          "ABS({fn LOG10(number_value)}-2)<0.000000000001 "
+          "AND {fn LOG10(CAST(NULL AS DOUBLE PRECISION))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_YEAR, "{fn YEAR(date_value)}=2024 AND {fn YEAR(CAST(NULL AS DATE))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_MONTH, "{fn MONTH(date_value)}=2 AND {fn MONTH(CAST(NULL AS DATE))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_DAYOFMONTH, "{fn DAYOFMONTH(date_value)}=29 AND {fn DAYOFMONTH(CAST(NULL AS DATE))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_DAYOFWEEK, "{fn DAYOFWEEK(date_value)}=5 AND {fn DAYOFWEEK(CAST(NULL AS DATE))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_DAYOFYEAR, "{fn DAYOFYEAR(date_value)}=60 AND {fn DAYOFYEAR(CAST(NULL AS DATE))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_HOUR, "{fn HOUR(timestamp_value)}=23 AND {fn HOUR(CAST(NULL AS TIMESTAMP))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_MINUTE, "{fn MINUTE(timestamp_value)}=59 AND {fn MINUTE(CAST(NULL AS TIMESTAMP))} IS NULL"},
+      {SQL_TIMEDATE_FUNCTIONS, SQL_FN_TD_SECOND, "{fn SECOND(timestamp_value)}=59 AND {fn SECOND(CAST(NULL AS TIMESTAMP))} IS NULL"},
+  };
+  const auto verify = [&](const Case& item) {
+    SCOPED_TRACE(item.bit);
+    SQLUINTEGER mask = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, item.type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(redshift_profile_ ? 0u : item.bit, mask & item.bit);
+    for (const bool prepared : {false, true}) {
+      EXPECT_NO_FATAL_FAILURE(verify_predicate(item.predicate, prepared, "odbcpp_scalar_capabilities"));
+    }
+  };
+  for (const auto& item : common) {
+    EXPECT_NO_FATAL_FAILURE(verify(item));
+  }
+  if (redshift_profile_) {
+    for (const auto& item : redshift_extensions) {
+      EXPECT_NO_FATAL_FAILURE(verify(item));
+    }
+  }
+  ASSERT_NO_FATAL_FAILURE(execute("DROP TABLE odbcpp_scalar_capabilities"));
 }
