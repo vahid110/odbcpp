@@ -629,8 +629,8 @@ TEST(SqlCapabilityEscapeProof, JoinTranslationFormsStripOnlyTheEscapeWrapper) {
   }
 }
 
-// Golden SQL for one second-based and one calendar unit per product (#144
-// review), so a wrong unit scale or operand order fails here and not only in
+// Golden SQL for all supported interval units per product (#220
+// qualification), so a wrong unit scale or operand order fails here and not only in
 // a live run. PostgreSQL counts unit boundaries as f(b) - f(a) over values
 // truncated to the unit; month and quarter use AGE from 2000-01-01, whose
 // total months times 12 (or 4) are read back exactly as the YEAR field.
@@ -673,5 +673,34 @@ TEST(SqlTimestampEscapeTest, GoldenSqlPerProduct) {
     const auto result = translate_odbc_sql(sql, profile);
     ASSERT_TRUE(result) << result.message << sql;
     EXPECT_EQ(expected, result.sql) << sql;
+  }
+  struct Unit { const char* keyword; const char* native; const char* interval; const char* seconds; };
+  for (const auto& unit : {Unit{"MINUTE", "minute", "1 minute", "60"},
+                           Unit{"HOUR", "hour", "1 hour", "3600"},
+                           Unit{"DAY", "day", "1 day", "86400"},
+                           Unit{"WEEK", "week", "7 days", nullptr},
+                           Unit{"MONTH", "month", "1 month", nullptr},
+                           Unit{"YEAR", "year", "1 year", nullptr}}) {
+    SCOPED_TRACE(unit.keyword);
+    const auto add = "SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit.keyword) + ", n, t)}";
+    EXPECT_EQ("SELECT (CAST(( n) AS BIGINT) * INTERVAL '" + std::string(unit.interval) + "' + " + pg_ts("t") + ")",
+        translate_odbc_sql(add, SqlDialectProfile::PostgreSql).sql);
+    EXPECT_EQ("SELECT DATEADD(" + std::string(unit.native) + ", CAST(( n) AS INTEGER), " + rs_ts("t") + ")",
+        translate_odbc_sql(add, SqlDialectProfile::Redshift).sql);
+    const auto diff = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit.keyword) + ", a, b)}";
+    if (std::string_view(unit.keyword) == "WEEK") {
+      EXPECT_EQ(SqlTranslationError::Unsupported, translate_odbc_sql(diff, SqlDialectProfile::PostgreSql).error);
+      EXPECT_EQ(SqlTranslationError::Unsupported, translate_odbc_sql(diff, SqlDialectProfile::Redshift).error);
+    } else {
+      const auto ordinal = [&](const char* value) {
+        return unit.seconds != nullptr
+            ? "(EXTRACT(EPOCH FROM DATE_TRUNC('" + std::string(unit.native) + "', " + pg_ts(value) + ")) / " + unit.seconds + ")"
+            : pg_months(unit.native, value, std::string_view(unit.keyword) == "MONTH" ? "12" : "1");
+      };
+      EXPECT_EQ("SELECT CAST(-(" + ordinal("a") + " - " + ordinal("b") + ") AS BIGINT)",
+          translate_odbc_sql(diff, SqlDialectProfile::PostgreSql).sql);
+      EXPECT_EQ("SELECT DATEDIFF(" + std::string(unit.native) + ", " + rs_ts("a") + ", " + rs_ts("b") + ")",
+          translate_odbc_sql(diff, SqlDialectProfile::Redshift).sql);
+    }
   }
 }
