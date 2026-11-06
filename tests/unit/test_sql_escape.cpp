@@ -561,7 +561,7 @@ TEST(RedshiftLogarithmEscapeTest, PostgresNativeLogAndUnknownPrefixesAndPriorFam
 }
 
 
-TEST(SqlCapabilityEscapeProof, EveryAdvertisedScalarHasAnExactProfileTranslation) {
+TEST(SqlCapabilityEscapeProof, ScalarTranslationsRemainAvailableIndependentlyOfQualifiedClaims) {
   using namespace rs::core::database;
   using postgres::SqlDialectProfile;
   struct Case {
@@ -599,8 +599,7 @@ TEST(SqlCapabilityEscapeProof, EveryAdvertisedScalarHasAnExactProfileTranslation
       SCOPED_TRACE(redshift);
       const auto* expected = redshift ? item.redshift_sql : item.postgres_sql;
       // A translation can remain usable while its SQLGetInfo claim awaits live proof.
-      const bool qualified = expected != nullptr &&
-          !(redshift && item.field == &SqlCapabilities::scalar_current_date);
+      const bool qualified = !redshift && expected != nullptr;
       EXPECT_EQ(qualified, capabilities.sql.*(item.field));
       if (expected != nullptr) {
         const auto result = translate_odbc_sql(item.escaped, profile);

@@ -174,28 +174,10 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
-  // No PostgreSQL SQL92/join/aggregate/literal/batch claims carry into
-  // Redshift without connected qualification (#142). Advertise only the
-  // scalar claims qualified by the historical execution/source mapping in
-  // docs/evidence/pr172-redshift-scalars.md. CURDATE has no connected receipt.
+  // Do not inherit PostgreSQL SQL or scalar claims. Existing Redshift escape
+  // translations remain usable, but advertising new capability bits awaits
+  // connected qualification under #142. Offline goldens alone are insufficient.
   result.sql = {};
-  result.sql.scalar_current_time = true;
-  result.sql.scalar_current_timestamp = true;
-  result.sql.scalar_if_null = true;
-  result.sql.scalar_lower = true;
-  result.sql.scalar_upper = true;
-  result.sql.scalar_day = true;
-  result.sql.scalar_hour = true;
-  result.sql.scalar_locate_two_arguments = true;
-  result.sql.scalar_log10 = true;
-  result.sql.scalar_minute = true;
-  result.sql.scalar_month = true;
-  result.sql.scalar_natural_log = true;
-  result.sql.scalar_second = true;
-  result.sql.scalar_trimmed_length = true;
-  result.sql.scalar_weekday = true;
-  result.sql.scalar_year = true;
-  result.sql.scalar_yearday = true;
   // CONVERT and TIMESTAMPADD/TIMESTAMPDIFF are translated for Redshift too,
   // but no Redshift statement behind them has run live yet (the generated SQL
   // uses REGEXP_REPLACE with a lookahead, VARCHAR(MAX) and VARBYTE casts).

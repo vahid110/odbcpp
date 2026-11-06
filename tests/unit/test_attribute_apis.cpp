@@ -190,11 +190,8 @@ TEST_F(AttributeApisTest, ConversionAndTimestampMasksMatchTheExplicitProductCont
         {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
         {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
         {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE) | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
-            (redshift ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
-                SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR |
-                SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND :
-                SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
         {SQL_CONVERT_GUID, pg_only(redshift ? 0u : SQL_CVT_GUID | characters)},
 #endif

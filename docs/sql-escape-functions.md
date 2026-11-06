@@ -128,23 +128,22 @@ existing prepared-select parameter-array facet independently justify `Y`.
 A provider that genuinely qualifies full SELECT batches also implies `Y`.
 A provider with neither reports `N`; the Redshift SQL declaration makes no
 new direct-sequence claim, while its existing prepared-array facet still
-supplies multiple results. The checked-in direct-sequence and prepared-array
-unit tests exercise `SQLMoreResults` separately from the zero batch masks.
+supplies multiple results. The native Redshift facet inspection and fake-carrier ODBC mapping are
+separate offline checks, not an end-to-end native session test. The checked-in
+direct-sequence and prepared-array unit tests exercise `SQLMoreResults` separately from the zero batch masks.
 See the [ODBC SQLGetInfo definitions](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetinfo-function)
 and [PostgreSQL extended-query restriction](https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY).
 
-Redshift's newly proposed SQL92, subquery, aggregate, datetime-literal and
-outer/relational-join masks remain zero pending connected qualification under
-#142. Seventeen scalar flags are newly advertised using retained connected
-execution evidence plus an unchanged-translation source comparison; see the
-[per-function evidence mapping](evidence/pr172-redshift-scalars.md). These are
-new capability flags for existing translations, not previously advertised flags.
-CURDATE remains zero because no connected receipt was found; its translation
-and offline tests remain available. The connected tests retain
-their SQL behavior assertions, explicitly expect withheld Redshift mask bits,
-and can collect future qualification evidence without advertising those bits
-prematurely. Conversion and timestamp-add/diff claims remain withheld under
-#220. A successful direct-only batch probe cannot qualify the broader batch
+Redshift's newly proposed scalar, SQL92, subquery, aggregate, datetime-literal
+and outer/relational-join masks remain zero pending connected qualification
+under #142. Existing translations and their offline/connected behavior tests
+remain available; withholding a metadata claim does not remove a translation.
+Historical local receipts are retained privately, but are not current-head CI
+or live acceptance evidence. The connected tests retain their SQL behavior
+assertions and explicitly expect withheld Redshift mask bits, so future
+qualification does not silently skip the behavior. Conversion and
+timestamp-add/diff claims remain withheld under #220.
+A successful direct-only batch probe cannot qualify the broader batch
 masks; prepared and parameterized support needs separate implementation/proof.
 
 **Public SDK source and binary compatibility:** `BackendCapabilities::outer_joins` has
