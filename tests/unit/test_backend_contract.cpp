@@ -17667,6 +17667,36 @@ TEST_F(SqlCapabilityMaskTest, RedshiftUnqualifiedSqlClaimsRemainWithheld) {
   EXPECT_STREQ("N", reinterpret_cast<const char*>(joins));
 }
 
+TEST_F(SqlCapabilityMaskTest, RedshiftCurrentDateClaimWaitsForConnectedEvidence) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  SQLUINTEGER mask = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TIMEDATE_FUNCTIONS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(0u, mask & SQL_FN_TD_CURDATE);
+}
+
+TEST_F(SqlCapabilityMaskTest, NativeRedshiftPreparedFacetAuthorizesMultipleResults) {
+  postgres::PgBackendProvider native(
+      BackendIdentity{"native-redshift", "Redshift", "test"},
+      BackendConnectionDefaults{"synthetic.invalid", 5432, "test", false},
+      std::nullopt, postgres::PgCatalogProfile::Redshift);
+  // Construct the actual native session without connecting or using a transport.
+  auto session = native.create_session(nullptr);
+  ASSERT_NE(nullptr, session);
+  auto* description = session->statement_description();
+  ASSERT_NE(nullptr, description);
+  ASSERT_TRUE(description->supports_prepared_result_sequence());
+  seen->select_array_authority = description->supports_prepared_result_sequence();
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  SQLCHAR multiple[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MULT_RESULT_SETS, multiple, sizeof(multiple), nullptr));
+  EXPECT_STREQ("Y", reinterpret_cast<const char*>(multiple));
+  SQLUINTEGER support = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
+  EXPECT_EQ(0u, support);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_PARAM_ARRAY_SELECTS, &support, sizeof(support), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PAS_BATCH), support);
+}
+
 TEST_F(SqlCapabilityMaskTest, DirectResultSequencesRemainUsableWithoutPreparedBatchClaims) {
   ASSERT_NO_FATAL_FAILURE(use_profile(false));
   SQLCHAR multiple[2]{};
