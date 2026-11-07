@@ -626,20 +626,20 @@ TEST_F(NativeSqlIntegrationTest, ConvertNumericEscapesPreserveValuesAndNulls) {
   for (const auto* target : {"SQL_SMALLINT", "SQL_INTEGER", "SQL_BIGINT", "SQL_REAL",
                            "SQL_FLOAT", "SQL_DOUBLE", "SQL_NUMERIC", "SQL_DECIMAL"}) {
     SCOPED_TRACE(target);
-    const auto expression = "{fn CONVERT('42'," + std::string(target) + ")}";
+    const auto expression = "{fn CONVERT(CAST('42' AS VARCHAR(2))," + std::string(target) + ")}";
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN " + expression + " = 42 THEN 'ok' ELSE 'bad' END", "ok"));
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", nullptr));
   }
-  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn CONVERT('1.25',SQL_DECIMAL)} = 1.25 THEN 'ok' ELSE 'bad' END", "ok"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn CONVERT(CAST('1.25' AS VARCHAR(4)),SQL_DECIMAL)} = 1.25 THEN 'ok' ELSE 'bad' END", "ok"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN {fn CONVERT(TRUE,SQL_BIT)} THEN 'ok' ELSE 'bad' END", "ok"));
 }
 
 TEST_F(NativeSqlIntegrationTest, ConvertCharacterBinaryAndTemporalEscapes) {
   for (const auto* target : {"SQL_CHAR", "SQL_VARCHAR", "SQL_LONGVARCHAR", "SQL_WCHAR", "SQL_WVARCHAR", "SQL_WLONGVARCHAR"}) {
-    ASSERT_NO_FATAL_FAILURE(expect_wide_scalar("SELECT {fn CONVERT('Grüße'," + std::string(target) + ")}", "Grüße"));
+    ASSERT_NO_FATAL_FAILURE(expect_wide_scalar("SELECT {fn CONVERT(CAST('Grüße' AS VARCHAR(16))," + std::string(target) + ")}", "Grüße"));
   }
   for (const auto* target : {"SQL_BINARY", "SQL_VARBINARY", "SQL_LONGVARBINARY"}) {
-    const auto expression = "{fn CONVERT('ab'," + std::string(target) + ")}";
+    const auto expression = "{fn CONVERT(CAST('ab' AS VARCHAR(2))," + std::string(target) + ")}";
     const auto query = odbcpp::test::compiled_redshift_product()
         ? "SELECT FROM_VARBYTE(" + expression + ", 'hex')"
         : "SELECT encode(" + expression + ", 'hex')";
@@ -649,12 +649,12 @@ TEST_F(NativeSqlIntegrationTest, ConvertCharacterBinaryAndTemporalEscapes) {
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(DATE '2024-02-29',SQL_TIMESTAMP)}", "2024-02-29 00:00:00"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(TIMESTAMP '2024-02-29 12:34:56',SQL_DATE)}", "2024-02-29"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(TIMESTAMP '2024-02-29 12:34:56',SQL_TIME)}", "12:34:56"));
-  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('2024-02-29',SQL_DATE)}", "2024-02-29"));
-  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('12:34:56',SQL_TIME)}", "12:34:56"));
-  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('2024-02-29 12:34:56',SQL_TIMESTAMP)}", "2024-02-29 12:34:56"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(CAST('2024-02-29' AS VARCHAR(10)),SQL_DATE)}", "2024-02-29"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(CAST('12:34:56' AS VARCHAR(8)),SQL_TIME)}", "12:34:56"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(CAST('2024-02-29 12:34:56' AS VARCHAR(19)),SQL_TIMESTAMP)}", "2024-02-29 12:34:56"));
   if (!odbcpp::test::compiled_redshift_product()) {
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(TRUE,SQL_VARCHAR)}", "true"));
-    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT('12345678-1234-1234-1234-123456789abc',SQL_GUID)}",
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(CAST('12345678-1234-1234-1234-123456789abc' AS VARCHAR(36)),SQL_GUID)}",
         "12345678-1234-1234-1234-123456789abc"));
   }
 }

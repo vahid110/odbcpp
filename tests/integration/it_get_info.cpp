@@ -527,7 +527,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_BATCH_ROW_COUNT, 0},
           {SQL_BATCH_SUPPORT, 0},
           {SQL_BOOKMARK_PERSISTENCE, SQL_BP_TRANSACTION},
-          {SQL_CONVERT_FUNCTIONS, redshift_profile_ ? 0u : static_cast<SQLUINTEGER>(SQL_FN_CVT_CONVERT)},
+          {SQL_CONVERT_FUNCTIONS, static_cast<SQLUINTEGER>(SQL_FN_CVT_CONVERT)},
           {SQL_CURSOR_SENSITIVITY, SQL_UNSPECIFIED},
           {SQL_DYNAMIC_CURSOR_ATTRIBUTES1, 0},
           {SQL_DYNAMIC_CURSOR_ATTRIBUTES2, 0},
@@ -657,39 +657,38 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
   constexpr SQLUINTEGER binary = SQL_CVT_BINARY | SQL_CVT_VARBINARY | SQL_CVT_LONGVARBINARY;
   constexpr SQLUINTEGER add = SQL_FN_TSI_SECOND | SQL_FN_TSI_MINUTE | SQL_FN_TSI_HOUR |
       SQL_FN_TSI_DAY | SQL_FN_TSI_WEEK | SQL_FN_TSI_MONTH | SQL_FN_TSI_QUARTER | SQL_FN_TSI_YEAR;
-    SQLUINTEGER character_targets = characters | numeric | binary | SQL_CVT_DATE | SQL_CVT_TIME | SQL_CVT_TIMESTAMP;
-    if (!redshift_profile_) {
-      character_targets |= SQL_CVT_BIT;
+  const auto binary_targets = binary | (redshift_profile_ ? 0u : characters);
+  SQLUINTEGER character_targets = characters | numeric | binary | SQL_CVT_DATE | SQL_CVT_TIME | SQL_CVT_TIMESTAMP;
+  if (!redshift_profile_) {
+    character_targets |= SQL_CVT_BIT;
 #ifdef SQL_CVT_GUID
-      character_targets |= SQL_CVT_GUID;
+    character_targets |= SQL_CVT_GUID;
 #endif
-    }
-    // Redshift reports none of these until its live acceptance passes (#144):
-    // the translations exist, but no Redshift statement behind them has run.
-    const auto pg_only = [&](SQLUINTEGER value) -> SQLUINTEGER { return redshift_profile_ ? 0u : value; };
-    const std::pair<SQLUSMALLINT, SQLUINTEGER> cases[]{
-        {SQL_CONVERT_FUNCTIONS, pg_only(SQL_FN_CVT_CONVERT)},
-        {SQL_CONVERT_SMALLINT, pg_only(numeric | characters)}, {SQL_CONVERT_INTEGER, pg_only(numeric | characters)},
-        {SQL_CONVERT_BIGINT, pg_only(numeric | characters)}, {SQL_CONVERT_REAL, pg_only(numeric | characters)},
-        {SQL_CONVERT_FLOAT, pg_only(numeric | characters)}, {SQL_CONVERT_DOUBLE, pg_only(numeric | characters)},
-        {SQL_CONVERT_NUMERIC, pg_only(numeric | characters)}, {SQL_CONVERT_DECIMAL, pg_only(numeric | characters)},
-        {SQL_CONVERT_BIT, pg_only(SQL_CVT_BIT | (redshift_profile_ ? 0u : characters))},
-        {SQL_CONVERT_CHAR, pg_only(character_targets)}, {SQL_CONVERT_VARCHAR, pg_only(character_targets)},
-        {SQL_CONVERT_LONGVARCHAR, pg_only(character_targets)}, {SQL_CONVERT_WCHAR, pg_only(character_targets)},
-        {SQL_CONVERT_WVARCHAR, pg_only(character_targets)}, {SQL_CONVERT_WLONGVARCHAR, pg_only(character_targets)},
-        {SQL_CONVERT_BINARY, pg_only(binary | characters)}, {SQL_CONVERT_VARBINARY, pg_only(binary | characters)},
-        {SQL_CONVERT_LONGVARBINARY, pg_only(binary | characters)},
-        {SQL_CONVERT_DATE, pg_only(SQL_CVT_DATE | SQL_CVT_TIMESTAMP | characters)},
-        {SQL_CONVERT_TIME, pg_only(SQL_CVT_TIME | characters)},
-        {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
-        {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
-        {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
-            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+  }
+  // #220 conversion/interval claims; other scalar claims remain gated by #142.
+  const std::pair<SQLUSMALLINT, SQLUINTEGER> cases[]{
+      {SQL_CONVERT_FUNCTIONS, SQL_FN_CVT_CONVERT},
+      {SQL_CONVERT_SMALLINT, numeric | characters}, {SQL_CONVERT_INTEGER, numeric | characters},
+      {SQL_CONVERT_BIGINT, numeric | characters}, {SQL_CONVERT_REAL, numeric | characters},
+      {SQL_CONVERT_FLOAT, numeric | characters}, {SQL_CONVERT_DOUBLE, numeric | characters},
+      {SQL_CONVERT_NUMERIC, numeric | characters}, {SQL_CONVERT_DECIMAL, numeric | characters},
+      {SQL_CONVERT_BIT, SQL_CVT_BIT | (redshift_profile_ ? 0u : characters)},
+      {SQL_CONVERT_CHAR, character_targets}, {SQL_CONVERT_VARCHAR, character_targets},
+      {SQL_CONVERT_LONGVARCHAR, character_targets}, {SQL_CONVERT_WCHAR, character_targets},
+      {SQL_CONVERT_WVARCHAR, character_targets}, {SQL_CONVERT_WLONGVARCHAR, character_targets},
+      {SQL_CONVERT_BINARY, binary_targets}, {SQL_CONVERT_VARBINARY, binary_targets},
+      {SQL_CONVERT_LONGVARBINARY, binary_targets},
+      {SQL_CONVERT_DATE, SQL_CVT_DATE | SQL_CVT_TIMESTAMP | characters},
+      {SQL_CONVERT_TIME, SQL_CVT_TIME | characters},
+      {SQL_CONVERT_TIMESTAMP, SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters},
+      {SQL_CONVERT_TINYINT, 0}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, 0}, {SQL_CONVERT_INTERVAL_DAY_TIME, 0},
+      {SQL_TIMEDATE_ADD_INTERVALS, add}, {SQL_TIMEDATE_DIFF_INTERVALS, add & ~SQL_FN_TSI_WEEK},
+      {SQL_TIMEDATE_FUNCTIONS, (redshift_profile_ ? 0u : SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW) |
+          SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
-        {SQL_CONVERT_GUID, pg_only(redshift_profile_ ? 0u : SQL_CVT_GUID | characters)},
+      {SQL_CONVERT_GUID, redshift_profile_ ? 0u : SQL_CVT_GUID | characters},
 #endif
-    };
+  };
   for (const auto& [type, expected] : cases) {
     SQLUINTEGER value = 0xfefefefe;
     SQLSMALLINT length = -1;
@@ -1101,24 +1100,23 @@ TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
             SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL)},
         {SQL_STRING_FUNCTIONS, pg_only(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE)},
         {SQL_NUMERIC_FUNCTIONS, 0},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
-            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW) |
+            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF},
         {SQL_SYSTEM_FUNCTIONS, pg_only(SQL_FN_SYS_IFNULL)},
         {SQL_DATETIME_LITERALS, pg_only(SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP)},
         {SQL_SUBQUERIES, pg_only(SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
-            (redshift_profile_ ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES))},
+            SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES)},
         {SQL_SQL92_PREDICATES, pg_only(predicates |
-            (redshift_profile_ ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON))},
+            SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON)},
         {SQL_SQL92_VALUE_EXPRESSIONS, pg_only(SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF)},
-        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(redshift_profile_ ? 0 :
-            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
+        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
         {SQL_SQL92_STRING_FUNCTIONS, pg_only(SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
             SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING)},
         {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, pg_only(SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
             SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
-            (redshift_profile_ ? 0 : SQL_SNVF_BIT_LENGTH))},
+            SQL_SNVF_BIT_LENGTH)},
         {SQL_SQL92_DATETIME_FUNCTIONS, pg_only(SQL_SDF_CURRENT_DATE |
-            (redshift_profile_ ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP))},
+            SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP)},
         {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, pg_only(SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
             SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
             SQL_SRJO_RIGHT_OUTER_JOIN)},
