@@ -66,6 +66,7 @@ def check_diff(diff):
         raise InvalidReview("missing complete text diff")
     old = new = 0
     has_hunk = False
+    in_file = False
     for line in diff[:-1].split("\n"):
         if line == r"\ No newline at end of file":
             continue
@@ -84,7 +85,12 @@ def check_diff(diff):
                 raise InvalidReview("invalid diff hunk")
             old, new = (int(n) if n is not None else 1 for n in match.groups())
             has_hunk = True
-        elif line.startswith(("diff --git ", "index ", "--- ", "+++ ", "old mode ",
+        elif line.startswith("diff --git "):
+            if in_file and not has_hunk:
+                raise InvalidReview("missing complete file patch")
+            in_file = True
+            has_hunk = False
+        elif line.startswith(("index ", "--- ", "+++ ", "old mode ",
                               "new mode ", "new file mode ", "deleted file mode ")):
             if line.startswith(("index ", "old mode ", "new mode ", "new file mode ",
                                 "deleted file mode ")) and line.endswith((" 120000", " 160000")):
@@ -146,6 +152,13 @@ def request_once(payload, key):
         connection.close()
 
 
+def unique_fields(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise InvalidReview("duplicate verdict field")
+    return value
+
+
 def parse_verdict(response):
     if response.get("status") != "completed" or response.get("error") or response.get("incomplete_details"):
         raise InvalidReview("incomplete response")
@@ -161,7 +174,7 @@ def parse_verdict(response):
     part = messages[0]["content"][0]
     if part.get("type") != "output_text":
         raise InvalidReview("refused or malformed verdict")
-    value = json.loads(part["text"])
+    value = json.loads(part["text"], object_pairs_hook=unique_fields)
     if not isinstance(value, dict) or set(value) != set(SCHEMA["required"]):
         raise InvalidReview("invalid verdict fields")
     body, labels = value["body"], value["labels"]
