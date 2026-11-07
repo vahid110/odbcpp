@@ -6,8 +6,9 @@ name: agent review canary
 # (prepare-workspace.sh) and the refusal to load repository agent
 # configuration. It judges the tool calls recorded in the action's execution
 # log (canary_judge.py, tested by test_canary_judge.py), not the model's own
-# account. On a pass it prints the fingerprint to store in
-# AGENT_REVIEW_ENABLED; the review runs only while they match.
+# account. Separate fallback jobs exercise the production router and OpenAI
+# adapter on synthetic diffs. Only the joint pass prints the fingerprint for
+# AGENT_REVIEW_ENABLED.
 
 on:
   workflow_dispatch:
@@ -28,11 +29,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check the judge
-        shell: bash
-        run: |
-          python3 -I -B .github/review/test_canary_judge.py
-          python3 -I -B .github/review/test_review_gate.py
+      - name: Test reviewer gates, routing, adapter and canary judges
+        run: python3 -I -B -m unittest discover -s .github/review
 
       - name: Plant fake values inside and outside the allowed area
         id: plant
@@ -166,4 +164,65 @@ jobs:
             if [[ -e "$RUNNER_TEMP/$marker" ]]; then markers="$markers $marker"; fi
           done
           CONFIG_MARKERS="$markers" python3 -I -B .github/review/canary_judge.py < "$LOG"
-          echo "Canary passed. Set the repository variable AGENT_REVIEW_ENABLED to: $(.github/review/fingerprint.sh)"
+
+  fallback:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: agent-review
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fixture: spelling
+            role: correctness
+          - fixture: credential-log
+            role: red-team
+    steps:
+      - name: Check out trusted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare synthetic PR and verify provider selection
+        id: prepare
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: |
+          route() { CLAUDE_OUTCOME="$1" RESULT="$2" python3 -I -B .github/review/provider_route.py; }
+          test "$(route failure '')" = openai
+          test "$(route success '{"verdict":"request_changes","body":"Blocked","labels":[]}')" = claude
+          head=$(python3 -I -B .github/review/openai_canary.py prepare "$FIXTURE")
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Review synthetic PR with the production OpenAI adapter
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
+          ROLE: ${{ matrix.role }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head }}
+        run: |
+          python3 -I -B .github/review/openai_fallback.py --role "$ROLE" --head "$HEAD_SHA" --pr 1 > "$RUNNER_TEMP/verdict.json"
+
+      - name: Check expected verdict
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: python3 -I -B .github/review/openai_canary.py judge "$FIXTURE" < "$RUNNER_TEMP/verdict.json"
+
+  fingerprint:
+    needs: [canary, fallback]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Report the configuration that passed all canaries
+        run: |
+          fingerprint=$(.github/review/fingerprint.sh)
+          echo "Canaries passed. Set the repository variable AGENT_REVIEW_ENABLED to: $fingerprint"
