@@ -29,12 +29,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check the judge
-        shell: bash
-        run: |
-          python3 -I -B .github/review/test_canary_judge.py
-          python3 -I -B .github/review/test_review_gate.py
-          python3 -I -B .github/review/test_openai_canary.py
+      - name: Test reviewer gates, routing, adapter and canary judges
+        run: python3 -I -B -m unittest discover -s .github/review
 
       - name: Plant fake values inside and outside the allowed area
         id: plant
@@ -228,4 +224,5 @@ jobs:
           persist-credentials: false
       - name: Report the configuration that passed all canaries
         run: |
-          echo "Canaries passed. Set the repository variable AGENT_REVIEW_ENABLED to: $(.github/review/fingerprint.sh)"
+          fingerprint=$(.github/review/fingerprint.sh)
+          echo "Canaries passed. Set the repository variable AGENT_REVIEW_ENABLED to: $fingerprint"
