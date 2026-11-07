@@ -91,8 +91,8 @@ and single evaluation of volatile operands. SQL itself does not promise left-to-
 evaluation order.
 
 `SQL_TIMEDATE_ADD_INTERVALS`, `SQL_TIMEDATE_DIFF_INTERVALS` and the corresponding
-`SQL_TIMEDATE_FUNCTIONS` bits expose exactly this interval subset. Broader scalar
-and SQL-92 capability reporting is tracked in issue #142.
+`SQL_TIMEDATE_FUNCTIONS` bits expose exactly this interval subset. Additional scalar and SQL-92
+capabilities are described below.
 
 ## References and qualification
 
