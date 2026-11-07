@@ -719,11 +719,9 @@ TEST_F(NativeSqlIntegrationTest, TimestampAddEverySupportedUnitAndCalendarEdges)
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit) + ",1,NULL)}", nullptr));
   }
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_MONTH,1,{d '2024-01-31'})}", "2024-02-29 00:00:00"));
-  // AWS DATEADD documents YEAR vs MONTH leap-day behavior explicitly:
-  // https://docs.aws.amazon.com/redshift/latest/dg/r_DATEADD_function.html
-  // This is a native calendar difference, not cross-product result parity.
-  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_YEAR,1,{d '2024-02-29'})}",
-      odbcpp::test::compiled_redshift_product() ? "2025-03-01 00:00:00" : "2025-02-28 00:00:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_YEAR,1,{d '2024-02-29'})}", "2025-02-28 00:00:00"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_YEAR,-1,{ts '2024-02-29 12:34:56'})}", "2023-02-28 12:34:56"));
+  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_YEAR,4,{d '2024-02-29'})}", "2028-02-29 00:00:00"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_MONTH,12,{d '2024-02-29'})}", "2025-02-28 00:00:00"));
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn TIMESTAMPADD(SQL_TSI_DAY,-1,{d '2024-01-01'})}", "2023-12-31 00:00:00"));
 }
