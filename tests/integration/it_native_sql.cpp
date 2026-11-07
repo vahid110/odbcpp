@@ -662,7 +662,11 @@ TEST_F(NativeSqlIntegrationTest, ConvertCharacterBinaryAndTemporalEscapes) {
 // Exercise every numeric source/target family, not only character-to-number.
 // Literal 42 is exactly representable in every supported numeric type.
 TEST_F(NativeSqlIntegrationTest, ConvertNumericSourceTargetMatrix) {
-  for (const auto* source : {"SMALLINT", "INTEGER", "BIGINT", "REAL", "DOUBLE PRECISION", "DECIMAL(10,2)"}) {
+  const std::array<std::pair<const char*, const char*>, 6> sources{{
+      {"SMALLINT", "42"}, {"INTEGER", "42"}, {"BIGINT", "42"}, {"REAL", "42"},
+      {"DOUBLE PRECISION", "42"}, {"DECIMAL(10,2)", "42.00"}}};
+  for (const auto& [source, expected_text] : sources) {
+    SCOPED_TRACE(source);
     for (const auto* target : {"SQL_SMALLINT", "SQL_INTEGER", "SQL_BIGINT", "SQL_REAL", "SQL_FLOAT",
                              "SQL_DOUBLE", "SQL_NUMERIC", "SQL_DECIMAL"}) {
       SCOPED_TRACE(std::string(source) + " -> " + target);
@@ -671,8 +675,15 @@ TEST_F(NativeSqlIntegrationTest, ConvertNumericSourceTargetMatrix) {
       ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + std::string("42") + suffix + " = 42 THEN 'ok' ELSE 'bad' END", "ok"));
       ASSERT_NO_FATAL_FAILURE(expect_scalar(prefix + std::string("NULL") + suffix + " IS NULL THEN 'ok' ELSE 'bad' END", "ok"));
     }
-    const auto converted = "{fn CONVERT(CAST(42 AS " + std::string(source) + "),SQL_VARCHAR)}";
-    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT CASE WHEN CAST(" + converted + " AS DECIMAL(10,2)) = 42 THEN 'ok' ELSE 'bad' END", "ok"));
+    const auto sql = "SELECT {fn CONVERT(CAST(42 AS " + std::string(source) + "),SQL_VARCHAR)}";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())), SQL_NTS));
+    SQLSMALLINT type = SQL_UNKNOWN_TYPE;
+    SQLCHAR name[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(statement_, 1, name, sizeof(name), nullptr,
+        &type, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARCHAR) << type;
+    ASSERT_NO_FATAL_FAILURE(expect_fetched_scalar(expected_text));
   }
 }
 
@@ -687,8 +698,6 @@ TEST_F(NativeSqlIntegrationTest, ConvertBinaryAndTemporalIdentityAndCharacterPai
     ASSERT_NO_FATAL_FAILURE(expect_scalar(query, "6162"));
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", nullptr));
   }
-  ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(" + std::string(binary) + ",SQL_VARCHAR)}",
-      redshift ? "ab" : "\\x6162"));
   const std::array<std::array<const char*, 3>, 3> temporal{{
       {{"DATE '2024-02-29'", "SQL_DATE", "2024-02-29"}},
       {{"TIME '12:34:56'", "SQL_TIME", "12:34:56"}},
@@ -700,6 +709,31 @@ TEST_F(NativeSqlIntegrationTest, ConvertBinaryAndTemporalIdentityAndCharacterPai
     ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL," + std::string(target) + ")}", nullptr));
   }
   ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(NULL,SQL_BIT)}", nullptr));
+}
+
+// Keep the native format observable even when the Redshift capability bit is withheld.
+TEST_F(NativeSqlIntegrationTest, BinaryToCharacterUsesNativeTextFormat) {
+  if (odbcpp::test::compiled_redshift_product()) {
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(FROM_HEX('6162'),SQL_VARCHAR)}", "ab"));
+    ASSERT_NO_FATAL_FAILURE(expect_wide_scalar("SELECT {fn CONVERT(FROM_HEX('f09f8c8d'),SQL_VARCHAR)}", "🌍"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(FROM_HEX(''),SQL_VARCHAR)}", ""));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(CAST(NULL AS VARBYTE),SQL_VARCHAR)}", nullptr));
+    return;
+  }
+  // SET LOCAL expires on rollback or on the fixture connection closing after an assertion.
+  SQLCHAR begin[] = "BEGIN";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, begin, SQL_NTS));
+  for (const bool hex : {true, false}) {
+    const auto* format = hex ? "hex" : "escape";
+    SCOPED_TRACE(format);
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT set_config('bytea_output','" + std::string(format) + "',true)", format));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(decode('6162','hex'),SQL_VARCHAR)}", hex ? "\\x6162" : "ab"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(decode('','hex'),SQL_VARCHAR)}", hex ? "\\x" : ""));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(decode('00ff','hex'),SQL_VARCHAR)}", hex ? "\\x00ff" : "\\000\\377"));
+    ASSERT_NO_FATAL_FAILURE(expect_scalar("SELECT {fn CONVERT(CAST(NULL AS BYTEA),SQL_VARCHAR)}", nullptr));
+  }
+  SQLCHAR rollback[] = "ROLLBACK";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, rollback, SQL_NTS));
 }
 
 TEST_F(NativeSqlIntegrationTest, TimestampAddEverySupportedUnitAndCalendarEdges) {
