@@ -61,6 +61,33 @@ class FallbackTests(unittest.TestCase):
                 self.assertEqual(supplied["checks"][0]["name"], "ci")
                 self.assertEqual(supplied["previous-reviews"], [])
 
+    def test_withholds_credentials_before_any_http_request(self):
+        token = "ghp_" + "S" * 32
+        args = ["review", "--role", "correctness", "--head", HEAD, "--pr", "17"]
+        originals = {p: p.read_text() for p in self.ctx.iterdir()}
+        fields = {
+            "pr.json": json.dumps(dict(self.pr, body=token)),
+            "full.diff": DIFF.replace("after", token),
+            "checks.jsonl": json.dumps({"name": token}),
+            "previous-reviews.jsonl": json.dumps({"body": token}),
+        }
+        for name, contents in fields.items():
+            with self.subTest(name=name):
+                path = self.ctx / name
+                path.write_text(contents)
+                with patch.object(Path, "cwd", return_value=self.workspace), \
+                        patch.object(fallback.sys, "argv", args), \
+                        patch.dict(os.environ, OPENAI_API_KEY="fake-key"), \
+                        patch.object(fallback, "request_once") as http, \
+                        contextlib.redirect_stdout(io.StringIO()) as out, \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(fallback.main(), 1)
+                http.assert_not_called()
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn("credential pattern", err.getvalue())
+                self.assertNotIn(token, err.getvalue())
+                path.write_text(originals[path])
+
     def test_refuses_head_number_or_role_mismatch(self):
         for role, sha, number in [("bad", HEAD, 17), ("red-team", "b"*40, 17),
                                   ("correctness", HEAD, 2)]:

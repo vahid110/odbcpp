@@ -29,7 +29,7 @@ SCHEMA = {
 }
 SECRET = re.compile(
     r"sk-(?:proj-|ant-|svcacct-)?[a-zA-Z0-9_-]{16,}|gh[pousr]_[a-zA-Z0-9]{20,}|"
-    r"github_pat_|eyJ[A-Za-z0-9_-]{10,}\.|-----BEGIN [A-Z ]*KEY"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}|github_pat_[A-Za-z0-9_]{20,}|eyJ[A-Za-z0-9_-]{10,}\.|-----BEGIN [A-Z ]*KEY"
 )
 HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?")
 
@@ -113,6 +113,11 @@ def make_request(workspace, trusted, role, head, pr):
     for field in ("checks", "previous-reviews"):
         rows = read_file(workspace, "review-context/" + field + ".jsonl").splitlines()
         data[field] = [json.loads(row) for row in rows if row.strip()]
+    input_text = json.dumps(data, ensure_ascii=False)
+    # Withhold the whole review: redacting parts of the diff would invalidate
+    # the completeness guarantee. Never include matching bytes in diagnostics.
+    if SECRET.search(input_text):
+        raise InvalidReview("credential pattern in review context")
     policy = [read_file(trusted, name) for name in (
         ".github/review/" + role + ".md", "AGENTS.md", "docs/adr/0001-development-process.md")]
     instructions = "\n\n".join(policy) + (
@@ -124,7 +129,7 @@ def make_request(workspace, trusted, role, head, pr):
     request = {
         "model": MODEL, "store": False, "tools": [], "truncation": "disabled",
         "max_output_tokens": MAX_OUTPUT_TOKENS, "reasoning": {"effort": "low"},
-        "instructions": instructions, "input": json.dumps(data, ensure_ascii=False),
+        "instructions": instructions, "input": input_text,
         "text": {"format": {"type": "json_schema", "name": "review", "strict": True,
                             "schema": SCHEMA}},
     }
