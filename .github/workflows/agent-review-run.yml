@@ -15,6 +15,12 @@ name: agent review run
 on:
   workflow_call:
     inputs:
+      claude:
+        required: true
+        type: boolean
+      openai:
+        required: true
+        type: boolean
       role:
         description: correctness or red-team
         required: true
@@ -134,7 +140,7 @@ jobs:
     # before publishing anything.
     name: agent review (${{ inputs.role }})
     needs: start
-    if: needs.start.outputs.skip != 'true'
+    if: needs.start.outputs.skip != 'true' && inputs.claude
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: agent-review
@@ -256,12 +262,21 @@ jobs:
           provider=$(python3 -I .github/review/provider_route.py)
           echo "provider=$provider" >> "$GITHUB_OUTPUT"
 
+      - name: Report unavailable backup
+        if: steps.route.outputs.provider == 'openai' && !inputs.openai
+        run: |
+          echo "::error::Claude produced no verdict and OpenAI has no passing canary."
+          exit 1
+
   reserve:
     # Caller concurrency serializes this role and PR. Record the attempt before
     # spending, on the candidate itself. An ambiguous POST fails closed.
     name: Reserve backup review (${{ inputs.role }})
     needs: [start, model]
-    if: needs.model.outputs.provider == 'openai'
+    if: >-
+      !cancelled() && needs.start.result == 'success' && needs.start.outputs.skip != 'true' &&
+      inputs.openai && ((!inputs.claude && needs.model.result == 'skipped') ||
+      (needs.model.result == 'success' && needs.model.outputs.provider == 'openai'))
     environment: agent-review
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -308,6 +323,7 @@ jobs:
     # Fresh runner. No Claude process, reviewer App token or PR code execution.
     name: OpenAI backup review (${{ inputs.role }})
     needs: [start, reserve]
+    if: "!cancelled() && needs.start.result == 'success' && needs.reserve.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: agent-review
@@ -393,12 +409,14 @@ jobs:
           permission-checks: write
 
       - name: Post the verdict as odbcpp-reviewer[bot]
-        if: ${{ !cancelled() && needs.model.result == 'success' && (needs.model.outputs.provider == 'claude' || needs.fallback.result == 'success') }}
+        if: >-
+          !cancelled() && ((needs.model.result == 'success' && needs.model.outputs.provider == 'claude') ||
+          needs.fallback.result == 'success')
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-          RESULT: ${{ needs.model.outputs.provider == 'openai' && needs.fallback.outputs.result || needs.model.outputs.result }}
-          REVIEW_PROVIDER: ${{ needs.model.outputs.provider }}
+          RESULT: ${{ needs.fallback.result == 'success' && needs.fallback.outputs.result || needs.model.outputs.result }}
+          REVIEW_PROVIDER: ${{ needs.fallback.result == 'success' && 'openai' || 'claude' }}
         run: |
           current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
           if [[ "$current" != "$HEAD_SHA" ]]; then

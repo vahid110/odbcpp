@@ -1,0 +1,52 @@
+name: record provider canary
+on:
+  workflow_call:
+    inputs:
+      provider:
+        required: true
+        type: string
+      outcome:
+        required: true
+        type: string
+    secrets:
+      ODBCPP_REVIEWER_PRIVATE_KEY:
+        required: true
+
+permissions: {}
+jobs:
+  record:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.workflow_ref == format('{0}/.github/workflows/agent-review-canary.yml@refs/heads/main', github.repository)
+    runs-on: ubuntu-24.04
+    environment: agent-review
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: reviewer
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liLzexEhszs2AHlm
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+      - name: Record the tested configuration for this provider
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          PROVIDER: ${{ inputs.provider }}
+          OUTCOME: ${{ inputs.outcome }}
+        run: |
+          [[ "$PROVIDER" == claude || "$PROVIDER" == openai ]]
+          conclusion=failure
+          if [[ "$OUTCOME" == success ]]; then conclusion=success; fi
+          fingerprint=$(.github/review/fingerprint.sh)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
+            -f head_sha="$(cat .github/review/run-anchor)" -f name="Provider canary $PROVIDER $fingerprint" \
+            -f external_id="$GITHUB_RUN_NUMBER:$GITHUB_RUN_ATTEMPT" -f status=completed -f conclusion="$conclusion" \
+            --jq .app.id > creator
+          [[ "$(cat creator)" == "$(cat .github/review/reviewer-app-id)" ]]
