@@ -34,6 +34,7 @@ jobs:
         run: |
           python3 -I -B .github/review/test_canary_judge.py
           python3 -I -B .github/review/test_review_gate.py
+          python3 -I -B .github/review/test_openai_canary.py
 
       - name: Plant fake values inside and outside the allowed area
         id: plant

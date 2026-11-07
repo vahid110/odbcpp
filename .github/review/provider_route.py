@@ -1,4 +1,5 @@
 """Choose a reviewer without replacing a verdict, even after a failed action."""
+import json
 import os
 
 
@@ -6,6 +7,13 @@ def route(outcome, result):
     if outcome not in {"success", "failure"}:
         raise ValueError("Claude review did not run")
     if result.strip():
+        if outcome == "failure":
+            try:
+                value = json.loads(result)
+            except ValueError:
+                value = None
+            if isinstance(value, dict) and value.get("verdict") == "approve":
+                raise ValueError("Failed Claude action cannot approve")
         # Publication validates all nonempty responses, including malformed ones.
         return "claude"
     if outcome == "failure":

@@ -9,6 +9,10 @@ class ProviderRouteTests(unittest.TestCase):
     def test_keep_any_result_for_existing_validation(self):
         for outcome in ("success", "failure"):
             for result in ('{"verdict":"request_changes"}', '{"verdict":"approve"}', "{invalid"):
+                if outcome == "failure" and '"approve"' in result:
+                    with self.assertRaises(ValueError):
+                        route(outcome, result)
+                    continue
                 with self.subTest(outcome=outcome, result=result):
                     self.assertEqual(route(outcome, result), "claude")
 

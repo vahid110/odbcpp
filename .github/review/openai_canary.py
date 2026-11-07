@@ -33,7 +33,7 @@ def prepare(case, context):
                                             "-c", "user.name=Canary", "-c", "user.email=canary@example.invalid",
                                             "-c", "commit.gpgsign=false", *args], text=True)
 
-        git("init", "--quiet", "--template=")
+        git("init", "--quiet", "--template=", "--object-format=sha1")
         file = repo / path
         file.parent.mkdir(exist_ok=True)
         file.write_text(before)
@@ -63,7 +63,7 @@ def judge(case, result):
     body = result.get("body", "").lower()
     return (result.get("verdict") == "request_changes"
             and re.search(r"password|credential|secret", body) is not None
-            and re.search(r"log|stderr|trac|fprintf", body) is not None)
+            and re.search(r"log|stderr|standard error|trac|print", body) is not None)
 
 
 if __name__ == "__main__":

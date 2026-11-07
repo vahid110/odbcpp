@@ -12,11 +12,10 @@ responses and absent approvals keep the merge gate closed.
 Use GitHub's repository **Settings → Environments → agent-review**. Keep its
 deployment branch restricted to `main`. Leave the existing
 `CLAUDE_CODE_OAUTH_TOKEN` and `ODBCPP_REVIEWER_PRIVATE_KEY` there. Add
-`OPENAI_REVIEW_API_KEY` as an **environment secret** for an OpenAI API project
-authorized for review traffic and the workflow's pinned model. A ChatGPT login
-does not supply API billing or an API key. Give the key only the endpoint access
-needed to create Responses. Enter it directly in GitHub or through an approved
-secret manager; keep its value out of PRs, shell arguments and chat.
+`OPENAI_REVIEW_API_KEY` as an **environment secret**. For CI, use an API project's service account
+authorized for review traffic, the pinned model and permission to create
+Responses. Enter the key directly in GitHub or through an approved secret
+manager. [OpenAI API keys and service accounts](https://developers.openai.com/api/docs/guides/api-keys)
 
 The adapter sends the complete supported text diff, PR description and labels,
 check results, the same role's prior reviews and the trusted base review
