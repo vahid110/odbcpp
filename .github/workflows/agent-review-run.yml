@@ -231,13 +231,15 @@ jobs:
           chmod +x "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
 
-      - name: Recheck claude canary before invoking the provider
+      - name: Recheck Claude canary before invoking the provider
+        id: admit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -I -B .github/review/provider_activation.py claude
+        run: python3 -I -B .github/review/provider_activation.py --check-claude >> "$GITHUB_OUTPUT"
 
       - name: Review
         id: review
+        if: steps.admit.outputs.available == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         env:
@@ -262,9 +264,14 @@ jobs:
         id: route
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
+          CLAUDE_PROVEN: ${{ steps.admit.outputs.available }}
           CLAUDE_OUTCOME: ${{ steps.review.outcome }}
         run: |
-          provider=$(python3 -I .github/review/provider_route.py)
+          if [[ "$CLAUDE_PROVEN" == false && "$CLAUDE_OUTCOME" == skipped ]]; then
+            provider=openai
+          else
+            provider=$(python3 -I .github/review/provider_route.py)
+          fi
           echo "provider=$provider" >> "$GITHUB_OUTPUT"
 
       - name: Report unavailable backup

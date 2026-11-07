@@ -7,8 +7,7 @@ name: agent review canary
 # configuration. It judges the tool calls recorded in the action's execution
 # log (canary_judge.py, tested by test_canary_judge.py), not the model's own
 # account. Separate fallback jobs exercise the production router and OpenAI
-# adapter on synthetic diffs. Only the joint pass prints the fingerprint for
-# AGENT_REVIEW_ENABLED.
+# adapter on synthetic diffs. The reviewer App records each provider outcome independently.
 
 on:
   workflow_dispatch:

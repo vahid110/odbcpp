@@ -30,7 +30,9 @@ def is_proven(provider, fingerprint):
 
 if __name__ == "__main__":
     fingerprint = subprocess.check_output([".github/review/fingerprint.sh"], text=True).strip()
-    if sys.argv[1:]:
+    if sys.argv[1:] == ["--check-claude"]:
+        print("available=" + str(is_proven("claude", fingerprint)).lower())
+    elif sys.argv[1:]:
         provider, = sys.argv[1:]
         if provider not in ("claude", "openai") or not is_proven(provider, fingerprint):
             raise SystemExit("Provider no longer has a passing canary")
