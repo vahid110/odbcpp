@@ -4,6 +4,7 @@
 #include "odbc/odbc_types.h"
 #include "odbcpp/util/deadline.h"
 #include "tests/test_handle_helpers.h"
+#include "tests/test_sql_capability_masks.h"
 #include "core/database/postgres/pg_backend_provider.h"
 
 #include <array>
@@ -190,8 +191,7 @@ TEST_F(AttributeApisTest, ConversionAndTimestampMasksMatchTheExplicitProductCont
         {SQL_CONVERT_TIMESTAMP, pg_only(SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters)},
         {SQL_CONVERT_TINYINT, pg_only(0)}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, pg_only(0)}, {SQL_CONVERT_INTERVAL_DAY_TIME, pg_only(0)},
         {SQL_TIMEDATE_ADD_INTERVALS, pg_only(add)}, {SQL_TIMEDATE_DIFF_INTERVALS, pg_only(add & ~SQL_FN_TSI_WEEK)},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
-            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
+        {SQL_TIMEDATE_FUNCTIONS, odbcpp::test::timedate_function_mask(redshift)},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
         {SQL_CONVERT_GUID, pg_only(redshift ? 0u : SQL_CVT_GUID | characters)},
 #endif

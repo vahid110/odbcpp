@@ -4,6 +4,7 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
+#include "tests/test_sql_capability_masks.h"
 #include "tests/support/scoped_driver_config.h"
 #include "odbcpp/util/hex.h"
 #include "odbc/unicode.h"
@@ -12166,7 +12167,9 @@ TEST_F(LocateEscapeApiTest, LocalRefusalKeepsRequiredOutputsSiblingSnapshotAndCa
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-9},after{83};} output;SQLLEN length=-1;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output.value,sizeof(output.value),&length));
   EXPECT_EQ(3,output.value);EXPECT_EQ(17,output.before);EXPECT_EQ(83,output.after);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_STRING_FUNCTIONS, &functions, sizeof(functions), nullptr));
+  EXPECT_EQ(odbcpp::test::string_function_mask(true), functions);
   ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT {fn LOCATE('x','x')}")),SQL_NTS));
   EXPECT_EQ("SELECT POSITION('x' IN 'x')",seen->sql);EXPECT_EQ(3,output.value);
 }
@@ -12220,7 +12223,9 @@ TEST_F(LengthEscapeApiTest, LocalErrorPreservesRequiredOutputsSiblingAndConserva
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&n));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,n);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER result=-91;SQLLEN length=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&result,sizeof(result),&length));EXPECT_EQ(3,result);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_STRING_FUNCTIONS, &functions, sizeof(functions), nullptr));
+  EXPECT_EQ(odbcpp::test::string_function_mask(true), functions);
   std::string good="SELECT {fn LENGTH('cat')}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(3,result);
 }
 }
@@ -12293,7 +12298,9 @@ TEST_F(CalendarEscapeApiTest, RequiredOutputsSiblingSnapshotAndDiscoveryClaimsSu
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER year=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&year,sizeof(year),&bytes));EXPECT_EQ(2024,year);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TIMEDATE_FUNCTIONS, &functions, sizeof(functions), nullptr));
+  EXPECT_EQ(odbcpp::test::timedate_function_mask(true), functions);
   std::string good="SELECT {fn YEAR({d '2000-01-01'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(2024,year);
 }
 }
@@ -12367,7 +12374,9 @@ TEST_F(ClockEscapeApiTest, LocalErrorPreservesOutputsSiblingSnapshotAndDiscovery
   ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
   SQLINTEGER second=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&second,sizeof(second),&bytes));EXPECT_EQ(59,second);
-  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  SQLUINTEGER functions = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TIMEDATE_FUNCTIONS, &functions, sizeof(functions), nullptr));
+  EXPECT_EQ(odbcpp::test::timedate_function_mask(true), functions);
   std::string good="SELECT {fn SECOND({ts '2000-01-01 12:08:43.101000'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(59,second);
 }
 }
@@ -12553,7 +12562,9 @@ TEST_F(DayOrdinalEscapeApiTest, SiblingSnapshotAndCapabilityMasksSurviveLocalRef
   EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
-  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
+  SQLUINTEGER mask = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TIMEDATE_FUNCTIONS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(odbcpp::test::timedate_function_mask(true), mask);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
@@ -12777,7 +12788,9 @@ TEST_F(LogarithmEscapeApiTest, LocalRefusalKeepsOwningSiblingAndNumericCapabilit
   EXPECT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
-  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_NUMERIC_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
+  SQLUINTEGER mask = 97;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_NUMERIC_FUNCTIONS, &mask, sizeof(mask), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10), mask);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
@@ -17572,41 +17585,7 @@ class SqlCapabilityMaskTest : public BackendContractTest {
   }
 
   void exact_masks(bool redshift) {
-    const auto pg_only = [&](SQLUINTEGER value) { return redshift ? 0u : value; };
-    const SQLUINTEGER outer = SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
-        SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER;
-    const SQLUINTEGER predicates = SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
-        SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON;
-    const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
-        {SQL_OJ_CAPABILITIES, pg_only(outer)},
-        {SQL_AGGREGATE_FUNCTIONS, pg_only(SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
-            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL)},
-        {SQL_STRING_FUNCTIONS, pg_only(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE)},
-        {SQL_NUMERIC_FUNCTIONS, 0},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
-            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF)},
-        {SQL_SYSTEM_FUNCTIONS, pg_only(SQL_FN_SYS_IFNULL)},
-        {SQL_DATETIME_LITERALS, pg_only(SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP)},
-        {SQL_SUBQUERIES, pg_only(SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
-            (redshift ? 0 : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES))},
-        {SQL_SQL92_PREDICATES, pg_only(predicates |
-            (redshift ? 0 : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON))},
-        {SQL_SQL92_VALUE_EXPRESSIONS, pg_only(SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF)},
-        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(redshift ? 0 :
-            SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
-        {SQL_SQL92_STRING_FUNCTIONS, pg_only(SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
-            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING)},
-        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, pg_only(SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
-            SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
-            (redshift ? 0 : SQL_SNVF_BIT_LENGTH))},
-        {SQL_SQL92_DATETIME_FUNCTIONS, pg_only(SQL_SDF_CURRENT_DATE |
-            (redshift ? 0 : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP))},
-        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, pg_only(SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
-            SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
-            SQL_SRJO_RIGHT_OUTER_JOIN)},
-        {SQL_BATCH_SUPPORT, 0},
-        {SQL_BATCH_ROW_COUNT, 0},
-    };
+    const auto expected = odbcpp::test::sql_capability_masks(redshift);
     for (const auto& [type, mask] : expected) {
       SCOPED_TRACE(type);
       for (const bool wide : {false, true}) {
@@ -17625,7 +17604,7 @@ class SqlCapabilityMaskTest : public BackendContractTest {
     for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
       SQLCHAR value[2]{};
       ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
-      EXPECT_STREQ(redshift ? "N" : "Y", reinterpret_cast<const char*>(value));
+      EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
     }
   }
 };
@@ -17647,38 +17626,44 @@ TEST_F(SqlCapabilityMaskTest, ExplicitBatchMasksStayWithheldForBothProfiles) {
   }
 }
 
-TEST_F(SqlCapabilityMaskTest, RedshiftUnqualifiedSqlClaimsRemainWithheld) {
+TEST_F(SqlCapabilityMaskTest, UnqualifiedRedshiftFormsRemainWithheld) {
   ASSERT_NO_FATAL_FAILURE(use_profile(true));
-  for (const auto type : std::array<SQLUSMALLINT, 11>{SQL_OJ_CAPABILITIES,
-      SQL_AGGREGATE_FUNCTIONS, SQL_DATETIME_LITERALS, SQL_SUBQUERIES,
-      SQL_SQL92_PREDICATES, SQL_SQL92_VALUE_EXPRESSIONS, SQL_SQL92_ROW_VALUE_CONSTRUCTOR,
-      SQL_SQL92_STRING_FUNCTIONS, SQL_SQL92_NUMERIC_VALUE_FUNCTIONS,
-      SQL_SQL92_DATETIME_FUNCTIONS, SQL_SQL92_RELATIONAL_JOIN_OPERATORS}) {
+  const std::pair<SQLUSMALLINT, SQLUINTEGER> withheld[]{
+      {SQL_OJ_CAPABILITIES, SQL_OJ_ALL_COMPARISON_OPS},
+      {SQL_SUBQUERIES, SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES},
+      {SQL_SQL92_PREDICATES, SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON},
+      {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY},
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_BIT_LENGTH},
+      {SQL_SQL92_DATETIME_FUNCTIONS, SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP},
+      {SQL_STRING_FUNCTIONS, SQL_FN_STR_LOCATE},
+  };
+  for (const auto& [type, excluded] : withheld) {
     SQLUINTEGER mask = 97;
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
-    EXPECT_EQ(0u, mask) << type;
-  }
-  SQLCHAR joins[2]{};
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_OUTER_JOINS, joins, sizeof(joins), nullptr));
-  EXPECT_STREQ("N", reinterpret_cast<const char*>(joins));
-}
-
-TEST_F(SqlCapabilityMaskTest, RedshiftScalarMasksWaitForConnectedQualification) {
-  ASSERT_NO_FATAL_FAILURE(use_profile(true));
-  for (const auto type : std::array<SQLUSMALLINT, 4>{SQL_STRING_FUNCTIONS,
-      SQL_NUMERIC_FUNCTIONS, SQL_TIMEDATE_FUNCTIONS, SQL_SYSTEM_FUNCTIONS}) {
-    SCOPED_TRACE(type);
-    SQLUINTEGER mask = 97;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
-    EXPECT_EQ(0u, mask);
+    EXPECT_EQ(0u, mask & excluded) << type;
   }
 }
 
-TEST_F(SqlCapabilityMaskTest, RedshiftCurrentDateClaimWaitsForConnectedEvidence) {
+TEST_F(SqlCapabilityMaskTest, RedshiftScalarMasksReportQualifiedForms) {
   ASSERT_NO_FATAL_FAILURE(use_profile(true));
-  SQLUINTEGER mask = 97;
+  const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
+      {SQL_STRING_FUNCTIONS, odbcpp::test::string_function_mask(true)},
+      {SQL_NUMERIC_FUNCTIONS, SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10},
+      {SQL_TIMEDATE_FUNCTIONS, odbcpp::test::timedate_function_mask(true)},
+      {SQL_SYSTEM_FUNCTIONS, SQL_FN_SYS_IFNULL},
+  };
+  for (const auto& [type, bits] : expected) {
+    SQLUINTEGER mask = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, &mask, sizeof(mask), nullptr));
+    EXPECT_EQ(bits, mask) << type;
+  }
+}
+
+TEST_F(SqlCapabilityMaskTest, RedshiftCurrentDateClaimMatchesConnectedEvidence) {
+  ASSERT_NO_FATAL_FAILURE(use_profile(true));
+  SQLUINTEGER mask = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TIMEDATE_FUNCTIONS, &mask, sizeof(mask), nullptr));
-  EXPECT_EQ(0u, mask & SQL_FN_TD_CURDATE);
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_TD_CURDATE), mask & SQL_FN_TD_CURDATE);
 }
 
 TEST_F(SqlCapabilityMaskTest, NativeRedshiftFacetAndOfflineOdbcMappingAgree) {
@@ -17799,14 +17784,11 @@ TEST_F(BackendContractTest, SelectArraysAlsoAuthorizeMultipleResultsWithoutExpli
 
 
 namespace {
-TEST_F(LocateEscapeApiTest, WithholdsLocateClaimButKeepsTranslationAndStartPositionRefusal) {
+TEST_F(LocateEscapeApiTest, AdvertisesTwoArgumentLocateAndRefusesStartPosition) {
   ASSERT_NO_FATAL_FAILURE(connect());
   SQLUINTEGER mask = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_STRING_FUNCTIONS, &mask, sizeof(mask), nullptr));
-  // SQLGetInfo defines LOCATE_2 for two arguments and LOCATE for the optional
-  // start-position form. Both claims await connected qualification; the
-  // latter form is also deliberately refused by this dialect.
-  EXPECT_EQ(0u, mask & SQL_FN_STR_LOCATE_2);
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_FN_STR_LOCATE_2), mask & SQL_FN_STR_LOCATE_2);
   EXPECT_EQ(0u, mask & SQL_FN_STR_LOCATE);
   std::string sql = "SELECT {fn LOCATE('a','cat',2)}";
   std::array<SQLCHAR, 128> output{};
