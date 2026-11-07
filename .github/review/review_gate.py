@@ -209,9 +209,9 @@ def status(reviews, labels, files, events, head_sha, now=None, runs=()):
 # credential scan is defence in depth only: it catches accidental leaks, not
 # a model that encodes or splits a secret.
 SECRET = re.compile(
-    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|sk-ant-|eyJ[A-Za-z0-9_-]{10,}\.|"
+    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|sk-[A-Za-z0-9_-]{16,}|sk-ant-|eyJ[A-Za-z0-9_-]{10,}\.|"
     r"-----BEGIN [A-Z ]*KEY|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN|"
-    r"CLAUDE_CODE_OAUTH_TOKEN\s*[=:]")
+    r"(?:CLAUDE_CODE_OAUTH_TOKEN|OPENAI_(?:REVIEW_)?API_KEY)\s*[=:]")
 MENTION = re.compile(r"@(?=[A-Za-z0-9_-])")
 # Character references that render as "@": escape their "&" so they show as
 # text instead of possibly becoming a mention.
@@ -268,6 +268,9 @@ def main(command):
     if command == "prepare":
         review, labels, held = prepare_review(os.environ.get("RESULT", ""), os.environ["ROLE"], head,
                                               os.environ.get("RUN_URL", ""))
+        provider = os.environ["REVIEW_PROVIDER"]
+        attribution = {"claude": "Claude / claude-opus-5-5", "openai": "OpenAI / gpt-5.4-mini-2026-03-17"}
+        review["body"] += "\n\nReviewer model: " + attribution[provider]
         json.dump(review, open("review.json", "w"))
         json.dump({"labels": labels}, open("labels-to-add.json", "w"))
         open("withheld", "w").write("1" if held else "")

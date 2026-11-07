@@ -263,7 +263,7 @@ class Workflows(unittest.TestCase):
                 block = _re.search(r"\n    secrets:\n((?:      [^\n]*\n)+)", job)
                 self.assertIsNotNone(block, "the caller passes no secrets")
                 passed = _re.findall(r"^      ([A-Z_]+): \$\{\{ secrets\.([A-Z_]+) \}\}$", block.group(1), _re.M)
-                self.assertEqual(sorted(passed), sorted((n, n) for n in self.SECRETS))
+                self.assertEqual(sorted(passed), sorted((n, n) for n in (*self.SECRETS, "OPENAI_REVIEW_API_KEY")))
 
     def test_review_workflow_requires_its_secrets(self):
         import re as _re

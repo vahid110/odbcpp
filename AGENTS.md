@@ -82,9 +82,12 @@ reviewer's latest review of the head commit approves. Branch protection must
 pin that check to the odbcpp-reviewer App, so no other job can satisfy it.
 A high-risk label, once added by anyone (or required by the changed paths),
 keeps the red-team review required even if the label is removed; the red-team
-review then runs and must approve. Its key and the Claude
-token live only in the main-only `agent-review` environment; no machine holds
-them. The review runs once the owner has enabled it after a passing canary.
+review then runs and must approve. The reviewer App key, Claude token and
+OpenAI fallback API key live in the main-only `agent-review` environment.
+The fallback handles a failed Claude action that returned no verdict. Both
+providers use the same reviewer roles and publication checks. Follow the
+[reviewer setup and recovery instructions](docs/agent-review.md) to enable
+the reviewed configuration after its canaries pass.
 Until then, session reviews are PR comments by `odbcpp-agent[bot]`; never
 merge unless every reviewer's latest review of the head commit approves.
 Each review starts with its role (`[correctness reviewer]` or
