@@ -28,6 +28,8 @@ on:
         required: true
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      OPENAI_REVIEW_API_KEY:
+        required: false
 
 permissions: {}
 
@@ -148,6 +150,7 @@ jobs:
       BASE_SHA: ${{ needs.start.outputs.base_sha }}
     outputs:
       result: ${{ steps.review.outputs.structured_output }}
+      provider: ${{ steps.route.outputs.provider }}
     steps:
       - name: Save the pull request for the review context
         shell: bash
@@ -173,27 +176,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           .github/review/prepare-workspace.sh
-          mkdir review-context
-          # head_sha is the commit the start job chose and the prompt names,
-          # even if the pull request moved since (post then discards the result).
-          jq --arg h "$HEAD_SHA" '{number, title, body, user: .user.login, labels: [.labels[].name],
-               base: .base.ref, head_sha: $h}' "$RUNNER_TEMP/pr-raw.json" > review-context/pr.json
-          # The exact diff of the reviewed commit against its merge base.
-          gh api -H "Accept: application/vnd.github.diff" \
-            "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" > review-context/pr.diff
-          gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-            --jq '.check_runs[] | {name, status, conclusion}' > review-context/checks.jsonl
-          # This role's own earlier reviews, so fixes can be checked; the
-          # other role's reviews stay hidden (independent reviews). The
-          # reviewed commit comes from each header, not commit_id, which
-          # GitHub re-points to the new head after a force-push (#210).
-          # gh's --jq uses Go regular expressions: no lookahead.
-          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            --jq ".[] | select(.user.login == \"odbcpp-reviewer[bot]\")
-                      | select(.body | ltrimstr(\"**\") | startswith(\"[$ROLE reviewer]\"))
-                      | {reviewed_commit: ((.body | split(\"\\n\")[0] | capture(\" at (?<s>[0-9a-f]{40})($|[^0-9a-f])\") | .s) // \"unknown\"),
-                         state, body}" > review-context/previous-reviews.jsonl
-          ls -l review-context
+          bash .github/review/prepare-context.sh
 
       - name: Load the reviewer's tool rules
         id: args
@@ -244,6 +227,7 @@ jobs:
 
       - name: Review
         id: review
+        continue-on-error: true
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
@@ -263,11 +247,119 @@ jobs:
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","body","labels"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string","enum":["security","auth","protocol","transactions","process"]}}}}'
 
 
+      - name: Route the Claude result
+        id: route
+        env:
+          RESULT: ${{ steps.review.outputs.structured_output }}
+          CLAUDE_OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          provider=$(python3 -I .github/review/provider_route.py)
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+
+  reserve:
+    # Caller concurrency serializes this role and PR. Record the attempt before
+    # spending, on the candidate itself. An ambiguous POST fails closed.
+    name: Reserve backup review (${{ inputs.role }})
+    needs: [start, model]
+    if: needs.model.outputs.provider == 'openai'
+    environment: agent-review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      attempt: ${{ steps.reserve.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: reviewer
+        with:
+          client-id: Iv23liLzexEhszs2AHlm
+          private-key: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+      - name: Claim this role and commit
+        id: reserve
+        env:
+          GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          HEAD_SHA: ${{ needs.start.outputs.head_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ROLE: ${{ inputs.role }}
+        run: |
+          app=$(cat .github/review/reviewer-app-id)
+          name="OpenAI review attempt ($ROLE) #$PR_NUMBER"
+          endpoint="repos/$GITHUB_REPOSITORY"
+          gh api --paginate --method GET "$endpoint/commits/$HEAD_SHA/check-runs" -f filter=all \
+            -f "app_id=$app" -f "check_name=$name" --jq '.check_runs[].id' > attempts
+          if [[ -s attempts ]]; then
+            echo "::error::Backup review already attempted on this commit for this role."
+            exit 1
+          fi
+          gh api -X POST "$endpoint/check-runs" -f name="$name" -f head_sha="$HEAD_SHA" \
+            -f status=completed -f conclusion=neutral --jq '.app.id' > creator
+          [[ "$(cat creator)" == "$app" ]]
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+  fallback:
+    # Fresh runner. No Claude process, reviewer App token or PR code execution.
+    name: OpenAI backup review (${{ inputs.role }})
+    needs: [start, reserve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: agent-review
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    env:
+      HEAD_SHA: ${{ needs.start.outputs.head_sha }}
+      BASE_SHA: ${{ needs.start.outputs.base_sha }}
+      ROLE: ${{ inputs.role }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    outputs:
+      result: ${{ steps.review.outputs.result }}
+    steps:
+      - name: Verify fresh reservation
+        env:
+          RESERVED_ATTEMPT: ${{ needs.reserve.outputs.attempt }}
+        run: '[[ "$GITHUB_RUN_ATTEMPT" == "$RESERVED_ATTEMPT" ]]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          path: pr-head
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Collect exact comparison and role evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr-raw.json"
+          bash .github/review/prepare-context.sh
+          git -C pr-head diff --no-ext-diff --no-textconv --no-renames --submodule=short \
+            "$BASE_SHA...$HEAD_SHA" -- > review-context/full.diff
+          .github/review/prepare-workspace.sh
+      - name: Request one structured review
+        id: review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
+        run: |
+          python3 -I .github/review/openai_fallback.py --role "$ROLE" --head "$HEAD_SHA" --pr "$PR_NUMBER" > "$RUNNER_TEMP/result.json"
+          jq -ce . "$RUNNER_TEMP/result.json" > "$RUNNER_TEMP/result.line"
+          { printf 'result='; cat "$RUNNER_TEMP/result.line"; } >> "$GITHUB_OUTPUT"
+
   post:
     # Publishes the validated verdict and updates the required check with a
     # fresh reviewer token, minted only after the model has finished (#205).
     name: agent review post (${{ inputs.role }})
-    needs: [start, model]
+    needs: [start, model, fallback]
     if: ${{ !cancelled() && needs.start.outputs.skip != 'true' && needs.start.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -301,11 +393,12 @@ jobs:
           permission-checks: write
 
       - name: Post the verdict as odbcpp-reviewer[bot]
-        if: needs.model.result == 'success'
+        if: ${{ !cancelled() && needs.model.result == 'success' && (needs.model.outputs.provider == 'claude' || needs.fallback.result == 'success') }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-          RESULT: ${{ needs.model.outputs.result }}
+          RESULT: ${{ needs.model.outputs.provider == 'openai' && needs.fallback.outputs.result || needs.model.outputs.result }}
+          REVIEW_PROVIDER: ${{ needs.model.outputs.provider }}
         run: |
           current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
           if [[ "$current" != "$HEAD_SHA" ]]; then

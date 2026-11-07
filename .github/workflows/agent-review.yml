@@ -142,6 +142,7 @@ jobs:
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
     with:
       role: correctness
 
@@ -163,6 +164,7 @@ jobs:
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
     with:
       role: red-team
 
