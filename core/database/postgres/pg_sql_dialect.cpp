@@ -418,12 +418,16 @@ SqlTranslationResult translate_timestamp(std::string_view function, std::size_t 
     std::string result;
     if (profile == SqlDialectProfile::Redshift) {
       result = addition ? "DATEADD(" : "DATEDIFF(";
-      result.append(unit.native);
+      // Native Redshift YEAR maps leap day to March 1. Twelve calendar
+      // months clamp to February 28, as PostgreSQL's year interval does.
+      const bool calendar_year = addition && unit.native == "year";
+      result.append(calendar_year ? "month" : unit.native);
       result += ", ";
       if (addition) {
         result += "CAST((";
         result.append((*arguments)[1]);
         result += ") AS INTEGER)";
+        if (calendar_year) result += " * 12";
       } else {
         result += timestamp_operand((*arguments)[1], profile);
       }

@@ -5,13 +5,9 @@ direct statements, prepared statements and `SQLNativeSql`. `SQL_ATTR_NOSCAN`
 continues to bypass escape translation. Native SQL type checking, range errors
 and NULL propagation remain server behavior.
 
-> **Redshift capability reporting.** The Redshift product translates these
-> escapes, but reports none of them in `SQLGetInfo` (`SQL_CONVERT_FUNCTIONS`,
-> the `SQL_CONVERT_*` pairs, `SQL_TIMEDATE_ADD_INTERVALS`,
-> `SQL_TIMEDATE_DIFF_INTERVALS`, and the TIMESTAMPADD/TIMESTAMPDIFF bits of
-> `SQL_TIMEDATE_FUNCTIONS`) until the generated SQL passes a Redshift live
-> acceptance (#144). Applications that check capabilities first therefore
-> do not emit them on Redshift yet.
+Both products expose `SQL_FN_CVT_CONVERT`, their source-specific
+`SQL_CONVERT_*` masks, and the supported TIMESTAMPADD and TIMESTAMPDIFF
+functions and interval masks through `SQLGetInfo`.
 
 ## CONVERT
 
@@ -46,7 +42,7 @@ or character length is required.
 `SQL_CONVERT_*` reports source-to-target pairs, not all target spellings for
 every source. Numeric sources expose numeric and character targets; character
 sources expose numeric, character, binary and temporal targets, plus BOOLEAN
-and UUID on PostgreSQL. Binary sources expose binary and character targets. Boolean exposes BOOLEAN
+and UUID on PostgreSQL. Binary sources expose binary targets on both products and character targets on PostgreSQL. Boolean exposes BOOLEAN
 and, on PostgreSQL only, character targets. Redshift BOOLEAN-to-character
 conversion is not advertised. DATE exposes DATE, TIMESTAMP and characters; TIME exposes TIME
 and characters; TIMESTAMP exposes all three temporal targets and characters.
@@ -58,7 +54,7 @@ character value converted to a binary target is parsed as `bytea` input
 syntax: `\x41` becomes one byte, and a lone backslash is an error. A binary
 value converted to a character target is rendered in the session's
 `bytea_output` format, hexadecimal `\x...` by default. On Redshift, VARBYTE
-to and from VARCHAR follows Redshift's own casts. Do not rely on
+to VARCHAR decodes UTF-8 bytes. Applications can request this native cast explicitly. The Redshift binary-to-character discovery bits stay clear because PostgreSQL returns a configurable rendering of the bytes. Do not rely on
 byte-for-byte round trips between the products.
 
 ## TIMESTAMPADD and TIMESTAMPDIFF
@@ -66,9 +62,10 @@ byte-for-byte round trips between the products.
 `{fn TIMESTAMPADD(SQL_TSI_unit, count, value)}` supports SECOND, MINUTE, HOUR,
 DAY, WEEK, MONTH, QUARTER and YEAR. PostgreSQL uses calendar interval arithmetic;
 Redshift uses DATEADD with an INTEGER count. Backend range errors remain errors.
-Native month/year clipping differs: adding one year to 2024-02-29 produces
-2025-02-28 on PostgreSQL and 2025-03-01 on Redshift; adding twelve months produces
-2025-02-28 on both. This product difference is covered by explicit expectations.
+The ODBC YEAR escape adds twelve calendar months per year on Redshift. Both
+products therefore return 2025-02-28 when adding one year to 2024-02-29.
+Applications calling native Redshift DATEADD(year, ...) directly still get
+2025-03-01 for the same operands.
 
 `{fn TIMESTAMPDIFF(SQL_TSI_unit, start, end)}` supports the same units except
 WEEK. ODBCPP chooses signed **calendar-boundary counts**, matching Redshift
@@ -141,8 +138,7 @@ remain available; withholding a metadata claim does not remove a translation.
 Historical local receipts are retained privately, but are not current-head CI
 or live acceptance evidence. The connected tests retain their SQL behavior
 assertions and explicitly expect withheld Redshift mask bits, so future
-qualification does not silently skip the behavior. Conversion and
-timestamp-add/diff claims remain withheld under #220.
+qualification does not silently skip the behavior.
 A successful direct-only batch probe cannot qualify the broader batch
 masks; prepared and parameterized support needs separate implementation/proof.
 
