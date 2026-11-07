@@ -688,7 +688,10 @@ TEST(SqlTimestampEscapeTest, GoldenSqlPerProduct) {
     const auto add = "SELECT {fn TIMESTAMPADD(SQL_TSI_" + std::string(unit.keyword) + ", n, t)}";
     EXPECT_EQ("SELECT (CAST(( n) AS BIGINT) * INTERVAL '" + std::string(unit.interval) + "' + " + pg_ts("t") + ")",
         translate_odbc_sql(add, SqlDialectProfile::PostgreSql).sql);
-    EXPECT_EQ("SELECT DATEADD(" + std::string(unit.native) + ", CAST(( n) AS INTEGER), " + rs_ts("t") + ")",
+    const std::string redshift_add = std::string_view(unit.keyword) == "YEAR"
+        ? "month, CAST(( n) AS INTEGER) * 12"
+        : std::string(unit.native) + ", CAST(( n) AS INTEGER)";
+    EXPECT_EQ("SELECT DATEADD(" + redshift_add + ", " + rs_ts("t") + ")",
         translate_odbc_sql(add, SqlDialectProfile::Redshift).sql);
     const auto diff = "SELECT {fn TIMESTAMPDIFF(SQL_TSI_" + std::string(unit.keyword) + ", a, b)}";
     if (std::string_view(unit.keyword) == "WEEK") {

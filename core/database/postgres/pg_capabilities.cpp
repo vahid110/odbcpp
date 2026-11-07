@@ -78,7 +78,9 @@ void set_sql_conversion_capabilities(BackendCapabilities& result, bool redshift)
   targets[static_cast<std::size_t>(Type::Character)] =
       character | numeric | binary | date | time | timestamp | (redshift ? 0u : boolean | uuid);
   targets[static_cast<std::size_t>(Type::Boolean)] = boolean | (redshift ? 0u : character);
-  targets[static_cast<std::size_t>(Type::Binary)] = binary | character;
+  // VARBYTE casts to UTF-8 text on Redshift. PostgreSQL renders BYTEA as
+  // encoded text, so the two products do not qualify this conversion together.
+  targets[static_cast<std::size_t>(Type::Binary)] = binary | (redshift ? 0u : character);
   targets[static_cast<std::size_t>(Type::Date)] = date | timestamp | character;
   targets[static_cast<std::size_t>(Type::Time)] = time | character;
   targets[static_cast<std::size_t>(Type::Timestamp)] = timestamp | date | time | character;
@@ -178,13 +180,10 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // translations remain usable, but advertising new capability bits awaits
   // connected qualification under #142. Offline goldens alone are insufficient.
   result.sql = {};
-  // CONVERT and TIMESTAMPADD/TIMESTAMPDIFF translations remain callable even
-  // when an application ignores SQLGetInfo. Keep their capability masks clear
-  // until the complete Redshift source/target and interval matrix passes #220;
-  // a partial connected run or offline goldens do not qualify the whole matrix.
-  result.conversions.targets.fill(0);
-  result.timestamp_add_intervals = 0;
-  result.timestamp_diff_intervals = 0;
+  // #220 qualifies the Redshift conversion and interval matrix separately
+  // from #142's SQL/scalar claims above. Use the Redshift table explicitly:
+  // inheriting PostgreSQL would also advertise unsupported UUID/boolean pairs.
+  set_sql_conversion_capabilities(result, true);
   return result;
 }
 
