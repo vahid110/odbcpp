@@ -53,7 +53,7 @@ validated results separately.
    A valid change request stands. The reviewer App still needs both role
    approvals on a product PR's exact head before merge.
 
-A cancelled workflow or failed receipt publication may leave a previously
-recorded result in place. Check the receipt jobs before relying on a new
-result. Clear the opt-in variable to stop admission if receipt publication
-fails. To recover a provider, fix its failure and run its canary again.
+Each provider first creates an in-progress receipt. An interrupted test or
+failed publication therefore leaves it disabled. Start a fresh canary dispatch
+for recovery. Reviewers recheck the receipt before calling the provider and
+before publishing its verdict.

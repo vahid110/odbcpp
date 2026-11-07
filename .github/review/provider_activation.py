@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 def latest_pass(receipts):
@@ -29,7 +30,12 @@ def is_proven(provider, fingerprint):
 
 if __name__ == "__main__":
     fingerprint = subprocess.check_output([".github/review/fingerprint.sh"], text=True).strip()
-    proven = {provider: is_proven(provider, fingerprint) for provider in ("claude", "openai")}
-    for provider, enabled in proven.items():
-        print(f"{provider}={str(enabled).lower()}")
-    print("state=" + ("enabled" if any(proven.values()) else "stale"))
+    if sys.argv[1:]:
+        provider, = sys.argv[1:]
+        if provider not in ("claude", "openai") or not is_proven(provider, fingerprint):
+            raise SystemExit("Provider no longer has a passing canary")
+    else:
+        proven = {provider: is_proven(provider, fingerprint) for provider in ("claude", "openai")}
+        for provider, enabled in proven.items():
+            print(f"{provider}={str(enabled).lower()}")
+        print("state=" + ("enabled" if any(proven.values()) else "stale"))

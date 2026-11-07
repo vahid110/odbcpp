@@ -8,6 +8,14 @@ on:
       outcome:
         required: true
         type: string
+      receipt:
+        required: false
+        type: string
+    outputs:
+      receipt:
+        value: ${{ jobs.record.outputs.receipt }}
+      attempt:
+        value: ${{ jobs.record.outputs.attempt }}
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY:
         required: true
@@ -20,6 +28,9 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.workflow_ref == format('{0}/.github/workflows/agent-review-canary.yml@refs/heads/main', github.repository)
     runs-on: ubuntu-24.04
+    outputs:
+      receipt: ${{ steps.proof.outputs.receipt }}
+      attempt: ${{ steps.proof.outputs.attempt }}
     environment: agent-review
     permissions:
       contents: read
@@ -36,17 +47,32 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-checks: write
       - name: Record the tested configuration for this provider
+        id: proof
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
+          RECEIPT: ${{ inputs.receipt }}
           PROVIDER: ${{ inputs.provider }}
           OUTCOME: ${{ inputs.outcome }}
         run: |
           [[ "$PROVIDER" == claude || "$PROVIDER" == openai ]]
-          conclusion=failure
-          if [[ "$OUTCOME" == success ]]; then conclusion=success; fi
           fingerprint=$(.github/review/fingerprint.sh)
-          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
-            -f head_sha="$(cat .github/review/run-anchor)" -f name="Provider canary $PROVIDER $fingerprint" \
-            -f external_id="$GITHUB_RUN_NUMBER:$GITHUB_RUN_ATTEMPT" -f status=completed -f conclusion="$conclusion" \
-            --jq .app.id > creator
-          [[ "$(cat creator)" == "$(cat .github/review/reviewer-app-id)" ]]
+          name="Provider canary $PROVIDER $fingerprint"
+          anchor=$(cat .github/review/run-anchor)
+          app=$(cat .github/review/reviewer-app-id)
+          attempt="$GITHUB_RUN_NUMBER:$GITHUB_RUN_ATTEMPT"
+          endpoint="repos/$GITHUB_REPOSITORY/check-runs"
+          if [[ "$OUTCOME" == begin ]]; then
+            gh api -X POST "$endpoint" -f head_sha="$anchor" -f name="$name" \
+              -f external_id="$attempt" -f status=in_progress > check.json
+            [[ "$(jq -r .app.id check.json)" == "$app" ]]
+            echo "receipt=$(jq -r .id check.json)" >> "$GITHUB_OUTPUT"
+            echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          else
+            [[ "$RECEIPT" =~ ^[0-9]+$ ]]
+            gh api "$endpoint/$RECEIPT" > check.json
+            jq -e --arg name "$name" --arg anchor "$anchor" --arg attempt "$attempt" --arg app "$app" \
+              '.name==$name and .head_sha==$anchor and .external_id==$attempt and (.app.id|tostring)==$app' check.json >/dev/null
+            conclusion=failure
+            if [[ "$OUTCOME" == success ]]; then conclusion=success; fi
+            gh api -X PATCH "$endpoint/$RECEIPT" -f status=completed -f conclusion="$conclusion" --silent
+          fi

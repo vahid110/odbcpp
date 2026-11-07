@@ -16,8 +16,20 @@ on:
 permissions: {}
 
 jobs:
-  canary:
+  begin-claude:
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/agent-review-proof.yml
+    with:
+      provider: claude
+      outcome: begin
+    secrets:
+      ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+
+  canary:
+    needs: begin-claude
+    if: needs.begin-claude.outputs.attempt == github.run_attempt && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: agent-review
@@ -165,8 +177,20 @@ jobs:
           done
           CONFIG_MARKERS="$markers" python3 -I -B .github/review/canary_judge.py < "$LOG"
 
-  fallback:
+  begin-openai:
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/agent-review-proof.yml
+    with:
+      provider: openai
+      outcome: begin
+    secrets:
+      ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
+
+  fallback:
+    needs: begin-openai
+    if: needs.begin-openai.outputs.attempt == github.run_attempt && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: agent-review
@@ -214,25 +238,27 @@ jobs:
         run: python3 -I -B .github/review/openai_canary.py judge "$FIXTURE" < "$RUNNER_TEMP/verdict.json"
 
   record-claude:
-    needs: canary
-    if: always() && github.ref == 'refs/heads/main'
+    needs: [begin-claude, canary]
+    if: always() && needs.begin-claude.outputs.attempt == github.run_attempt && github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/agent-review-proof.yml
     with:
       provider: claude
+      receipt: ${{ needs.begin-claude.outputs.receipt }}
       outcome: ${{ needs.canary.result }}
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
 
   record-openai:
-    needs: fallback
-    if: always() && github.ref == 'refs/heads/main'
+    needs: [begin-openai, fallback]
+    if: always() && needs.begin-openai.outputs.attempt == github.run_attempt && github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/agent-review-proof.yml
     with:
       provider: openai
+      receipt: ${{ needs.begin-openai.outputs.receipt }}
       outcome: ${{ needs.fallback.result }}
     secrets:
       ODBCPP_REVIEWER_PRIVATE_KEY: ${{ secrets.ODBCPP_REVIEWER_PRIVATE_KEY }}
