@@ -196,9 +196,12 @@ TEST(SqlEscapeTest, RejectsInvalidDatetimeValues) {
 }
 
 TEST(SqlEscapeTest, TranslatesNestedScalarFunctions) {
-  EXPECT_EQ("SELECT UPPER(LOWER(name))",
-            translate_odbc_sql(
-                "SELECT {fn UCASE({fn LCASE(name)})}").sql);
+  using rs::core::database::postgres::SqlDialectProfile;
+  for (const auto profile : {SqlDialectProfile::PostgreSql, SqlDialectProfile::Redshift}) {
+    const auto translated = translate_odbc_sql("SELECT {fn UCASE({fn LCASE(name)})}", profile);
+    ASSERT_TRUE(translated);
+    EXPECT_EQ("SELECT UPPER(LOWER(name))", translated.sql);
+  }
   EXPECT_EQ("SELECT COALESCE(value, 0), CURRENT_DATE, CURRENT_TIME, "
             "CURRENT_TIMESTAMP",
             translate_odbc_sql(
