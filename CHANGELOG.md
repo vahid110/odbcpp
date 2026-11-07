@@ -70,7 +70,7 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 ### Changed
 - Public SDK source/binary compatibility break: `BackendCapabilities::outer_joins` is replaced by detailed `sql.join_*` declarations and the capability aggregate layout changes. Out-of-tree providers must migrate their declarations and all SDK consumers must recompile.
 - Unknown providers now report `SQL_MULT_RESULT_SETS=N` unless a qualified SELECT-batch, direct-result-sequence, or prepared-select-array capability supplies multiple results. Explicit batch masks remain zero for PostgreSQL and Redshift because their prepared batch contract is not implemented.
-- Redshift scalar and SQL92/join/aggregate/literal capability claims remain withheld pending connected qualification (#142); existing translations and behavior tests remain available. Conversions and timestamp-add/diff remain withheld under #220.
+- Redshift now reports its qualified SQL-92 expressions, subqueries, joins, aggregates, datetime literals and 18 scalar escape functions through `SQLGetInfo`. Both native products report `SQL_OUTER_JOINS=F` for full nested support alongside their specific supported join bits. This includes two-argument LOCATE. The optional start-position form remains unsupported.
 - Redshift connections without `PORT` or `DATABASE` now default to port 5439 and database `dev` (previously the PostgreSQL defaults 5432 and `postgres`). PostgreSQL defaults are unchanged.
 - Verified TLS without `SSLCAFILE`/`SSLCADIR` now uses the operating-system trust store instead of the crypto provider's compiled default verify paths
 - Installation now includes the shared ODBC driver library
