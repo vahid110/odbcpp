@@ -383,7 +383,7 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
           {SQL_INTEGRITY, "Y"},
           {SQL_LIKE_ESCAPE_CLAUSE, "Y"},
           {SQL_MULT_RESULT_SETS, "Y"},
-          {SQL_OUTER_JOINS, "Y"},
+          {SQL_OUTER_JOINS, "F"},
           {SQL_PROCEDURES, "Y"},
           {SQL_ACCESSIBLE_TABLES, "N"},
           {SQL_ACCESSIBLE_PROCEDURES, "N"},
@@ -1095,7 +1095,7 @@ TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, type, &actual, sizeof(actual), nullptr));
     EXPECT_EQ(expected_mask, actual);
   }
-  EXPECT_EQ("Y", string_info(SQL_OUTER_JOINS));
+  EXPECT_EQ("F", string_info(SQL_OUTER_JOINS));
   EXPECT_EQ("Y", string_info(SQL_MULT_RESULT_SETS));
 }
 
@@ -1122,6 +1122,17 @@ TEST_F(GetInfoIntegrationTest, Sql92PredicateAndSubqueryClaimsExecute) {
         "2 > ALL (SELECT 1) AND 1 = ANY (SELECT 1) AND 1 = SOME (SELECT 1)"));
     ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
         "EXISTS (SELECT 1 FROM (SELECT 1 AS k) a WHERE EXISTS (SELECT 1 WHERE a.k=1))"));
+    // Correlation applies to each supported subquery predicate, including
+    // comparison, IN and quantified comparison as well as EXISTS.
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "(SELECT COUNT(*) FROM (SELECT 1 AS k UNION ALL SELECT 2) a "
+        "WHERE 2 = (SELECT a.k))=1"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "(SELECT COUNT(*) FROM (SELECT 1 AS k UNION ALL SELECT 2) a "
+        "WHERE 2 IN (SELECT a.k))=1"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "(SELECT COUNT(*) FROM (SELECT 1 AS k UNION ALL SELECT 2) a "
+        "WHERE 1 < ALL (SELECT a.k) AND 2 = ANY (SELECT a.k) AND 2 = SOME (SELECT a.k))=1"));
     ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_PREDICATES, SQL_SP_QUANTIFIED_COMPARISON,
         "2 > ALL (SELECT 1) AND 1 = ANY (SELECT 1) AND 1 = SOME (SELECT 1)"));
     ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_PREDICATES, SQL_SP_OVERLAPS,
@@ -1212,6 +1223,10 @@ TEST_F(GetInfoIntegrationTest, Sql92JoinAndOuterEscapeClaimsExecute) {
           "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN (SELECT 2 AS y) b ON b.y=a.x})=1"},
       {SQL_OJ_CAPABILITIES, SQL_OJ_NESTED,
           "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN ((SELECT 2 AS y) b LEFT OUTER JOIN (SELECT 3 AS z) c ON b.y=c.z) ON a.x=b.y})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_NESTED,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x UNION ALL SELECT 2) a LEFT OUTER JOIN "
+          "{oj (SELECT 1 AS y) b LEFT OUTER JOIN (SELECT 1 AS z) c ON c.z=b.y} ON b.y=a.x} "
+          "WHERE (a.x=1 AND c.z=1) OR (a.x=2 AND b.y IS NULL AND c.z IS NULL))=2"},
       {SQL_OJ_CAPABILITIES, SQL_OJ_INNER,
           "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN ((SELECT 2 AS y) b INNER JOIN (SELECT 2 AS z) c ON b.y=c.z) ON a.x=b.y})=1"},
   };

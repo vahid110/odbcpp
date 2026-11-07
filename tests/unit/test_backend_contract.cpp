@@ -321,7 +321,7 @@ struct Observations {
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool advertised_transactions{false};
-  bool advertised_select_batches{false};
+  SqlCapabilities advertised_sql;
   std::optional<TransactionCapabilities> transaction_capability_override;
   bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
@@ -809,7 +809,7 @@ class FakeProvider final : public IBackendProvider {
     result.dbms_name = "ContractDB";
     result.read_only = seen_->read_only_capability;
     result.describe_parameters = true;
-    result.sql.batch_select = seen_->advertised_select_batches;
+    result.sql = seen_->advertised_sql;
     result.catalog_names = seen_->advertised_catalog_names;
     result.max_identifier_length = 117;
     result.identifier_case = IdentifierCase::Upper;
@@ -17604,7 +17604,7 @@ class SqlCapabilityMaskTest : public BackendContractTest {
     for (const auto type : std::array<SQLUSMALLINT, 2>{SQL_OUTER_JOINS, SQL_MULT_RESULT_SETS}) {
       SQLCHAR value[2]{};
       ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, type, value, sizeof(value), nullptr));
-      EXPECT_STREQ("Y", reinterpret_cast<const char*>(value));
+      EXPECT_STREQ(type == SQL_OUTER_JOINS ? "F" : "Y", reinterpret_cast<const char*>(value));
     }
   }
 };
@@ -17757,8 +17757,38 @@ TEST_F(BackendContractTest, UnknownProviderDeclaresNoSqlFeaturesOrMultipleResult
   }
 }
 
+TEST_F(BackendContractTest, LegacyOuterJoinLevelReflectsAvailableNesting) {
+  struct Case {
+    bool left, right, full, nested, unordered, inner;
+    const char* level;
+  };
+  const Case cases[]{
+      {false, false, false, false, false, false, "N"},
+      {true, false, false, false, false, false, "Y"},
+      {true, true, true, true, false, false, "P"},
+      {true, true, true, true, true, true, "F"},
+  };
+  for (const auto& item : cases) {
+    SCOPED_TRACE(item.level);
+    auto& sql = seen->advertised_sql;
+    sql.join_left = item.left;
+    sql.join_right = item.right;
+    sql.join_full = item.full;
+    sql.join_nested = item.nested;
+    sql.join_unordered_columns = item.unordered;
+    sql.join_inner_with_outer = item.inner;
+    ASSERT_NO_FATAL_FAILURE(connect());
+    SQLCHAR level[2]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_OUTER_JOINS, level, sizeof(level), nullptr));
+    EXPECT_STREQ(item.level, reinterpret_cast<const char*>(level));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+    stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
 TEST_F(BackendContractTest, QualifiedSelectBatchSupportAlsoImpliesMultipleResults) {
-  seen->advertised_select_batches = true;
+  seen->advertised_sql.batch_select = true;
   ASSERT_NO_FATAL_FAILURE(connect());
   SQLUINTEGER support = 97;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_BATCH_SUPPORT, &support, sizeof(support), nullptr));
