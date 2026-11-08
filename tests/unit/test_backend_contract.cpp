@@ -17765,6 +17765,9 @@ TEST_F(BackendContractTest, LegacyOuterJoinLevelReflectsAvailableNesting) {
   const Case cases[]{
       {false, false, false, false, false, false, "N"},
       {true, false, false, false, false, false, "Y"},
+      // SQLGetInfo defines Y for two-table outer joins without nesting,
+      // including when all three two-table join types are available.
+      {true, true, true, false, false, false, "Y"},
       {true, true, true, true, false, false, "P"},
       // SQL_OUTER_JOINS reserves F for unrestricted nesting. P is the
       // conservative level if either legacy restriction remains.
