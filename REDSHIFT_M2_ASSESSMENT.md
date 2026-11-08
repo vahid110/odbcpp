@@ -679,3 +679,23 @@ case in `odbc/odbc_api.cpp` reads those two fields and returns the union of
 `SQL_FN_NUM_LOG` and `SQL_FN_NUM_LOG10`. The per-product expectation in
 `tests/test_sql_capability_masks.h` is that union on Redshift and zero on
 PostgreSQL. The connected exact-mask test checks the value through SQLGetInfo.
+
+### Issue #142 live qualification provenance
+
+The four [live collections](https://github.com/vahid110/odbcpp/pull/236#issuecomment-6714374225)
+ran at `55e414090c6f13a69178163aca447e6d798365c4`. PostgreSQL and
+Redshift each passed 20 direct-driver and 18 iODBC cases. Git records the
+following content identities at that tested revision. Compare them with
+the candidate under review using
+`git ls-tree HEAD core/database/postgres/pg_capabilities.cpp odbc/odbc_api.cpp tests/integration`.
+
+| Path | Live-tested Git object |
+| --- | --- |
+| core/database/postgres/pg_capabilities.cpp | `72076ce1d61901170f7741c25166d1baa52a7a1b` |
+| odbc/odbc_api.cpp | `a642b7f96d38a324549bd53663d4b15670a3d1a2` |
+| tests/integration (complete tree) | `ccf415d6f46b4c93a3d9903b05003fc464229bcd` |
+
+The tested revision already contained the capability changes visible in
+the PR diff against main. To verify subsequent changes across the complete
+runtime directories and connected tests, run
+`git diff --exit-code 55e414090c6f13a69178163aca447e6d798365c4 HEAD -- core sdk odbc tests/integration`.
