@@ -311,11 +311,14 @@ def main(command):
         if os.environ.get("ADDED_LABEL", "").startswith("reconsider:"):
             with open("reconsider-event.json") as stream:
                 event = json.load(stream)
+            with open("reconsider-pr.json") as stream:
+                current = json.load(stream)
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             correctness, red_team = [
-                reconsider(role, event["action"], event["label"]["name"], head,
-                           event["pull_request"]["head"]["sha"], reviews, event["pull_request"].get("body"))
+                current["head"]["sha"] == head and reconsider(
+                    role, event["action"], event["label"]["name"], head,
+                    event["pull_request"]["head"]["sha"], reviews, current.get("body"))
                 and not over_budget(runs, role, now) for role in ("correctness", "red-team")]
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")
