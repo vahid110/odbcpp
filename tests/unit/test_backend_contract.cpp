@@ -17766,6 +17766,10 @@ TEST_F(BackendContractTest, LegacyOuterJoinLevelReflectsAvailableNesting) {
       {false, false, false, false, false, false, "N"},
       {true, false, false, false, false, false, "Y"},
       {true, true, true, true, false, false, "P"},
+      // SQL_OUTER_JOINS reserves F for unrestricted nesting. P is the
+      // conservative level if either legacy restriction remains.
+      {true, true, true, true, true, false, "P"},
+      {true, true, true, true, false, true, "P"},
       {true, true, true, true, true, true, "F"},
   };
   for (const auto& item : cases) {
