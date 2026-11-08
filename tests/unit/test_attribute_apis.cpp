@@ -4,6 +4,7 @@
 #include "odbc/odbc_types.h"
 #include "odbcpp/util/deadline.h"
 #include "tests/test_handle_helpers.h"
+#include "tests/test_sql_capability_masks.h"
 #include "core/database/postgres/pg_backend_provider.h"
 
 #include <array>
@@ -171,7 +172,7 @@ TEST_F(AttributeApisTest, ConversionAndTimestampMasksMatchTheExplicitProductCont
       character_targets |= SQL_CVT_GUID;
 #endif
     }
-    // #220 conversion/interval claims; other scalar claims remain gated by #142.
+    // Qualified conversion targets and interval masks are product-specific.
     const std::pair<SQLUSMALLINT, SQLUINTEGER> cases[]{
         {SQL_CONVERT_FUNCTIONS, SQL_FN_CVT_CONVERT},
         {SQL_CONVERT_SMALLINT, numeric | characters}, {SQL_CONVERT_INTEGER, numeric | characters},
@@ -189,8 +190,7 @@ TEST_F(AttributeApisTest, ConversionAndTimestampMasksMatchTheExplicitProductCont
         {SQL_CONVERT_TIMESTAMP, SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters},
         {SQL_CONVERT_TINYINT, 0}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, 0}, {SQL_CONVERT_INTERVAL_DAY_TIME, 0},
         {SQL_TIMEDATE_ADD_INTERVALS, add}, {SQL_TIMEDATE_DIFF_INTERVALS, add & ~SQL_FN_TSI_WEEK},
-        {SQL_TIMEDATE_FUNCTIONS, (redshift ? 0u : SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW) |
-            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF},
+        {SQL_TIMEDATE_FUNCTIONS, odbcpp::test::timedate_function_mask(redshift)},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
         {SQL_CONVERT_GUID, redshift ? 0u : SQL_CVT_GUID | characters},
 #endif

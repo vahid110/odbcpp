@@ -12,6 +12,7 @@
 #include "tests/test_connection_config.h"
 #include "tests/test_dm_expectations.h"
 #include "tests/test_product_profile.h"
+#include "tests/test_sql_capability_masks.h"
 #include "tests/test_driver_exports.h"
 
 #include <array>
@@ -342,10 +343,7 @@ class GetInfoIntegrationTest : public ::testing::Test {
     SCOPED_TRACE(predicate);
     SQLUINTEGER mask = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, type, &mask, sizeof(mask), nullptr));
-    // Redshift remains a qualification probe: assert the claim is withheld,
-    // then run the same semantic assertion so future acceptance cannot hide
-    // behind a zero capability mask. PostgreSQL must advertise the exact bit.
-    ASSERT_EQ(redshift_profile_ ? 0u : bit, mask & bit);
+    ASSERT_EQ(bit, mask & bit);
     ASSERT_NO_FATAL_FAILURE(verify_predicate(predicate));
   }
 
@@ -385,7 +383,7 @@ TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
           {SQL_INTEGRITY, "Y"},
           {SQL_LIKE_ESCAPE_CLAUSE, "Y"},
           {SQL_MULT_RESULT_SETS, "Y"},
-          {SQL_OUTER_JOINS, redshift_profile_ ? "N" : "Y"},
+          {SQL_OUTER_JOINS, "F"},
           {SQL_PROCEDURES, "Y"},
           {SQL_ACCESSIBLE_TABLES, "N"},
           {SQL_ACCESSIBLE_PROCEDURES, "N"},
@@ -665,7 +663,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
     character_targets |= SQL_CVT_GUID;
 #endif
   }
-  // #220 conversion/interval claims; other scalar claims remain gated by #142.
+  // Qualified conversion targets and interval masks are product-specific.
   const std::pair<SQLUSMALLINT, SQLUINTEGER> cases[]{
       {SQL_CONVERT_FUNCTIONS, SQL_FN_CVT_CONVERT},
       {SQL_CONVERT_SMALLINT, numeric | characters}, {SQL_CONVERT_INTEGER, numeric | characters},
@@ -683,8 +681,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
       {SQL_CONVERT_TIMESTAMP, SQL_CVT_TIMESTAMP | SQL_CVT_DATE | SQL_CVT_TIME | characters},
       {SQL_CONVERT_TINYINT, 0}, {SQL_CONVERT_INTERVAL_YEAR_MONTH, 0}, {SQL_CONVERT_INTERVAL_DAY_TIME, 0},
       {SQL_TIMEDATE_ADD_INTERVALS, add}, {SQL_TIMEDATE_DIFF_INTERVALS, add & ~SQL_FN_TSI_WEEK},
-      {SQL_TIMEDATE_FUNCTIONS, (redshift_profile_ ? 0u : SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW) |
-          SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF},
+      {SQL_TIMEDATE_FUNCTIONS, odbcpp::test::timedate_function_mask(redshift_profile_)},
 #if defined(SQL_CONVERT_GUID) && defined(SQL_CVT_GUID)
       {SQL_CONVERT_GUID, redshift_profile_ ? 0u : SQL_CVT_GUID | characters},
 #endif
@@ -1089,40 +1086,7 @@ TEST_F(GetInfoIntegrationTest, NullAndSetOperationClaimsMatchServerSemantics) {
 }  // namespace
 
 TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
-    const auto pg_only = [&](SQLUINTEGER value) { return redshift_profile_ ? 0u : value; };
-    const SQLUINTEGER outer = SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
-        SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER;
-    const SQLUINTEGER predicates = SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
-        SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON;
-    const std::pair<SQLUSMALLINT, SQLUINTEGER> expected[]{
-        {SQL_OJ_CAPABILITIES, pg_only(outer)},
-        {SQL_AGGREGATE_FUNCTIONS, pg_only(SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
-            SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL)},
-        {SQL_STRING_FUNCTIONS, pg_only(SQL_FN_STR_UCASE | SQL_FN_STR_LCASE)},
-        {SQL_NUMERIC_FUNCTIONS, 0},
-        {SQL_TIMEDATE_FUNCTIONS, pg_only(SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW) |
-            SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF},
-        {SQL_SYSTEM_FUNCTIONS, pg_only(SQL_FN_SYS_IFNULL)},
-        {SQL_DATETIME_LITERALS, pg_only(SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP)},
-        {SQL_SUBQUERIES, pg_only(SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
-            SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES)},
-        {SQL_SQL92_PREDICATES, pg_only(predicates |
-            SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON)},
-        {SQL_SQL92_VALUE_EXPRESSIONS, pg_only(SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF)},
-        {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, pg_only(SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY)},
-        {SQL_SQL92_STRING_FUNCTIONS, pg_only(SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
-            SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING)},
-        {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, pg_only(SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
-            SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
-            SQL_SNVF_BIT_LENGTH)},
-        {SQL_SQL92_DATETIME_FUNCTIONS, pg_only(SQL_SDF_CURRENT_DATE |
-            SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP)},
-        {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, pg_only(SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
-            SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
-            SQL_SRJO_RIGHT_OUTER_JOIN)},
-        {SQL_BATCH_SUPPORT, 0},
-        {SQL_BATCH_ROW_COUNT, 0},
-    };
+  const auto expected = odbcpp::test::sql_capability_masks(redshift_profile_);
 
   RecordProperty("server_version", string_info(SQL_DBMS_VER));
   for (const auto& [type, expected_mask] : expected) {
@@ -1131,7 +1095,7 @@ TEST_F(GetInfoIntegrationTest, ExactSqlCapabilityMasksForConnectedProduct) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, type, &actual, sizeof(actual), nullptr));
     EXPECT_EQ(expected_mask, actual);
   }
-  EXPECT_EQ(redshift_profile_ ? "N" : "Y", string_info(SQL_OUTER_JOINS));
+  EXPECT_EQ("F", string_info(SQL_OUTER_JOINS));
   EXPECT_EQ("Y", string_info(SQL_MULT_RESULT_SETS));
 }
 
@@ -1158,6 +1122,17 @@ TEST_F(GetInfoIntegrationTest, Sql92PredicateAndSubqueryClaimsExecute) {
         "2 > ALL (SELECT 1) AND 1 = ANY (SELECT 1) AND 1 = SOME (SELECT 1)"));
     ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
         "EXISTS (SELECT 1 FROM (SELECT 1 AS k) a WHERE EXISTS (SELECT 1 WHERE a.k=1))"));
+    // Correlation applies to each supported subquery predicate, including
+    // comparison, IN and quantified comparison as well as EXISTS.
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "(SELECT COUNT(*) FROM (SELECT 1 AS k UNION ALL SELECT 2) a "
+        "WHERE 2 = (SELECT a.k))=1"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "(SELECT COUNT(*) FROM (SELECT 1 AS k UNION ALL SELECT 2) a "
+        "WHERE 2 IN (SELECT a.k))=1"));
+    ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SUBQUERIES, SQL_SQ_CORRELATED_SUBQUERIES,
+        "(SELECT COUNT(*) FROM (SELECT 1 AS k UNION ALL SELECT 2) a "
+        "WHERE 1 < ALL (SELECT a.k) AND 2 = ANY (SELECT a.k) AND 2 = SOME (SELECT a.k))=1"));
     ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_PREDICATES, SQL_SP_QUANTIFIED_COMPARISON,
         "2 > ALL (SELECT 1) AND 1 = ANY (SELECT 1) AND 1 = SOME (SELECT 1)"));
     ASSERT_NO_FATAL_FAILURE(verify_sql_feature(SQL_SQL92_PREDICATES, SQL_SP_OVERLAPS,
@@ -1248,6 +1223,10 @@ TEST_F(GetInfoIntegrationTest, Sql92JoinAndOuterEscapeClaimsExecute) {
           "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN (SELECT 2 AS y) b ON b.y=a.x})=1"},
       {SQL_OJ_CAPABILITIES, SQL_OJ_NESTED,
           "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN ((SELECT 2 AS y) b LEFT OUTER JOIN (SELECT 3 AS z) c ON b.y=c.z) ON a.x=b.y})=1"},
+      {SQL_OJ_CAPABILITIES, SQL_OJ_NESTED,
+          "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x UNION ALL SELECT 2) a LEFT OUTER JOIN "
+          "{oj (SELECT 1 AS y) b LEFT OUTER JOIN (SELECT 1 AS z) c ON c.z=b.y} ON b.y=a.x} "
+          "WHERE (a.x=1 AND c.z=1) OR (a.x=2 AND b.y IS NULL AND c.z IS NULL))=2"},
       {SQL_OJ_CAPABILITIES, SQL_OJ_INNER,
           "(SELECT COUNT(*) FROM {oj (SELECT 1 AS x) a LEFT OUTER JOIN ((SELECT 2 AS y) b INNER JOIN (SELECT 2 AS z) c ON b.y=c.z) ON a.x=b.y})=1"},
   };
@@ -1395,7 +1374,7 @@ TEST_F(GetInfoIntegrationTest, ScalarEscapesExecuteOnTableValuesDirectAndPrepare
     SCOPED_TRACE(item.bit);
     SQLUINTEGER mask = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, item.type, &mask, sizeof(mask), nullptr));
-    EXPECT_EQ(redshift_profile_ ? 0u : item.bit, mask & item.bit);
+    EXPECT_EQ(item.bit, mask & item.bit);
     for (const bool prepared : {false, true}) {
       EXPECT_NO_FATAL_FAILURE(verify_predicate(item.predicate, prepared, "odbcpp_scalar_capabilities",
           item.typed_expression, item.expected_type));

@@ -1,0 +1,62 @@
+#pragma once
+
+#ifdef ODBCPP_TEST_VIA_DRIVER_MANAGER
+#include "tests/test_dm_odbc.h"
+#else
+#include "odbc/odbc_types.h"
+#endif
+
+#include <array>
+#include <utility>
+
+namespace odbcpp::test {
+
+// Public ODBC expectations are independent of the provider's declarations.
+constexpr SQLUINTEGER string_function_mask(bool redshift) {
+  return SQL_FN_STR_UCASE | SQL_FN_STR_LCASE |
+      (redshift ? SQL_FN_STR_LENGTH | SQL_FN_STR_LOCATE_2 : 0u);
+}
+
+constexpr SQLUINTEGER timedate_function_mask(bool redshift) {
+  return SQL_FN_TD_CURDATE | SQL_FN_TD_CURTIME | SQL_FN_TD_NOW |
+      SQL_FN_TD_TIMESTAMPADD | SQL_FN_TD_TIMESTAMPDIFF |
+      (redshift ? SQL_FN_TD_YEAR | SQL_FN_TD_MONTH | SQL_FN_TD_DAYOFMONTH |
+          SQL_FN_TD_DAYOFWEEK | SQL_FN_TD_DAYOFYEAR | SQL_FN_TD_HOUR |
+          SQL_FN_TD_MINUTE | SQL_FN_TD_SECOND : 0u);
+}
+
+constexpr std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 17> sql_capability_masks(bool redshift) {
+  return {{
+      {SQL_OJ_CAPABILITIES, SQL_OJ_LEFT | SQL_OJ_RIGHT | SQL_OJ_FULL |
+          SQL_OJ_NESTED | SQL_OJ_NOT_ORDERED | SQL_OJ_INNER},
+      {SQL_AGGREGATE_FUNCTIONS, SQL_AF_AVG | SQL_AF_COUNT | SQL_AF_MAX |
+          SQL_AF_MIN | SQL_AF_SUM | SQL_AF_DISTINCT | SQL_AF_ALL},
+      {SQL_STRING_FUNCTIONS, string_function_mask(redshift)},
+      {SQL_NUMERIC_FUNCTIONS, redshift ? SQL_FN_NUM_LOG | SQL_FN_NUM_LOG10 : 0u},
+      {SQL_TIMEDATE_FUNCTIONS, timedate_function_mask(redshift)},
+      {SQL_SYSTEM_FUNCTIONS, SQL_FN_SYS_IFNULL},
+      {SQL_DATETIME_LITERALS, SQL_DL_SQL92_DATE | SQL_DL_SQL92_TIME | SQL_DL_SQL92_TIMESTAMP},
+      {SQL_SUBQUERIES, SQL_SQ_COMPARISON | SQL_SQ_EXISTS | SQL_SQ_IN |
+          (redshift ? 0u : SQL_SQ_QUANTIFIED | SQL_SQ_CORRELATED_SUBQUERIES)},
+      {SQL_SQL92_PREDICATES, SQL_SP_EXISTS | SQL_SP_ISNOTNULL | SQL_SP_ISNULL |
+          SQL_SP_LIKE | SQL_SP_IN | SQL_SP_BETWEEN | SQL_SP_COMPARISON |
+          (redshift ? 0u : SQL_SP_OVERLAPS | SQL_SP_QUANTIFIED_COMPARISON)},
+      {SQL_SQL92_VALUE_EXPRESSIONS, SQL_SVE_CASE | SQL_SVE_CAST | SQL_SVE_COALESCE | SQL_SVE_NULLIF},
+      {SQL_SQL92_ROW_VALUE_CONSTRUCTOR, redshift ? 0u :
+          SQL_SRVC_VALUE_EXPRESSION | SQL_SRVC_NULL | SQL_SRVC_ROW_SUBQUERY},
+      {SQL_SQL92_STRING_FUNCTIONS, SQL_SSF_LOWER | SQL_SSF_UPPER | SQL_SSF_SUBSTRING |
+          SQL_SSF_TRIM_BOTH | SQL_SSF_TRIM_LEADING | SQL_SSF_TRIM_TRAILING},
+      {SQL_SQL92_NUMERIC_VALUE_FUNCTIONS, SQL_SNVF_CHAR_LENGTH | SQL_SNVF_CHARACTER_LENGTH |
+          SQL_SNVF_EXTRACT | SQL_SNVF_OCTET_LENGTH | SQL_SNVF_POSITION |
+          (redshift ? 0u : SQL_SNVF_BIT_LENGTH)},
+      {SQL_SQL92_DATETIME_FUNCTIONS, SQL_SDF_CURRENT_DATE |
+          (redshift ? 0u : SQL_SDF_CURRENT_TIME | SQL_SDF_CURRENT_TIMESTAMP)},
+      {SQL_SQL92_RELATIONAL_JOIN_OPERATORS, SQL_SRJO_CROSS_JOIN | SQL_SRJO_FULL_OUTER_JOIN |
+          SQL_SRJO_INNER_JOIN | SQL_SRJO_LEFT_OUTER_JOIN | SQL_SRJO_NATURAL_JOIN |
+          SQL_SRJO_RIGHT_OUTER_JOIN},
+      {SQL_BATCH_SUPPORT, 0},
+      {SQL_BATCH_ROW_COUNT, 0},
+  }};
+}
+
+}  // namespace odbcpp::test
