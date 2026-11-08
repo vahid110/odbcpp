@@ -60,7 +60,8 @@ before publishing its verdict.
 
 ## Correct evidence on an unchanged head
 
-After a role requests changes, the repository owner or coordinator App can
+After a role requests changes, the repository owner or the coordinator App (GitHub bot user ID
+350232297, currently `odbcpp-agent[bot]`) can
 request one additional verdict from that role on that commit. Add a line to
 the PR description beginning with `Review response #123: ` (replace 123 with
 the numeric GitHub review ID), followed by the correction and its evidence.

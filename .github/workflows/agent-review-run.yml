@@ -67,6 +67,7 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github
+          ref: ${{ github.event.pull_request.base.sha }}
       - name: Find the head to review
         id: head
         shell: bash
@@ -90,6 +91,8 @@ jobs:
                  "$RUNNER_TEMP/reviews.json")
           reconsider=false
           if [[ "$done" == 1 && "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == labeled ]]; then
+            cp "$GITHUB_EVENT_PATH" reconsider-event.json
+            cp "$raw" reconsider-pr.json
             cp "$RUNNER_TEMP/reviews.json" reviews.json
             .github/review/list-runs.sh
             reconsider=$(HEAD_SHA="$head" REVIEW_TIME="$(date -u +%FT%TZ)" python3 -I -B .github/review/review_gate.py reconsider)

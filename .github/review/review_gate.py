@@ -127,7 +127,8 @@ def latest_reviews(reviews, head_sha):
 def reconsider(role, action, label, head, event_head, reviews, body):
     """Allow one additional verdict for a documented, exact-head objection."""
     actor = os.environ.get("GITHUB_ACTOR")
-    if not actor or actor not in ("odbcpp-agent[bot]", os.environ.get("GITHUB_REPOSITORY_OWNER")):
+    coordinator = os.environ.get("GITHUB_ACTOR_ID") == "350232297"  # odbcpp-agent[bot]
+    if not coordinator and (not actor or actor != os.environ.get("GITHUB_REPOSITORY_OWNER")):
         return False
     if action != "labeled" or label != "reconsider:" + role or head != event_head:
         return False
@@ -137,8 +138,9 @@ def reconsider(role, action, label, head, event_head, reviews, body):
     if len(prior) != 1 or prior[0].get("state") != "CHANGES_REQUESTED":
         return False
     review_id = prior[0].get("id")
-    return isinstance(review_id, int) and bool(re.search(
-        rf"^Review response #{review_id}: [^\s].*", body or "", re.MULTILINE))
+    prefix = f"Review response #{review_id}: "
+    return isinstance(review_id, int) and any(
+        line.startswith(prefix) and line[len(prefix):].strip() for line in (body or "").splitlines())
 
 
 def required_roles(labels, files=None):
@@ -283,9 +285,9 @@ def main(command):
     runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
     if command == "reconsider":
-        with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+        with open("reconsider-event.json") as stream:
             event = json.load(stream)
-        with open(os.path.join(os.environ["RUNNER_TEMP"], "pr-raw.json")) as stream:
+        with open("reconsider-pr.json") as stream:
             current = json.load(stream)
         allowed = reconsider(os.environ["ROLE"], event["action"], (event.get("label") or {}).get("name"),
                              head, event["pull_request"]["head"]["sha"], reviews, current.get("body"))
@@ -307,7 +309,7 @@ def main(command):
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
                                           labels, files, events, reviews, head, runs=runs)
         if os.environ.get("ADDED_LABEL", "").startswith("reconsider:"):
-            with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+            with open("reconsider-event.json") as stream:
                 event = json.load(stream)
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
