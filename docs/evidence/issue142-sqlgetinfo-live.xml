@@ -1,0 +1,111 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="Issue142SqlGetInfo" tests="76" failures="0" errors="0" skipped="0">
+  <testsuite name="pg.it_get_info" tests="20" failures="0" errors="0" skipped="0" time="0.17">
+    <properties>
+      <property name="git_commit" value="4b4081a9caf2f34d0d52f0224f091b661b83fbdb" />
+      <property name="original_gtest_xml_sha256" value="0e56fb96e28ecb2478091979df27f8813701e7936d93dfa47fd6b505fe057401" />
+      <property name="test_executable_sha256" value="3e8bc731016df480d877c1b316e37ac4cd070812b1fa8da5fc6590b836053c46" />
+      <property name="driver_sha256" value="69af1166509f2c992353b3fb083d550b3106e6441a609409711ba9e95b25e89d" />
+    </properties>
+    <testcase classname="GetInfoFixtureProfile" name="KeepsPostgresAndRedshiftExpectationsDistinct" time="0." status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsStaticStringCapabilities" time="0.011" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsNumericCapabilities" time="0.006" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputNeedNotBeAligned" time="0.005" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputLengthNeedNotBeAligned" time="0.005" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsErrorsAndTruncationPrecisely" time="0.005" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AdvertisedPostgresqlSyntaxExecutes" time="0.026" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportMatchesDriverExports" time="0.007" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportHandlesUnalignedOutput" time="0.004" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="IdentifierProfileMatchesQuotedBoundaryNames" time="0.007" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NullAndSetOperationClaimsMatchServerSemantics" time="0.008" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ExactSqlCapabilityMasksForConnectedProduct" time="0.004" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92PredicateAndSubqueryClaimsExecute" time="0.011" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92ValueAndStringClaimsExecute" time="0.01" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92NumericDatetimeAndLiteralClaimsExecute" time="0.01" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92JoinAndOuterEscapeClaimsExecute" time="0.01" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AggregateClaimsExecuteWithDistinctAndAll" time="0.008" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="DirectSequencesReturnEachResultWithoutClaimingPreparedBatches" time="0.007" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ScalarEscapesExecuteOnTableValuesDirectAndPrepared" time="0.012" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ExecuteAssertionFailureReleasesItsStatement" time="0.005" status="run" result="completed" />
+  </testsuite>
+  <testsuite name="pg.dm_it_get_info" tests="18" failures="0" errors="0" skipped="0" time="0.381">
+    <properties>
+      <property name="git_commit" value="4b4081a9caf2f34d0d52f0224f091b661b83fbdb" />
+      <property name="original_gtest_xml_sha256" value="7f1fd72493db520691c4926600f99dc456b9b4034923bf169db05fc1de237e89" />
+      <property name="test_executable_sha256" value="162996236487cbee6bc6e577958e0e0aea563af64b5192897521cb7169270cb5" />
+      <property name="driver_sha256" value="69af1166509f2c992353b3fb083d550b3106e6441a609409711ba9e95b25e89d" />
+    </properties>
+    <testcase classname="GetInfoIntegrationTest" name="ReportsStaticStringCapabilities" time="0.235" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsNumericCapabilities" time="0.005" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputNeedNotBeAligned" time="0.006" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputLengthNeedNotBeAligned" time="0.006" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsErrorsAndTruncationPrecisely" time="0.006" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AdvertisedPostgresqlSyntaxExecutes" time="0.013" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportMatchesDriverExports" time="0.011" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportHandlesUnalignedOutput" time="0.006" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="IdentifierProfileMatchesQuotedBoundaryNames" time="0.008" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NullAndSetOperationClaimsMatchServerSemantics" time="0.008" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ExactSqlCapabilityMasksForConnectedProduct" time="0.005" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92PredicateAndSubqueryClaimsExecute" time="0.011" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92ValueAndStringClaimsExecute" time="0.009" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92NumericDatetimeAndLiteralClaimsExecute" time="0.009" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92JoinAndOuterEscapeClaimsExecute" time="0.01" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AggregateClaimsExecuteWithDistinctAndAll" time="0.007" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="DirectSequencesReturnEachResultWithoutClaimingPreparedBatches" time="0.006" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ScalarEscapesExecuteOnTableValuesDirectAndPrepared" time="0.012" status="run" result="completed" />
+  </testsuite>
+  <testsuite name="redshift.it_get_info" tests="20" failures="0" errors="0" skipped="0" time="16.095">
+    <properties>
+      <property name="git_commit" value="4b4081a9caf2f34d0d52f0224f091b661b83fbdb" />
+      <property name="original_gtest_xml_sha256" value="798c109341fd525896b58682bc0240fd0a0ad6c2040ebddf78ea4cc81e8d4fea" />
+      <property name="test_executable_sha256" value="bd3b945ba354385be24ac5da34edf457eef174b1b496e0ddc8307733699173d2" />
+      <property name="driver_sha256" value="ec55401c990ae6dcecbad42e67ba4820234447f5285232b003052bf15cfeab2b" />
+    </properties>
+    <testcase classname="GetInfoFixtureProfile" name="KeepsPostgresAndRedshiftExpectationsDistinct" time="0." status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsStaticStringCapabilities" time="0.368" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsNumericCapabilities" time="0.367" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputNeedNotBeAligned" time="0.368" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputLengthNeedNotBeAligned" time="0.302" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsErrorsAndTruncationPrecisely" time="0.358" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AdvertisedPostgresqlSyntaxExecutes" time="2.091" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportMatchesDriverExports" time="0.436" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportHandlesUnalignedOutput" time="0.313" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="IdentifierProfileMatchesQuotedBoundaryNames" time="0.913" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NullAndSetOperationClaimsMatchServerSemantics" time="0.552" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ExactSqlCapabilityMasksForConnectedProduct" time="0.321" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92PredicateAndSubqueryClaimsExecute" time="0.815" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92ValueAndStringClaimsExecute" time="0.835" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92NumericDatetimeAndLiteralClaimsExecute" time="0.73" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92JoinAndOuterEscapeClaimsExecute" time="1.048" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AggregateClaimsExecuteWithDistinctAndAll" time="0.647" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="DirectSequencesReturnEachResultWithoutClaimingPreparedBatches" time="0.774" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ScalarEscapesExecuteOnTableValuesDirectAndPrepared" time="4.491" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ExecuteAssertionFailureReleasesItsStatement" time="0.358" status="run" result="completed" />
+  </testsuite>
+  <testsuite name="redshift.dm_it_get_info" tests="18" failures="0" errors="0" skipped="0" time="13.241">
+    <properties>
+      <property name="git_commit" value="4b4081a9caf2f34d0d52f0224f091b661b83fbdb" />
+      <property name="original_gtest_xml_sha256" value="ac6cec3cfccc280cee80aa36aff4cb0bfcd425bf8f1e9f46d0e42aebd7ee885c" />
+      <property name="test_executable_sha256" value="78a87721e5712ba9d47e40d5c2bd50c2ed414886b76344cae624a1a13b3d4603" />
+      <property name="driver_sha256" value="ec55401c990ae6dcecbad42e67ba4820234447f5285232b003052bf15cfeab2b" />
+    </properties>
+    <testcase classname="GetInfoIntegrationTest" name="ReportsStaticStringCapabilities" time="0.582" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsNumericCapabilities" time="0.313" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputNeedNotBeAligned" time="0.301" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NumericOutputLengthNeedNotBeAligned" time="0.298" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ReportsErrorsAndTruncationPrecisely" time="0.31" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AdvertisedPostgresqlSyntaxExecutes" time="0.897" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportMatchesDriverExports" time="0.317" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="FunctionSupportHandlesUnalignedOutput" time="0.301" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="IdentifierProfileMatchesQuotedBoundaryNames" time="0.579" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="NullAndSetOperationClaimsMatchServerSemantics" time="0.56" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ExactSqlCapabilityMasksForConnectedProduct" time="0.312" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92PredicateAndSubqueryClaimsExecute" time="0.786" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92ValueAndStringClaimsExecute" time="0.789" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92NumericDatetimeAndLiteralClaimsExecute" time="0.739" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="Sql92JoinAndOuterEscapeClaimsExecute" time="1.053" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="AggregateClaimsExecuteWithDistinctAndAll" time="0.664" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="DirectSequencesReturnEachResultWithoutClaimingPreparedBatches" time="0.919" status="run" result="completed" />
+    <testcase classname="GetInfoIntegrationTest" name="ScalarEscapesExecuteOnTableValuesDirectAndPrepared" time="3.512" status="run" result="completed" />
+  </testsuite>
+</testsuites>
