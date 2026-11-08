@@ -124,6 +124,23 @@ def latest_reviews(reviews, head_sha):
     return latest
 
 
+def reconsider(role, action, label, head, event_head, reviews, body):
+    """Allow one additional verdict for a documented, exact-head objection."""
+    actor = os.environ.get("GITHUB_ACTOR")
+    if not actor or actor not in ("odbcpp-agent[bot]", os.environ.get("GITHUB_REPOSITORY_OWNER")):
+        return False
+    if action != "labeled" or label != "reconsider:" + role or head != event_head:
+        return False
+    prior = [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER
+             and r.get("commit_id") == head and role_of(r.get("body")) == role
+             and names_commit(r.get("body"), head)]
+    if len(prior) != 1 or prior[0].get("state") != "CHANGES_REQUESTED":
+        return False
+    review_id = prior[0].get("id")
+    return isinstance(review_id, int) and bool(re.search(
+        rf"^Review response #{review_id}: [^\s].*", body or "", re.MULTILINE))
+
+
 def required_roles(labels, files=None):
     """The roles that must approve. <files> None means unknown: fail closed."""
     red = bool(set(labels) & set(HIGH_RISK)) or red_team_by_path(files or [])
@@ -265,6 +282,16 @@ def main(command):
     files = _load("files.json", [])
     runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
+    if command == "reconsider":
+        with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+            event = json.load(stream)
+        with open(os.path.join(os.environ["RUNNER_TEMP"], "pr-raw.json")) as stream:
+            current = json.load(stream)
+        allowed = reconsider(os.environ["ROLE"], event["action"], (event.get("label") or {}).get("name"),
+                             head, event["pull_request"]["head"]["sha"], reviews, current.get("body"))
+        print("true" if allowed and not over_budget(
+            runs, os.environ["ROLE"], _time(os.environ["REVIEW_TIME"])) else "false")
+        return
     if command == "prepare":
         review, labels, held = prepare_review(os.environ.get("RESULT", ""), os.environ["ROLE"], head,
                                               os.environ.get("RUN_URL", ""))
@@ -279,6 +306,15 @@ def main(command):
     if command == "plan":
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
                                           labels, files, events, reviews, head, runs=runs)
+        if os.environ.get("ADDED_LABEL", "").startswith("reconsider:"):
+            with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+                event = json.load(stream)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            correctness, red_team = [
+                reconsider(role, event["action"], event["label"]["name"], head,
+                           event["pull_request"]["head"]["sha"], reviews, event["pull_request"].get("body"))
+                and not over_budget(runs, role, now) for role in ("correctness", "red-team")]
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")
         print(f"files={len(files)} labels={sorted(labels)} add={add} "

@@ -57,3 +57,15 @@ Each provider first creates an in-progress receipt. An interrupted test or
 failed publication therefore leaves it disabled. Start a fresh canary dispatch
 for recovery. Reviewers recheck the receipt before calling the provider and
 before publishing its verdict.
+
+## Correct evidence on an unchanged head
+
+After a role requests changes, the repository owner or coordinator App can
+request one additional verdict from that role on that commit. Add a line to
+the PR description beginning with `Review response #123: ` (replace 123 with
+the numeric GitHub review ID), followed by the correction and its evidence.
+Then apply the label `reconsider:correctness` or `reconsider:red-team`.
+Create the label if necessary. Removing and reapplying a label after a
+second verdict does not grant another review. A new commit uses the normal
+review process. Daily budgets and provider activation still apply. The
+original objection remains visible and blocks merge until the role approves.

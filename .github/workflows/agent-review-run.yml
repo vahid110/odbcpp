@@ -62,6 +62,11 @@ jobs:
       head_sha: ${{ steps.head.outputs.head_sha }}
       base_sha: ${{ steps.head.outputs.base_sha }}
     steps:
+      - name: Check out the review configuration from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
       - name: Find the head to review
         id: head
         shell: bash
@@ -83,19 +88,22 @@ jobs:
                    | select(.body | split("\n")[0] | test(" at " + $h + "($|[^0-9a-f])"))
                    | select(.body | split("\n")[0] | contains("verdict withheld") | not)] | length' \
                  "$RUNNER_TEMP/reviews.json")
-          if [[ "$(jq -r .state "$raw")" != open || "$done" != 0 ]]; then
+          reconsider=false
+          if [[ "$done" == 1 && "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == labeled ]]; then
+            cp "$RUNNER_TEMP/reviews.json" reviews.json
+            .github/review/list-runs.sh
+            reconsider=$(HEAD_SHA="$head" REVIEW_TIME="$(date -u +%FT%TZ)" python3 -I -B .github/review/review_gate.py reconsider)
+          fi
+          if [[ "$(jq -r .state "$raw")" != open || "$(jq -r .draft "$raw")" == true || ( "$done" != 0 && "$reconsider" != true ) ]]; then
             echo "Nothing to review: PR state $(jq -r .state "$raw"), $done existing review(s) of ${head:0:7}."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$(jq -r '.label.name // ""' "$GITHUB_EVENT_PATH")" == reconsider:* && "$reconsider" != true ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
           echo "head_sha=$head" >> "$GITHUB_OUTPUT"
           echo "base_sha=$(jq -r .base.sha "$raw")" >> "$GITHUB_OUTPUT"
 
-      - name: Check out the review configuration from main
-        if: steps.head.outputs.skip != 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: .github
       - name: Get a reviewer token that can only record the run
         id: reviewer
         if: steps.head.outputs.skip != 'true'

@@ -38,6 +38,25 @@ def plan_(*args, **kwargs):
 
 
 class Plan(unittest.TestCase):
+    def test_reconsider_one_exact_change_request(self):
+        role = "correctness"
+        prior = dict(review(role, "CHANGES_REQUESTED"), id=123)
+        env = {"GITHUB_ACTOR": "odbcpp-agent[bot]", "GITHUB_REPOSITORY_OWNER": "vahid110"}
+        from unittest.mock import patch
+        def allowed(reviews, body="Review response #123: see the attached live XML.", event_head=HEAD):
+            return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body)
+        with patch.dict(os.environ, env):
+            self.assertTrue(allowed([prior]))
+            self.assertFalse(allowed([prior], body="No response"))
+            self.assertFalse(allowed([prior], event_head=OLD))
+            self.assertFalse(allowed([prior, prior]))
+            self.assertFalse(allowed([dict(prior, state="APPROVED")]))
+            self.assertFalse(allowed([dict(prior, user={"login": "other"})]))
+            self.assertFalse(allowed([dict(prior, commit_id=OLD)]))
+            self.assertFalse(allowed([review("red-team", "CHANGES_REQUESTED")]))
+            with patch.dict(os.environ, {"GITHUB_ACTOR": "contributor"}):
+                self.assertFalse(allowed([prior]))
+
     def test_documentation_push_runs_correctness_only(self):
         # Changed for #204: a code push now also starts the red-team review
         # (test_code_change_starts_red_team_without_a_label).
