@@ -669,3 +669,13 @@ complete mask on each product. In `Sql92PredicateAndSubqueryClaimsExecute`,
 the `if (!redshift_profile_)` block exercises the correlated comparison, IN,
 EXISTS and quantified forms on PostgreSQL. Redshift exercises the common
 subquery cases outside that block.
+
+### Numeric escape functions in capability discovery
+
+The Redshift profile in `core/database/postgres/pg_capabilities.cpp` sets
+`result.sql.scalar_natural_log = true` and `result.sql.scalar_log10 = true`
+after initializing the common SQL capabilities. The `SQL_NUMERIC_FUNCTIONS`
+case in `odbc/odbc_api.cpp` reads those two fields and returns the union of
+`SQL_FN_NUM_LOG` and `SQL_FN_NUM_LOG10`. The per-product expectation in
+`tests/test_sql_capability_masks.h` is that union on Redshift and zero on
+PostgreSQL. The connected exact-mask test checks the value through SQLGetInfo.
