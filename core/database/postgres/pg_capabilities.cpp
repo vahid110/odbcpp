@@ -2,7 +2,7 @@
 
 namespace rs::core::database::postgres {
 namespace {
-SqlCapabilities qualified_postgres_sql_capabilities() noexcept {
+SqlCapabilities qualified_common_sql_capabilities() noexcept {
   SqlCapabilities result;
   result.aggregate_all = true;
   result.aggregate_average = true;
@@ -134,7 +134,7 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   result.schema_in_dml = result.schema_in_procedures = true;
   result.schema_in_table_definitions = result.schema_in_index_definitions = true;
   result.schema_in_privileges = true;
-  result.sql = qualified_postgres_sql_capabilities();
+  result.sql = qualified_common_sql_capabilities();
   result.sql.datetime_current_time = true;
   result.sql.datetime_current_timestamp = true;
   result.sql.numeric_bit_length = true;
@@ -176,10 +176,19 @@ BackendCapabilities redshift_backend_capabilities(std::string_view display_name)
   // SQL-92 Entry requires an available SERIALIZABLE isolation option. The
   // native database mode is not selected by session isolation aliases.
   result.sql92_entry = false;
-  // Do not inherit PostgreSQL SQL or scalar claims. Existing Redshift escape
-  // translations remain usable, but advertising new capability bits awaits
-  // connected qualification under #142. Offline goldens alone are insufficient.
-  result.sql = {};
+  result.sql = qualified_common_sql_capabilities();
+  result.sql.scalar_trimmed_length = true;
+  result.sql.scalar_locate_two_arguments = true;
+  result.sql.scalar_natural_log = true;
+  result.sql.scalar_log10 = true;
+  result.sql.scalar_year = true;
+  result.sql.scalar_month = true;
+  result.sql.scalar_day = true;
+  result.sql.scalar_weekday = true;
+  result.sql.scalar_yearday = true;
+  result.sql.scalar_hour = true;
+  result.sql.scalar_minute = true;
+  result.sql.scalar_second = true;
   // #220 qualifies the Redshift conversion and interval matrix separately
   // from #142's SQL/scalar claims above. Use the Redshift table explicitly:
   // inheriting PostgreSQL would also advertise unsupported UUID/boolean pairs.

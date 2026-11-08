@@ -91,8 +91,8 @@ and single evaluation of volatile operands. SQL itself does not promise left-to-
 evaluation order.
 
 `SQL_TIMEDATE_ADD_INTERVALS`, `SQL_TIMEDATE_DIFF_INTERVALS` and the corresponding
-`SQL_TIMEDATE_FUNCTIONS` bits expose exactly this interval subset. Broader scalar
-and SQL-92 capability reporting is tracked in issue #142.
+`SQL_TIMEDATE_FUNCTIONS` bits expose exactly this interval subset. Additional scalar and SQL-92
+capabilities are described below.
 
 ## References and qualification
 
@@ -119,28 +119,23 @@ execution use one protocol Parse, which cannot contain multiple commands.
 Prepared and parameterized semicolon batches remain unsupported; use separate
 statements. No automatic splitting, interpolation or fallback is implemented.
 
-`SQL_MULT_RESULT_SETS` describes available result sequences, not support for
-all batch execution paths. PostgreSQL's direct result sequences and the
-existing prepared-select parameter-array facet independently justify `Y`.
-A provider that genuinely qualifies full SELECT batches also implies `Y`.
-A provider with neither reports `N`; the Redshift SQL declaration makes no
-new direct-sequence claim, while its existing prepared-array facet still
-supplies multiple results. The native Redshift facet inspection and fake-carrier ODBC mapping are
-separate offline checks, not an end-to-end native session test. The checked-in
-direct-sequence and prepared-array unit tests exercise `SQLMoreResults` separately from the zero batch masks.
-See the [ODBC SQLGetInfo definitions](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetinfo-function)
+`SQL_MULT_RESULT_SETS` reports `Y` for PostgreSQL and Redshift. A direct
+statement can return multiple results, and native prepared SELECT parameter arrays
+also support result sequences. An external provider can declare a qualified
+SELECT batch, direct result sequence or prepared-array result sequence to report
+`Y`. See the [ODBC SQLGetInfo definitions](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetinfo-function)
 and [PostgreSQL extended-query restriction](https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY).
 
-Redshift's newly proposed scalar, SQL92, subquery, aggregate, datetime-literal
-and outer/relational-join masks remain zero pending connected qualification
-under #142. Existing translations and their offline/connected behavior tests
-remain available; withholding a metadata claim does not remove a translation.
-Historical local receipts are retained privately, but are not current-head CI
-or live acceptance evidence. The connected tests retain their SQL behavior
-assertions and explicitly expect withheld Redshift mask bits, so future
-qualification does not silently skip the behavior.
-A successful direct-only batch probe cannot qualify the broader batch
-masks; prepared and parameterized support needs separate implementation/proof.
+Both products report their tested aggregate functions, date/time/timestamp literals,
+SQL-92 expressions, subqueries, and join forms. `SQL_OUTER_JOINS` is `F` for full nested support, with
+left, right, full, nested and mixed inner/outer joins and either operand order
+in an equality predicate. Redshift omits SQL-92 row constructors, quantified and
+correlated subqueries, OVERLAPS, BIT_LENGTH, and the SQL-92 CURRENT_TIME and
+CURRENT_TIMESTAMP bits. The ODBC CURTIME and NOW escapes are qualified separately.
+
+Redshift advertises all 18 scalar escapes exercised in the connected direct and
+prepared tests. Use `SQL_FN_STR_LOCATE_2` for two-argument LOCATE. The optional
+three-argument start-position form returns `HYC00`.
 
 **Public SDK source and binary compatibility:** `BackendCapabilities::outer_joins` has
 been replaced by the detailed `BackendCapabilities::sql.join_*` declarations.
