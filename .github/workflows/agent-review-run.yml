@@ -15,6 +15,12 @@ name: agent review run
 on:
   workflow_call:
     inputs:
+      claude:
+        required: true
+        type: boolean
+      openai:
+        required: true
+        type: boolean
       role:
         description: correctness or red-team
         required: true
@@ -134,7 +140,7 @@ jobs:
     # before publishing anything.
     name: agent review (${{ inputs.role }})
     needs: start
-    if: needs.start.outputs.skip != 'true'
+    if: needs.start.outputs.skip != 'true' && inputs.claude
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: agent-review
@@ -225,8 +231,15 @@ jobs:
           chmod +x "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
 
+      - name: Recheck Claude canary before invoking the provider
+        id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B .github/review/provider_activation.py --check-claude >> "$GITHUB_OUTPUT"
+
       - name: Review
         id: review
+        if: steps.admit.outputs.available == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         env:
@@ -251,17 +264,31 @@ jobs:
         id: route
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
+          CLAUDE_PROVEN: ${{ steps.admit.outputs.available }}
           CLAUDE_OUTCOME: ${{ steps.review.outcome }}
         run: |
-          provider=$(python3 -I .github/review/provider_route.py)
+          if [[ "$CLAUDE_PROVEN" == false && "$CLAUDE_OUTCOME" == skipped ]]; then
+            provider=openai
+          else
+            provider=$(python3 -I .github/review/provider_route.py)
+          fi
           echo "provider=$provider" >> "$GITHUB_OUTPUT"
+
+      - name: Report unavailable backup
+        if: steps.route.outputs.provider == 'openai' && !inputs.openai
+        run: |
+          echo "::error::Claude produced no verdict and OpenAI has no passing canary."
+          exit 1
 
   reserve:
     # Caller concurrency serializes this role and PR. Record the attempt before
     # spending, on the candidate itself. An ambiguous POST fails closed.
     name: Reserve backup review (${{ inputs.role }})
     needs: [start, model]
-    if: needs.model.outputs.provider == 'openai'
+    if: >-
+      !cancelled() && needs.start.result == 'success' && needs.start.outputs.skip != 'true' &&
+      inputs.openai && ((!inputs.claude && needs.model.result == 'skipped') ||
+      (needs.model.result == 'success' && needs.model.outputs.provider == 'openai'))
     environment: agent-review
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -308,6 +335,7 @@ jobs:
     # Fresh runner. No Claude process, reviewer App token or PR code execution.
     name: OpenAI backup review (${{ inputs.role }})
     needs: [start, reserve]
+    if: "!cancelled() && needs.start.result == 'success' && needs.reserve.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: agent-review
@@ -346,6 +374,11 @@ jobs:
           git -C pr-head diff --no-ext-diff --no-textconv --no-renames --submodule=short \
             "$BASE_SHA...$HEAD_SHA" -- > review-context/full.diff
           .github/review/prepare-workspace.sh
+      - name: Recheck openai canary before invoking the provider
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B .github/review/provider_activation.py openai
+
       - name: Request one structured review
         id: review
         env:
@@ -379,7 +412,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /AGENTS.md
+            /docs/adr/0001-development-process.md
 
       - name: Get the reviewer identity
         id: reviewer
@@ -393,13 +430,16 @@ jobs:
           permission-checks: write
 
       - name: Post the verdict as odbcpp-reviewer[bot]
-        if: ${{ !cancelled() && needs.model.result == 'success' && (needs.model.outputs.provider == 'claude' || needs.fallback.result == 'success') }}
+        if: >-
+          !cancelled() && ((needs.model.result == 'success' && needs.model.outputs.provider == 'claude') ||
+          needs.fallback.result == 'success')
         shell: bash
         env:
           GH_TOKEN: ${{ steps.reviewer.outputs.token }}
-          RESULT: ${{ needs.model.outputs.provider == 'openai' && needs.fallback.outputs.result || needs.model.outputs.result }}
-          REVIEW_PROVIDER: ${{ needs.model.outputs.provider }}
+          RESULT: ${{ needs.fallback.result == 'success' && needs.fallback.outputs.result || needs.model.outputs.result }}
+          REVIEW_PROVIDER: ${{ needs.fallback.result == 'success' && 'openai' || 'claude' }}
         run: |
+          python3 -I -B .github/review/provider_activation.py "$REVIEW_PROVIDER"
           current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
           if [[ "$current" != "$HEAD_SHA" ]]; then
             echo "PR moved from $HEAD_SHA to $current; a queued run reviews it."
