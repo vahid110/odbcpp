@@ -139,8 +139,19 @@ def reconsider(role, action, label, head, event_head, reviews, body):
         return False
     review_id = prior[0].get("id")
     prefix = f"Review response #{review_id}: "
-    return isinstance(review_id, int) and any(
-        line.startswith(prefix) and line[len(prefix):].strip() for line in (body or "").splitlines())
+    lines = [line for line in (body or "").splitlines()
+             if line.startswith(prefix) and line[len(prefix):].strip()]
+    if not isinstance(review_id, int) or len(lines) != 1:
+        return False
+    # The labeler's trusted account must attest these exact response bytes.
+    # Include the SHA in the review body: GitHub may remap commit_id.
+    for record in reviews:
+        author = record.get("user") or {}
+        if (record.get("state") == "COMMENTED" and record.get("commit_id") == head
+                and str(author.get("id")) == os.environ.get("GITHUB_ACTOR_ID")
+                and record.get("body") == head + "\n" + lines[0]):
+            return True
+    return False
 
 
 def required_roles(labels, files=None):
@@ -284,13 +295,17 @@ def main(command):
     files = _load("files.json", [])
     runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
-    if command == "reconsider":
+    if command in ("reconsider", "verify-response"):
         with open("reconsider-event.json") as stream:
             event = json.load(stream)
         with open("reconsider-pr.json") as stream:
             current = json.load(stream)
         allowed = reconsider(os.environ["ROLE"], event["action"], (event.get("label") or {}).get("name"),
                              head, event["pull_request"]["head"]["sha"], reviews, current.get("body"))
+        if command == "verify-response":
+            if not allowed:
+                raise SystemExit("Reconsideration response no longer matches the trusted review")
+            return
         print("true" if allowed and not over_budget(
             runs, os.environ["ROLE"], _time(os.environ["REVIEW_TIME"])) else "false")
         return

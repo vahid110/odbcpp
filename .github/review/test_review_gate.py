@@ -43,11 +43,19 @@ class Plan(unittest.TestCase):
         prior = dict(review(role, "CHANGES_REQUESTED"), id=123)
         env = {"GITHUB_ACTOR_ID": "350232297", "GITHUB_ACTOR": "odbcpp-agent[bot]", "GITHUB_REPOSITORY_OWNER": "vahid110"}
         from unittest.mock import patch
-        def allowed(reviews, body="Review response #123: see the attached live XML.", event_head=HEAD):
+        response = "Review response #123: see the attached live XML."
+        attestation = {"user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+                       "body": HEAD + "\n" + response}
+        def allowed(reviews, body=response, event_head=HEAD, attestor=attestation):
+            reviews = reviews + ([attestor] if attestor else [])
             return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body)
         with patch.dict(os.environ, env):
             self.assertTrue(allowed([prior]))
             self.assertFalse(allowed([prior], body="No response"))
+            self.assertFalse(allowed([prior], attestor=None))
+            self.assertFalse(allowed([prior], body="Review response #123: substituted"))
+            self.assertFalse(allowed([prior], attestor=dict(attestation, user={"login": "other"})))
+            self.assertFalse(allowed([prior], attestor=dict(attestation, commit_id=OLD)))
             self.assertFalse(allowed([prior], event_head=OLD))
             self.assertFalse(allowed([prior, prior]))
             self.assertFalse(allowed([dict(prior, state="APPROVED")]))

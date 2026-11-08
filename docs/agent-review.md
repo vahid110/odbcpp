@@ -65,7 +65,9 @@ After a role requests changes, the repository owner or the coordinator App (GitH
 request one additional verdict from that role on that commit. Add a line to
 the PR description beginning with `Review response #123: ` (replace 123 with
 the numeric GitHub review ID), followed by the correction and its evidence.
-Then apply the label `reconsider:correctness` or `reconsider:red-team`.
+From the same owner or coordinator account, submit a **Comment** review on
+that exact commit. Its first line must be the full head SHA and its second
+line the exact response line from the description. Then apply the label `reconsider:correctness` or `reconsider:red-team`.
 Create the label if necessary. Removing and reapplying a label after a
 second verdict does not grant another review. A new commit uses the normal
 review process. Daily budgets and provider activation still apply. The
