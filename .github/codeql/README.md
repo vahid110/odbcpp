@@ -85,7 +85,7 @@ cumulative compilation metrics with a current extraction summary containing
 252 cache hits and no new partial unit, so the strict limitation check correctly
 rejected it. Retain that original failure; do not widen the exception to accept
 mixed extraction evidence. The
-[pinned overlay configuration](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/src/config-utils.ts)
+[pinned overlay configuration](https://github.com/github/codeql-action/blob/33d7b85da1a04171e211befe2c739303b9a4c066/src/config-utils.ts)
 recognizes `none` as an explicit disable, and the pinned init action exposes
 `trap-caching` separately from `dependency-caching`.
 
@@ -214,8 +214,8 @@ backend, ODBC, tests/CMake and product contracts are unchanged.
 
 Primary references: [compiled-language build modes](https://docs.github.com/en/code-security/reference/code-scanning/codeql/build-options-for-compiled-languages),
 [query suites](https://docs.github.com/en/code-security/concepts/code-scanning/codeql/codeql-query-suites),
-[pinned init inputs](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/init/action.yml),
-[pinned analyze inputs](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/analyze/action.yml),
+[pinned init inputs](https://github.com/github/codeql-action/blob/33d7b85da1a04171e211befe2c739303b9a4c066/init/action.yml),
+[pinned analyze inputs](https://github.com/github/codeql-action/blob/33d7b85da1a04171e211befe2c739303b9a4c066/analyze/action.yml),
 [multiple SARIF categories](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file),
 [default-setup transition](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/results-different-than-expected).
 
