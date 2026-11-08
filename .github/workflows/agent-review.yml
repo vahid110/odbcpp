@@ -34,6 +34,8 @@ jobs:
       pull-requests: read
       checks: read
     outputs:
+      claude: ${{ steps.gate.outputs.claude }}
+      openai: ${{ steps.gate.outputs.openai }}
       correctness: ${{ steps.plan.outputs.correctness }}
       red_team: ${{ steps.plan.outputs.red_team }}
     env:
@@ -59,16 +61,11 @@ jobs:
         id: gate
         shell: bash
         run: |
-          fingerprint=$(.github/review/fingerprint.sh)
-          if [[ "$ENABLED_FOR" == "$fingerprint" ]]; then
-            echo "state=enabled" >> "$GITHUB_OUTPUT"
-          elif [[ -z "$ENABLED_FOR" ]]; then
-            echo "::notice::Agent review is not enabled; run the agent review canary."
+          if [[ -z "$ENABLED_FOR" ]]; then
             echo "state=off" >> "$GITHUB_OUTPUT"
+          elif [[ "$ENABLED_FOR" == provider-canaries-v1 ]]; then
+            python3 -I -B .github/review/provider_activation.py >> "$GITHUB_OUTPUT"
           else
-            # Enabled once, but the configuration changed since the canary
-            # passed: fail the required check until the canary passes again.
-            echo "::error::Agent review configuration changed (fingerprint $fingerprint); run the agent review canary."
             echo "state=stale" >> "$GITHUB_OUTPUT"
           fi
 
@@ -148,6 +145,8 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       OPENAI_REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
     with:
+      claude: ${{ needs.plan.outputs.claude == 'true' }}
+      openai: ${{ needs.plan.outputs.openai == 'true' }}
       role: correctness
 
   red-team:
@@ -170,6 +169,8 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       OPENAI_REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
     with:
+      claude: ${{ needs.plan.outputs.claude == 'true' }}
+      openai: ${{ needs.plan.outputs.openai == 'true' }}
       role: red-team
 
   report-failure:
