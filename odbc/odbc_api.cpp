@@ -430,9 +430,9 @@ namespace {
       case SQL_OUTER_JOINS:
         if (!backend.sql.join_left && !backend.sql.join_right && !backend.sql.join_full) return "N";
         if (!backend.sql.join_nested) return "Y";
-        // The legacy full level includes nesting without operand-order or
-        // inner/outer mixing restrictions. Partial nesting has its own value.
-        return backend.sql.join_unordered_columns && backend.sql.join_inner_with_outer ? "F" : "P";
+        // Conservatively report unrestricted nesting only across all join types.
+        return backend.sql.join_left && backend.sql.join_right && backend.sql.join_full &&
+            backend.sql.join_unordered_columns && backend.sql.join_inner_with_outer ? "F" : "P";
       case SQL_PROCEDURES: return backend.procedures ? "Y" : "N";
       case SQL_MULT_RESULT_SETS:
         return backend.sql.batch_select || backend.sql.direct_result_sequences ||

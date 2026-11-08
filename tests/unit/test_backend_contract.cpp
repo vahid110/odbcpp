@@ -17770,6 +17770,9 @@ TEST_F(BackendContractTest, LegacyOuterJoinLevelReflectsAvailableNesting) {
       // conservative level if either legacy restriction remains.
       {true, true, true, true, true, false, "P"},
       {true, true, true, true, false, true, "P"},
+      {true, true, false, true, true, true, "P"},
+      {true, false, true, true, true, true, "P"},
+      {false, true, true, true, true, true, "P"},
       {true, true, true, true, true, true, "F"},
   };
   for (const auto& item : cases) {
