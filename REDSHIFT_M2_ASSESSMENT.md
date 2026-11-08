@@ -115,7 +115,7 @@ proof of server behavior.
 | order_by_expressions/requires_select, correlation_names, group_by | True/false, any, unrelated | Ordered rows proved; expression/grouping breadth pending |
 | null_collation, concat_null_yields_null, non_nullable_columns | High, true, true | NULL retrieval does not qualify ordering/concatenation/non-null constraints |
 | read_only, integrity, like_escape, procedures | False, true, true, true | Escaped discovery partly proved; write/integrity/routine semantics pending |
-| sql.join_left/right/full/nested/unordered_columns/inner_with_outer/all_comparisons | All false | SQL_OUTER_JOINS=N and SQL_OJ_CAPABILITIES=0 until connected Redshift acceptance (#142); replaces the removed standalone outer_joins field |
+| sql.join_left/right/full/nested/unordered_columns/inner_with_outer/all_comparisons | First six true, all_comparisons false | SQL_OUTER_JOINS=F and the detailed mask reports left, right, full, nested, reversed operands and mixed inner/outer joins. See [provider capability reporting](docs/sql-escape-functions.md#capability-reporting-and-provider-migration). |
 | create_index, drop_index | Both false | Corrected static reporting, direct ODBC regression |
 | insert_literals/searched, select_into | All true | Inherited; no general ODBC write qualification |
 | sql92_entry, union_distinct/all | All true | UNION DISTINCT in001; broader conformance unqualified |
@@ -660,3 +660,42 @@ Exact fe314fa CI37162977875 passed all required gates. The separately reviewed, 
 
 
 Native edge successor002 at exact331dd83/CI37165162234 was separately owner-admitted after fresh controls, official price, exact-host TLS and retained coverage checks. Durable consumption preceded SQL. Five GoogleTests passed: identity plus no-key and quoted composite-key cases in both explicit modes. The canonical schema-USAGE query succeeded; the two exact tables were ownership-checked and dropped with RESTRICT, and independent activity checks passed before/after teardown. Completion took about9.93seconds inside the original bounds, with no uncertainty. Independent review accepted endpoint/fixture-specific empty six-field descriptors, exact quoted stored names/constraint/key order and recovery/typed-NULL assertions. Original blockededge001 remains immutable. This does not qualify native widths/OIDs, missing/denied behavior, manual transactions or broader catalog parity. No allowance reset or reservation-horizon extension occurred.
+
+### Correlated subqueries in capability discovery
+
+Redshift omits `SQL_SQ_CORRELATED_SUBQUERIES` from `SQLGetInfo(SQL_SUBQUERIES)`.
+The connected test `ExactSqlCapabilityMasksForConnectedProduct` checks the
+complete mask on each product. In `Sql92PredicateAndSubqueryClaimsExecute`,
+the `if (!redshift_profile_)` block exercises the correlated comparison, IN,
+EXISTS and quantified forms on PostgreSQL. Redshift exercises the common
+subquery cases outside that block.
+
+### Numeric escape functions in capability discovery
+
+The Redshift profile in `core/database/postgres/pg_capabilities.cpp` sets
+`result.sql.scalar_natural_log = true` and `result.sql.scalar_log10 = true`
+after initializing the common SQL capabilities. The `SQL_NUMERIC_FUNCTIONS`
+case in `odbc/odbc_api.cpp` reads those two fields and returns the union of
+`SQL_FN_NUM_LOG` and `SQL_FN_NUM_LOG10`. The per-product expectation in
+`tests/test_sql_capability_masks.h` is that union on Redshift and zero on
+PostgreSQL. The connected exact-mask test checks the value through SQLGetInfo.
+
+### Issue #142 live qualification provenance
+
+The four [live collections](https://github.com/vahid110/odbcpp/pull/236#issuecomment-6714374225)
+ran at `55e414090c6f13a69178163aca447e6d798365c4`. PostgreSQL and
+Redshift each passed 20 direct-driver and 18 iODBC cases. Git records the
+following content identities at that tested revision. Compare them with
+the candidate under review using
+`git ls-tree HEAD core/database/postgres/pg_capabilities.cpp odbc/odbc_api.cpp tests/integration`.
+
+| Path | Live-tested Git object |
+| --- | --- |
+| core/database/postgres/pg_capabilities.cpp | `72076ce1d61901170f7741c25166d1baa52a7a1b` |
+| odbc/odbc_api.cpp | `a642b7f96d38a324549bd53663d4b15670a3d1a2` |
+| tests/integration (complete tree) | `ccf415d6f46b4c93a3d9903b05003fc464229bcd` |
+
+The tested revision already contained the capability changes visible in
+the PR diff against main. To verify subsequent changes across the complete
+runtime directories and connected tests, run
+`git diff --exit-code 55e414090c6f13a69178163aca447e6d798365c4 HEAD -- core sdk odbc tests/integration`.

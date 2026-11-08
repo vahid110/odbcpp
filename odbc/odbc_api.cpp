@@ -428,7 +428,11 @@ namespace {
       case SQL_INTEGRITY: return backend.integrity ? "Y" : "N";
       case SQL_LIKE_ESCAPE_CLAUSE: return backend.like_escape ? "Y" : "N";
       case SQL_OUTER_JOINS:
-        return backend.sql.join_left || backend.sql.join_right || backend.sql.join_full ? "Y" : "N";
+        if (!backend.sql.join_left && !backend.sql.join_right && !backend.sql.join_full) return "N";
+        if (!backend.sql.join_nested) return "Y";
+        // Conservatively report unrestricted nesting only across all join types.
+        return backend.sql.join_left && backend.sql.join_right && backend.sql.join_full &&
+            backend.sql.join_unordered_columns && backend.sql.join_inner_with_outer ? "F" : "P";
       case SQL_PROCEDURES: return backend.procedures ? "Y" : "N";
       case SQL_MULT_RESULT_SETS:
         return backend.sql.batch_select || backend.sql.direct_result_sequences ||

@@ -6,7 +6,8 @@ set(ODBCPP_SPDLOG_VERSION "1.17.0")
 set(ODBCPP_SPDLOG_ARCHIVE_SHA256 "b11912a82d149792fef33fabd0503b13d54aeac25c1464755461d4108ea71fc2")
 FetchContent_Declare(
   spdlog
-  URL https://github.com/gabime/spdlog/archive/refs/tags/v${ODBCPP_SPDLOG_VERSION}.zip
+  URL https://codeload.github.com/gabime/spdlog/zip/refs/tags/v${ODBCPP_SPDLOG_VERSION}
+      https://github.com/gabime/spdlog/archive/refs/tags/v${ODBCPP_SPDLOG_VERSION}.zip
   URL_HASH SHA256=${ODBCPP_SPDLOG_ARCHIVE_SHA256}
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
