@@ -660,3 +660,12 @@ Exact fe314fa CI37162977875 passed all required gates. The separately reviewed, 
 
 
 Native edge successor002 at exact331dd83/CI37165162234 was separately owner-admitted after fresh controls, official price, exact-host TLS and retained coverage checks. Durable consumption preceded SQL. Five GoogleTests passed: identity plus no-key and quoted composite-key cases in both explicit modes. The canonical schema-USAGE query succeeded; the two exact tables were ownership-checked and dropped with RESTRICT, and independent activity checks passed before/after teardown. Completion took about9.93seconds inside the original bounds, with no uncertainty. Independent review accepted endpoint/fixture-specific empty six-field descriptors, exact quoted stored names/constraint/key order and recovery/typed-NULL assertions. Original blockededge001 remains immutable. This does not qualify native widths/OIDs, missing/denied behavior, manual transactions or broader catalog parity. No allowance reset or reservation-horizon extension occurred.
+
+### Correlated subqueries in capability discovery
+
+Redshift omits `SQL_SQ_CORRELATED_SUBQUERIES` from `SQLGetInfo(SQL_SUBQUERIES)`.
+The connected test `ExactSqlCapabilityMasksForConnectedProduct` checks the
+complete mask on each product. In `Sql92PredicateAndSubqueryClaimsExecute`,
+the `if (!redshift_profile_)` block exercises the correlated comparison, IN,
+EXISTS and quantified forms on PostgreSQL. Redshift exercises the common
+subquery cases outside that block.
