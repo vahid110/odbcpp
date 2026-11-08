@@ -102,7 +102,7 @@ the fresh hosted raw SARIF and extractor logs still require review. This follows
 
 ### Pinned compile-time assertion limitation
 
-CodeQL 2.27.3 reports a failed private-member `requires` assertion at line 34 of
+CodeQL 2.27.3 and 2.27.4 report a failed private-member `requires` assertion at line 34 of
 `tests/unit/test_session_owner.cpp` although the actual GCC build accepts it.
 The supplemental Clang-based extraction reports the same diagnostic; this is
 not established as a GCC-only issue. Original assertions and raw SARIF remain
@@ -251,3 +251,5 @@ compilation and SARIF qualification remain hosted acceptance requirements.
 
 Primary build references: [CodeQL manual builds](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/manage-your-configuration/codeql-for-compiled-languages),
 [C# library output](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/output#outputtype).
+
+The [2.27.4 Redshift scan](https://github.com/vahid110/odbcpp/actions/runs/42513860734/job/128832484266) recorded 266 of 267 compilations without errors and zero missing expected files. The same source, object, diagnostic, metric and log checks apply to both versions.
