@@ -154,6 +154,8 @@ def reconsider(role, action, label, head, event_head, reviews, body):
     prior = [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER
              and r.get("commit_id") == head and role_of(r.get("body")) == role
              and names_commit(r.get("body"), head)]
+    # Every verdict counts here. A second verdict consumes reconsideration even
+    # when it requests changes again or its approval is later dismissed.
     if len(prior) != 1 or prior[0].get("state") != "CHANGES_REQUESTED":
         return False
     review_id = prior[0].get("id")

@@ -68,6 +68,11 @@ class Plan(unittest.TestCase):
             self.assertFalse(allowed([prior], attestor=dict(attestation, commit_id=OLD)))
             self.assertFalse(allowed([prior], event_head=OLD))
             self.assertFalse(allowed([prior, prior]))
+            # Reapplying the same label after the second verdict must fail.
+            for verdict in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                second = dict(review(role, verdict, at="2026-11-03T10:00:02Z"), id=125)
+                with self.subTest(second_verdict=verdict):
+                    self.assertFalse(allowed([prior, second]))
             self.assertFalse(allowed([dict(prior, state="APPROVED")]))
             self.assertFalse(allowed([dict(prior, user={"login": "other"})]))
             self.assertFalse(allowed([dict(prior, commit_id=OLD)]))
