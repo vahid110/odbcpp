@@ -58,6 +58,11 @@ class Plan(unittest.TestCase):
             return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body, snapshot)
         with patch.dict(os.environ, env):
             self.assertTrue(allowed([prior]))
+            self.assertTrue(allowed([prior, review("red-team", "APPROVED")]))
+            withheld = dict(prior, id=122, body=f"[{role} reviewer] verdict withheld at {HEAD}")
+            self.assertTrue(allowed([withheld, prior]))
+            self.assertFalse(allowed([withheld]))
+            self.assertFalse(allowed([withheld, prior, review(role, "APPROVED")]))
             self.assertFalse(allowed([prior], body=None))
             self.assertFalse(allowed([prior], snapshot=None))
             for late in ("2026-11-03T10:01:00Z", "2026-11-03T10:01:01Z"):

@@ -131,3 +131,27 @@ Ran 108 tests in 0.981s
 
 OK
 Exit: 0
+
+Withheld verdict followed by a real objection. Before: 9f0f0882 with new test:
+..........github/review/test_review_gate.py:595: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/hz/bqsjvj9163j_s9bqbv5hj0cr0000gp/T/tmp2ukvh2ow/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.................F...................................
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 63, in test_reconsider_one_exact_change_request
+    self.assertTrue(allowed([withheld, prior]))
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 62 tests in 0.247s
+
+FAILED (failures=1)
+Exit: 1
+After using one role-specific verdict filter in the workflow and planner:
+Ran 108 tests in 0.696s
+
+OK
+Exit: 0

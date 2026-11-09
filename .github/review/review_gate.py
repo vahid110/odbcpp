@@ -141,6 +141,13 @@ def strictly_ordered_times(*stamps):
     return all(t.tzinfo is not None for t in times) and all(a < b for a, b in zip(times, times[1:]))
 
 
+def role_verdicts(reviews, role, head):
+    """Count only this reviewer's substantive verdicts for this role and commit."""
+    return [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER
+            and r.get("commit_id") == head and role_of(r.get("body")) == role
+            and names_commit(r.get("body"), head) and not withheld(r.get("body"))]
+
+
 def reconsider(role, action, label, head, event_head, reviews, body, snapshot_time):
     """Allow one additional verdict for a documented, exact-head objection."""
     if not isinstance(body, str):
@@ -151,9 +158,7 @@ def reconsider(role, action, label, head, event_head, reviews, body, snapshot_ti
         return False
     if action != "labeled" or label != "reconsider:" + role or head != event_head:
         return False
-    prior = [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER
-             and r.get("commit_id") == head and role_of(r.get("body")) == role
-             and names_commit(r.get("body"), head)]
+    prior = role_verdicts(reviews, role, head)
     # Every verdict counts here. A second verdict consumes reconsideration even
     # when it requests changes again or its approval is later dismissed.
     if len(prior) != 1 or prior[0].get("state") != "CHANGES_REQUESTED":
@@ -319,6 +324,11 @@ def _load(name, default):
 def main(command):
     """Prints key=value step outputs on stdout (the workflow appends them to
     GITHUB_OUTPUT) and a human summary on stderr."""
+    if command == "count-role-verdicts":
+        with open("reviews.json") as stream:
+            reviews = json.load(stream)
+        print(len(role_verdicts(reviews, os.environ["ROLE"], os.environ["HEAD_SHA"])))
+        return
     labels = _load("labels.json", [])
     events = _load("events.json", [])
     reviews = _load("reviews.json", [])

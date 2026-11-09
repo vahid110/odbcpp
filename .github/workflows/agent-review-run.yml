@@ -83,17 +83,12 @@ jobs:
           # event); a withheld verdict does not count as a review. GitHub
           # re-points commit_id to a new head after a force-push, so the
           # header must also name the full head SHA (review_gate.names_commit).
-          done=$(jq --arg h "$head" --arg role "[$ROLE reviewer]" '[.[]
-                   | select(.user.login == "odbcpp-reviewer[bot]" and .commit_id == $h)
-                   | select(.body | ltrimstr("**") | startswith($role))
-                   | select(.body | split("\n")[0] | test(" at " + $h + "($|[^0-9a-f])"))
-                   | select(.body | split("\n")[0] | contains("verdict withheld") | not)] | length' \
-                 "$RUNNER_TEMP/reviews.json")
+          cp "$RUNNER_TEMP/reviews.json" reviews.json
+          done=$(HEAD_SHA="$head" python3 -I -B .github/review/review_gate.py count-role-verdicts)
           reconsider=false
           if [[ "$done" == 1 && "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == labeled ]]; then
             cp "$GITHUB_EVENT_PATH" reconsider-event.json
             cp "$raw" reconsider-pr.json
-            cp "$RUNNER_TEMP/reviews.json" reviews.json
             .github/review/list-runs.sh
             reconsider=$(HEAD_SHA="$head" REVIEW_TIME="$(date -u +%FT%TZ)" python3 -I -B .github/review/review_gate.py reconsider)
           fi
