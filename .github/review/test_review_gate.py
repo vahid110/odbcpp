@@ -3,6 +3,8 @@
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import unittest
 
@@ -43,11 +45,35 @@ def graphql_reply(record):
     return {"data": {"node": {"id": record["node_id"], "body": record["body"], "lastEditedAt": None}}}
 
 
-def stub_graphql(root):
-    gh = root / "gh"
-    gh.write_text('#!/bin/sh\n[ "$1 $2 $6" = "api graphql id=PRR_321" ] || exit 2\ncat graphql.json\n')
-    gh.chmod(0o755)
-    return str(root) + os.pathsep + os.environ.get("PATH", os.defpath)
+def offline_gate(command):
+    """Run the real gate CLI logic with GitHub's GraphQL response supplied locally."""
+    import runpy
+    from unittest.mock import patch
+
+    def graphql(args, **kwargs):
+        if (args[:4] != ["gh", "api", "graphql", "-f"] or args[-2:] != ["-f", "id=PRR_321"]
+                or "lastEditedAt" not in args[4]):
+            raise AssertionError(f"Unexpected external call: {args!r}")
+        return subprocess.CompletedProcess(args, 0, stdout=Path("graphql.json").read_bytes())
+
+    # The real jobs execute on Ubuntu; keep scalar command substitutions LF-only.
+    sys.stdout.reconfigure(newline="\n")
+    with patch.object(subprocess, "run", side_effect=graphql), patch.object(sys, "argv", [g.__file__, command]):
+        runpy.run_path(g.__file__, run_name="__main__")
+
+
+def run_workflow_shell(root, script, env):
+    # Use Git for Windows Bash explicitly. The system bash.exe can launch WSL.
+    bash = "bash"
+    if os.name == "nt":
+        git = Path(shutil.which("git")).resolve()
+        bash = next(parent / "bin" / "bash.exe" for parent in git.parents if (parent / "bin" / "bash.exe").is_file())
+
+    # A file keeps native Windows command-line quoting away from the shell code.
+    path = root / "step.sh"
+    path.write_bytes(script.encode("utf-8"))
+    return subprocess.run([str(bash), "-eu", "-o", "pipefail", path.name], cwd=root, env=env,
+                          capture_output=True, text=True)
 
 
 class Plan(unittest.TestCase):
@@ -441,7 +467,6 @@ class SplitJobs(unittest.TestCase):
                 self.assertTrue(names[0].endswith("(${{ inputs.role }})"), names[0])
 
     def test_openai_initial_and_reconsideration_each_reserve_once(self):
-        import subprocess
         import tempfile
         from textwrap import dedent
 
@@ -461,21 +486,21 @@ class SplitJobs(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / ".github").symlink_to(Path(ROOT) / ".github")
+            review_dir = root / ".github" / "review"
+            review_dir.mkdir(parents=True)
+            shutil.copyfile(Path(ROOT) / ".github/review/reviewer-app-id", review_dir / "reviewer-app-id")
             (root / "ledger").touch()
             env = dict(os.environ, ROLE="correctness", PR_NUMBER=PR, HEAD_SHA=HEAD,
-                       GITHUB_REPOSITORY="owner/repo", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT=os.devnull)
+                       GITHUB_REPOSITORY="owner/repo", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT="step-output")
             for reconsider, expected in [("false", 0), ("false", 1), ("true", 0), ("true", 1)]:
                 with self.subTest(reconsider=reconsider, expected=expected):
-                    run = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", fake_api + script],
-                                         cwd=root, env=dict(env, RECONSIDER=reconsider), capture_output=True)
-                    self.assertEqual(run.returncode, expected, run.stderr)
+                    run = run_workflow_shell(root, fake_api + script, dict(env, RECONSIDER=reconsider))
+                    self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
             self.assertEqual((root / "ledger").read_text().splitlines(),
                              [f"OpenAI review attempt (correctness) #{PR}",
                               f"OpenAI reconsideration attempt (correctness) #{PR}"])
 
     def test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed(self):
-        import subprocess
         import tempfile
         from textwrap import dedent
 
@@ -492,7 +517,12 @@ class SplitJobs(unittest.TestCase):
         fake_api = """
         python3() {
           if [[ "$*" == *provider_activation.py* ]]; then return 0; fi
-          command python3 "$@"
+          if [[ "$1 $2 $3" != "-I -B .github/review/review_gate.py" ]]; then return 2; fi
+          "$TEST_PYTHON" -I -B "$TEST_GATE" --offline-gate "$4"
+        }
+        jq() {
+          # Native Windows jq may emit CRLF. The workflow uses Linux jq.
+          command jq "$@" | tr -d '\\r'
         }
         gh() {
           case "$*" in
@@ -512,7 +542,6 @@ class SplitJobs(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / ".github").symlink_to(Path(ROOT) / ".github")
             (root / "graphql.json").write_text(json.dumps(graphql_reply(response)))
             (root / "current.json").write_text(json.dumps(current))
             (root / "event.json").write_text(json.dumps(event))
@@ -520,11 +549,11 @@ class SplitJobs(unittest.TestCase):
             result = {"verdict": "approve", "body": "verified", "labels": ["auth"]}
             env = dict(os.environ, HEAD_SHA=HEAD, ROLE=role, GITHUB_ACTOR_ID="350232297",
                        GITHUB_EVENT_PATH="event.json", PR_NUMBER=PR, REPO="owner/repo", RESULT=json.dumps(result),
-                       RUN_URL="https://run/7", REVIEW_PROVIDER="openai", PATH=stub_graphql(root))
+                       RUN_URL="https://run/7", REVIEW_PROVIDER="openai",
+                       TEST_PYTHON=Path(sys.executable).as_posix(), TEST_GATE=Path(__file__).resolve().as_posix())
             for expected, expected_status, expected_count in [(1, "failure", 2), (1, "pending", 3), (0, "pending", 3)]:
-                run = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", fake_api + script],
-                                     cwd=root, env=env, capture_output=True)
-                self.assertEqual(run.returncode, expected, run.stderr)
+                run = run_workflow_shell(root, fake_api + script, env)
+                self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
                 history = [json.loads(line) for line in (root / "history").read_text().splitlines()]
                 applied = root / "applied.json"
                 labels = json.loads(applied.read_text())["labels"] if applied.exists() else []
@@ -706,12 +735,13 @@ class Command(unittest.TestCase):
             for name, data in files.items():
                 with open(os.path.join(d, name), "w") as f:
                     json.dump(data, f)
-            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_gate.py")
-            out = subprocess.run([sys.executable, "-I", "-B", script, command], cwd=d, capture_output=True,
-                                 text=True, env={"HEAD_SHA": HEAD, "PR_NUMBER": PR, "PATH": stub_graphql(Path(d)),
-                                                 **env}, check=True)
-            status_file = os.path.join(d, "check-status.txt")
-            status = open(status_file).read() if os.path.exists(status_file) else ""
+            script = str(Path(__file__).resolve())
+            out = subprocess.run([sys.executable, "-I", "-B", script, "--offline-gate", command],
+                                 cwd=d, capture_output=True, text=True,
+                                 env=dict(os.environ, HEAD_SHA=HEAD, PR_NUMBER=PR, **env))
+            self.assertEqual(out.returncode, 0, out.stderr)
+            status_file = Path(d) / "check-status.txt"
+            status = status_file.read_text() if status_file.exists() else ""
             return out.stdout, status
 
     def test_plan_prints_only_step_outputs(self):
@@ -759,4 +789,7 @@ class Command(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:2] == ["--offline-gate"]:
+        offline_gate(sys.argv[2])
+    else:
+        unittest.main()

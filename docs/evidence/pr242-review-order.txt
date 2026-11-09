@@ -201,3 +201,22 @@ Changing GraphQL lastEditedAt while keeping the response ID, REST body and
 submission time identical caused refusal. Cases cover earlier edits, missing
 node/metadata and mismatched body/identity. A read-only GitHub GraphQL smoke on
 a real PR review returned the requested id, body and lastEditedAt fields.
+
+Windows harness repair after run 42638066350:
+Both hosted Windows products failed review_gate tests on 80a5d372. The
+reservation ledger stayed empty, the publication step kept the objection,
+and the publication CLI failed in its fake GitHub command. Neither profile
+qualified on those results.
+The shell tests now pass LF script files to Git for Windows Bash, use a regular
+workspace fixture for the reviewer App ID, and invoke the test interpreter by
+its full path. The real gate CLI runs in a separate Python process with only
+its GraphQL subprocess replaced by an argument-checked offline responder.
+The fixture never searches PATH for gh. All three regression tests still run.
+On macOS:
+$ python3 -B .github/review/test_review_gate.py
+Ran 65 tests in 4.267s
+OK
+$ python3 -B -m unittest discover -s .github/review
+Ran 111 tests in 4.709s
+OK
+Windows execution on this repair is pending fresh hosted CI.
