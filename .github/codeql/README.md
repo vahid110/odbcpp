@@ -269,11 +269,5 @@ python3 -B -m unittest discover -s .github/codeql -p 'test_*.py' -v
 ruby .github/codeql/test_action_pins.rb
 ```
 
-The following result lines are from the [hosted step on PR head
-`7e35fb4b`](https://github.com/vahid110/odbcpp/actions/runs/42621276111/job/129173744113#step:3:1).
-
-```text
-Ran 50 tests in 0.139s
-OK
-1 runs, 26 assertions, 0 failures, 0 errors, 0 skips
-```
+For each update, open the Redshift CodeQL job for the PR head and expand
+`Check extraction controls offline` to inspect both command results.
