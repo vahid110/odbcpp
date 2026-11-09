@@ -84,7 +84,12 @@ jobs:
         id: plan
         if: steps.gate.outputs.state == 'enabled'
         shell: bash
-        run: python3 -I -B .github/review/review_gate.py plan >> "$GITHUB_OUTPUT"
+        run: |
+          cp "$GITHUB_EVENT_PATH" reconsider-event.json
+          if [[ "$ADDED_LABEL" == reconsider:* ]]; then
+            gh api "repos/$REPO/pulls/$PR_NUMBER" > reconsider-pr.json
+          fi
+          python3 -I -B .github/review/review_gate.py plan >> "$GITHUB_OUTPUT"
 
       - name: Get the reviewer identity
         id: reviewer

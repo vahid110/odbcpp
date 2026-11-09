@@ -1,0 +1,238 @@
+PR 242 | workflow unit test transcript
+Source and tests: d7446f0bd2134b2cd394a5b7f19e42cf1adf0159
+
+Before: same test file, review_gate.py from 448d5f917093cb92e4296e88d060f51402fcde0d.
+$ python3 -B -m unittest test_review_gate.Plan.test_reconsider_one_exact_change_request
+F
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='2026-11-03T09:59:59Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='2026-11-03T10:00:00Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp=None)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='invalid')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='2026-11-03T10:01:00')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 63, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([dict(prior, submitted_at=None)]))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 1 test in 0.032s
+
+FAILED (failures=6)
+Exit: 1
+
+After: unmodified source and tests at d7446f0b.
+$ python3 -B -m unittest discover -s .github/review
+........................................................github/review/test_review_gate.py:577: ResourceWarning: unclosed file <_io.TextIOWrapper name='<temp>/tmpgb8hpdy0/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.....................................................
+----------------------------------------------------------------------
+Ran 108 tests in 0.716s
+
+OK
+Exit: 0
+
+Response-record regression (source before fix: 3c954d29; new test without an issued record ID):
+$ python3 -B -m unittest discover -s .github/review -p test_review_gate.py
+..........github/review/test_review_gate.py:585: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/hz/bqsjvj9163j_s9bqbv5hj0cr0000gp/T/tmp0g_rbuwz/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.................F...................................
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 61, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], body=response))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 62 tests in 0.284s
+
+FAILED (failures=1)
+Exit: 1
+
+After binding the response record ID:
+$ python3 -B -m unittest discover -s .github/review
+Ran 108 tests in 0.974s
+
+OK
+Exit: 0
+
+Label-event timestamp regression (before: d95e6918 with new tests, equal/after submission):
+$ python3 -B -m unittest discover -s .github/review -p test_review_gate.py
+..........github/review/test_review_gate.py:589: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/hz/bqsjvj9163j_s9bqbv5hj0cr0000gp/T/tmp1or877e6/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+....................................................
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (late='2026-11-03T10:01:00Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 64, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=late)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (late='2026-11-03T10:01:01Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 64, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=late)))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 62 tests in 0.259s
+
+FAILED (failures=2)
+Exit: 1
+
+After enforcing objection < response < label snapshot and rejecting missing bodies:
+$ python3 -B -m unittest discover -s .github/review
+Ran 108 tests in 0.981s
+
+OK
+Exit: 0
+
+Withheld verdict followed by a real objection. Before: 9f0f0882 with new test:
+..........github/review/test_review_gate.py:595: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/hz/bqsjvj9163j_s9bqbv5hj0cr0000gp/T/tmp2ukvh2ow/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.................F...................................
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 63, in test_reconsider_one_exact_change_request
+    self.assertTrue(allowed([withheld, prior]))
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 62 tests in 0.247s
+
+FAILED (failures=1)
+Exit: 1
+After using one role-specific verdict filter in the workflow and planner:
+Ran 108 tests in 0.696s
+
+OK
+Exit: 0
+
+Initial and reconsideration OpenAI reservations, and publication recovery:
+Before: actual reserve/post shell steps from 1911b902, current regression tests.
+The tests substitute a local GitHub API ledger. The post test fails the first
+label write after the review is accepted, then reruns the same publication step.
+$ python3 -B -m unittest test_review_gate.SplitJobs.test_openai_initial_and_reconsideration_each_reserve_once test_review_gate.SplitJobs.test_failed_label_post_reruns_only_side_effects
+FAIL: test_openai_initial_and_reconsideration_each_reserve_once (reconsider='true', expected=0)
+AssertionError: 1 != 0 : b''
+FAIL: test_openai_initial_and_reconsideration_each_reserve_once
+Second list contains 1 additional elements.
+First extra element 1:
+'OpenAI reconsideration attempt (correctness) #7'
+FAIL: test_failed_label_post_reruns_only_side_effects
+AssertionError: 4 != 3
+Ran 2 tests in 0.187s
+FAILED (failures=3)
+Exit: 1
+
+After: both regression tests, CLI publication cases and all existing controls.
+$ python3 -B -m unittest discover -s .github/review
+Ran 111 tests in 1.624s
+OK
+Exit: 0
+The initial and reconsideration reservations each succeeded once and rejected
+a repeat. Publication retry left the objection, response record and one new
+verdict in the ledger, and applied the missing auth label. Offline only.
+
+Risk labels before approval, ambiguous review POST and edited response records:
+Before: 8ad5e9ca source/workflow with the new regression assertions.
+$ python3 -B -m unittest test_review_gate.SplitJobs.test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed test_review_gate.Command.test_publication_retry_repairs_without_reposting
+FAIL: test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed
+AssertionError: 'success' != 'failure'
+FAIL: test_publication_retry_repairs_without_reposting
+AssertionError: 'publish' != 'superseded'
+Ran 2 tests in 0.311s
+FAILED (failures=2)
+Exit: 1
+
+After: all 111 workflow tests passed. The workflow shell test failed a label
+write, simulated a lost response after a successful verdict POST, and retried.
+Protected check conclusions at the three boundaries: failure, pending, pending.
+The ledger retained one new verdict and the high-risk label requiring red-team.
+Changing GraphQL lastEditedAt while keeping the response ID, REST body and
+submission time identical caused refusal. Cases cover earlier edits, missing
+node/metadata and mismatched body/identity. A read-only GitHub GraphQL smoke on
+a real PR review returned the requested id, body and lastEditedAt fields.
+
+Windows harness repair after run 42638066350:
+Both hosted Windows products failed review_gate tests on 80a5d372. The
+reservation ledger stayed empty, the publication step kept the objection,
+and the publication CLI failed in its fake GitHub command. Neither profile
+qualified on those results.
+The shell tests now pass LF script files to Git for Windows Bash, use a regular
+workspace fixture for the reviewer App ID, and invoke the test interpreter by
+its full path. The real gate CLI runs in a separate Python process with only
+its GraphQL subprocess replaced by an argument-checked offline responder.
+The fixture never searches PATH for gh. All three regression tests still run.
+On macOS:
+$ python3 -B .github/review/test_review_gate.py
+Ran 65 tests in 4.267s
+OK
+$ python3 -B -m unittest discover -s .github/review
+Ran 111 tests in 4.709s
+OK
+Windows execution on this repair is pending fresh hosted CI.
+
+CodeQL check 129254924473 reported an uncontrolled path at publication on
+89c71a9c. The revised command fixture supplies the fixed event snapshot and
+points GITHUB_EVENT_PATH elsewhere. With the old gate and an ambient
+ADDED_LABEL=reconsider:red-team the two CLI cases failed:
+test_plan_prints_only_step_outputs: FileNotFoundError: reconsider-event.json
+test_publication_retry_repairs_without_reposting: FileNotFoundError: unused-runner-path.json
+Ran 2 tests in 0.503s
+FAILED (failures=2)
+
+After copying the runner event in the trusted workflow, reading the fixed
+filename in Python, and isolating the test label:
+$ ADDED_LABEL=reconsider:red-team python3 -B -m unittest discover -s .github/review
+Ran 111 tests in 5.093s
+OK
+Exit: 0

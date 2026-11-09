@@ -4,6 +4,14 @@ mkdir review-context
 # head_sha is the commit the start job chose and the prompt names,
 # even if the pull request moved since (post then discards the result).
 jq -e --arg h "$HEAD_SHA" --arg b "$BASE_SHA" '.head.sha == $h and .base.sha == $b' "$RUNNER_TEMP/pr-raw.json" > /dev/null
+# Check the actual model input against the trusted review once more.
+if [[ "$(jq -r '.label.name // ""' "$GITHUB_EVENT_PATH")" == "reconsider:$ROLE" ]]; then
+  cp "$GITHUB_EVENT_PATH" reconsider-event.json
+  cp "$RUNNER_TEMP/pr-raw.json" reconsider-pr.json
+  gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
+  python3 -I -B .github/review/review_gate.py verify-response
+  rm reconsider-event.json reconsider-pr.json reviews.json
+fi
 jq --arg h "$HEAD_SHA" '{number, title, body, user: .user.login, labels: [.labels[].name],
      base: .base.ref, head_sha: $h}' "$RUNNER_TEMP/pr-raw.json" > review-context/pr.json
 # The exact diff of the reviewed commit against its merge base.

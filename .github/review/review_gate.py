@@ -13,6 +13,7 @@ GitHub API, so the logic runs the same in tests and in Actions.
 import json
 import os
 import re
+import subprocess
 import sys
 
 REVIEWER = "odbcpp-reviewer[bot]"
@@ -122,6 +123,94 @@ def latest_reviews(reviews, head_sha):
         if role:
             latest[role] = r
     return latest
+
+
+def label_bound_body(event, current):
+    """Reject edits between the label event and any reconsideration stage."""
+    snapshot = event["pull_request"].get("body")
+    return snapshot if isinstance(snapshot, str) and snapshot == current.get("body") else None
+
+
+def strictly_ordered_times(*stamps):
+    """Unknown, ambiguous or simultaneous timestamps cannot establish ordering."""
+    if not all(isinstance(stamp, str) for stamp in stamps):
+        return False
+    try:
+        times = [_time(stamp) for stamp in stamps]
+    except ValueError:
+        return False
+    return all(t.tzinfo is not None for t in times) and all(a < b for a, b in zip(times, times[1:]))
+
+
+def role_verdicts(reviews, role, head):
+    """Count only this reviewer's substantive verdicts for this role and commit."""
+    return [r for r in reviews if (r.get("user") or {}).get("login") == REVIEWER
+            and r.get("commit_id") == head and role_of(r.get("body")) == role
+            and names_commit(r.get("body"), head) and not withheld(r.get("body"))]
+
+
+def submitted_response_unchanged(record):
+    """Read the cited review's current text and edit history in one GitHub response."""
+    node_id = record.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        return False
+    query = """query($id: ID!) {
+      node(id: $id) { id ... on PullRequestReview { body lastEditedAt } }
+    }"""
+    result = subprocess.run(["gh", "api", "graphql", "-f", "query=" + query, "-f", "id=" + node_id],
+                            check=True, capture_output=True)
+    response = json.loads(result.stdout)
+    node = (response.get("data") or {}).get("node")
+    return (not response.get("errors") and isinstance(node, dict) and node.get("id") == node_id
+            and "lastEditedAt" in node and node["lastEditedAt"] is None and node.get("body") == record["body"])
+
+
+def reconsider(role, action, label, head, event_head, reviews, body, snapshot_time):
+    """Allow one additional verdict for a documented, exact-head objection."""
+    if not isinstance(body, str):
+        return False
+    actor = os.environ.get("GITHUB_ACTOR")
+    coordinator = os.environ.get("GITHUB_ACTOR_ID") == "350232297"  # odbcpp-agent[bot]
+    if not coordinator and (not actor or actor != os.environ.get("GITHUB_REPOSITORY_OWNER")):
+        return False
+    if action != "labeled" or label != "reconsider:" + role or head != event_head:
+        return False
+    prior = role_verdicts(reviews, role, head)
+    # Every verdict counts here. A second verdict consumes reconsideration even
+    # when it requests changes again or its approval is later dismissed.
+    if len(prior) != 1 or prior[0].get("state") != "CHANGES_REQUESTED":
+        return False
+    review_id = prior[0].get("id")
+    prefix = f"Review response #{review_id}: "
+    lines = [line for line in body.splitlines()
+             if line.startswith(prefix) and line[len(prefix):].strip()]
+    if not isinstance(review_id, int) or len(lines) != 1:
+        return False
+    # The response is published as a timestamped review. Bind its GitHub ID
+    # and bytes in the label event, so edits or a different review cannot substitute for it.
+    record_prefix = f"Response record #{review_id}: "
+    pointers = [line for line in body.splitlines() if line.startswith(record_prefix)]
+    if len(pointers) != 1:
+        return False
+    # Include the SHA in the review body: GitHub may remap commit_id.
+    for record in reviews:
+        author = record.get("user") or {}
+        record_id = record.get("id")
+        if (type(record_id) is int and pointers[0] == record_prefix + str(record_id)
+                and record.get("state") == "COMMENTED" and record.get("commit_id") == head
+                and str(author.get("id")) == os.environ.get("GITHUB_ACTOR_ID")
+                and record.get("body") == head + "\n" + lines[0]
+                and strictly_ordered_times(prior[0].get("submitted_at"), record.get("submitted_at"),
+                                           snapshot_time)):
+            return submitted_response_unchanged(record)
+    return False
+
+
+def reconsider_snapshot(role, event, current, reviews, head):
+    return current["head"]["sha"] == head and reconsider(
+        role, event["action"], (event.get("label") or {}).get("name"), head,
+        event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current),
+        event["pull_request"].get("updated_at"))
 
 
 def required_roles(labels, files=None):
@@ -259,18 +348,57 @@ def _load(name, default):
 def main(command):
     """Prints key=value step outputs on stdout (the workflow appends them to
     GITHUB_OUTPUT) and a human summary on stderr."""
+    if command == "count-role-verdicts":
+        with open("reviews.json") as stream:
+            reviews = json.load(stream)
+        print(len(role_verdicts(reviews, os.environ["ROLE"], os.environ["HEAD_SHA"])))
+        return
     labels = _load("labels.json", [])
     events = _load("events.json", [])
     reviews = _load("reviews.json", [])
     files = _load("files.json", [])
     runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
+    if command == "publication":
+        role = os.environ["ROLE"]
+        with open("reviews.json") as stream:
+            history = json.load(stream)
+        with open("review.json") as stream:
+            prepared = json.load(stream)
+        # The prepared body ends with this workflow run's trusted identifier.
+        if any((r.get("user") or {}).get("login") == REVIEWER and r.get("commit_id") == head
+               and r.get("body") == prepared["body"] for r in history):
+            print("recover")
+            return
+        with open("reconsider-event.json") as stream:
+            event = json.load(stream)
+        if (event.get("label") or {}).get("name") == "reconsider:" + role:
+            with open("reconsider-pr.json") as stream:
+                current = json.load(stream)
+            allowed = reconsider_snapshot(role, event, current, history, head)
+        else:
+            allowed = not role_verdicts(history, role, head)
+        print("publish" if allowed else "superseded")
+        return
+    if command in ("reconsider", "verify-response"):
+        with open("reconsider-event.json") as stream:
+            event = json.load(stream)
+        with open("reconsider-pr.json") as stream:
+            current = json.load(stream)
+        allowed = reconsider_snapshot(os.environ["ROLE"], event, current, reviews, head)
+        if command == "verify-response":
+            if not allowed:
+                raise SystemExit("Reconsideration response no longer matches the trusted review")
+            return
+        print("true" if allowed and not over_budget(
+            runs, os.environ["ROLE"], _time(os.environ["REVIEW_TIME"])) else "false")
+        return
     if command == "prepare":
         review, labels, held = prepare_review(os.environ.get("RESULT", ""), os.environ["ROLE"], head,
                                               os.environ.get("RUN_URL", ""))
         provider = os.environ["REVIEW_PROVIDER"]
         attribution = {"claude": "Claude / claude-opus-5-5", "openai": "OpenAI / gpt-5.4-mini-2026-03-17"}
-        review["body"] += "\n\nReviewer model: " + attribution[provider]
+        review["body"] += "\n\nReviewer model: " + attribution[provider] + "\nReview run: " + os.environ["RUN_URL"]
         json.dump(review, open("review.json", "w"))
         json.dump({"labels": labels}, open("labels-to-add.json", "w"))
         open("withheld", "w").write("1" if held else "")
@@ -279,6 +407,16 @@ def main(command):
     if command == "plan":
         correctness, red_team, add = plan(os.environ["EVENT_ACTION"], os.environ.get("ADDED_LABEL", ""),
                                           labels, files, events, reviews, head, runs=runs)
+        if os.environ.get("ADDED_LABEL", "").startswith("reconsider:"):
+            with open("reconsider-event.json") as stream:
+                event = json.load(stream)
+            with open("reconsider-pr.json") as stream:
+                current = json.load(stream)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            correctness, red_team = [
+                reconsider_snapshot(role, event, current, reviews, head)
+                and not over_budget(runs, role, now) for role in ("correctness", "red-team")]
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")
         print(f"files={len(files)} labels={sorted(labels)} add={add} "

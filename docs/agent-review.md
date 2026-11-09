@@ -57,3 +57,26 @@ Each provider first creates an in-progress receipt. An interrupted test or
 failed publication therefore leaves it disabled. Start a fresh canary dispatch
 for recovery. Reviewers recheck the receipt before calling the provider and
 before publishing its verdict.
+
+## Correct evidence on an unchanged head
+
+After a role requests changes, the repository owner or the coordinator App (GitHub bot user ID
+350232297, currently `odbcpp-agent[bot]`) can
+request one additional verdict from that role on that commit.
+
+1. **Publish the response** by submitting a GitHub **Comment** review on the blocked commit. Put the full head SHA on line one and `Review response #123: <correction and evidence>` on line two, replacing 123 with the blocking review ID. Submit the final response text in that review. The workflow checks the review body and edit metadata together at admission, model preparation and publication. If you need to correct the text, submit a fresh Comment review and reference its ID. The submitting account must be the one that will apply the label. GitHub's response review submission time must be strictly later than the objection.
+2. Copy the response's second line into the PR description and add `Response record #123: 321` on a separate line, replacing 321 with the GitHub-generated ID of the **submitted response review**. The description is a copy for the reviewer. The submitted review is the dated record of publication.
+3. Apply `reconsider:correctness` or `reconsider:red-team`. Eligibility requires both the referenced record and its exact response text in the immutable label-event payload. The submitted response must strictly predate the PR's `updated_at` in that payload. This is a conservative cutoff: queue delays cannot admit a response published later. If timestamps coincide at GitHub’s one-second precision, update the description with the response reference in a later second, then reapply the label.
+
+Create the label if necessary. Removing and reapplying a label after a
+second verdict does not grant another review. A new commit uses the normal
+review process. Daily budgets and provider activation still apply. The
+original objection remains visible and blocks merge until the role approves.
+
+OpenAI records a separate single-use reservation for an authorized
+reconsideration. Both reservations are scoped to the same role, PR and commit.
+The workflow applies required risk labels before posting the verdict. A failed
+label write keeps the prior objection in force. If GitHub accepts the verdict
+and the job loses the response or fails updating the check, rerun the failed
+job. It recognizes its published review, reapplies the labels and updates
+the check.

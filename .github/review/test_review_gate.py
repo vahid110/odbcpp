@@ -1,6 +1,10 @@
 """Tests for review_gate: planning, sticky labels and the required check."""
 
+import json
 import os
+from pathlib import Path
+import shutil
+import subprocess
 import sys
 import unittest
 
@@ -37,7 +41,110 @@ def plan_(*args, **kwargs):
     return g.plan(*args, **kwargs)
 
 
+def graphql_reply(record):
+    return {"data": {"node": {"id": record["node_id"], "body": record["body"], "lastEditedAt": None}}}
+
+
+def offline_gate(command):
+    """Run the real gate CLI logic with GitHub's GraphQL response supplied locally."""
+    import runpy
+    from unittest.mock import patch
+
+    def graphql(args, **kwargs):
+        if (args[:4] != ["gh", "api", "graphql", "-f"] or args[-2:] != ["-f", "id=PRR_321"]
+                or "lastEditedAt" not in args[4]):
+            raise AssertionError(f"Unexpected external call: {args!r}")
+        return subprocess.CompletedProcess(args, 0, stdout=Path("graphql.json").read_bytes())
+
+    # The real jobs execute on Ubuntu; keep scalar command substitutions LF-only.
+    sys.stdout.reconfigure(newline="\n")
+    with patch.object(subprocess, "run", side_effect=graphql), patch.object(sys, "argv", [g.__file__, command]):
+        runpy.run_path(g.__file__, run_name="__main__")
+
+
+def run_workflow_shell(root, script, env):
+    # Use Git for Windows Bash explicitly. The system bash.exe can launch WSL.
+    bash = "bash"
+    if os.name == "nt":
+        git = Path(shutil.which("git")).resolve()
+        bash = next(parent / "bin" / "bash.exe" for parent in git.parents if (parent / "bin" / "bash.exe").is_file())
+
+    # A file keeps native Windows command-line quoting away from the shell code.
+    path = root / "step.sh"
+    path.write_bytes(script.encode("utf-8"))
+    return subprocess.run([str(bash), "-eu", "-o", "pipefail", path.name], cwd=root, env=env,
+                          capture_output=True, text=True)
+
+
 class Plan(unittest.TestCase):
+    def test_reconsideration_rejects_changes_after_label_event(self):
+        event = {"pull_request": {"body": "original"}}
+        self.assertEqual(g.label_bound_body(event, {"body": "original"}), "original")
+        self.assertIsNone(g.label_bound_body(event, {"body": "changed"}))
+        self.assertIsNone(g.label_bound_body({"pull_request": {}}, {"body": "original"}))
+
+    def test_reconsider_one_exact_change_request(self):
+        role = "correctness"
+        prior = dict(review(role, "CHANGES_REQUESTED"), id=123)
+        env = {"GITHUB_ACTOR_ID": "350232297", "GITHUB_ACTOR": "odbcpp-agent[bot]", "GITHUB_REPOSITORY_OWNER": "vahid110"}
+        from unittest.mock import patch
+        response = "Review response #123: see the attached live XML."
+        mirror = response + "\nResponse record #123: 321"
+        attestation = {"id": 321, "node_id": "PRR_321", "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+                       "body": HEAD + "\n" + response, "submitted_at": "2026-11-03T10:00:01Z"}
+        def allowed(reviews, body=mirror, event_head=HEAD, attestor=attestation, snapshot="2026-11-03T10:01:00Z"):
+            reviews = reviews + ([attestor] if attestor else [])
+            return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body, snapshot)
+        from subprocess import CompletedProcess
+        def reply(node):
+            return CompletedProcess([], 0, stdout=json.dumps({"data": {"node": node}}))
+
+        node = graphql_reply(attestation)["data"]["node"]
+        with patch.dict(os.environ, env), patch("subprocess.run", return_value=reply(node)) as lookup:
+            self.assertTrue(allowed([prior]))
+            for changed in [dict(node, lastEditedAt="2026-11-03T10:01:30Z"),
+                            dict(node, lastEditedAt="2026-11-03T10:00:30Z"),
+                            dict(node, body="different"), dict(node, id="PRR_other"), None,
+                            {key: value for key, value in node.items() if key != "lastEditedAt"}]:
+                with self.subTest(graphql=changed):
+                    lookup.return_value = reply(changed)
+                    self.assertFalse(allowed([prior]))
+            lookup.return_value = reply(node)
+            self.assertTrue(allowed([prior, review("red-team", "APPROVED")]))
+            withheld = dict(prior, id=122, body=f"[{role} reviewer] verdict withheld at {HEAD}")
+            self.assertTrue(allowed([withheld, prior]))
+            self.assertFalse(allowed([withheld]))
+            self.assertFalse(allowed([withheld, prior, review(role, "APPROVED")]))
+            self.assertFalse(allowed([prior], body=None))
+            self.assertFalse(allowed([prior], snapshot=None))
+            for late in ("2026-11-03T10:01:00Z", "2026-11-03T10:01:01Z"):
+                with self.subTest(late=late):
+                    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=late)))
+            self.assertFalse(allowed([prior], body=response))
+            self.assertFalse(allowed([prior], body=mirror.replace("321", "322")))
+            for stamp in ("2026-11-03T09:59:59Z", prior["submitted_at"], None, "invalid", "2026-11-03T10:01:00"):
+                with self.subTest(stamp=stamp):
+                    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+            self.assertFalse(allowed([dict(prior, submitted_at=None)]))
+            self.assertFalse(allowed([prior], body="No response"))
+            self.assertFalse(allowed([prior], attestor=None))
+            self.assertFalse(allowed([prior], body="Review response #123: substituted"))
+            self.assertFalse(allowed([prior], attestor=dict(attestation, user={"login": "other"})))
+            self.assertFalse(allowed([prior], attestor=dict(attestation, commit_id=OLD)))
+            self.assertFalse(allowed([prior], event_head=OLD))
+            self.assertFalse(allowed([prior, prior]))
+            # Reapplying the same label after the second verdict must fail.
+            for verdict in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                second = dict(review(role, verdict, at="2026-11-03T10:00:02Z"), id=125)
+                with self.subTest(second_verdict=verdict):
+                    self.assertFalse(allowed([prior, second]))
+            self.assertFalse(allowed([dict(prior, state="APPROVED")]))
+            self.assertFalse(allowed([dict(prior, user={"login": "other"})]))
+            self.assertFalse(allowed([dict(prior, commit_id=OLD)]))
+            self.assertFalse(allowed([review("red-team", "CHANGES_REQUESTED")]))
+            with patch.dict(os.environ, {"GITHUB_ACTOR_ID": "123", "GITHUB_ACTOR": "contributor"}):
+                self.assertFalse(allowed([prior]))
+
     def test_documentation_push_runs_correctness_only(self):
         # Changed for #204: a code push now also starts the red-team review
         # (test_code_change_starts_red_team_without_a_label).
@@ -359,6 +466,101 @@ class SplitJobs(unittest.TestCase):
                 self.assertEqual(1, len(names), job[:120])
                 self.assertTrue(names[0].endswith("(${{ inputs.role }})"), names[0])
 
+    def test_openai_initial_and_reconsideration_each_reserve_once(self):
+        import tempfile
+        from textwrap import dedent
+
+        job = self.jobs()["reserve"]
+        script = dedent(job.split("        run: |\n", 1)[1])
+        # Exercise the actual reservation command with a local check-run ledger.
+        fake_api = """
+        gh() {
+          for arg in "$@"; do
+            case "$arg" in
+              check_name=*) grep -Fx "${arg#check_name=}" ledger || true; return ;;
+              name=*) echo "${arg#name=}" >> ledger; cat .github/review/reviewer-app-id; return ;;
+            esac
+          done
+          return 2
+        }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            review_dir = root / ".github" / "review"
+            review_dir.mkdir(parents=True)
+            shutil.copyfile(Path(ROOT) / ".github/review/reviewer-app-id", review_dir / "reviewer-app-id")
+            (root / "ledger").touch()
+            env = dict(os.environ, ROLE="correctness", PR_NUMBER=PR, HEAD_SHA=HEAD,
+                       GITHUB_REPOSITORY="owner/repo", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT="step-output")
+            for reconsider, expected in [("false", 0), ("false", 1), ("true", 0), ("true", 1)]:
+                with self.subTest(reconsider=reconsider, expected=expected):
+                    run = run_workflow_shell(root, fake_api + script, dict(env, RECONSIDER=reconsider))
+                    self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
+            self.assertEqual((root / "ledger").read_text().splitlines(),
+                             [f"OpenAI review attempt (correctness) #{PR}",
+                              f"OpenAI reconsideration attempt (correctness) #{PR}"])
+
+    def test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed(self):
+        import tempfile
+        from textwrap import dedent
+
+        role = "correctness"
+        line = "Review response #123: corrected evidence"
+        current = {"head": {"sha": HEAD}, "body": line + "\nResponse record #123: 321",
+                   "updated_at": "2026-11-03T10:00:02Z"}
+        event = {"action": "labeled", "label": {"name": "reconsider:" + role}, "pull_request": current}
+        prior = dict(review(role, "CHANGES_REQUESTED"), id=123)
+        response = {"id": 321, "node_id": "PRR_321", "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+                    "body": HEAD + "\n" + line, "submitted_at": "2026-11-03T10:00:01Z"}
+        step = self.jobs()["post"].split("      - name: Post the verdict", 1)[1].split("      - name:", 1)[0]
+        script = dedent(step.split("        run: |\n", 1)[1])
+        fake_api = """
+        python3() {
+          if [[ "$*" == *provider_activation.py* ]]; then return 0; fi
+          if [[ "$1 $2 $3" != "-I -B .github/review/review_gate.py" ]]; then return 2; fi
+          "$TEST_PYTHON" -I -B "$TEST_GATE" --offline-gate "$4"
+        }
+        jq() {
+          # Native Windows jq may emit CRLF. The workflow uses Linux jq.
+          command jq "$@" | tr -d '\\r'
+        }
+        gh() {
+          case "$*" in
+            *'--input review.json'*)
+              jq -c '. + {user:{login:"odbcpp-reviewer[bot]"},state:"APPROVED",submitted_at:"2026-11-03T10:01:00Z"}' review.json >> history
+              # Accepted by GitHub, but its response did not reach the client.
+              [[ ! -e applied.json ]] ;;
+            *'--input labels-to-add.json'*)
+              if [[ ! -e fail-once ]]; then touch fail-once; return 1; fi
+              cp labels-to-add.json applied.json ;;
+            *'/reviews --jq .[]'*) cat history ;;
+            *'--jq .head.sha') jq -r .head.sha current.json ;;
+            *"/pulls/$PR_NUMBER") cat current.json ;;
+            *) return 2 ;;
+          esac
+        }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "graphql.json").write_text(json.dumps(graphql_reply(response)))
+            (root / "current.json").write_text(json.dumps(current))
+            (root / "event.json").write_text(json.dumps(event))
+            (root / "history").write_text(json.dumps(prior) + "\n" + json.dumps(response) + "\n")
+            result = {"verdict": "approve", "body": "verified", "labels": ["auth"]}
+            env = dict(os.environ, HEAD_SHA=HEAD, ROLE=role, GITHUB_ACTOR_ID="350232297",
+                       GITHUB_EVENT_PATH="event.json", PR_NUMBER=PR, REPO="owner/repo", RESULT=json.dumps(result),
+                       RUN_URL="https://run/7", REVIEW_PROVIDER="openai",
+                       TEST_PYTHON=Path(sys.executable).as_posix(), TEST_GATE=Path(__file__).resolve().as_posix())
+            for expected, expected_status, expected_count in [(1, "failure", 2), (1, "pending", 3), (0, "pending", 3)]:
+                run = run_workflow_shell(root, fake_api + script, env)
+                self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
+                history = [json.loads(line) for line in (root / "history").read_text().splitlines()]
+                applied = root / "applied.json"
+                labels = json.loads(applied.read_text())["labels"] if applied.exists() else []
+                self.assertEqual(g.status_(history, labels, [], HEAD, files=DOCS)[0], expected_status)
+                self.assertEqual(len(history), expected_count)
+            self.assertEqual(json.loads((root / "applied.json").read_text()), {"labels": ["auth"]})
+
     def test_reviews_are_posted_only_after_validation(self):
         jobs = self.jobs()
         self.assertIn("post", jobs)
@@ -533,17 +735,50 @@ class Command(unittest.TestCase):
             for name, data in files.items():
                 with open(os.path.join(d, name), "w") as f:
                     json.dump(data, f)
-            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_gate.py")
-            out = subprocess.run([sys.executable, "-I", "-B", script, command], cwd=d, capture_output=True,
-                                 text=True, env={"HEAD_SHA": HEAD, "PR_NUMBER": PR, **env}, check=True)
-            status_file = os.path.join(d, "check-status.txt")
-            status = open(status_file).read() if os.path.exists(status_file) else ""
+            script = str(Path(__file__).resolve())
+            out = subprocess.run([sys.executable, "-I", "-B", script, "--offline-gate", command],
+                                 cwd=d, capture_output=True, text=True,
+                                 env={**os.environ, "ADDED_LABEL": "", "HEAD_SHA": HEAD, "PR_NUMBER": PR, **env})
+            self.assertEqual(out.returncode, 0, out.stderr)
+            status_file = Path(d) / "check-status.txt"
+            status = status_file.read_text() if status_file.exists() else ""
             return out.stdout, status
 
     def test_plan_prints_only_step_outputs(self):
         stdout, _ = self.run_gate("plan", {"files.json": ["sdk/src/auth/x.cpp"]}, {"EVENT_ACTION": "opened"})
         # Changed for #204: the code path starts the red-team review at once.
         self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=true", "add_labels=auth"])
+
+    def test_publication_retry_repairs_without_reposting(self):
+        prior = dict(review("correctness", "CHANGES_REQUESTED"), id=123)
+        line = "Review response #123: corrected transcript"
+        attestation = {"id": 321, "node_id": "PRR_321", "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+                       "body": HEAD + "\n" + line, "submitted_at": "2026-11-03T10:00:01Z"}
+        current = {"head": {"sha": HEAD}, "body": line + "\nResponse record #123: 321",
+                   "updated_at": "2026-11-03T10:00:02Z"}
+        event = {"action": "labeled", "label": {"name": "reconsider:correctness"}, "pull_request": current}
+        published = review("correctness", "APPROVED", body_tail="evidence verified\nReview run: https://run")
+        files = {"reconsider-event.json": event, "reconsider-pr.json": current, "review.json": {"body": published["body"]},
+                 "graphql.json": graphql_reply(attestation)}
+        env = {"GITHUB_EVENT_PATH": "unused-runner-path.json", "GITHUB_ACTOR_ID": "350232297", "ROLE": "correctness"}
+        def decision(history, **changes):
+            stdout, _ = self.run_gate("publication", {**files, "reviews.json": history, **changes}, env)
+            return stdout.strip()
+        history = [prior, attestation]
+        self.assertEqual(decision(history), "publish")
+        edited = graphql_reply(attestation)
+        edited["data"]["node"]["lastEditedAt"] = "2026-11-03T10:01:30Z"
+        self.assertEqual(decision(history, **{"graphql.json": edited}), "superseded")
+        self.assertEqual(decision(history, **{"reconsider-pr.json": dict(current, body="edited")}), "superseded")
+        self.assertEqual(decision(history + [published]), "recover")
+        self.assertEqual(decision(history + [dict(published, state="DISMISSED")]), "recover")
+        other = dict(published, body=published["body"].replace("https://run", "https://other-run"))
+        self.assertEqual(decision(history + [other]), "superseded")
+        self.assertEqual(decision(history + [dict(published, user={"login": "contributor"})]), "publish")
+        ordinary = {"reconsider-event.json": {"action": "opened"}}
+        self.assertEqual(decision([], **ordinary), "publish")
+        self.assertEqual(decision([published], **ordinary), "recover")
+        self.assertEqual(decision(history + [other], **ordinary), "superseded")
 
     def test_status_writes_the_check_file(self):
         # Changed for #204: correctness alone suffices only for documentation.
@@ -554,4 +789,7 @@ class Command(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:2] == ["--offline-gate"]:
+        offline_gate(sys.argv[2])
+    else:
+        unittest.main()
