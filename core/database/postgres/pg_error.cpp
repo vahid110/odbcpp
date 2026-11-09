@@ -65,6 +65,9 @@ std::optional<std::string> PgBackendProvider::normalize_error_sqlstate(
   }
   if (server_state == "42701") return std::string{"42S21"};
   if (server_state == "42703") return std::string{"42S22"};
+  // Preserve valid native syntax errors (standard SQL 42601) rather than
+  // collapsing to generic 42000, matching native/Simba vendor diagnostics.
+  if (server_state == "42601") return std::string{"42601"};
   return std::nullopt;
 }
 
