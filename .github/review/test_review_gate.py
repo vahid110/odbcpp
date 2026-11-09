@@ -51,12 +51,16 @@ class Plan(unittest.TestCase):
         from unittest.mock import patch
         response = "Review response #123: see the attached live XML."
         attestation = {"user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
-                       "body": HEAD + "\n" + response}
+                       "body": HEAD + "\n" + response, "submitted_at": "2026-11-03T10:00:01Z"}
         def allowed(reviews, body=response, event_head=HEAD, attestor=attestation):
             reviews = reviews + ([attestor] if attestor else [])
             return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body)
         with patch.dict(os.environ, env):
             self.assertTrue(allowed([prior]))
+            for stamp in ("2026-11-03T09:59:59Z", prior["submitted_at"], None, "invalid", "2026-11-03T10:01:00"):
+                with self.subTest(stamp=stamp):
+                    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+            self.assertFalse(allowed([dict(prior, submitted_at=None)]))
             self.assertFalse(allowed([prior], body="No response"))
             self.assertFalse(allowed([prior], attestor=None))
             self.assertFalse(allowed([prior], body="Review response #123: substituted"))

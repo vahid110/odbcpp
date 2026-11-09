@@ -130,6 +130,19 @@ def label_bound_body(event, current):
     return snapshot if isinstance(snapshot, str) and snapshot == current.get("body") else None
 
 
+def submitted_after(record, objection):
+    """Require unambiguous GitHub submission times for both reviews."""
+    times = [review.get("submitted_at") for review in (record, objection)]
+    if not all(isinstance(stamp, str) for stamp in times):
+        return False
+    try:
+        response_time, objection_time = map(_time, times)
+    except ValueError:
+        return False
+    return (response_time.tzinfo is not None and objection_time.tzinfo is not None
+            and response_time > objection_time)
+
+
 def reconsider(role, action, label, head, event_head, reviews, body):
     """Allow one additional verdict for a documented, exact-head objection."""
     actor = os.environ.get("GITHUB_ACTOR")
@@ -155,7 +168,8 @@ def reconsider(role, action, label, head, event_head, reviews, body):
         author = record.get("user") or {}
         if (record.get("state") == "COMMENTED" and record.get("commit_id") == head
                 and str(author.get("id")) == os.environ.get("GITHUB_ACTOR_ID")
-                and record.get("body") == head + "\n" + lines[0]):
+                and record.get("body") == head + "\n" + lines[0]
+                and submitted_after(record, prior[0])):
             return True
     return False
 
