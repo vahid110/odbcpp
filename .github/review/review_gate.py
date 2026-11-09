@@ -189,6 +189,13 @@ def reconsider(role, action, label, head, event_head, reviews, body, snapshot_ti
     return False
 
 
+def reconsider_snapshot(role, event, current, reviews, head):
+    return current["head"]["sha"] == head and reconsider(
+        role, event["action"], (event.get("label") or {}).get("name"), head,
+        event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current),
+        event["pull_request"].get("updated_at"))
+
+
 def required_roles(labels, files=None):
     """The roles that must approve. <files> None means unknown: fail closed."""
     red = bool(set(labels) & set(HIGH_RISK)) or red_team_by_path(files or [])
@@ -335,14 +342,33 @@ def main(command):
     files = _load("files.json", [])
     runs = _load("runs.json", [])
     head = os.environ["HEAD_SHA"]
+    if command == "publication":
+        role = os.environ["ROLE"]
+        with open("reviews.json") as stream:
+            history = json.load(stream)
+        with open("review.json") as stream:
+            prepared = json.load(stream)
+        # The prepared body ends with this workflow run's trusted identifier.
+        if any((r.get("user") or {}).get("login") == REVIEWER and r.get("commit_id") == head
+               and r.get("body") == prepared["body"] for r in history):
+            print("recover")
+            return
+        with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+            event = json.load(stream)
+        if (event.get("label") or {}).get("name") == "reconsider:" + role:
+            with open("reconsider-pr.json") as stream:
+                current = json.load(stream)
+            allowed = reconsider_snapshot(role, event, current, history, head)
+        else:
+            allowed = not role_verdicts(history, role, head)
+        print("publish" if allowed else "superseded")
+        return
     if command in ("reconsider", "verify-response"):
         with open("reconsider-event.json") as stream:
             event = json.load(stream)
         with open("reconsider-pr.json") as stream:
             current = json.load(stream)
-        allowed = reconsider(os.environ["ROLE"], event["action"], (event.get("label") or {}).get("name"),
-                             head, event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current),
-                             event["pull_request"].get("updated_at"))
+        allowed = reconsider_snapshot(os.environ["ROLE"], event, current, reviews, head)
         if command == "verify-response":
             if not allowed:
                 raise SystemExit("Reconsideration response no longer matches the trusted review")
@@ -355,7 +381,7 @@ def main(command):
                                               os.environ.get("RUN_URL", ""))
         provider = os.environ["REVIEW_PROVIDER"]
         attribution = {"claude": "Claude / claude-opus-5-5", "openai": "OpenAI / gpt-5.4-mini-2026-03-17"}
-        review["body"] += "\n\nReviewer model: " + attribution[provider]
+        review["body"] += "\n\nReviewer model: " + attribution[provider] + "\nReview run: " + os.environ["RUN_URL"]
         json.dump(review, open("review.json", "w"))
         json.dump({"labels": labels}, open("labels-to-add.json", "w"))
         open("withheld", "w").write("1" if held else "")
@@ -372,10 +398,7 @@ def main(command):
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             correctness, red_team = [
-                current["head"]["sha"] == head and reconsider(
-                    role, event["action"], event["label"]["name"], head,
-                    event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current),
-                    event["pull_request"].get("updated_at"))
+                reconsider_snapshot(role, event, current, reviews, head)
                 and not over_budget(runs, role, now) for role in ("correctness", "red-team")]
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")

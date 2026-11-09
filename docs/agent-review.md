@@ -72,3 +72,9 @@ Create the label if necessary. Removing and reapplying a label after a
 second verdict does not grant another review. A new commit uses the normal
 review process. Daily budgets and provider activation still apply. The
 original objection remains visible and blocks merge until the role approves.
+
+OpenAI records a separate single-use reservation for an authorized
+reconsideration. Both reservations are scoped to the same role, PR and commit.
+If GitHub accepts a verdict and a later label or check update fails, rerun the
+failed job. It recognizes the published review from that workflow run and
+repairs the remaining updates without submitting the verdict again.

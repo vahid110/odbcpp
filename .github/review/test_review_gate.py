@@ -414,6 +414,94 @@ class SplitJobs(unittest.TestCase):
                 self.assertEqual(1, len(names), job[:120])
                 self.assertTrue(names[0].endswith("(${{ inputs.role }})"), names[0])
 
+    def test_openai_initial_and_reconsideration_each_reserve_once(self):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from textwrap import dedent
+
+        job = self.jobs()["reserve"]
+        script = dedent(job.split("        run: |\n", 1)[1])
+        # Exercise the actual reservation command with a local check-run ledger.
+        fake_api = """
+        gh() {
+          for arg in "$@"; do
+            case "$arg" in
+              check_name=*) grep -Fx "${arg#check_name=}" ledger || true; return ;;
+              name=*) echo "${arg#name=}" >> ledger; cat .github/review/reviewer-app-id; return ;;
+            esac
+          done
+          return 2
+        }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").symlink_to(Path(ROOT) / ".github")
+            (root / "ledger").touch()
+            env = dict(os.environ, ROLE="correctness", PR_NUMBER=PR, HEAD_SHA=HEAD,
+                       GITHUB_REPOSITORY="owner/repo", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT=os.devnull)
+            for reconsider, expected in [("false", 0), ("false", 1), ("true", 0), ("true", 1)]:
+                with self.subTest(reconsider=reconsider, expected=expected):
+                    run = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", fake_api + script],
+                                         cwd=root, env=dict(env, RECONSIDER=reconsider), capture_output=True)
+                    self.assertEqual(run.returncode, expected, run.stderr)
+            self.assertEqual((root / "ledger").read_text().splitlines(),
+                             [f"OpenAI review attempt (correctness) #{PR}",
+                              f"OpenAI reconsideration attempt (correctness) #{PR}"])
+
+    def test_failed_label_post_reruns_only_side_effects(self):
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from textwrap import dedent
+
+        role = "correctness"
+        line = "Review response #123: corrected evidence"
+        current = {"head": {"sha": HEAD}, "body": line + "\nResponse record #123: 321",
+                   "updated_at": "2026-11-03T10:00:02Z"}
+        event = {"action": "labeled", "label": {"name": "reconsider:" + role}, "pull_request": current}
+        prior = dict(review(role, "CHANGES_REQUESTED"), id=123)
+        response = {"id": 321, "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+                    "body": HEAD + "\n" + line, "submitted_at": "2026-11-03T10:00:01Z"}
+        step = self.jobs()["post"].split("      - name: Post the verdict", 1)[1].split("      - name:", 1)[0]
+        script = dedent(step.split("        run: |\n", 1)[1])
+        fake_api = """
+        python3() {
+          if [[ "$*" == *provider_activation.py* ]]; then return 0; fi
+          command python3 "$@"
+        }
+        gh() {
+          case "$*" in
+            *'--input review.json'*)
+              jq -c '. + {user:{login:"odbcpp-reviewer[bot]"},state:"APPROVED"}' review.json >> history ;;
+            *'--input labels-to-add.json'*)
+              if [[ ! -e fail-once ]]; then touch fail-once; return 1; fi
+              cp labels-to-add.json applied.json ;;
+            *'/reviews --jq .[]'*) cat history ;;
+            *'--jq .head.sha') jq -r .head.sha current.json ;;
+            *"/pulls/$PR_NUMBER") cat current.json ;;
+            *) return 2 ;;
+          esac
+        }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").symlink_to(Path(ROOT) / ".github")
+            (root / "current.json").write_text(json.dumps(current))
+            (root / "event.json").write_text(json.dumps(event))
+            (root / "history").write_text(json.dumps(prior) + "\n" + json.dumps(response) + "\n")
+            result = {"verdict": "approve", "body": "verified", "labels": ["auth"]}
+            env = dict(os.environ, HEAD_SHA=HEAD, ROLE=role, GITHUB_ACTOR_ID="350232297",
+                       GITHUB_EVENT_PATH="event.json", PR_NUMBER=PR, REPO="owner/repo", RESULT=json.dumps(result),
+                       RUN_URL="https://run/7", REVIEW_PROVIDER="openai")
+            for expected in [1, 0]:
+                run = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", fake_api + script],
+                                     cwd=root, env=env, capture_output=True)
+                self.assertEqual(run.returncode, expected, run.stderr)
+            self.assertEqual(len((root / "history").read_text().splitlines()), 3)
+            self.assertEqual(json.loads((root / "applied.json").read_text()), {"labels": ["auth"]})
+
     def test_reviews_are_posted_only_after_validation(self):
         jobs = self.jobs()
         self.assertIn("post", jobs)
@@ -599,6 +687,33 @@ class Command(unittest.TestCase):
         stdout, _ = self.run_gate("plan", {"files.json": ["sdk/src/auth/x.cpp"]}, {"EVENT_ACTION": "opened"})
         # Changed for #204: the code path starts the red-team review at once.
         self.assertEqual(stdout.splitlines(), ["correctness=true", "red_team=true", "add_labels=auth"])
+
+    def test_publication_retry_repairs_without_reposting(self):
+        prior = dict(review("correctness", "CHANGES_REQUESTED"), id=123)
+        line = "Review response #123: corrected transcript"
+        attestation = {"id": 321, "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+                       "body": HEAD + "\n" + line, "submitted_at": "2026-11-03T10:00:01Z"}
+        current = {"head": {"sha": HEAD}, "body": line + "\nResponse record #123: 321",
+                   "updated_at": "2026-11-03T10:00:02Z"}
+        event = {"action": "labeled", "label": {"name": "reconsider:correctness"}, "pull_request": current}
+        published = review("correctness", "APPROVED", body_tail="evidence verified\nReview run: https://run")
+        files = {"event.json": event, "reconsider-pr.json": current, "review.json": {"body": published["body"]}}
+        env = {"GITHUB_EVENT_PATH": "event.json", "GITHUB_ACTOR_ID": "350232297", "ROLE": "correctness"}
+        def decision(history, **changes):
+            stdout, _ = self.run_gate("publication", {**files, "reviews.json": history, **changes}, env)
+            return stdout.strip()
+        history = [prior, attestation]
+        self.assertEqual(decision(history), "publish")
+        self.assertEqual(decision(history, **{"reconsider-pr.json": dict(current, body="edited")}), "superseded")
+        self.assertEqual(decision(history + [published]), "recover")
+        self.assertEqual(decision(history + [dict(published, state="DISMISSED")]), "recover")
+        other = dict(published, body=published["body"].replace("https://run", "https://other-run"))
+        self.assertEqual(decision(history + [other]), "superseded")
+        self.assertEqual(decision(history + [dict(published, user={"login": "contributor"})]), "publish")
+        ordinary = {"event.json": {"action": "opened"}}
+        self.assertEqual(decision([], **ordinary), "publish")
+        self.assertEqual(decision([published], **ordinary), "recover")
+        self.assertEqual(decision(history + [other], **ordinary), "superseded")
 
     def test_status_writes_the_check_file(self):
         # Changed for #204: correctness alone suffices only for documentation.

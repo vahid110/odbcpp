@@ -155,3 +155,29 @@ Ran 108 tests in 0.696s
 
 OK
 Exit: 0
+
+Initial and reconsideration OpenAI reservations, and publication recovery:
+Before: actual reserve/post shell steps from 1911b902, current regression tests.
+The tests substitute a local GitHub API ledger. The post test fails the first
+label write after the review is accepted, then reruns the same publication step.
+$ python3 -B -m unittest test_review_gate.SplitJobs.test_openai_initial_and_reconsideration_each_reserve_once test_review_gate.SplitJobs.test_failed_label_post_reruns_only_side_effects
+FAIL: test_openai_initial_and_reconsideration_each_reserve_once (reconsider='true', expected=0)
+AssertionError: 1 != 0 : b''
+FAIL: test_openai_initial_and_reconsideration_each_reserve_once
+Second list contains 1 additional elements.
+First extra element 1:
+'OpenAI reconsideration attempt (correctness) #7'
+FAIL: test_failed_label_post_reruns_only_side_effects
+AssertionError: 4 != 3
+Ran 2 tests in 0.187s
+FAILED (failures=3)
+Exit: 1
+
+After: both regression tests, CLI publication cases and all existing controls.
+$ python3 -B -m unittest discover -s .github/review
+Ran 111 tests in 1.624s
+OK
+Exit: 0
+The initial and reconsideration reservations each succeeded once and rejected
+a repeat. Publication retry left the objection, response record and one new
+verdict in the ledger, and applied the missing auth label. Offline only.

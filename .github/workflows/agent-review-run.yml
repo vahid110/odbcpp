@@ -59,6 +59,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     outputs:
       skip: ${{ steps.head.outputs.skip }}
+      reconsider: ${{ steps.head.outputs.reconsider }}
       head_sha: ${{ steps.head.outputs.head_sha }}
       base_sha: ${{ steps.head.outputs.base_sha }}
     steps:
@@ -99,6 +100,7 @@ jobs:
           if [[ "$reconsider" != true ]] && jq -e '(.label.name // "") | startswith("reconsider:")' "$GITHUB_EVENT_PATH" >/dev/null; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "reconsider=$reconsider" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head" >> "$GITHUB_OUTPUT"
           echo "base_sha=$(jq -r .base.sha "$raw")" >> "$GITHUB_OUTPUT"
 
@@ -322,9 +324,13 @@ jobs:
           HEAD_SHA: ${{ needs.start.outputs.head_sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ROLE: ${{ inputs.role }}
+          RECONSIDER: ${{ needs.start.outputs.reconsider }}
         run: |
           app=$(cat .github/review/reviewer-app-id)
           name="OpenAI review attempt ($ROLE) #$PR_NUMBER"
+          if [[ "$RECONSIDER" == true ]]; then
+            name="OpenAI reconsideration attempt ($ROLE) #$PR_NUMBER"
+          fi
           endpoint="repos/$GITHUB_REPOSITORY"
           gh api --paginate --method GET "$endpoint/commits/$HEAD_SHA/check-runs" -f filter=all \
             -f "app_id=$app" -f "check_name=$name" --jq '.check_runs[].id' > attempts
@@ -446,7 +452,8 @@ jobs:
           REVIEW_PROVIDER: ${{ needs.fallback.result == 'success' && 'openai' || 'claude' }}
         run: |
           python3 -I -B .github/review/provider_activation.py "$REVIEW_PROVIDER"
-          current=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > reconsider-pr.json
+          current=$(jq -r .head.sha reconsider-pr.json)
           if [[ "$current" != "$HEAD_SHA" ]]; then
             echo "PR moved from $HEAD_SHA to $current; a queued run reviews it."
             exit 0
@@ -454,7 +461,15 @@ jobs:
           # Validates the untrusted output and writes review.json,
           # labels-to-add.json and withheld (review_gate.prepare_review).
           python3 -I -B .github/review/review_gate.py prepare
-          gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
+          disposition=$(python3 -I -B .github/review/review_gate.py publication)
+          case "$disposition" in
+            publish)
+              gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null ;;
+            recover) echo "Review already posted by this run. Repairing labels and check." ;;
+            superseded) echo "Another verdict already consumed this review."; exit 0 ;;
+            *) exit 1 ;;
+          esac
           # The reviewer, not the author, adds high-risk labels; a new one
           # starts the red-team review.
           if [[ "$(jq '.labels | length' labels-to-add.json)" != 0 ]]; then
