@@ -241,6 +241,8 @@ run_windows_fixture(pe_path_bearing
 function(run_darwin_fixture name linkage output resolution expect_success static_map_mode)
   set(_fixture_dir "${BINARY_DIR}/crypto-origin-darwin-${name}")
   file(MAKE_DIRECTORY "${_fixture_dir}")
+  set(_artifact "${_fixture_dir}/libodbcpp.dylib")
+  file(WRITE "${_artifact}" "fixture")
   set(_ssl "${_fixture_dir}/libssl.a")
   set(_crypto "${_fixture_dir}/libcrypto.a")
   file(WRITE "${_ssl}" "ssl")
@@ -261,9 +263,9 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n"
       "[  2] ${_crypto}(crypto_member.o)\n")
     if(static_map_mode STREQUAL "RELATIVE")
-      file(RELATIVE_PATH _relative_root "${BINARY_DIR}" "${_fixture_dir}")
+      file(RELATIVE_PATH _relative_artifact "${_fixture_dir}" "${_artifact}")
       file(READ "${_static_map}" _map_text)
-      string(REPLACE "${_fixture_dir}/" "${_relative_root}/" _map_text "${_map_text}")
+      string(REPLACE "${_artifact}" "${_relative_artifact}" _map_text "${_map_text}")
       file(WRITE "${_static_map}" "${_map_text}")
     endif()
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
@@ -277,9 +279,33 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "WRONG_OUTPUT")
+    set(_other_artifact "${_fixture_dir}/another-driver.dylib")
+    file(WRITE "${_other_artifact}" "other")
     set(_static_map "${_fixture_dir}/static-link.map")
     file(WRITE "${_static_map}"
-      "# Path: ${_fixture_dir}/another-driver.dylib\n"
+      "# Path: ${_other_artifact}\n"
+      "# Arch: arm64\n"
+      "# Object files:\n"
+      "[  0] linker synthesized\n"
+      "[  1] ${_ssl}(ssl_member.o)\n"
+      "[  2] ${_crypto}(crypto_member.o)\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "NONEXISTENT_ARTIFACT")
+    set(_static_map "${_fixture_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "# Path: ${_fixture_dir}/nonexistent.dylib\n"
+      "# Arch: arm64\n"
+      "# Object files:\n"
+      "[  0] linker synthesized\n"
+      "[  1] ${_ssl}(ssl_member.o)\n"
+      "[  2] ${_crypto}(crypto_member.o)\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "FOREIGN_MAP")
+    set(_foreign_dir "${BINARY_DIR}/crypto-origin-darwin-foreign")
+    file(MAKE_DIRECTORY "${_foreign_dir}")
+    set(_static_map "${_foreign_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "# Path: ${_artifact}\n"
       "# Arch: arm64\n"
       "# Object files:\n"
       "[  0] linker synthesized\n"
@@ -349,6 +375,10 @@ run_darwin_fixture(darwin_static_incomplete_map BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false SSL_ONLY)
 run_darwin_fixture(darwin_static_wrong_output BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false WRONG_OUTPUT)
+run_darwin_fixture(darwin_static_nonexistent_artifact BUNDLED_STATIC
+  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NONEXISTENT_ARTIFACT)
+run_darwin_fixture(darwin_static_foreign_map BUNDLED_STATIC
+  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false FOREIGN_MAP)
 run_darwin_fixture(darwin_static_no_path BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NO_PATH)
 run_darwin_fixture(darwin_static_relative BUNDLED_STATIC
@@ -358,6 +388,8 @@ run_darwin_fixture(darwin_static_dynamic_leak BUNDLED_STATIC
 
 set(_unsupported_fixture_dir "${BINARY_DIR}/crypto-origin-darwin-unsupported-linker")
 file(MAKE_DIRECTORY "${_unsupported_fixture_dir}")
+set(_unsupported_artifact "${_unsupported_fixture_dir}/libodbcpp.dylib")
+file(WRITE "${_unsupported_artifact}" "fixture")
 set(_unsupported_ssl "${_unsupported_fixture_dir}/libssl.a")
 set(_unsupported_crypto "${_unsupported_fixture_dir}/libcrypto.a")
 file(WRITE "${_unsupported_ssl}" "ssl")
@@ -369,11 +401,11 @@ file(WRITE "${_unsupported_manifest}"
   "\"sslLinkInput\":\"${_unsupported_ssl}\",\"cryptoLinkInput\":\"${_unsupported_crypto}\"}\n")
 set(_unsupported_map "${_unsupported_fixture_dir}/static-link.map")
 file(WRITE "${_unsupported_map}"
-  "# Path: ${_artifact}\n# Arch: arm64\n# Object files:\n"
+  "# Path: ${_unsupported_artifact}\n# Arch: arm64\n# Object files:\n"
   "[  1] ${_unsupported_ssl}(ssl_member.o)\n[  2] ${_unsupported_crypto}(crypto_member.o)\n")
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
-          -DARTIFACT=${_artifact}
+          -DARTIFACT=${_unsupported_artifact}
           -DEXPECTED_PROVIDER=OPENSSL
           -DEXPECTED_LINKAGE=BUNDLED_STATIC
           -DPLATFORM=Darwin
@@ -389,7 +421,7 @@ endif()
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
-          -DARTIFACT=${_artifact}
+          -DARTIFACT=${_unsupported_artifact}
           -DEXPECTED_PROVIDER=OPENSSL
           -DEXPECTED_LINKAGE=BUNDLED_STATIC
           -DPLATFORM=Darwin
@@ -405,7 +437,7 @@ endif()
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
-          -DARTIFACT=${_artifact}
+          -DARTIFACT=${_unsupported_artifact}
           -DEXPECTED_PROVIDER=OPENSSL
           -DEXPECTED_LINKAGE=BUNDLED_STATIC
           -DPLATFORM=Darwin
@@ -419,15 +451,33 @@ if(_darwin_gnu_mismatch EQUAL 0)
   message(FATAL_ERROR "Bundled-static origin accepted GNU ld on Darwin")
 endif()
 
+set(_linux_mismatch_dir "${BINARY_DIR}/crypto-origin-linux-mismatch")
+file(MAKE_DIRECTORY "${_linux_mismatch_dir}")
+set(_linux_artifact "${_linux_mismatch_dir}/libodbcpp.so")
+file(WRITE "${_linux_artifact}" "fixture")
+set(_linux_ssl "${_linux_mismatch_dir}/libssl.a")
+set(_linux_crypto "${_linux_mismatch_dir}/libcrypto.a")
+file(WRITE "${_linux_ssl}" "ssl")
+file(WRITE "${_linux_crypto}" "crypto")
+set(_linux_manifest "${_linux_mismatch_dir}/manifest.json")
+file(WRITE "${_linux_manifest}"
+  "{\"provider\":\"OPENSSL\",\"requestedLinkage\":\"BUNDLED_STATIC\","
+  "\"dependencyRoot\":\"${_linux_mismatch_dir}\","
+  "\"sslLinkInput\":\"${_linux_ssl}\",\"cryptoLinkInput\":\"${_linux_crypto}\"}\n")
+set(_linux_map "${_linux_mismatch_dir}/static-link.map")
+file(WRITE "${_linux_map}"
+  "# Path: ${_linux_artifact}\n# Arch: arm64\n# Object files:\n"
+  "[  1] ${_linux_ssl}(ssl_member.o)\n[  2] ${_linux_crypto}(crypto_member.o)\n")
+
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
-          -DARTIFACT=${_artifact}
+          -DARTIFACT=${_linux_artifact}
           -DEXPECTED_PROVIDER=OPENSSL
           -DEXPECTED_LINKAGE=BUNDLED_STATIC
           -DPLATFORM=Linux
           "-DINSPECTION_OUTPUT=NEEDED libc.so.6"
-          -DCONFIG_MANIFEST=${_unsupported_manifest}
-          -DSTATIC_LINK_MAP=${_unsupported_map}
+          -DCONFIG_MANIFEST=${_linux_manifest}
+          -DSTATIC_LINK_MAP=${_linux_map}
           "-DSTATIC_LINKER_IDENTITY=@(#)PROGRAM:ld PROJECT:ld-1167.5"
           -P "${_script}"
   RESULT_VARIABLE _linux_apple_mismatch)

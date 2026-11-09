@@ -179,12 +179,12 @@ elseif(APPLE)
       ERROR_STRIP_TRAILING_WHITESPACE)
     set(_combined_linker_identity "${_static_linker_output}${_static_linker_error}")
     if(NOT _static_linker_result EQUAL 0 OR
-       NOT _combined_linker_identity MATCHES "PROGRAM:ld")
+       NOT _combined_linker_identity MATCHES "PROGRAM:ld PROJECT:ld-")
       message(FATAL_ERROR
         "macOS BUNDLED_STATIC evidence requires Apple ld: "
         "${_static_linker_error}${_static_linker_output}")
     endif()
-    string(REGEX MATCH "(@\\(#\\))?PROGRAM:ld[^\r\n]*"
+    string(REGEX MATCH "(@\\(#\\))?PROGRAM:ld PROJECT:ld-[^\r\n]+"
       ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY
       "${_combined_linker_identity}")
     set(ODBCPP_CRYPTO_STATIC_LINK_MAP
