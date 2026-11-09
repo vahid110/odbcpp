@@ -386,3 +386,51 @@ execute_process(
 if(_unsupported_linker_result EQUAL 0)
   message(FATAL_ERROR "Bundled-static origin accepted an unsupported linker identity")
 endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}"
+          -DARTIFACT=${_artifact}
+          -DEXPECTED_PROVIDER=OPENSSL
+          -DEXPECTED_LINKAGE=BUNDLED_STATIC
+          -DPLATFORM=Darwin
+          "-DINSPECTION_OUTPUT=/usr/lib/libSystem.B.dylib"
+          -DCONFIG_MANIFEST=${_unsupported_manifest}
+          -DSTATIC_LINK_MAP=${_unsupported_map}
+          "-DSTATIC_LINKER_IDENTITY=custom-ld (PROGRAM:ld compatible)"
+          -P "${_script}"
+  RESULT_VARIABLE _substring_linker_result)
+if(_substring_linker_result EQUAL 0)
+  message(FATAL_ERROR "Bundled-static origin accepted an unanchored linker identity substring")
+endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}"
+          -DARTIFACT=${_artifact}
+          -DEXPECTED_PROVIDER=OPENSSL
+          -DEXPECTED_LINKAGE=BUNDLED_STATIC
+          -DPLATFORM=Darwin
+          "-DINSPECTION_OUTPUT=/usr/lib/libSystem.B.dylib"
+          -DCONFIG_MANIFEST=${_unsupported_manifest}
+          -DSTATIC_LINK_MAP=${_unsupported_map}
+          "-DSTATIC_LINKER_IDENTITY=GNU ld (fixture) 2.42"
+          -P "${_script}"
+  RESULT_VARIABLE _darwin_gnu_mismatch)
+if(_darwin_gnu_mismatch EQUAL 0)
+  message(FATAL_ERROR "Bundled-static origin accepted GNU ld on Darwin")
+endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}"
+          -DARTIFACT=${_artifact}
+          -DEXPECTED_PROVIDER=OPENSSL
+          -DEXPECTED_LINKAGE=BUNDLED_STATIC
+          -DPLATFORM=Linux
+          "-DINSPECTION_OUTPUT=NEEDED libc.so.6"
+          -DCONFIG_MANIFEST=${_unsupported_manifest}
+          -DSTATIC_LINK_MAP=${_unsupported_map}
+          "-DSTATIC_LINKER_IDENTITY=@(#)PROGRAM:ld PROJECT:ld-1167.5"
+          -P "${_script}"
+  RESULT_VARIABLE _linux_apple_mismatch)
+if(_linux_apple_mismatch EQUAL 0)
+  message(FATAL_ERROR "Bundled-static origin accepted Apple ld on Linux")
+endif()
