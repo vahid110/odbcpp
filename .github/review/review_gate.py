@@ -130,21 +130,21 @@ def label_bound_body(event, current):
     return snapshot if isinstance(snapshot, str) and snapshot == current.get("body") else None
 
 
-def submitted_after(record, objection):
-    """Require unambiguous GitHub submission times for both reviews."""
-    times = [review.get("submitted_at") for review in (record, objection)]
-    if not all(isinstance(stamp, str) for stamp in times):
+def strictly_ordered_times(*stamps):
+    """Unknown, ambiguous or simultaneous timestamps cannot establish ordering."""
+    if not all(isinstance(stamp, str) for stamp in stamps):
         return False
     try:
-        response_time, objection_time = map(_time, times)
+        times = [_time(stamp) for stamp in stamps]
     except ValueError:
         return False
-    return (response_time.tzinfo is not None and objection_time.tzinfo is not None
-            and response_time > objection_time)
+    return all(t.tzinfo is not None for t in times) and all(a < b for a, b in zip(times, times[1:]))
 
 
-def reconsider(role, action, label, head, event_head, reviews, body):
+def reconsider(role, action, label, head, event_head, reviews, body, snapshot_time):
     """Allow one additional verdict for a documented, exact-head objection."""
+    if not isinstance(body, str):
+        return False
     actor = os.environ.get("GITHUB_ACTOR")
     coordinator = os.environ.get("GITHUB_ACTOR_ID") == "350232297"  # odbcpp-agent[bot]
     if not coordinator and (not actor or actor != os.environ.get("GITHUB_REPOSITORY_OWNER")):
@@ -160,7 +160,7 @@ def reconsider(role, action, label, head, event_head, reviews, body):
         return False
     review_id = prior[0].get("id")
     prefix = f"Review response #{review_id}: "
-    lines = [line for line in (body or "").splitlines()
+    lines = [line for line in body.splitlines()
              if line.startswith(prefix) and line[len(prefix):].strip()]
     if not isinstance(review_id, int) or len(lines) != 1:
         return False
@@ -178,7 +178,8 @@ def reconsider(role, action, label, head, event_head, reviews, body):
                 and record.get("state") == "COMMENTED" and record.get("commit_id") == head
                 and str(author.get("id")) == os.environ.get("GITHUB_ACTOR_ID")
                 and record.get("body") == head + "\n" + lines[0]
-                and submitted_after(record, prior[0])):
+                and strictly_ordered_times(prior[0].get("submitted_at"), record.get("submitted_at"),
+                                           snapshot_time)):
             return True
     return False
 
@@ -330,7 +331,8 @@ def main(command):
         with open("reconsider-pr.json") as stream:
             current = json.load(stream)
         allowed = reconsider(os.environ["ROLE"], event["action"], (event.get("label") or {}).get("name"),
-                             head, event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current))
+                             head, event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current),
+                             event["pull_request"].get("updated_at"))
         if command == "verify-response":
             if not allowed:
                 raise SystemExit("Reconsideration response no longer matches the trusted review")
@@ -362,7 +364,8 @@ def main(command):
             correctness, red_team = [
                 current["head"]["sha"] == head and reconsider(
                     role, event["action"], event["label"]["name"], head,
-                    event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current))
+                    event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current),
+                    event["pull_request"].get("updated_at"))
                 and not over_budget(runs, role, now) for role in ("correctness", "red-team")]
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")

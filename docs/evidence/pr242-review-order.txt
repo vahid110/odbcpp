@@ -96,3 +96,38 @@ Ran 108 tests in 0.974s
 
 OK
 Exit: 0
+
+Label-event timestamp regression (before: d95e6918 with new tests, equal/after submission):
+$ python3 -B -m unittest discover -s .github/review -p test_review_gate.py
+..........github/review/test_review_gate.py:589: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/hz/bqsjvj9163j_s9bqbv5hj0cr0000gp/T/tmp1or877e6/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+....................................................
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (late='2026-11-03T10:01:00Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 64, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=late)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (late='2026-11-03T10:01:01Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 64, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=late)))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 62 tests in 0.259s
+
+FAILED (failures=2)
+Exit: 1
+
+After enforcing objection < response < label snapshot and rejecting missing bodies:
+$ python3 -B -m unittest discover -s .github/review
+Ran 108 tests in 0.981s
+
+OK
+Exit: 0

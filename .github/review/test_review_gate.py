@@ -53,11 +53,16 @@ class Plan(unittest.TestCase):
         mirror = response + "\nResponse record #123: 321"
         attestation = {"id": 321, "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
                        "body": HEAD + "\n" + response, "submitted_at": "2026-11-03T10:00:01Z"}
-        def allowed(reviews, body=mirror, event_head=HEAD, attestor=attestation):
+        def allowed(reviews, body=mirror, event_head=HEAD, attestor=attestation, snapshot="2026-11-03T10:01:00Z"):
             reviews = reviews + ([attestor] if attestor else [])
-            return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body)
+            return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body, snapshot)
         with patch.dict(os.environ, env):
             self.assertTrue(allowed([prior]))
+            self.assertFalse(allowed([prior], body=None))
+            self.assertFalse(allowed([prior], snapshot=None))
+            for late in ("2026-11-03T10:01:00Z", "2026-11-03T10:01:01Z"):
+                with self.subTest(late=late):
+                    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=late)))
             self.assertFalse(allowed([prior], body=response))
             self.assertFalse(allowed([prior], body=mirror.replace("321", "322")))
             for stamp in ("2026-11-03T09:59:59Z", prior["submitted_at"], None, "invalid", "2026-11-03T10:01:00"):

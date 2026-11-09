@@ -66,7 +66,7 @@ request one additional verdict from that role on that commit.
 
 1. **Publish the response** by submitting a GitHub **Comment** review on the blocked commit. Put the full head SHA on line one and `Review response #123: <correction and evidence>` on line two, replacing 123 with the blocking review ID. The submitting account must be the one that will apply the label. GitHub's response review submission time must be strictly later than the objection.
 2. Copy the response's second line into the PR description and add `Response record #123: 321` on a separate line, replacing 321 with the GitHub-generated ID of the **submitted response review**. The description is a copy for the reviewer. The submitted review is the dated record of publication.
-3. Apply `reconsider:correctness` or `reconsider:red-team`. Eligibility requires both the referenced record and its exact response text at the time the label was applied.
+3. Apply `reconsider:correctness` or `reconsider:red-team`. Eligibility requires both the referenced record and its exact response text in the immutable label-event payload. The submitted response must strictly predate the PR's `updated_at` in that payload. This is a conservative cutoff: queue delays cannot admit a response published later. If timestamps coincide at GitHub’s one-second precision, update the description with the response reference in a later second, then reapply the label.
 
 Create the label if necessary. Removing and reapplying a label after a
 second verdict does not grant another review. A new commit uses the normal
