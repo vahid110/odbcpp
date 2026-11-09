@@ -47,7 +47,8 @@ STATIC_ASSERT_BINDINGS = {
 
 def accepted_static_assert(runs, metrics, expected, extracted, commands, root, build):
     """Recognize one reviewed extractor limitation, never a general error budget."""
-    if (runs[0]["tool"]["driver"].get("semanticVersion") != "2.27.3" or
+    version = runs[0]["tool"]["driver"].get("semanticVersion")
+    if (version not in ("2.27.3", "2.27.4") or
             type(metrics.get("compiler errors")) is not int or
             type(metrics.get("syntax errors")) is not int or
             metrics.get("compiler errors") != 2 or metrics.get("syntax errors") != 0 or
@@ -134,7 +135,7 @@ def accepted_static_assert(runs, metrics, expected, extracted, commands, root, b
     if (len(failures) != 1 or failures[0][1] != 3 or
             path not in failures[0][0]):
         return None
-    return {"source": STATIC_ASSERT_SOURCE, "line": 34, "codeql_version": "2.27.3",
+    return {"source": STATIC_ASSERT_SOURCE, "line": 34, "codeql_version": version,
             "reason": "Reviewed private-member requires-expression static assertion; actual GCC assertion compiled",
             "source_sha256": dict(STATIC_ASSERT_BINDINGS),
             "compiler_error_buckets": dict(buckets),

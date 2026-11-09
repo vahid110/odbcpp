@@ -85,7 +85,7 @@ cumulative compilation metrics with a current extraction summary containing
 252 cache hits and no new partial unit, so the strict limitation check correctly
 rejected it. Retain that original failure; do not widen the exception to accept
 mixed extraction evidence. The
-[pinned overlay configuration](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/src/config-utils.ts)
+[pinned overlay configuration](https://github.com/github/codeql-action/blob/33d7b85da1a04171e211befe2c739303b9a4c066/src/config-utils.ts)
 recognizes `none` as an explicit disable, and the pinned init action exposes
 `trap-caching` separately from `dependency-caching`.
 
@@ -102,7 +102,7 @@ the fresh hosted raw SARIF and extractor logs still require review. This follows
 
 ### Pinned compile-time assertion limitation
 
-CodeQL 2.27.3 reports a failed private-member `requires` assertion at line 34 of
+CodeQL 2.27.3 and 2.27.4 report a failed private-member `requires` assertion at line 34 of
 `tests/unit/test_session_owner.cpp` although the actual GCC build accepts it.
 The supplemental Clang-based extraction reports the same diagnostic; this is
 not established as a GCC-only issue. Original assertions and raw SARIF remain
@@ -214,8 +214,8 @@ backend, ODBC, tests/CMake and product contracts are unchanged.
 
 Primary references: [compiled-language build modes](https://docs.github.com/en/code-security/reference/code-scanning/codeql/build-options-for-compiled-languages),
 [query suites](https://docs.github.com/en/code-security/concepts/code-scanning/codeql/codeql-query-suites),
-[pinned init inputs](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/init/action.yml),
-[pinned analyze inputs](https://github.com/github/codeql-action/blob/9b3254085494b55a0f7c4c2b3d2d52cc712ce370/analyze/action.yml),
+[pinned init inputs](https://github.com/github/codeql-action/blob/33d7b85da1a04171e211befe2c739303b9a4c066/init/action.yml),
+[pinned analyze inputs](https://github.com/github/codeql-action/blob/33d7b85da1a04171e211befe2c739303b9a4c066/analyze/action.yml),
 [multiple SARIF categories](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file),
 [default-setup transition](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/results-different-than-expected).
 
@@ -251,3 +251,23 @@ compilation and SARIF qualification remain hosted acceptance requirements.
 
 Primary build references: [CodeQL manual builds](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/manage-your-configuration/codeql-for-compiled-languages),
 [C# library output](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/output#outputtype).
+
+The [2.27.4 Redshift scan](https://github.com/vahid110/odbcpp/actions/runs/42513860734/job/128832484266) recorded 266 of 267 compilations without errors and zero missing expected files. The same source, object, diagnostic, metric and log checks apply to both versions.
+
+### Checking a grouped CodeQL action update
+
+The `Check extraction controls offline` step in the Redshift profile runs these
+two commands from the repository root. The Ruby test parses the CodeQL and
+Scorecard workflows and the Dependabot group. It checks the dependency names
+recorded for [init (#232)](https://github.com/vahid110/odbcpp/pull/232/commits/1e5443ef21b8fc43f3fc600d97cab1c42783fbd4),
+[upload-sarif (#233)](https://github.com/vahid110/odbcpp/pull/233/commits/9024658abd4ee5644422493ecf22cbb16e2811f3)
+and [analyze (#234)](https://github.com/vahid110/odbcpp/pull/234/commits/6f08cc68ba2722d258202913cfb740c6cbb2ea30),
+and verifies that both workflows use the same immutable action revision.
+
+```sh
+python3 -B -m unittest discover -s .github/codeql -p 'test_*.py' -v
+ruby .github/codeql/test_action_pins.rb
+```
+
+For each update, open the Redshift CodeQL job for the PR head and expand
+`Check extraction controls offline` to inspect both command results.
