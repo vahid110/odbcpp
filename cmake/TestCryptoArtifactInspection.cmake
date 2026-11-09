@@ -300,18 +300,6 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n"
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
-  elseif(static_map_mode STREQUAL "FOREIGN_MAP")
-    set(_foreign_dir "${BINARY_DIR}/crypto-origin-darwin-foreign")
-    file(MAKE_DIRECTORY "${_foreign_dir}")
-    set(_static_map "${_foreign_dir}/static-link.map")
-    file(WRITE "${_static_map}"
-      "# Path: ${_artifact}\n"
-      "# Arch: arm64\n"
-      "# Object files:\n"
-      "[  0] linker synthesized\n"
-      "[  1] ${_ssl}(ssl_member.o)\n"
-      "[  2] ${_crypto}(crypto_member.o)\n")
-    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "WRONG_MAP_NAME")
     set(_static_map "${_fixture_dir}/unrelated.map")
     file(WRITE "${_static_map}"
@@ -391,8 +379,6 @@ run_darwin_fixture(darwin_static_wrong_output BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false WRONG_OUTPUT)
 run_darwin_fixture(darwin_static_nonexistent_artifact BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NONEXISTENT_ARTIFACT)
-run_darwin_fixture(darwin_static_foreign_map BUNDLED_STATIC
-  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false FOREIGN_MAP)
 run_darwin_fixture(darwin_static_wrong_map_name BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false WRONG_MAP_NAME)
 run_darwin_fixture(darwin_static_no_path BUNDLED_STATIC

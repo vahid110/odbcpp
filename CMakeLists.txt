@@ -189,6 +189,7 @@ elseif(APPLE)
       "${_combined_linker_identity}")
     set(ODBCPP_CRYPTO_STATIC_LINK_MAP
         "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link.map")
+    file(REMOVE "${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
     target_link_options(${PROJECT_NAME}_driver PRIVATE
       "LINKER:-map,${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
     set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
