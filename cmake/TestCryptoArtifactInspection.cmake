@@ -253,7 +253,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
     "\"dependencyRoot\":\"${_fixture_dir}\","
     "\"sslLinkInput\":\"${_ssl}\",\"cryptoLinkInput\":\"${_crypto}\"}\n")
   set(_static_map_argument "")
-  if(static_map_mode MATCHES "^(GOOD|RELATIVE)$")
+  if(static_map_mode MATCHES "^(GOOD|RELATIVE|LD64)$")
     set(_static_map "${_fixture_dir}/static-link.map")
     file(WRITE "${_static_map}"
       "# Path: ${_artifact}\n"
@@ -312,6 +312,16 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n"
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "WRONG_MAP_NAME")
+    set(_static_map "${_fixture_dir}/unrelated.map")
+    file(WRITE "${_static_map}"
+      "# Path: ${_artifact}\n"
+      "# Arch: arm64\n"
+      "# Object files:\n"
+      "[  0] linker synthesized\n"
+      "[  1] ${_ssl}(ssl_member.o)\n"
+      "[  2] ${_crypto}(crypto_member.o)\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "NO_PATH")
     set(_static_map "${_fixture_dir}/static-link.map")
     file(WRITE "${_static_map}"
@@ -321,18 +331,10 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n"
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
-  elseif(static_map_mode STREQUAL "STALE_MAP")
-    set(_static_map "${_fixture_dir}/static-link.map")
-    file(WRITE "${_static_map}"
-      "# Path: ${_artifact}\n"
-      "# Arch: arm64\n"
-      "# Object files:\n"
-      "[  0] linker synthesized\n"
-      "[  1] ${_ssl}(ssl_member.o)\n"
-      "[  2] ${_crypto}(crypto_member.o)\n")
-    execute_process(
-      COMMAND python3 -c "import os, time; t = time.time() - 100; os.utime('${_static_map}', (t, t))")
-    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  endif()
+  set(_linker_id "@(#)PROGRAM:ld  PROJECT:ld-1167.5")
+  if(static_map_mode STREQUAL "LD64")
+    set(_linker_id "@(#)PROGRAM:ld  PROJECT:ld64-951.9")
   endif()
   execute_process(
     COMMAND "${CMAKE_COMMAND}"
@@ -344,7 +346,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
             "-DRESOLUTION_OUTPUT=${resolution}"
             -DCONFIG_MANIFEST=${_manifest}
             ${_static_map_argument}
-            "-DSTATIC_LINKER_IDENTITY=@(#)PROGRAM:ld PROJECT:ld-1167.5"
+            "-DSTATIC_LINKER_IDENTITY=${_linker_id}"
             -DEVIDENCE=${_fixture_dir}/evidence.json
             -P "${_script}"
     RESULT_VARIABLE _result
@@ -391,10 +393,12 @@ run_darwin_fixture(darwin_static_nonexistent_artifact BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NONEXISTENT_ARTIFACT)
 run_darwin_fixture(darwin_static_foreign_map BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false FOREIGN_MAP)
+run_darwin_fixture(darwin_static_wrong_map_name BUNDLED_STATIC
+  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false WRONG_MAP_NAME)
 run_darwin_fixture(darwin_static_no_path BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NO_PATH)
-run_darwin_fixture(darwin_static_stale_map BUNDLED_STATIC
-  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false STALE_MAP)
+run_darwin_fixture(darwin_static_ld64 BUNDLED_STATIC
+  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" true LD64)
 run_darwin_fixture(darwin_static_relative BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" true RELATIVE)
 run_darwin_fixture(darwin_static_dynamic_leak BUNDLED_STATIC
