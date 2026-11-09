@@ -7,6 +7,8 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # Dependabot commit metadata in PRs #232–234 names the dependencies
+      # github/codeql-action/init, /upload-sarif and /analyze (subpaths included).
       codeql-action:
         patterns:
           - "github/codeql-action/*"
