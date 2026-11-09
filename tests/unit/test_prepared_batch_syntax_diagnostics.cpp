@@ -22,14 +22,21 @@ std::string error_frame(std::string_view sqlstate, std::string_view message) {
   return frame('E', body);
 }
 
-// Scripted provider for the PostgreSQL profile.
-class ScriptedPostgresProvider final : public IBackendProvider {
+// Scripted backend provider that explicitly parameterizes the catalog profile
+// (PostgreSQL or Redshift) for both the provider metadata and created database connections.
+class ScriptedBatchProvider final : public IBackendProvider {
  public:
-  explicit ScriptedPostgresProvider(std::shared_ptr<WireScript> script)
+  ScriptedBatchProvider(std::shared_ptr<WireScript> script, postgres::PgCatalogProfile profile)
       : script_(std::move(script)),
-        product_(BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
-                 BackendConnectionDefaults{"localhost", 5432, std::nullopt, true},
-                 std::nullopt, postgres::PgCatalogProfile::PostgreSQL) {}
+        profile_(profile),
+        product_(
+            profile == postgres::PgCatalogProfile::Redshift
+                ? BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"}
+                : BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+            profile == postgres::PgCatalogProfile::Redshift
+                ? BackendConnectionDefaults{"localhost", 5439, std::nullopt, true}
+                : BackendConnectionDefaults{"localhost", 5432, std::nullopt, true},
+            std::nullopt, profile) {}
 
   const BackendIdentity& identity() const noexcept override { return product_.identity(); }
   const BackendConnectionDefaults& connection_defaults() const noexcept override {
@@ -58,12 +65,12 @@ class ScriptedPostgresProvider final : public IBackendProvider {
   std::unique_ptr<IDatabaseConnection> create_session(
       std::unique_ptr<rs::core::transport::ITransport>) const override {
     return std::make_unique<postgres::PgDatabaseConnection>(
-        std::make_unique<RedshiftWire>(script_), std::nullopt,
-        postgres::PgCatalogProfile::PostgreSQL);
+        std::make_unique<RedshiftWire>(script_), std::nullopt, profile_);
   }
 
  private:
   std::shared_ptr<WireScript> script_;
+  postgres::PgCatalogProfile profile_;
   postgres::PgBackendProvider product_;
 };
 
@@ -80,12 +87,9 @@ class PreparedBatchSyntaxDiagnosticsTest : public ::testing::TestWithParam<bool>
     ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION,
         reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
 
-    std::shared_ptr<IBackendProvider> provider;
-    if (GetParam()) {
-      provider = std::make_shared<ScriptedRedshiftProvider>(script);
-    } else {
-      provider = std::make_shared<ScriptedPostgresProvider>(script);
-    }
+    const auto profile = GetParam() ? postgres::PgCatalogProfile::Redshift
+                                    : postgres::PgCatalogProfile::PostgreSQL;
+    auto provider = std::make_shared<ScriptedBatchProvider>(script, profile);
 
     auto connection = std::make_unique<rs::odbc::ODBCConnection>(nullptr, std::move(provider));
     dbc = reinterpret_cast<SQLHDBC>(connection.get());
