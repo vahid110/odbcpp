@@ -139,7 +139,7 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, ParameterFreePreparedBatchPreservesSy
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS));
   EXPECT_EQ(prepare_count_before, script->received_sql.size());
 
-  // Step 2: SQLExecute dispatches the prepared statement to the wire.
+  // Step 2: SQLExecute dispatches the prepared statement to the wire and fails.
   EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
 
   // Step 3: Diagnostic verification: must preserve 42601 rather than collapsing to generic 42000.
@@ -147,7 +147,11 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, ParameterFreePreparedBatchPreservesSy
   EXPECT_EQ("42601", state);
   EXPECT_NE(msg.find("cannot insert multiple commands into a prepared statement"), std::string::npos);
 
-  // Step 4: Proving a valid single-statement operation still works afterward on the same statement.
+  // Step 4: Proving statement handle cleanup and recovery:
+  // Freeing statement resources succeeds.
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+
+  // Step 5: Proving a valid single-statement operation works afterward on the same statement handle.
   script->responses["SELECT 11"] = row_description({{"val", 23}}) + data_row({{"11"}}) + complete("SELECT 1");
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 11")), SQL_NTS));
   SQLCHAR buf[32]{};
@@ -163,7 +167,7 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, ParameterMarkerPreparedBatchPreserves
   const std::string wire_sql = "SELECT CAST($1 AS INTEGER); SELECT CAST($2 AS INTEGER)";
   script->responses[wire_sql] = error_frame("42601", "cannot insert multiple commands into a prepared statement");
 
-  // Default prepare succeeds locally
+  // Default prepare succeeds locally with 0 network calls
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS));
 
   // Binding parameters
@@ -178,6 +182,10 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, ParameterMarkerPreparedBatchPreserves
   EXPECT_EQ("42601", state);
   EXPECT_NE(msg.find("cannot insert multiple commands into a prepared statement"), std::string::npos);
 
+  // Proving parameter and statement cleanup
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
+
   // Proving single-statement execution succeeds afterward on the same statement
   script->responses["SELECT 31"] = row_description({{"val", 23}}) + data_row({{"31"}}) + complete("SELECT 1");
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 31")), SQL_NTS));
@@ -189,7 +197,35 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, ParameterMarkerPreparedBatchPreserves
   EXPECT_STREQ("31", reinterpret_cast<char*>(buf));
 }
 
+TEST_P(PreparedBatchSyntaxDiagnosticsTest, DeferredPrepareSurfaces42601AtMetadataDescriptionTime) {
+  // Proves timing point 2: In default deferred prepare mode, SQLPrepare succeeds locally,
+  // but explicit parameter description (SQLDescribeParam) forces server description over the wire
+  // and surfaces 42601 at metadata description time before SQLExecute is ever called.
+  const std::string sql = "SELECT CAST(? AS INTEGER); SELECT CAST(? AS INTEGER)";
+  const std::string wire_sql = "SELECT CAST($1 AS INTEGER); SELECT CAST($2 AS INTEGER)";
+  script->responses[wire_sql] = error_frame("42601", "cannot insert multiple commands into a prepared statement");
+
+  const auto prepare_count_before = script->received_sql.size();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS));
+  EXPECT_EQ(prepare_count_before, script->received_sql.size());
+
+  // Requesting parameter metadata forces server description and surfaces 42601
+  SQLSMALLINT data_type = 0;
+  SQLULEN parameter_size = 0;
+  SQLSMALLINT decimal_digits = 0;
+  SQLSMALLINT nullable = 0;
+  EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &data_type, &parameter_size, &decimal_digits, &nullable));
+
+  const auto [state, msg] = diagnostic();
+  EXPECT_EQ("42601", state);
+  EXPECT_NE(msg.find("cannot insert multiple commands into a prepared statement"), std::string::npos);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+}
+
 TEST_P(PreparedBatchSyntaxDiagnosticsTest, EagerAutoIpdFailsAtPrepareTimeWith42601) {
+  // Proves timing point 3: With SQL_ATTR_ENABLE_AUTO_IPD enabled, SQLPrepare eagerly requests
+  // statement description over the wire, surfacing 42601 synchronously at prepare time.
   const std::string sql = "SELECT CAST(? AS INTEGER); SELECT CAST(? AS INTEGER)";
   const std::string wire_sql = "SELECT CAST($1 AS INTEGER); SELECT CAST($2 AS INTEGER)";
   script->responses[wire_sql] = error_frame("42601", "cannot insert multiple commands into a prepared statement");
@@ -203,6 +239,8 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, EagerAutoIpdFailsAtPrepareTimeWith426
   const auto [state, msg] = diagnostic();
   EXPECT_EQ("42601", state);
   EXPECT_NE(msg.find("cannot insert multiple commands into a prepared statement"), std::string::npos);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
 }
 
 TEST_P(PreparedBatchSyntaxDiagnosticsTest, DirectExecutionAllowsMultipleStatements) {

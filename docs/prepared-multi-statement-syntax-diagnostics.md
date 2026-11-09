@@ -50,3 +50,14 @@ or prevent statement reuse:
 - In manual-transaction mode, the failure transitions the session to a failed
   transaction state; issuing `SQLEndTran(..., SQL_ROLLBACK)` rolls back the failed
   state and restores the connection to idle for subsequent operations.
+
+## Integration test assertions and intentional behavior change
+
+Because PostgreSQL and Redshift emit `42601` for all native SQL syntax errors
+(such as `SELECT * FROM` or unescaped `{fn ...}` with `SQL_NOSCAN_ON`), preserving
+`42601` intentionally changes the diagnostic SQLSTATE for these syntax errors from
+the old collapsed fallback `42000` to the specific standard SQLSTATE `42601`.
+Integration tests in `it_metadata_real.cpp`, `it_native_sql.cpp`, and
+`it_prepared_statements_real.cpp` were updated accordingly to assert `42601`.
+
+
