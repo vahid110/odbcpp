@@ -38,6 +38,12 @@ def plan_(*args, **kwargs):
 
 
 class Plan(unittest.TestCase):
+    def test_reconsideration_rejects_changes_after_label_event(self):
+        event = {"pull_request": {"body": "original"}}
+        self.assertEqual(g.label_bound_body(event, {"body": "original"}), "original")
+        self.assertIsNone(g.label_bound_body(event, {"body": "changed"}))
+        self.assertIsNone(g.label_bound_body({"pull_request": {}}, {"body": "original"}))
+
     def test_reconsider_one_exact_change_request(self):
         role = "correctness"
         prior = dict(review(role, "CHANGES_REQUESTED"), id=123)

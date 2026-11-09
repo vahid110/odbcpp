@@ -124,6 +124,12 @@ def latest_reviews(reviews, head_sha):
     return latest
 
 
+def label_bound_body(event, current):
+    """Reject edits between the label event and any reconsideration stage."""
+    snapshot = event["pull_request"].get("body")
+    return snapshot if isinstance(snapshot, str) and snapshot == current.get("body") else None
+
+
 def reconsider(role, action, label, head, event_head, reviews, body):
     """Allow one additional verdict for a documented, exact-head objection."""
     actor = os.environ.get("GITHUB_ACTOR")
@@ -301,7 +307,7 @@ def main(command):
         with open("reconsider-pr.json") as stream:
             current = json.load(stream)
         allowed = reconsider(os.environ["ROLE"], event["action"], (event.get("label") or {}).get("name"),
-                             head, event["pull_request"]["head"]["sha"], reviews, current.get("body"))
+                             head, event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current))
         if command == "verify-response":
             if not allowed:
                 raise SystemExit("Reconsideration response no longer matches the trusted review")
@@ -333,7 +339,7 @@ def main(command):
             correctness, red_team = [
                 current["head"]["sha"] == head and reconsider(
                     role, event["action"], event["label"]["name"], head,
-                    event["pull_request"]["head"]["sha"], reviews, current.get("body"))
+                    event["pull_request"]["head"]["sha"], reviews, label_bound_body(event, current))
                 and not over_budget(runs, role, now) for role in ("correctness", "red-team")]
         print(f"correctness={str(correctness).lower()}\nred_team={str(red_team).lower()}\n"
               f"add_labels={','.join(add)}")
