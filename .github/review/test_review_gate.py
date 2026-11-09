@@ -1,6 +1,8 @@
 """Tests for review_gate: planning, sticky labels and the required check."""
 
+import json
 import os
+from pathlib import Path
 import sys
 import unittest
 
@@ -37,6 +39,17 @@ def plan_(*args, **kwargs):
     return g.plan(*args, **kwargs)
 
 
+def graphql_reply(record):
+    return {"data": {"node": {"id": record["node_id"], "body": record["body"], "lastEditedAt": None}}}
+
+
+def stub_graphql(root):
+    gh = root / "gh"
+    gh.write_text('#!/bin/sh\n[ "$1 $2 $6" = "api graphql id=PRR_321" ] || exit 2\ncat graphql.json\n')
+    gh.chmod(0o755)
+    return str(root) + os.pathsep + os.environ.get("PATH", os.defpath)
+
+
 class Plan(unittest.TestCase):
     def test_reconsideration_rejects_changes_after_label_event(self):
         event = {"pull_request": {"body": "original"}}
@@ -51,13 +64,26 @@ class Plan(unittest.TestCase):
         from unittest.mock import patch
         response = "Review response #123: see the attached live XML."
         mirror = response + "\nResponse record #123: 321"
-        attestation = {"id": 321, "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+        attestation = {"id": 321, "node_id": "PRR_321", "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
                        "body": HEAD + "\n" + response, "submitted_at": "2026-11-03T10:00:01Z"}
         def allowed(reviews, body=mirror, event_head=HEAD, attestor=attestation, snapshot="2026-11-03T10:01:00Z"):
             reviews = reviews + ([attestor] if attestor else [])
             return g.reconsider(role, "labeled", "reconsider:correctness", HEAD, event_head, reviews, body, snapshot)
-        with patch.dict(os.environ, env):
+        from subprocess import CompletedProcess
+        def reply(node):
+            return CompletedProcess([], 0, stdout=json.dumps({"data": {"node": node}}))
+
+        node = graphql_reply(attestation)["data"]["node"]
+        with patch.dict(os.environ, env), patch("subprocess.run", return_value=reply(node)) as lookup:
             self.assertTrue(allowed([prior]))
+            for changed in [dict(node, lastEditedAt="2026-11-03T10:01:30Z"),
+                            dict(node, lastEditedAt="2026-11-03T10:00:30Z"),
+                            dict(node, body="different"), dict(node, id="PRR_other"), None,
+                            {key: value for key, value in node.items() if key != "lastEditedAt"}]:
+                with self.subTest(graphql=changed):
+                    lookup.return_value = reply(changed)
+                    self.assertFalse(allowed([prior]))
+            lookup.return_value = reply(node)
             self.assertTrue(allowed([prior, review("red-team", "APPROVED")]))
             withheld = dict(prior, id=122, body=f"[{role} reviewer] verdict withheld at {HEAD}")
             self.assertTrue(allowed([withheld, prior]))
@@ -417,7 +443,6 @@ class SplitJobs(unittest.TestCase):
     def test_openai_initial_and_reconsideration_each_reserve_once(self):
         import subprocess
         import tempfile
-        from pathlib import Path
         from textwrap import dedent
 
         job = self.jobs()["reserve"]
@@ -449,11 +474,9 @@ class SplitJobs(unittest.TestCase):
                              [f"OpenAI review attempt (correctness) #{PR}",
                               f"OpenAI reconsideration attempt (correctness) #{PR}"])
 
-    def test_failed_label_post_reruns_only_side_effects(self):
-        import json
+    def test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed(self):
         import subprocess
         import tempfile
-        from pathlib import Path
         from textwrap import dedent
 
         role = "correctness"
@@ -462,7 +485,7 @@ class SplitJobs(unittest.TestCase):
                    "updated_at": "2026-11-03T10:00:02Z"}
         event = {"action": "labeled", "label": {"name": "reconsider:" + role}, "pull_request": current}
         prior = dict(review(role, "CHANGES_REQUESTED"), id=123)
-        response = {"id": 321, "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+        response = {"id": 321, "node_id": "PRR_321", "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
                     "body": HEAD + "\n" + line, "submitted_at": "2026-11-03T10:00:01Z"}
         step = self.jobs()["post"].split("      - name: Post the verdict", 1)[1].split("      - name:", 1)[0]
         script = dedent(step.split("        run: |\n", 1)[1])
@@ -474,7 +497,9 @@ class SplitJobs(unittest.TestCase):
         gh() {
           case "$*" in
             *'--input review.json'*)
-              jq -c '. + {user:{login:"odbcpp-reviewer[bot]"},state:"APPROVED"}' review.json >> history ;;
+              jq -c '. + {user:{login:"odbcpp-reviewer[bot]"},state:"APPROVED",submitted_at:"2026-11-03T10:01:00Z"}' review.json >> history
+              # Accepted by GitHub, but its response did not reach the client.
+              [[ ! -e applied.json ]] ;;
             *'--input labels-to-add.json'*)
               if [[ ! -e fail-once ]]; then touch fail-once; return 1; fi
               cp labels-to-add.json applied.json ;;
@@ -488,18 +513,23 @@ class SplitJobs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".github").symlink_to(Path(ROOT) / ".github")
+            (root / "graphql.json").write_text(json.dumps(graphql_reply(response)))
             (root / "current.json").write_text(json.dumps(current))
             (root / "event.json").write_text(json.dumps(event))
             (root / "history").write_text(json.dumps(prior) + "\n" + json.dumps(response) + "\n")
             result = {"verdict": "approve", "body": "verified", "labels": ["auth"]}
             env = dict(os.environ, HEAD_SHA=HEAD, ROLE=role, GITHUB_ACTOR_ID="350232297",
                        GITHUB_EVENT_PATH="event.json", PR_NUMBER=PR, REPO="owner/repo", RESULT=json.dumps(result),
-                       RUN_URL="https://run/7", REVIEW_PROVIDER="openai")
-            for expected in [1, 0]:
+                       RUN_URL="https://run/7", REVIEW_PROVIDER="openai", PATH=stub_graphql(root))
+            for expected, expected_status, expected_count in [(1, "failure", 2), (1, "pending", 3), (0, "pending", 3)]:
                 run = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", fake_api + script],
                                      cwd=root, env=env, capture_output=True)
                 self.assertEqual(run.returncode, expected, run.stderr)
-            self.assertEqual(len((root / "history").read_text().splitlines()), 3)
+                history = [json.loads(line) for line in (root / "history").read_text().splitlines()]
+                applied = root / "applied.json"
+                labels = json.loads(applied.read_text())["labels"] if applied.exists() else []
+                self.assertEqual(g.status_(history, labels, [], HEAD, files=DOCS)[0], expected_status)
+                self.assertEqual(len(history), expected_count)
             self.assertEqual(json.loads((root / "applied.json").read_text()), {"labels": ["auth"]})
 
     def test_reviews_are_posted_only_after_validation(self):
@@ -678,7 +708,8 @@ class Command(unittest.TestCase):
                     json.dump(data, f)
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_gate.py")
             out = subprocess.run([sys.executable, "-I", "-B", script, command], cwd=d, capture_output=True,
-                                 text=True, env={"HEAD_SHA": HEAD, "PR_NUMBER": PR, **env}, check=True)
+                                 text=True, env={"HEAD_SHA": HEAD, "PR_NUMBER": PR, "PATH": stub_graphql(Path(d)),
+                                                 **env}, check=True)
             status_file = os.path.join(d, "check-status.txt")
             status = open(status_file).read() if os.path.exists(status_file) else ""
             return out.stdout, status
@@ -691,19 +722,23 @@ class Command(unittest.TestCase):
     def test_publication_retry_repairs_without_reposting(self):
         prior = dict(review("correctness", "CHANGES_REQUESTED"), id=123)
         line = "Review response #123: corrected transcript"
-        attestation = {"id": 321, "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
+        attestation = {"id": 321, "node_id": "PRR_321", "user": {"id": 350232297}, "state": "COMMENTED", "commit_id": HEAD,
                        "body": HEAD + "\n" + line, "submitted_at": "2026-11-03T10:00:01Z"}
         current = {"head": {"sha": HEAD}, "body": line + "\nResponse record #123: 321",
                    "updated_at": "2026-11-03T10:00:02Z"}
         event = {"action": "labeled", "label": {"name": "reconsider:correctness"}, "pull_request": current}
         published = review("correctness", "APPROVED", body_tail="evidence verified\nReview run: https://run")
-        files = {"event.json": event, "reconsider-pr.json": current, "review.json": {"body": published["body"]}}
+        files = {"event.json": event, "reconsider-pr.json": current, "review.json": {"body": published["body"]},
+                 "graphql.json": graphql_reply(attestation)}
         env = {"GITHUB_EVENT_PATH": "event.json", "GITHUB_ACTOR_ID": "350232297", "ROLE": "correctness"}
         def decision(history, **changes):
             stdout, _ = self.run_gate("publication", {**files, "reviews.json": history, **changes}, env)
             return stdout.strip()
         history = [prior, attestation]
         self.assertEqual(decision(history), "publish")
+        edited = graphql_reply(attestation)
+        edited["data"]["node"]["lastEditedAt"] = "2026-11-03T10:01:30Z"
+        self.assertEqual(decision(history, **{"graphql.json": edited}), "superseded")
         self.assertEqual(decision(history, **{"reconsider-pr.json": dict(current, body="edited")}), "superseded")
         self.assertEqual(decision(history + [published]), "recover")
         self.assertEqual(decision(history + [dict(published, state="DISMISSED")]), "recover")

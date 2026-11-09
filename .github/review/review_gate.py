@@ -13,6 +13,7 @@ GitHub API, so the logic runs the same in tests and in Actions.
 import json
 import os
 import re
+import subprocess
 import sys
 
 REVIEWER = "odbcpp-reviewer[bot]"
@@ -148,6 +149,22 @@ def role_verdicts(reviews, role, head):
             and names_commit(r.get("body"), head) and not withheld(r.get("body"))]
 
 
+def submitted_response_unchanged(record):
+    """Read the cited review's current text and edit history in one GitHub response."""
+    node_id = record.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        return False
+    query = """query($id: ID!) {
+      node(id: $id) { id ... on PullRequestReview { body lastEditedAt } }
+    }"""
+    result = subprocess.run(["gh", "api", "graphql", "-f", "query=" + query, "-f", "id=" + node_id],
+                            check=True, capture_output=True)
+    response = json.loads(result.stdout)
+    node = (response.get("data") or {}).get("node")
+    return (not response.get("errors") and isinstance(node, dict) and node.get("id") == node_id
+            and "lastEditedAt" in node and node["lastEditedAt"] is None and node.get("body") == record["body"])
+
+
 def reconsider(role, action, label, head, event_head, reviews, body, snapshot_time):
     """Allow one additional verdict for a documented, exact-head objection."""
     if not isinstance(body, str):
@@ -185,7 +202,7 @@ def reconsider(role, action, label, head, event_head, reviews, body, snapshot_ti
                 and record.get("body") == head + "\n" + lines[0]
                 and strictly_ordered_times(prior[0].get("submitted_at"), record.get("submitted_at"),
                                            snapshot_time)):
-            return True
+            return submitted_response_unchanged(record)
     return False
 
 

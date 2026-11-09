@@ -464,16 +464,18 @@ jobs:
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
           disposition=$(python3 -I -B .github/review/review_gate.py publication)
           case "$disposition" in
-            publish)
-              gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null ;;
+            publish) ;;
             recover) echo "Review already posted by this run. Repairing labels and check." ;;
             superseded) echo "Another verdict already consumed this review."; exit 0 ;;
             *) exit 1 ;;
           esac
-          # The reviewer, not the author, adds high-risk labels; a new one
-          # starts the red-team review.
+          # Persist risk escalation before any approval can change the check.
+          # Adding an existing label is safe on publication recovery.
           if [[ "$(jq '.labels | length' labels-to-add.json)" != 0 ]]; then
             gh api -X POST "repos/$REPO/issues/$PR_NUMBER/labels" --input labels-to-add.json > /dev/null
+          fi
+          if [[ "$disposition" == publish ]]; then
+            gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input review.json > /dev/null
           fi
           if [[ -s withheld ]]; then
             echo "::error::The review output was withheld (malformed, or matched a credential pattern)."

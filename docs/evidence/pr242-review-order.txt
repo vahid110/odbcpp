@@ -181,3 +181,23 @@ Exit: 0
 The initial and reconsideration reservations each succeeded once and rejected
 a repeat. Publication retry left the objection, response record and one new
 verdict in the ledger, and applied the missing auth label. Offline only.
+
+Risk labels before approval, ambiguous review POST and edited response records:
+Before: 8ad5e9ca source/workflow with the new regression assertions.
+$ python3 -B -m unittest test_review_gate.SplitJobs.test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed test_review_gate.Command.test_publication_retry_repairs_without_reposting
+FAIL: test_risk_label_failure_and_ambiguous_verdict_keep_merge_closed
+AssertionError: 'success' != 'failure'
+FAIL: test_publication_retry_repairs_without_reposting
+AssertionError: 'publish' != 'superseded'
+Ran 2 tests in 0.311s
+FAILED (failures=2)
+Exit: 1
+
+After: all 111 workflow tests passed. The workflow shell test failed a label
+write, simulated a lost response after a successful verdict POST, and retried.
+Protected check conclusions at the three boundaries: failure, pending, pending.
+The ledger retained one new verdict and the high-risk label requiring red-team.
+Changing GraphQL lastEditedAt while keeping the response ID, REST body and
+submission time identical caused refusal. Cases cover earlier edits, missing
+node/metadata and mismatched body/identity. A read-only GitHub GraphQL smoke on
+a real PR review returned the requested id, body and lastEditedAt fields.
