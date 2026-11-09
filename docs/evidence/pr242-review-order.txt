@@ -1,0 +1,71 @@
+PR 242 | workflow unit test transcript
+Source and tests: d7446f0bd2134b2cd394a5b7f19e42cf1adf0159
+
+Before: same test file, review_gate.py from 448d5f917093cb92e4296e88d060f51402fcde0d.
+$ python3 -B -m unittest test_review_gate.Plan.test_reconsider_one_exact_change_request
+F
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='2026-11-03T09:59:59Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='2026-11-03T10:00:00Z')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp=None)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='invalid')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan) (stamp='2026-11-03T10:01:00')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 62, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], attestor=dict(attestation, submitted_at=stamp)))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private<temp>/test_review_gate.py", line 63, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([dict(prior, submitted_at=None)]))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 1 test in 0.032s
+
+FAILED (failures=6)
+Exit: 1
+
+After: unmodified source and tests at d7446f0b.
+$ python3 -B -m unittest discover -s .github/review
+........................................................github/review/test_review_gate.py:577: ResourceWarning: unclosed file <_io.TextIOWrapper name='<temp>/tmpgb8hpdy0/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.....................................................
+----------------------------------------------------------------------
+Ran 108 tests in 0.716s
+
+OK
+Exit: 0
