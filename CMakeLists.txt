@@ -187,8 +187,9 @@ elseif(APPLE)
     string(REGEX MATCH "(@\\(#\\))?PROGRAM:ld[ \t]+PROJECT:ld(64)?-[^\r\n]+"
       ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY
       "${_combined_linker_identity}")
+    string(TIMESTAMP _crypto_map_nonce "%Y%m%d%H%M%S")
     set(ODBCPP_CRYPTO_STATIC_LINK_MAP
-        "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link.map")
+        "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link-${_crypto_map_nonce}.map")
     file(REMOVE "${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
     target_link_options(${PROJECT_NAME}_driver PRIVATE
       "LINKER:-map,${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
