@@ -220,3 +220,19 @@ $ python3 -B -m unittest discover -s .github/review
 Ran 111 tests in 4.709s
 OK
 Windows execution on this repair is pending fresh hosted CI.
+
+CodeQL check 129254924473 reported an uncontrolled path at publication on
+89c71a9c. The revised command fixture supplies the fixed event snapshot and
+points GITHUB_EVENT_PATH elsewhere. With the old gate and an ambient
+ADDED_LABEL=reconsider:red-team the two CLI cases failed:
+test_plan_prints_only_step_outputs: FileNotFoundError: reconsider-event.json
+test_publication_retry_repairs_without_reposting: FileNotFoundError: unused-runner-path.json
+Ran 2 tests in 0.503s
+FAILED (failures=2)
+
+After copying the runner event in the trusted workflow, reading the fixed
+filename in Python, and isolating the test label:
+$ ADDED_LABEL=reconsider:red-team python3 -B -m unittest discover -s .github/review
+Ran 111 tests in 5.093s
+OK
+Exit: 0

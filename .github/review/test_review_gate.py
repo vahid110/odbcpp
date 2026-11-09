@@ -738,7 +738,7 @@ class Command(unittest.TestCase):
             script = str(Path(__file__).resolve())
             out = subprocess.run([sys.executable, "-I", "-B", script, "--offline-gate", command],
                                  cwd=d, capture_output=True, text=True,
-                                 env=dict(os.environ, HEAD_SHA=HEAD, PR_NUMBER=PR, **env))
+                                 env={**os.environ, "ADDED_LABEL": "", "HEAD_SHA": HEAD, "PR_NUMBER": PR, **env})
             self.assertEqual(out.returncode, 0, out.stderr)
             status_file = Path(d) / "check-status.txt"
             status = status_file.read_text() if status_file.exists() else ""
@@ -758,9 +758,9 @@ class Command(unittest.TestCase):
                    "updated_at": "2026-11-03T10:00:02Z"}
         event = {"action": "labeled", "label": {"name": "reconsider:correctness"}, "pull_request": current}
         published = review("correctness", "APPROVED", body_tail="evidence verified\nReview run: https://run")
-        files = {"event.json": event, "reconsider-pr.json": current, "review.json": {"body": published["body"]},
+        files = {"reconsider-event.json": event, "reconsider-pr.json": current, "review.json": {"body": published["body"]},
                  "graphql.json": graphql_reply(attestation)}
-        env = {"GITHUB_EVENT_PATH": "event.json", "GITHUB_ACTOR_ID": "350232297", "ROLE": "correctness"}
+        env = {"GITHUB_EVENT_PATH": "unused-runner-path.json", "GITHUB_ACTOR_ID": "350232297", "ROLE": "correctness"}
         def decision(history, **changes):
             stdout, _ = self.run_gate("publication", {**files, "reviews.json": history, **changes}, env)
             return stdout.strip()
@@ -775,7 +775,7 @@ class Command(unittest.TestCase):
         other = dict(published, body=published["body"].replace("https://run", "https://other-run"))
         self.assertEqual(decision(history + [other]), "superseded")
         self.assertEqual(decision(history + [dict(published, user={"login": "contributor"})]), "publish")
-        ordinary = {"event.json": {"action": "opened"}}
+        ordinary = {"reconsider-event.json": {"action": "opened"}}
         self.assertEqual(decision([], **ordinary), "publish")
         self.assertEqual(decision([published], **ordinary), "recover")
         self.assertEqual(decision(history + [other], **ordinary), "superseded")

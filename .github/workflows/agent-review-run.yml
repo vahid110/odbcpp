@@ -462,6 +462,7 @@ jobs:
           # labels-to-add.json and withheld (review_gate.prepare_review).
           python3 -I -B .github/review/review_gate.py prepare
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '.[]' | jq -s . > reviews.json
+          cp "$GITHUB_EVENT_PATH" reconsider-event.json
           disposition=$(python3 -I -B .github/review/review_gate.py publication)
           case "$disposition" in
             publish) ;;

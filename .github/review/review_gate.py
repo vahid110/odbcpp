@@ -370,7 +370,7 @@ def main(command):
                and r.get("body") == prepared["body"] for r in history):
             print("recover")
             return
-        with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+        with open("reconsider-event.json") as stream:
             event = json.load(stream)
         if (event.get("label") or {}).get("name") == "reconsider:" + role:
             with open("reconsider-pr.json") as stream:
