@@ -200,6 +200,13 @@ if(DEFINED CONFIG_MANIFEST AND NOT CONFIG_MANIFEST STREQUAL "")
         message(FATAL_ERROR
           "Bundled-static Apple ld linker map must be located in the artifact build directory: ${STATIC_LINK_MAP}")
       endif()
+      file(TIMESTAMP "${STATIC_LINK_MAP}" _map_time "%s" UTC)
+      file(TIMESTAMP "${ARTIFACT}" _artifact_time "%s" UTC)
+      math(EXPR _time_skew "${_artifact_time} - ${_map_time}")
+      if(_time_skew GREATER 3 OR _time_skew LESS -3)
+        message(FATAL_ERROR
+          "Bundled-static Apple ld linker map is stale or desynchronized from artifact (skew: ${_time_skew}s)")
+      endif()
     endif()
     set(_auxiliary_inputs "")
     string(JSON _auxiliary_count ERROR_VARIABLE _auxiliary_error

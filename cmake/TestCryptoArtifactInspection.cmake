@@ -321,6 +321,18 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n"
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "STALE_MAP")
+    set(_static_map "${_fixture_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "# Path: ${_artifact}\n"
+      "# Arch: arm64\n"
+      "# Object files:\n"
+      "[  0] linker synthesized\n"
+      "[  1] ${_ssl}(ssl_member.o)\n"
+      "[  2] ${_crypto}(crypto_member.o)\n")
+    execute_process(
+      COMMAND python3 -c "import os, time; t = time.time() - 100; os.utime('${_static_map}', (t, t))")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   endif()
   execute_process(
     COMMAND "${CMAKE_COMMAND}"
@@ -381,6 +393,8 @@ run_darwin_fixture(darwin_static_foreign_map BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false FOREIGN_MAP)
 run_darwin_fixture(darwin_static_no_path BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NO_PATH)
+run_darwin_fixture(darwin_static_stale_map BUNDLED_STATIC
+  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false STALE_MAP)
 run_darwin_fixture(darwin_static_relative BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" true RELATIVE)
 run_darwin_fixture(darwin_static_dynamic_leak BUNDLED_STATIC

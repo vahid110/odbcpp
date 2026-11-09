@@ -191,6 +191,12 @@ elseif(APPLE)
         "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link.map")
     target_link_options(${PROJECT_NAME}_driver PRIVATE
       "LINKER:-map,${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
+    set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
+      ADDITIONAL_CLEAN_FILES "${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
+    add_custom_command(
+      TARGET ${PROJECT_NAME}_driver PRE_LINK
+      COMMAND "${CMAKE_COMMAND}" -E rm -f "${ODBCPP_CRYPTO_STATIC_LINK_MAP}"
+      COMMENT "Removing stale Apple ld linker map before driver link")
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(_driver_export_control "${CMAKE_CURRENT_BINARY_DIR}/odbcpp.exports.map")
