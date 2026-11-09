@@ -69,3 +69,30 @@ Ran 108 tests in 0.716s
 
 OK
 Exit: 0
+
+Response-record regression (source before fix: 3c954d29; new test without an issued record ID):
+$ python3 -B -m unittest discover -s .github/review -p test_review_gate.py
+..........github/review/test_review_gate.py:585: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/hz/bqsjvj9163j_s9bqbv5hj0cr0000gp/T/tmp0g_rbuwz/check-status.txt' mode='r' encoding='UTF-8'>
+  status = open(status_file).read() if os.path.exists(status_file) else ""
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.................F...................................
+======================================================================
+FAIL: test_reconsider_one_exact_change_request (test_review_gate.Plan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File ".github/review/test_review_gate.py", line 61, in test_reconsider_one_exact_change_request
+    self.assertFalse(allowed([prior], body=response))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 62 tests in 0.284s
+
+FAILED (failures=1)
+Exit: 1
+
+After binding the response record ID:
+$ python3 -B -m unittest discover -s .github/review
+Ran 108 tests in 0.974s
+
+OK
+Exit: 0

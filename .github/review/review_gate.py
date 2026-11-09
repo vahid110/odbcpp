@@ -164,11 +164,18 @@ def reconsider(role, action, label, head, event_head, reviews, body):
              if line.startswith(prefix) and line[len(prefix):].strip()]
     if not isinstance(review_id, int) or len(lines) != 1:
         return False
-    # The labeler's trusted account must attest these exact response bytes.
+    # The response is published as a timestamped review. Bind its GitHub ID
+    # and bytes in the label event, so edits or a different review cannot substitute for it.
+    record_prefix = f"Response record #{review_id}: "
+    pointers = [line for line in body.splitlines() if line.startswith(record_prefix)]
+    if len(pointers) != 1:
+        return False
     # Include the SHA in the review body: GitHub may remap commit_id.
     for record in reviews:
         author = record.get("user") or {}
-        if (record.get("state") == "COMMENTED" and record.get("commit_id") == head
+        record_id = record.get("id")
+        if (type(record_id) is int and pointers[0] == record_prefix + str(record_id)
+                and record.get("state") == "COMMENTED" and record.get("commit_id") == head
                 and str(author.get("id")) == os.environ.get("GITHUB_ACTOR_ID")
                 and record.get("body") == head + "\n" + lines[0]
                 and submitted_after(record, prior[0])):
