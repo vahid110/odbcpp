@@ -193,8 +193,7 @@ if(DEFINED CONFIG_MANIFEST AND NOT CONFIG_MANIFEST STREQUAL "")
     endif()
     if(_is_apple_ld)
       get_filename_component(_map_name "${STATIC_LINK_MAP}" NAME)
-      if(NOT _map_name MATCHES "^odbcpp-crypto-static-link-[0-9]+-[0-9a-fA-F]+\\.map$" AND
-         NOT _map_name STREQUAL "static-link.map")
+      if(NOT _map_name MATCHES "^odbcpp-crypto-static-link-[0-9]+-[0-9a-fA-F]+\\.map$")
         message(FATAL_ERROR
           "Bundled-static Apple ld linker map name is unrecognized: ${_map_name}")
       endif()

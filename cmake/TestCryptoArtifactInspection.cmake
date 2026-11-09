@@ -253,8 +253,9 @@ function(run_darwin_fixture name linkage output resolution expect_success static
     "\"dependencyRoot\":\"${_fixture_dir}\","
     "\"sslLinkInput\":\"${_ssl}\",\"cryptoLinkInput\":\"${_crypto}\"}\n")
   set(_static_map_argument "")
+  set(_default_darwin_map "${_fixture_dir}/odbcpp-crypto-static-link-20261110010203-0123456789abcdef.map")
   if(static_map_mode MATCHES "^(GOOD|RELATIVE|LD64)$")
-    set(_static_map "${_fixture_dir}/static-link.map")
+    set(_static_map "${_default_darwin_map}")
     file(WRITE "${_static_map}"
       "# Path: ${_artifact}\n"
       "# Arch: arm64\n"
@@ -270,7 +271,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
     endif()
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "SSL_ONLY")
-    set(_static_map "${_fixture_dir}/static-link.map")
+    set(_static_map "${_default_darwin_map}")
     file(WRITE "${_static_map}"
       "# Path: ${_artifact}\n"
       "# Arch: arm64\n"
@@ -281,7 +282,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
   elseif(static_map_mode STREQUAL "WRONG_OUTPUT")
     set(_other_artifact "${_fixture_dir}/another-driver.dylib")
     file(WRITE "${_other_artifact}" "other")
-    set(_static_map "${_fixture_dir}/static-link.map")
+    set(_static_map "${_default_darwin_map}")
     file(WRITE "${_static_map}"
       "# Path: ${_other_artifact}\n"
       "# Arch: arm64\n"
@@ -291,7 +292,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "NONEXISTENT_ARTIFACT")
-    set(_static_map "${_fixture_dir}/static-link.map")
+    set(_static_map "${_default_darwin_map}")
     file(WRITE "${_static_map}"
       "# Path: ${_fixture_dir}/nonexistent.dylib\n"
       "# Arch: arm64\n"
@@ -311,7 +312,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "NONCED")
-    set(_static_map "${_fixture_dir}/odbcpp-crypto-static-link-20261110010203-0123456789abcdef.map")
+    set(_static_map "${_default_darwin_map}")
     file(WRITE "${_static_map}"
       "# Path: ${_artifact}\n"
       "# Arch: arm64\n"
@@ -330,8 +331,18 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  1] ${_ssl}(ssl_member.o)\n"
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
-  elseif(static_map_mode STREQUAL "NO_PATH")
+  elseif(static_map_mode STREQUAL "LEGACY_STATIC_LINK_MAP")
     set(_static_map "${_fixture_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "# Path: ${_artifact}\n"
+      "# Arch: arm64\n"
+      "# Object files:\n"
+      "[  0] linker synthesized\n"
+      "[  1] ${_ssl}(ssl_member.o)\n"
+      "[  2] ${_crypto}(crypto_member.o)\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "NO_PATH")
+    set(_static_map "${_default_darwin_map}")
     file(WRITE "${_static_map}"
       "# Arch: arm64\n"
       "# Object files:\n"
@@ -405,6 +416,8 @@ run_darwin_fixture(darwin_static_nonced_map BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" true NONCED)
 run_darwin_fixture(darwin_static_unnonced_driver_map BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false UNNONCED)
+run_darwin_fixture(darwin_static_legacy_static_link_map BUNDLED_STATIC
+  "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false LEGACY_STATIC_LINK_MAP)
 run_darwin_fixture(darwin_static_no_path BUNDLED_STATIC
   "/usr/lib/libc++.1.dylib\n/usr/lib/libSystem.B.dylib" "" false NO_PATH)
 run_darwin_fixture(darwin_static_ld64 BUNDLED_STATIC
