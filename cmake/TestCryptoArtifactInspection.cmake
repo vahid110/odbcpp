@@ -311,7 +311,7 @@ function(run_darwin_fixture name linkage output resolution expect_success static
       "[  2] ${_crypto}(crypto_member.o)\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "NONCED")
-    set(_static_map "${_fixture_dir}/odbcpp-crypto-static-link-20261110010203.map")
+    set(_static_map "${_fixture_dir}/odbcpp-crypto-static-link-20261110010203-0123456789abcdef.map")
     file(WRITE "${_static_map}"
       "# Path: ${_artifact}\n"
       "# Arch: arm64\n"

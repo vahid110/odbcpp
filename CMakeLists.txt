@@ -187,7 +187,9 @@ elseif(APPLE)
     string(REGEX MATCH "(@\\(#\\))?PROGRAM:ld[ \t]+PROJECT:ld(64)?-[^\r\n]+"
       ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY
       "${_combined_linker_identity}")
-    string(TIMESTAMP _crypto_map_nonce "%Y%m%d%H%M%S")
+    string(TIMESTAMP _crypto_map_ts "%Y%m%d%H%M%S")
+    string(RANDOM LENGTH 16 ALPHABET "0123456789abcdef" _crypto_map_rand)
+    set(_crypto_map_nonce "${_crypto_map_ts}-${_crypto_map_rand}")
     set(ODBCPP_CRYPTO_STATIC_LINK_MAP
         "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link-${_crypto_map_nonce}.map")
     file(REMOVE "${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
