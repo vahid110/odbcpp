@@ -335,18 +335,42 @@ def evaluate_duplication_report(
     return findings
 
 
+def _find_locked_jscpd_bin(root: Path) -> Path | None:
+    """Find the locked jscpd executable in root or enclosing repository checkout."""
+    candidates = [
+        root / "tools" / "ci" / "duplication" / "node_modules" / ".bin" / "jscpd",
+        Path(__file__).resolve().parents[2] / "tools" / "ci" / "duplication" / "node_modules" / ".bin" / "jscpd",
+    ]
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
+    return None
+
+
+def _find_jscpd_config(root: Path) -> Path | None:
+    """Find the locked jscpd configuration file in root or enclosing repository checkout."""
+    candidates = [
+        root / "tools" / "ci" / "duplication" / ".jscpd.json",
+        Path(__file__).resolve().parents[2] / "tools" / "ci" / "duplication" / ".jscpd.json",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def run_jscpd(
     root: Path,
     min_tokens: int = DEFAULT_MIN_TOKENS,
     timeout_seconds: int = 45,
 ) -> dict[str, Any]:
     """Execute jscpd via local locked binary or system tool and return parsed JSON report, failing closed on errors."""
-    local_locked_bin = root / "tools" / "ci" / "duplication" / "node_modules" / ".bin" / "jscpd"
+    locked_bin = _find_locked_jscpd_bin(root)
     system_jscpd = shutil.which("jscpd")
     npx_bin = shutil.which("npx")
 
-    if local_locked_bin.is_file() and os.access(local_locked_bin, os.X_OK):
-        cmd = [str(local_locked_bin)]
+    if locked_bin:
+        cmd = [str(locked_bin)]
     elif system_jscpd:
         cmd = [system_jscpd]
     elif npx_bin:
@@ -360,8 +384,8 @@ def run_jscpd(
     with tempfile.TemporaryDirectory() as tmpdir:
         output_dir = Path(tmpdir) / "jscpd-output"
 
-        config_file = root / "tools" / "ci" / "duplication" / ".jscpd.json"
-        if config_file.is_file():
+        config_file = _find_jscpd_config(root)
+        if config_file:
             cmd.extend(["--config", str(config_file)])
 
         cmd.extend([

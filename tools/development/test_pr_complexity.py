@@ -309,6 +309,25 @@ class DuplicationCheckTests(unittest.TestCase):
                         checker.run_jscpd(Path("/some/path"))
                     self.assertIn("did not generate a report file", str(ctx.exception))
 
+    def test_find_locked_jscpd_bin_and_config_resolution(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        # In a random temporary directory without tools/ci, it resolves via repo fallback
+        with tempfile.TemporaryDirectory() as tmpdir:
+            td = Path(tmpdir)
+            locked_bin = checker._find_locked_jscpd_bin(td)
+            expected_bin = repo_root / "tools" / "ci" / "duplication" / "node_modules" / ".bin" / "jscpd"
+            if expected_bin.is_file():
+                self.assertEqual(expected_bin.resolve(), locked_bin)
+
+            cfg = checker._find_jscpd_config(td)
+            expected_cfg = repo_root / "tools" / "ci" / "duplication" / ".jscpd.json"
+            self.assertEqual(expected_cfg.resolve(), cfg)
+
+        # When files are completely absent, both helpers return None
+        with mock.patch("pathlib.Path.is_file", return_value=False):
+            self.assertIsNone(checker._find_locked_jscpd_bin(Path("/nonexistent")))
+            self.assertIsNone(checker._find_jscpd_config(Path("/nonexistent")))
+
     def test_real_jscpd_binary_detects_duplicate_fixture(self):
         repo_root = Path(__file__).resolve().parents[2]
         local_bin = repo_root / "tools" / "ci" / "duplication" / "node_modules" / ".bin" / "jscpd"
