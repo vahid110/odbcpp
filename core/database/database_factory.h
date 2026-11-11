@@ -31,10 +31,6 @@ public:
   
   // Get the database type this build was compiled for
   static DatabaseType get_compiled_database_type();
-  
-  // Utility functions
-  static DatabaseType detect_from_url(const std::string& connection_url);
-  static DatabaseType detect_from_port(uint16_t port);
 };
 
 } // namespace rs::core::database
