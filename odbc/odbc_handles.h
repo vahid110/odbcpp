@@ -814,6 +814,8 @@ private:
     SQLLEN* octet_length_ptr{};
     SQLLEN octet_length{};
   };
+  struct ParameterBindingLayout;
+  class ParameterConversion;
   static ParameterConversionRecord conversion_record(const DescriptorRecord& record) noexcept;
   struct ParameterInputBase {
     void* data{};
