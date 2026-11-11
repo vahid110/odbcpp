@@ -1904,8 +1904,8 @@ struct PgDatabaseConnection::RedshiftCatalogExecution {
         *plan, connection.execute_prepared(primary_key_command, parameters, deadline));
   }
 
-  BackendResult<QueryResult> dispatch(const CatalogRequest& native,
-                                      const CatalogRequest& semantic_request) {
+  std::optional<BackendResult<QueryResult>> dispatch_non_primary_keys(
+      const CatalogRequest& native, const CatalogRequest& semantic_request) {
     if (auto discovery = scoped_discovery(native, semantic_request)) return std::move(*discovery);
     if (std::holds_alternative<ProceduresCatalogRequest>(native) ||
         std::holds_alternative<ProcedureColumnsCatalogRequest>(native)) {
@@ -1928,8 +1928,7 @@ struct PgDatabaseConnection::RedshiftCatalogExecution {
     }
     if (const auto* foreign = std::get_if<ForeignKeysCatalogRequest>(&native))
       return foreign_keys(*foreign);
-    if (const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&native)) return primary_keys(*keys);
-    return unsupported();
+    return std::nullopt;
   }
 };
 
@@ -1952,6 +1951,7 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(const CatalogRe
     return local_backend_error(LocalFailure::InvalidInput, "Invalid catalog name semantics",
                                BackendOperation::ExecuteCatalog, session_state());
   RedshiftCatalogExecution execution{*this, deadline};
+  const auto unsupported = [&execution] { return execution.unsupported(); };
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
     if (const auto* special = std::get_if<SpecialColumnsCatalogRequest>(&*native);
         special && special->identifier == SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
@@ -1961,11 +1961,13 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(const CatalogRe
     const auto semantic_request = *native;
     auto prepared = execution.prepare_identifier_request(native);
     if (!prepared) return prepared.backend_error();
-    return execution.dispatch(*native, semantic_request);
+    if (auto result = execution.dispatch_non_primary_keys(*native, semantic_request)) {
+      return std::move(*result);
+    }
   }
-  // PostgreSQL exposes catalog_queries() for generated SQL. Direct calls to the
-  // native execution facet keep its unsupported result for that profile.
-  return execution.unsupported();
+  const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&*native);
+  if (catalog_profile_ != PgCatalogProfile::Redshift || !keys) return unsupported();
+  return execution.primary_keys(*keys);
 }
 
 BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
