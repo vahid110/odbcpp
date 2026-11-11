@@ -6967,7 +6967,7 @@ std::optional<std::vector<rs::core::database::QueryParameter>> ODBCStatement::ma
   std::vector<rs::core::database::QueryParameter> param_values;
   param_values.reserve(selected ? 1 : count);
   const ParameterBindingLayout layout{input_offset, set_index, array, bind_stride};
-  const auto first = selected ? static_cast<SQLSMALLINT>(*selected) : 0;
+  const auto first = selected ? static_cast<SQLSMALLINT>(*selected) : SQLSMALLINT{0};
   const auto end = selected ? static_cast<SQLSMALLINT>(*selected + 1) : parameter_count_;
   for (SQLSMALLINT index = first; index < end; ++index) {
     const auto application = captured ? captured_application[index]
