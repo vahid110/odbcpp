@@ -377,7 +377,8 @@ TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
       Case{"42P01", ErrorContext::Unknown, "42S02"},
       Case{"42704", ErrorContext::DropIndex, "42S12"},
       Case{"42701", ErrorContext::Unknown, "42S21"},
-      Case{"42703", ErrorContext::Unknown, "42S22"}}) {
+      Case{"42703", ErrorContext::Unknown, "42S22"},
+      Case{"42601", ErrorContext::Unknown, "42601"}}) {
     SCOPED_TRACE(item.native);
     EXPECT_EQ(std::optional<std::string>(item.expected),
               configured_backend_provider().normalize_error_sqlstate(item.native, item.context));

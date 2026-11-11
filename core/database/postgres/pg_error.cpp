@@ -65,6 +65,9 @@ std::optional<std::string> PgBackendProvider::normalize_error_sqlstate(
   }
   if (server_state == "42701") return std::string{"42S21"};
   if (server_state == "42703") return std::string{"42S22"};
+  // Preserve PostgreSQL and Amazon Redshift native syntax error SQLSTATE 42601
+  // rather than collapsing to generic caller fallback, matching vendor diagnostics.
+  if (server_state == "42601") return std::string{"42601"};
   return std::nullopt;
 }
 

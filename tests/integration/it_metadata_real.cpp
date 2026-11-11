@@ -2232,7 +2232,9 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("42000", reinterpret_cast<char*>(state));
+    // PostgreSQL emits native 42601 (syntax error) for "SELECT * FROM",
+    // preserved rather than collapsed to generic 42000 per #226.
+    EXPECT_STREQ("42601", reinterpret_cast<char*>(state));
     row_count = 77;
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
     EXPECT_EQ(untouched_row_count(77), row_count);
