@@ -190,9 +190,15 @@ TEST_P(PreparedBatchSyntaxDiagnosticsTest, ParameterMarkerPreparedBatchPreserves
   EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
 
-  // Proving single-statement execution succeeds afterward on the same statement
-  script->responses["SELECT 31"] = row_description({{"val", 23}}) + data_row({{"31"}}) + complete("SELECT 1");
-  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 31")), SQL_NTS));
+  // Proving subsequent prepared single-statement execution with parameters succeeds on the same handle
+  const std::string single_sql = "SELECT CAST(? AS INTEGER)";
+  const std::string single_wire = "SELECT CAST($1 AS INTEGER)";
+  script->responses[single_wire] = frame('1', "") + frame('2', "") + row_description({{"val", 23}}) + data_row({{"31"}}) + complete("SELECT 1");
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(single_sql.c_str())), SQL_NTS));
+  SQLINTEGER p_new = 31;
+  SQLLEN p_len = sizeof(p_new);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &p_new, 0, &p_len));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
 
   SQLCHAR buf[32]{};
   SQLLEN len = 0;

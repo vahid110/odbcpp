@@ -68,6 +68,7 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Development roadmap and changelog
 
 ### Changed
+- Preserved PostgreSQL and Amazon Redshift native syntax error SQLSTATE `42601` rather than collapsing to generic caller fallback (`42000` or `HY000`) for rejected prepared multi-statement batches and server-side syntax errors, matching native and Simba vendor driver diagnostics (#226).
 - Public SDK source/binary compatibility break: `BackendCapabilities::outer_joins` is replaced by detailed `sql.join_*` declarations and the capability aggregate layout changes. Out-of-tree providers must migrate their declarations and all SDK consumers must recompile.
 - Unknown providers now report `SQL_MULT_RESULT_SETS=N` unless a qualified SELECT-batch, direct-result-sequence, or prepared-select-array capability supplies multiple results. Explicit batch masks remain zero for PostgreSQL and Redshift because their prepared batch contract is not implemented.
 - Redshift now reports its qualified SQL-92 expressions, subqueries, joins, aggregates, datetime literals and 18 scalar escape functions through `SQLGetInfo`. Both native products report `SQL_OUTER_JOINS=F` for full nested support alongside their specific supported join bits. This includes two-argument LOCATE. The optional start-position form remains unsupported.
