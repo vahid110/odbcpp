@@ -49,6 +49,22 @@ Record unrun gates as debt. Prose-only edits need targeted link/command review,
 not a blanket product-suite replay. Control/preset changes need their focused
 offline tests and a meaningful command smoke.
 
+### PR code complexity and duplication gates
+
+Incoming pull requests are guarded by automated lightweight complexity and duplication checks on changed files (`tools/development/check_pr_complexity.py`):
+- **Cyclomatic Complexity Number (CCN)**: Functions newly introduced or modified in a PR must not exceed CCN **25**.
+- **Function Length (NLOC)**: Functions newly introduced or modified in a PR must not exceed **100** non-comment lines of code (NLOC).
+- **Duplication**: Newly introduced or modified code blocks must not duplicate more than **50 tokens** (approx. 10–15 lines).
+- **Scope & Boundaries**: The gate checks only files modified or added in the PR; untouched legacy code is never retroactively failed.
+- **Exemptions**:
+  - Functions requiring higher complexity (e.g., machine-generated parsers, dispatch jump tables, exhaustive protocol switch cases) may be exempted with an inline comment: `// NOLINT(complexity)`, `/* NOLINT(complexity) */`, `// lizard: ignore`, or `# NOLINT(complexity)`.
+  - Duplicate blocks (e.g., repetitive protocol test tables or mock responses) may be exempted with `/* jscpd:ignore-start */ ... /* jscpd:ignore-end */` or `// jscpd:ignore-start ... // jscpd:ignore-end`.
+- **Local execution**:
+  ```sh
+  python3 -B tools/development/check_pr_complexity.py --base <base-ref>
+  ```
+  Requires `python3 -m pip install lizard` and Node.js (`npx`).
+
 When running a full suite, execute the complete applicable inventory through
 ordinary assertion failures and isolated crashes before repairing anything.
 CTest owns selection, scheduling, timeouts, fixtures and process outcomes.

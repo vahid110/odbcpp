@@ -129,6 +129,9 @@ jobs:
         if: matrix.product == 'POSTGRESQL'
         run: |
           set -o pipefail
+          python3 -m pip install --no-cache-dir lizard
+          python3 -B tools/development/check_pr_complexity.py \
+            --base "${{ github.event.pull_request.base.sha || 'origin/main' }}"
           status=0
           for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
             echo "::group::$test"

@@ -56,6 +56,9 @@ cmake --build --preset unixodbc-pg
 ctest --preset unixodbc-pg -R '^test_connection_options$' --output-junit focused.xml
 ctest --preset unixodbc-pg --output-junit full.xml --output-log full.log
 ctest --preset unixodbc-redshift-offline --output-junit offline.xml
+
+# Code quality and complexity gates on changed files:
+python3 -B tools/development/check_pr_complexity.py --base <base-ref>
 ```
 
 The unfiltered test preset is the full configured inventory. Its `-offline`
