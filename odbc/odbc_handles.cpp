@@ -6122,932 +6122,866 @@ ODBCStatement::ParameterConversionRecord ODBCStatement::conversion_record(const 
   return out;
 }
 
-std::optional<std::vector<rs::core::database::QueryParameter>>
-ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
-                                         SQLULEN set_index, bool array,
-                                         SQLULEN bind_stride, std::span<const ParameterInputBase> bases,
-                                         std::size_t& parameter_bytes,
-                                         std::span<const ParameterConversionRecord> captured_application,
-                                         std::span<const ParameterConversionRecord> captured_implementation,
-                                         std::optional<std::size_t> selected) {
-  const bool captured = !captured_application.empty();
-  const auto application_descriptor = captured ? std::shared_ptr<ODBCDescriptor>{} : descriptor(app_param_descriptor_);
-  const auto span_error = [&]() -> std::optional<std::vector<rs::core::database::QueryParameter>> {
-    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Parameter binding address span is out of range");
-    return std::nullopt;
-  };
-  struct InputFields { void* data{}; SQLLEN* indicator{}; SQLLEN* length{}; };
-  bool diagnosed_field_error = false;
-  const auto fields_for = [&](const ParameterConversionRecord& record, std::size_t index, InputFields& fields) {
-    const auto base = array ? bases[index]
-        : ParameterInputBase{record.data_ptr, record.indicator_ptr, record.octet_length_ptr};
-    if (!array && !input_offset) {
-      fields = {base.data, base.indicator, base.octet_length};
+namespace {
+
+// ODBC conversion failures are terminal for the current parameter set.
+bool reject_parameter(ODBCStatement& statement, const char* state, const char* message) {
+  statement.set_error(state, message);
+  return false;
+}
+
+}  // namespace
+
+struct ODBCStatement::ParameterBindingLayout {
+  std::uintptr_t input_offset;
+  SQLULEN set_index;
+  bool array;
+  SQLULEN bind_stride;
+
+  bool shift(const void* base, std::size_t step, std::size_t extent, void*& output) const {
+    if (!base) {
+      output = nullptr;
       return true;
     }
-    const auto normal_implementation=captured ? ParameterConversionRecord{} :
-        conversion_record(*descriptor(imp_param_descriptor_)->record(index));
-    const auto* implementation=captured ? &captured_implementation[index] : &normal_implementation;
-    // Resolve only the native C representation; no descriptor base is rewritten.
-    const auto type = ResultTypes::canonical_c_type(record.concise_type == SQL_C_DEFAULT
-        ? ResultTypes::default_c_type(implementation && implementation->bound_sql_type
-            ? implementation->bound_sql_type : implementation ? implementation->concise_type : 0)
-        : record.concise_type);
+    const auto address = reinterpret_cast<std::uintptr_t>(base);
+    const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    if (input_offset > maximum - address) return false;
+    const auto shifted = address + input_offset;
+    // Row-wise layout advances each original field base by the same captured
+    // struct stride; its consumed extent remains field-specific. No premise
+    // that BufferLength fits inside the stride or proves caller allocation.
+    const auto effective_step =
+        array && bind_stride != SQL_PARAM_BIND_BY_COLUMN ? bind_stride : static_cast<SQLULEN>(step);
+    if (set_index && effective_step > (maximum - shifted) / set_index) return false;
+    const auto slot =
+        shifted + static_cast<std::uintptr_t>(set_index) * static_cast<std::uintptr_t>(effective_step);
+    if (extent > maximum - slot) return false;
+    output = reinterpret_cast<void*>(slot);
+    return true;
+  }
+
+  bool resolve(ODBCStatement& statement, const ParameterConversionRecord& record, SQLSMALLINT type,
+               ParameterInputBase base, ParameterInputBase& fields) const {
+    if (!array && !input_offset) {
+      fields = base;
+      return true;
+    }
     const bool variable = type == SQL_C_CHAR || type == SQL_C_WCHAR || type == SQL_C_BINARY;
     const auto fixed = bound_column_stride(type, 0);
-    const auto stride = variable ? static_cast<std::size_t>(record.octet_length > 0 ? record.octet_length : 0)
-                                 : fixed.value_or(0);
-    const auto shift = [&](const void* base, std::size_t step, std::size_t extent, void*& output) {
-      if (!base) { output = nullptr; return true; }
-      const auto address = reinterpret_cast<std::uintptr_t>(base);
-      const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
-      if (input_offset > maximum - address) return false;
-      const auto shifted = address + input_offset;
-      // Row-wise layout advances each original field base by the same captured
-      // struct stride; its consumed extent remains field-specific. No premise
-      // that BufferLength fits inside the stride or proves caller allocation.
-      const auto effective_step = array && bind_stride != SQL_PARAM_BIND_BY_COLUMN
-          ? bind_stride : static_cast<SQLULEN>(step);
-      if (set_index && effective_step > (maximum - shifted) / set_index) return false;
-      const auto slot = shifted + static_cast<std::uintptr_t>(set_index) *
-          static_cast<std::uintptr_t>(effective_step);
-      if (extent > maximum - slot) return false;
-      output = reinterpret_cast<void*>(slot);
-      return true;
-    };
+    const auto stride = variable
+                            ? static_cast<std::size_t>(record.octet_length > 0 ? record.octet_length : 0)
+                            : fixed.value_or(0);
     void* indicator = nullptr;
-    if (!shift(base.indicator, sizeof(SQLLEN), sizeof(SQLLEN), indicator)) return false;
+    if (!shift(base.indicator, sizeof(SQLLEN), sizeof(SQLLEN), indicator)) {
+      return reject_span(statement);
+    }
     fields.indicator = static_cast<SQLLEN*>(indicator);
-    if (fields.indicator && load_application_value<SQLLEN>(fields.indicator) == SQL_NULL_DATA)
-      return true; // NULL does not consume data or a separate octet length.
+    if (fields.indicator && load_application_value<SQLLEN>(fields.indicator) == SQL_NULL_DATA) {
+      return true;  // NULL consumes neither data nor a separate octet length.
+    }
     if (array && variable && record.octet_length <= 0) {
-      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                "Parameter arrays require a positive variable-width slot size");
-      diagnosed_field_error = true;
-      return false;
+      return reject_parameter(statement, SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                              "Parameter arrays require a positive variable-width slot size");
     }
     void* length = nullptr;
-    if (!shift(base.octet_length, sizeof(SQLLEN), sizeof(SQLLEN), length)) return false;
-    fields.length = static_cast<SQLLEN*>(length);
-    if (!shift(base.data, stride, variable ? (array ? stride : 0) : fixed.value_or(0), fields.data)) return false;
-    if (!array || !fields.data || !variable) return true;
-    const auto* pointer = fields.length ? fields.length : fields.indicator;
+    if (!shift(base.octet_length, sizeof(SQLLEN), sizeof(SQLLEN), length)) {
+      return reject_span(statement);
+    }
+    fields.octet_length = static_cast<SQLLEN*>(length);
+    const auto extent = variable ? (array ? stride : 0) : fixed.value_or(0);
+    if (!shift(base.data, stride, extent, fields.data)) {
+      return reject_span(statement);
+    }
+    return !array || !fields.data || !variable ||
+           validate_array_slot(statement, record, type, fields, stride);
+  }
+
+ private:
+  static bool reject_span(ODBCStatement& statement) {
+    return reject_parameter(statement, SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                            "Parameter binding address span is out of range");
+  }
+
+  static bool validate_array_slot(ODBCStatement& statement, const ParameterConversionRecord& record,
+                                  SQLSMALLINT type, const ParameterInputBase& fields,
+                                  std::size_t stride) {
+    const auto* pointer = fields.octet_length ? fields.octet_length : fields.indicator;
     const auto bytes = pointer ? load_application_value<SQLLEN>(pointer) : record.octet_length;
     if (bytes >= 0 && (bytes != 0 || pointer || type == SQL_C_BINARY)) {
-      if (array && static_cast<SQLULEN>(bytes) > stride) return false;
-      return static_cast<SQLULEN>(bytes) <= (std::numeric_limits<std::uintptr_t>::max)() -
-          reinterpret_cast<std::uintptr_t>(fields.data);
+      // shift() already validated the complete variable-width slot extent.
+      return static_cast<SQLULEN>(bytes) <= stride || reject_span(statement);
     }
-    // The array NTS scan cannot escape its fixed application slot. Scalar scans
-    // retain the existing configured byte bound and caller allocation contract.
-    if (bytes == SQL_NTS || (bytes == 0 && !pointer)) {
-      if (type == SQL_C_BINARY) return true;
-      const auto unit = type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
-      const auto budget = std::min(conn_->input_limits().max_parameter_bytes,
-          conn_->input_limits().max_parameter_total_bytes - parameter_bytes);
-      if (!array && budget > (std::numeric_limits<std::size_t>::max)() - unit) return false;
-      const auto scan = array ? stride : budget + unit;
-      if (scan > (std::numeric_limits<std::uintptr_t>::max)() - reinterpret_cast<std::uintptr_t>(fields.data)) return false;
-      bool ended = false;
-      for (std::size_t pos = 0; pos <= scan && unit <= scan - pos; pos += unit) {
-        const auto* next = static_cast<const unsigned char*>(fields.data) + pos;
-        if ((type == SQL_C_WCHAR ? load_application_value<SQLWCHAR>(next) == 0
-                                : load_application_value<SQLCHAR>(next) == 0)) { ended = true; break; }
-      }
-      if (array && !ended) {
-        set_error(SQLSTATE_INVALID_STRING_LENGTH, "Parameter string is not terminated within its array slot");
-        diagnosed_field_error = true;
-        return false;
+    if (type == SQL_C_BINARY || (bytes != SQL_NTS && (bytes != 0 || pointer))) {
+      return true;
+    }
+    // An NTS scan must end inside its own array slot.
+    const auto unit = type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
+    for (std::size_t pos = 0; pos <= stride && unit <= stride - pos; pos += unit) {
+      const auto* next = static_cast<const unsigned char*>(fields.data) + pos;
+      if (type == SQL_C_WCHAR ? load_application_value<SQLWCHAR>(next) == 0
+                              : load_application_value<SQLCHAR>(next) == 0) {
+        return true;
       }
     }
-    return true;
-  };
-    const auto implementation_descriptor = captured ? std::shared_ptr<ODBCDescriptor>{} : descriptor(imp_param_descriptor_);
-    if ((array && bases.size() != static_cast<std::size_t>(parameter_count_)) ||
-        (captured ? captured_application.size() : application_descriptor->record_count()) <
-            static_cast<std::size_t>(parameter_count_) ||
-        (captured ? captured_implementation.size() : implementation_descriptor->record_count()) <
-            static_cast<std::size_t>(parameter_count_)) {
-      set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
-                "Not all statement parameters are bound");
-      return std::nullopt;
+    return reject_parameter(statement, SQLSTATE_INVALID_STRING_LENGTH,
+                            "Parameter string is not terminated within its array slot");
+  }
+};
+
+// One conversion owns its intermediate value. The caller commits the byte count
+// and publishes the query parameter only after every applicable target check.
+class ODBCStatement::ParameterConversion {
+  using QueryParameterType = rs::core::database::QueryParameterType;
+
+  ODBCStatement& statement;
+  const ParameterConversionRecord& application;
+  const ParameterConversionRecord& implementation;
+  const SQLSMALLINT declared_sql_type;
+  const SQLULEN declared_sql_length;
+  const SQLSMALLINT declared_sql_precision;
+  const SQLSMALLINT declared_sql_scale;
+  const SQLSMALLINT value_type;
+  const std::size_t parameter_limit;
+  ParameterInputBase fields{};
+  rs::core::database::QueryParameter query_param;
+  std::string value;
+  std::optional<SQLBIGINT> signed_number;
+  std::optional<SQLUBIGINT> unsigned_number;
+
+ public:
+  ParameterConversion(ODBCStatement& statement, const ParameterConversionRecord& application,
+                      const ParameterConversionRecord& implementation, std::size_t parameter_limit)
+      : statement(statement),
+        application(application),
+        implementation(implementation),
+        declared_sql_type(implementation.bound_sql_type ? implementation.bound_sql_type
+                                                        : implementation.concise_type),
+        declared_sql_length(implementation.bound_sql_type ? implementation.bound_sql_length
+                                                          : implementation.length),
+        declared_sql_precision(implementation.bound_sql_precision ? implementation.bound_sql_precision
+                                                                  : implementation.precision),
+        declared_sql_scale(implementation.bound_sql_scale.value_or(implementation.scale)),
+        value_type(ResultTypes::canonical_c_type(application.concise_type == SQL_C_DEFAULT
+                                                     ? ResultTypes::default_c_type(declared_sql_type)
+                                                     : application.concise_type)),
+        parameter_limit(parameter_limit) {}
+
+  bool append(const ParameterBindingLayout& layout, ParameterInputBase base,
+              std::size_t& parameter_bytes, std::vector<rs::core::database::QueryParameter>& results) {
+    if (!layout.resolve(statement, application, value_type, base, fields)) return false;
+    const bool is_null =
+        fields.indicator && load_application_value<SQLLEN>(fields.indicator) == SQL_NULL_DATA;
+    if (!fields.data && !is_null) {
+      return reject(SQLSTATE_INVALID_PARAMETER_NUMBER, "Not all statement parameters are bound");
     }
-    const auto& input_limits = conn_->input_limits();
-    if (static_cast<std::size_t>(parameter_count_) > input_limits.max_parameters) {
-      set_error(SQLSTATE_GENERAL_ERROR, "Parameter count exceeds configured limit");
-      return std::nullopt;
+    if (implementation.parameter_type != SQL_PARAM_INPUT) {
+      return reject(SQLSTATE_GENERAL_ERROR, "Only input parameters are currently supported");
     }
-    const auto reject_parameter_limit = [&]() {
-      set_error(SQLSTATE_GENERAL_ERROR, "Parameter bytes exceed configured limit");
-      return std::nullopt;
-    };
-    std::vector<rs::core::database::QueryParameter> param_values;
-    param_values.reserve(selected ? 1 : static_cast<std::size_t>(parameter_count_));
-    
-    for (SQLSMALLINT index = selected ? static_cast<SQLSMALLINT>(*selected) : 0;
-         index < (selected ? static_cast<SQLSMALLINT>(*selected+1) : parameter_count_); ++index) {
-      const auto application = captured ? captured_application[index]
-          : conversion_record(*application_descriptor->record(static_cast<std::size_t>(index)));
-      const auto implementation = captured ? captured_implementation[index]
-          : conversion_record(*implementation_descriptor->record(static_cast<std::size_t>(index)));
-      InputFields fields;
-      if (!fields_for(application, static_cast<std::size_t>(index), fields)) {
-        if (diagnosed_field_error) return std::nullopt;
-        return span_error();
-      }
-      const auto* length_or_indicator = fields.length
-          ? fields.length : fields.indicator;
-      const bool is_null = fields.indicator &&
-          load_application_value<SQLLEN>(fields.indicator) ==
-              SQL_NULL_DATA;
-      if (!fields.data && !is_null) {
-        set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
-                  "Not all statement parameters are bound");
-        return std::nullopt;
-      }
-      if (implementation.parameter_type != SQL_PARAM_INPUT) {
-        set_error(SQLSTATE_GENERAL_ERROR,
-                  "Only input parameters are currently supported");
-        return std::nullopt;
-      }
-
-      SQLSMALLINT value_type = application.concise_type;
-      const auto declared_sql_type = implementation.bound_sql_type != 0
-          ? implementation.bound_sql_type : implementation.concise_type;
-      const auto declared_sql_length = implementation.bound_sql_type != 0
-          ? implementation.bound_sql_length : implementation.length;
-      const auto declared_sql_precision =
-          implementation.bound_sql_precision != 0
-          ? implementation.bound_sql_precision : implementation.precision;
-      const auto declared_sql_scale =
-          implementation.bound_sql_scale.value_or(implementation.scale);
-      if (value_type == SQL_C_DEFAULT) {
-        value_type = ResultTypes::default_c_type(declared_sql_type);
-      }
-      value_type = ResultTypes::canonical_c_type(value_type);
-      if (const auto* error = restricted_parameter_pair_error(value_type, declared_sql_type)) {
-        set_error(SQLSTATE_RESTRICTED_DATA_TYPE, error);
-        return std::nullopt;
-      }
-      rs::core::database::QueryParameter query_param;
-      query_param.type = parameter_type_for(
-          implementation.concise_type, value_type);
-      if (is_null) {
-        query_param.value = std::nullopt;
-        param_values.push_back(std::move(query_param));
-        continue;
-      }
-
-      const auto parameter_limit = std::min(input_limits.max_parameter_bytes,
-          input_limits.max_parameter_total_bytes - parameter_bytes);
-      std::string value;
-      std::optional<SQLBIGINT> signed_number;
-      std::optional<SQLUBIGINT> unsigned_number;
-      if (value_type == SQL_C_CHAR) {
-        const auto* text = static_cast<const char*>(fields.data);
-        SQLLEN length = application.octet_length;
-        if (length_or_indicator) {
-          length = load_application_value<SQLLEN>(length_or_indicator);
-        }
-        if (length == SQL_NTS || (length == 0 && !length_or_indicator)) {
-          std::size_t bytes = 0;
-          while (bytes < parameter_limit && text[bytes] != '\0') ++bytes;
-          if (bytes == parameter_limit && text[bytes] != '\0') {
-            return reject_parameter_limit();
-          }
-          value.assign(text, bytes);
-        } else if (length >= 0) {
-          if (static_cast<std::size_t>(length) > parameter_limit) {
-            return reject_parameter_limit();
-          }
-          value.assign(text, static_cast<std::size_t>(length));
-        } else {
-          set_error(SQLSTATE_GENERAL_ERROR,
-                    "Data-at-execution parameters are not supported yet");
-          return std::nullopt;
-        }
-      } else if (value_type == SQL_C_WCHAR) {
-        SQLLEN length = application.octet_length;
-        if (length_or_indicator) {
-          length = load_application_value<SQLLEN>(length_or_indicator);
-        }
-        SQLINTEGER units = SQL_NTS;
-        if (length != SQL_NTS && (length != 0 || length_or_indicator)) {
-          if (length < 0 || length % sizeof(SQLWCHAR) != 0 ||
-              static_cast<SQLULEN>(length / sizeof(SQLWCHAR)) >
-                  static_cast<SQLULEN>(
-                      std::numeric_limits<SQLINTEGER>::max())) {
-            set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                      "Invalid wide-character parameter length");
-            return std::nullopt;
-          }
-          units = static_cast<SQLINTEGER>(length / sizeof(SQLWCHAR));
-        }
-        bool exceeded = false;
-        auto converted = sqlwchar_to_utf8_bounded(
-            fields.data, units, parameter_limit, exceeded);
-        if (exceeded) return reject_parameter_limit();
-        if (!converted) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid wide-character parameter value");
-          return std::nullopt;
-        }
-        value = std::move(*converted);
-      } else if (value_type == SQL_C_STINYINT) {
-        signed_number = load_application_value<SQLSCHAR>(fields.data);
-        value = std::to_string(*signed_number);
-      } else if (value_type == SQL_C_SSHORT) {
-        signed_number = load_application_value<SQLSMALLINT>(
-            fields.data);
-        value = std::to_string(*signed_number);
-      } else if (value_type == SQL_C_SLONG) {
-        signed_number = load_application_value<SQLINTEGER>(
-            fields.data);
-        value = std::to_string(*signed_number);
-      } else if (value_type == SQL_C_SBIGINT) {
-        signed_number = load_application_value<SQLBIGINT>(
-            fields.data);
-        value = std::to_string(*signed_number);
-      } else if (value_type == SQL_C_UTINYINT) {
-        unsigned_number = load_application_value<SQLCHAR>(
-            fields.data);
-        value = std::to_string(*unsigned_number);
-      } else if (value_type == SQL_C_USHORT) {
-        unsigned_number = load_application_value<SQLUSMALLINT>(
-            fields.data);
-        value = std::to_string(*unsigned_number);
-      } else if (value_type == SQL_C_ULONG) {
-        unsigned_number = load_application_value<SQLUINTEGER>(
-            fields.data);
-        value = std::to_string(*unsigned_number);
-      } else if (value_type == SQL_C_UBIGINT) {
-        unsigned_number = load_application_value<SQLUBIGINT>(
-            fields.data);
-        value = std::to_string(*unsigned_number);
-      } else if (value_type == SQL_C_NUMERIC) {
-        const auto formatted = TextDataConverter::format_numeric(
-            load_application_value<SQL_NUMERIC_STRUCT>(fields.data),
-            application.precision, application.scale);
-        if (!formatted) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Numeric parameter exceeds APD precision or has invalid fields");
-          return std::nullopt;
-        }
-        value = *formatted;
-        if (const auto limits = signed_integer_limits(declared_sql_type)) {
-          SQLBIGINT integer = 0;
-          if (TextDataConverter::convert_data(value, SQL_C_SBIGINT,
-                  &integer, 0, nullptr) == SQL_ERROR ||
-              integer < limits->minimum || integer > limits->maximum) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Numeric parameter is outside SQL integer range");
-            return std::nullopt;
-          }
-          value = std::to_string(integer);
-        }
-        // ODBC SQL target policy validates the owning exact APD text without
-        // replacing it with a rounded floating representation.
-        if (declared_sql_type == SQL_REAL) {
-          SQLREAL checked = 0;
-          if (TextDataConverter::convert_data(
-                  value, SQL_C_FLOAT, &checked, 0, nullptr) == SQL_ERROR) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Numeric parameter is outside SQL_REAL range");
-            return std::nullopt;
-          }
-        } else if (declared_sql_type == SQL_FLOAT ||
-                   declared_sql_type == SQL_DOUBLE) {
-          SQLDOUBLE checked = 0;
-          if (TextDataConverter::convert_data(
-                  value, SQL_C_DOUBLE, &checked, 0, nullptr) == SQL_ERROR) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Numeric parameter is outside SQL floating range");
-            return std::nullopt;
-          }
-        }
-      } else if (value_type == SQL_C_FLOAT) {
-        value = format_floating_parameter(
-            load_application_value<SQLREAL>(fields.data));
-      } else if (value_type == SQL_C_DOUBLE) {
-        const auto number = load_application_value<SQLDOUBLE>(fields.data);
-        if (declared_sql_type == SQL_REAL) {
-          const auto narrowed = narrow_real_parameter(number);
-          if (!narrowed) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Double parameter is outside SQL_REAL range");
-            return std::nullopt;
-          }
-          value = format_floating_parameter(*narrowed);
-        } else {
-          value = format_floating_parameter(number);
-        }
-      } else if (value_type == SQL_C_BIT) {
-        const auto bit = load_application_value<SQLCHAR>(fields.data);
-        if (bit > 1) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "BIT parameter must be zero or one");
-          return std::nullopt;
-        }
-        value = bit ? "1" : "0";
-      } else if (value_type == SQL_C_DATE ||
-                 value_type == SQL_C_TYPE_DATE) {
-        const auto formatted = format_date_parameter(
-            load_application_value<SQL_DATE_STRUCT>(fields.data));
-        if (!formatted) {
-          set_error(invalid_temporal_parameter_state(query_param.type),
-                    "Invalid date parameter value");
-          return std::nullopt;
-        }
-        if (query_param.type ==
-                rs::core::database::QueryParameterType::Text &&
-            declared_sql_length < formatted->size()) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Date parameter exceeds SQL character length");
-          return std::nullopt;
-        }
-        value = query_param.type ==
-                rs::core::database::QueryParameterType::Timestamp
-            ? *formatted + " 00:00:00"
-            : *formatted;
-      } else if (value_type == SQL_C_TIME ||
-                 value_type == SQL_C_TYPE_TIME) {
-        const auto formatted = format_time_parameter(
-            load_application_value<SQL_TIME_STRUCT>(fields.data));
-        if (!formatted) {
-          set_error(invalid_temporal_parameter_state(query_param.type),
-                    "Invalid time parameter value");
-          return std::nullopt;
-        }
-        if (query_param.type ==
-                rs::core::database::QueryParameterType::Text &&
-            declared_sql_length < formatted->size()) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Time parameter exceeds SQL character length");
-          return std::nullopt;
-        }
-        if (query_param.type ==
-            rs::core::database::QueryParameterType::Timestamp) {
-          const auto date = current_local_date_parameter();
-          if (!date) {
-            set_error(SQLSTATE_GENERAL_ERROR,
-                      "Current local date is unavailable");
-            return std::nullopt;
-          }
-          value = *date + " " + *formatted;
-        } else {
-          value = *formatted;
-        }
-      } else if (value_type == SQL_C_TIMESTAMP ||
-                 value_type == SQL_C_TYPE_TIMESTAMP) {
-        const auto timestamp = load_application_value<SQL_TIMESTAMP_STRUCT>(
-            fields.data);
-        const auto date = format_date_parameter(SQL_DATE_STRUCT{
-            timestamp.year, timestamp.month, timestamp.day});
-        const auto time = format_time_parameter(SQL_TIME_STRUCT{
-            timestamp.hour, timestamp.minute, timestamp.second});
-        const auto target = query_param.type;
-        using rs::core::database::QueryParameterType;
-        if ((target != QueryParameterType::Time && !date) || !time ||
-            timestamp.fraction >= 1000000000u) {
-          set_error(invalid_temporal_parameter_state(target),
-                    "Invalid timestamp parameter value");
-          return std::nullopt;
-        }
-        if (target == QueryParameterType::Date) {
-          if (timestamp.hour != 0 || timestamp.minute != 0 ||
-              timestamp.second != 0 || timestamp.fraction != 0) {
-            set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                      "Timestamp time fields cannot fit a date parameter");
-            return std::nullopt;
-          }
-          value = *date;
-        } else if (target == QueryParameterType::Time) {
-          if (timestamp.fraction != 0) {
-            set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                      "Timestamp fraction cannot fit a time parameter");
-            return std::nullopt;
-          }
-          value = *time;
-        } else {
-          const bool character_target = target == QueryParameterType::Text;
-          std::uint32_t fractional_quantum = 1000u;
-          if (target == QueryParameterType::Timestamp) {
-            const auto quantum = timestamp_fractional_quantum(
-                implementation.precision);
-            if (!quantum) {
-              set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
-                        "Unsupported timestamp parameter precision");
-              return std::nullopt;
-            }
-            fractional_quantum = *quantum;
-          }
-          if (!character_target &&
-              timestamp.fraction % fractional_quantum != 0) {
-            set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                      "Timestamp fraction exceeds parameter precision");
-            return std::nullopt;
-          }
-          char fraction[11]{};
-          std::string fractional_text;
-          if (character_target) {
-            std::snprintf(fraction, sizeof(fraction), ".%09u",
-                          timestamp.fraction);
-            fractional_text = fraction;
-            while (fractional_text.size() > 1 &&
-                   fractional_text.back() == '0') {
-              fractional_text.pop_back();
-            }
-            if (fractional_text.size() == 1) {
-              fractional_text.clear();
-            }
-          } else {
-            std::snprintf(fraction, sizeof(fraction), ".%06u",
-                          timestamp.fraction / 1000u);
-            fractional_text = fraction;
-          }
-          value = *date + " " + *time + fractional_text;
-          if (character_target && declared_sql_length < value.size()) {
-            set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                      "Timestamp parameter exceeds SQL character length");
-            return std::nullopt;
-          }
-        }
-      } else if (value_type == SQL_C_BINARY) {
-        SQLLEN length = application.octet_length;
-        if (length_or_indicator) {
-          length = load_application_value<SQLLEN>(length_or_indicator);
-        }
-        if (length < 0) {
-          set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid binary parameter length");
-          return std::nullopt;
-        }
-        if (static_cast<std::size_t>(length) > parameter_limit) {
-          return reject_parameter_limit();
-        }
-        if (query_param.type ==
-                rs::core::database::QueryParameterType::Binary &&
-            static_cast<SQLULEN>(length) > declared_sql_length) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Binary parameter exceeds SQL binary length");
-          return std::nullopt;
-        }
-        if (declared_sql_type == SQL_INTEGER) {
-          static_assert(sizeof(SQLINTEGER) == 4 &&
-                        std::numeric_limits<SQLINTEGER>::is_signed);
-          if (length != static_cast<SQLLEN>(sizeof(SQLINTEGER))) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Binary INTEGER parameter requires exactly four bytes");
-            return std::nullopt;
-          }
-          signed_number = load_application_value<SQLINTEGER>(fields.data);
-          value = std::to_string(*signed_number);
-        } else if (declared_sql_type == SQL_BIGINT) {
-          static_assert(sizeof(SQLBIGINT) == 8 &&
-                        std::numeric_limits<SQLBIGINT>::is_signed);
-          if (length != static_cast<SQLLEN>(sizeof(SQLBIGINT))) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Binary BIGINT parameter requires exactly eight bytes");
-            return std::nullopt;
-          }
-          signed_number = load_application_value<SQLBIGINT>(fields.data);
-          value = std::to_string(*signed_number);
-        } else {
-          value.assign(static_cast<const char*>(fields.data),
-                       static_cast<std::size_t>(length));
-          query_param.binary_input = true;
-        }
-      } else {
-        set_error(SQLSTATE_GENERAL_ERROR,
-                  "Unsupported C parameter type");
-        return std::nullopt;
-      }
-
-      const bool character_input =
-          value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
-      const bool floating_input =
-          value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
-      const bool signed_integer_input = signed_number.has_value();
-      const bool unsigned_integer_input = unsigned_number.has_value();
-      const bool numeric_input = signed_integer_input ||
-          unsigned_integer_input || floating_input ||
-          value_type == SQL_C_NUMERIC;
-      if (floating_input &&
-          (declared_sql_type == SQL_DECIMAL ||
-           declared_sql_type == SQL_NUMERIC)) {
-        const double number = value_type == SQL_C_FLOAT
-            ? static_cast<double>(load_application_value<SQLREAL>(
-                  fields.data))
-            : load_application_value<SQLDOUBLE>(fields.data);
-        if (!std::isfinite(number)) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Nonfinite floating parameter cannot bind to SQL numeric");
-          return std::nullopt;
-        }
-        if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
-          const auto digits = decimal_digits(value);
-          const auto available_digits = std::max<int>(
-              0, declared_sql_precision - declared_sql_scale);
-          if (!digits ||
-              digits->whole > static_cast<std::size_t>(available_digits)) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Floating parameter exceeds SQL numeric precision");
-            return std::nullopt;
-          }
-        }
-      }
-      using rs::core::database::QueryParameterType;
-      const auto integer_limits = signed_integer_limits(declared_sql_type);
-      if (character_input && integer_limits) {
-        if (!decimal_digits(value)) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Character parameter is not a numeric literal");
-          return std::nullopt;
-        }
-        SQLBIGINT integer = 0;
-        const auto converted = TextDataConverter::convert_data(
-            value, SQL_C_SBIGINT, &integer, 0, nullptr);
-        if (converted == SQL_ERROR) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Character parameter is outside SQL integer range");
-          return std::nullopt;
-        }
-        if (converted == SQL_SUCCESS_WITH_INFO ||
-            integer < integer_limits->minimum ||
-            integer > integer_limits->maximum) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Character parameter loses digits as SQL integer");
-          return std::nullopt;
-        }
-        value = std::to_string(integer);
-      }
-      if (character_input &&
-          (declared_sql_type == SQL_REAL ||
-           declared_sql_type == SQL_FLOAT ||
-           declared_sql_type == SQL_DOUBLE)) {
-        if (!decimal_digits(value)) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Character parameter is not a numeric literal");
-          return std::nullopt;
-        }
-        if (declared_sql_type == SQL_REAL) {
-          SQLREAL number = 0;
-          if (TextDataConverter::convert_data(
-                  value, SQL_C_FLOAT, &number, 0, nullptr) ==
-              SQL_ERROR) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Character parameter is outside SQL_REAL range");
-            return std::nullopt;
-          }
-          value = format_floating_parameter(number);
-        } else {
-          SQLDOUBLE number = 0;
-          if (TextDataConverter::convert_data(
-                  value, SQL_C_DOUBLE, &number, 0, nullptr) ==
-              SQL_ERROR) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Character parameter is outside SQL floating range");
-            return std::nullopt;
-          }
-          value = format_floating_parameter(number);
-        }
-      }
-      if ((character_input || value_type == SQL_C_NUMERIC) &&
-          implementation.concise_type == SQL_BIT) {
-        switch (classify_bit_numeric_literal(value)) {
-          case BitNumericLiteral::Zero:
-            value = "0";
-            break;
-          case BitNumericLiteral::One:
-            value = "1";
-            break;
-          case BitNumericLiteral::Fraction:
-            set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                      "Character parameter has fractional SQL_BIT value");
-            return std::nullopt;
-          case BitNumericLiteral::OutOfRange:
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Character parameter is outside SQL_BIT range");
-            return std::nullopt;
-          case BitNumericLiteral::Invalid:
-            set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                      "Character parameter is not a numeric literal");
-            return std::nullopt;
-        }
-      }
-      if (floating_input &&
-          (integer_limits || implementation.concise_type == SQL_BIT)) {
-        const double number = value_type == SQL_C_FLOAT
-            ? static_cast<double>(load_application_value<SQLREAL>(
-                  fields.data))
-            : load_application_value<SQLDOUBLE>(fields.data);
-        if (implementation.concise_type == SQL_BIT) {
-          if (!std::isfinite(number) || number < 0 || number >= 2) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Floating parameter is outside SQL_BIT range");
-            return std::nullopt;
-          }
-          if (number != 0 && number != 1) {
-            set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                      "Floating parameter has fractional SQL_BIT value");
-            return std::nullopt;
-          }
-          value = number == 0 ? "0" : "1";
-        } else {
-          const double truncated = std::trunc(number);
-          const double upper_exclusive = std::ldexp(
-              1.0, integer_limits->value_bits);
-          if (!std::isfinite(number) ||
-              truncated < -upper_exclusive || truncated >= upper_exclusive) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Floating parameter is outside SQL integer range");
-            return std::nullopt;
-          }
-          value = std::to_string(static_cast<SQLBIGINT>(truncated));
-        }
-      }
-      if (signed_integer_input && integer_limits) {
-        if (*signed_number < integer_limits->minimum ||
-            *signed_number > integer_limits->maximum) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Signed parameter is outside SQL integer range");
-          return std::nullopt;
-        }
-      }
-      if (unsigned_integer_input && integer_limits) {
-        if (*unsigned_number >
-            static_cast<SQLUBIGINT>(integer_limits->maximum)) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Unsigned parameter is outside SQL integer range");
-          return std::nullopt;
-        }
-      }
-      if ((signed_integer_input || unsigned_integer_input) &&
-          implementation.concise_type == SQL_BIT &&
-          value != "0" && value != "1") {
-        set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                  "Integer parameter is outside SQL_BIT range");
-        return std::nullopt;
-      }
-      if ((signed_integer_input || unsigned_integer_input ||
-           value_type == SQL_C_BIT) &&
-          (declared_sql_type == SQL_DECIMAL ||
-           declared_sql_type == SQL_NUMERIC) &&
-          declared_sql_precision > 0 && declared_sql_scale >= 0) {
-        const auto sign_size = value.front() == '-' ? std::size_t{1} : 0;
-        const auto whole_digits = value.size() - sign_size;
-        const auto available_digits = std::max<int>(
-            0, declared_sql_precision - declared_sql_scale);
-        const bool is_zero = whole_digits == 1 && value[sign_size] == '0';
-        if (!is_zero &&
-            whole_digits > static_cast<std::size_t>(available_digits)) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    value_type == SQL_C_BIT
-                        ? "BIT parameter exceeds SQL numeric precision"
-                        : "Integer parameter exceeds SQL numeric precision");
-          return std::nullopt;
-        }
-      }
-      if (character_input &&
-          (declared_sql_type == SQL_DECIMAL ||
-           declared_sql_type == SQL_NUMERIC)) {
-        const auto digits = decimal_digits(value);
-        if (!digits) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Character parameter is not an ODBC numeric literal");
-          return std::nullopt;
-        }
-        if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
-          const auto character_loss_state = declared_sql_precision <= 38 &&
-              declared_sql_scale <= declared_sql_precision
-              ? SQLSTATE_STRING_DATA_RIGHT_TRUNCATION
-              : SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE;
-          const auto available_digits = std::max<int>(
-              0, declared_sql_precision - declared_sql_scale);
-          if (digits->whole > static_cast<std::size_t>(available_digits)) {
-            set_error(character_loss_state,
-                      "Character parameter exceeds SQL numeric precision");
-            return std::nullopt;
-          }
-          if (digits->fractional >
-              static_cast<std::size_t>(declared_sql_scale)) {
-            set_error(character_loss_state,
-                      "Character parameter exceeds SQL numeric scale");
-            return std::nullopt;
-          }
-        }
-      }
-      if (value_type == SQL_C_NUMERIC &&
-          (declared_sql_type == SQL_DECIMAL ||
-           declared_sql_type == SQL_NUMERIC) &&
-          declared_sql_precision > 0 && declared_sql_scale >= 0) {
-        const auto digits = decimal_digits(value);
-        const auto available_digits = std::max<int>(
-            0, declared_sql_precision - declared_sql_scale);
-        if (!digits ||
-            digits->whole > static_cast<std::size_t>(available_digits)) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Numeric parameter exceeds SQL precision or scale");
-          return std::nullopt;
-        }
-        if (digits->fractional >
-            static_cast<std::size_t>(declared_sql_scale)) {
-          // Target policy stays in the adapter. Only known valid targets may
-          // discard fractional digits; whole capacity was checked above.
-          if (declared_sql_precision > 38 ||
-              declared_sql_scale > declared_sql_precision) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Numeric parameter exceeds SQL precision or scale");
-            return std::nullopt;
-          }
-          const auto decimal = rs::util::rescale_decimal(
-              value, static_cast<std::size_t>(declared_sql_precision),
-              declared_sql_scale);
-          const auto formatted = decimal
-              ? rs::util::format_scaled_decimal(*decimal, 41)
-              : std::nullopt;
-          if (!formatted) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                      "Numeric parameter exceeds SQL precision or scale");
-            return std::nullopt;
-          }
-          // C-to-SQL fractional loss permits SQL_SUCCESS. Publish owning text
-          // only after the exact bounded conversion succeeds.
-          value = *formatted;
-        }
-      }
-      if (numeric_input && declared_sql_length > 0 &&
-          is_character_sql_type(declared_sql_type) &&
-          static_cast<SQLULEN>(value.size()) > declared_sql_length) {
-        set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                  "Numeric parameter exceeds SQL character length");
-        return std::nullopt;
-      }
-      if (character_input && declared_sql_length > 0 &&
-          (declared_sql_type == SQL_CHAR ||
-           declared_sql_type == SQL_VARCHAR ||
-           declared_sql_type == SQL_LONGVARCHAR) &&
-          static_cast<SQLULEN>(value.size()) > declared_sql_length) {
-        set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                  "Character parameter exceeds SQL byte length");
-        return std::nullopt;
-      }
-      if (character_input &&
-          (declared_sql_type == SQL_WCHAR ||
-           declared_sql_type == SQL_WVARCHAR ||
-           declared_sql_type == SQL_WLONGVARCHAR)) {
-        if (!utf8_to_wide(value)) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Character parameter is not valid Unicode");
-          return std::nullopt;
-        }
-        const auto character_count = std::count_if(
-            value.begin(), value.end(), [](unsigned char byte) {
-              return (byte & 0xc0) != 0x80;
-            });
-        if (declared_sql_length > 0 &&
-            static_cast<SQLULEN>(character_count) > declared_sql_length) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Character parameter exceeds SQL character length");
-          return std::nullopt;
-        }
-      }
-      if (character_input && query_param.type == QueryParameterType::Binary) {
-        std::size_t hex_length = value.size() / 2 * 2;
-        if (value_type == SQL_C_WCHAR) {
-          std::size_t character_count = 0;
-          std::size_t last_character_start = 0;
-          for (std::size_t position = 0; position < value.size(); ++position) {
-            const auto byte = static_cast<unsigned char>(value[position]);
-            if ((byte & 0xc0) != 0x80) {
-              ++character_count;
-              last_character_start = position;
-            }
-          }
-          hex_length = character_count % 2 == 0
-              ? value.size() : last_character_start;
-        }
-        const auto decoded = rs::util::decode_hex(
-            std::string_view(value).substr(0, hex_length));
-        if (!decoded) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Character binary parameter is not hexadecimal");
-          return std::nullopt;
-        }
-        if (static_cast<SQLULEN>(decoded->size()) > declared_sql_length) {
-          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Character binary parameter exceeds SQL binary length");
-          return std::nullopt;
-        }
-        value = *decoded;
-      }
-      if (character_input &&
-          (query_param.type == QueryParameterType::Date ||
-           query_param.type == QueryParameterType::Time ||
-           query_param.type == QueryParameterType::Timestamp) &&
-          (has_temporal_timezone_suffix(value) ||
-           has_temporal_t_separator(value))) {
-        set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                  "Invalid ODBC temporal parameter literal form");
-        return std::nullopt;
-      }
-      if (character_input && query_param.type == QueryParameterType::Date) {
-        SQL_DATE_STRUCT parsed{};
-        const auto converted = TextDataConverter::convert_data(
-            value, SQL_C_TYPE_DATE, &parsed, sizeof(parsed), nullptr,
-            nullptr);
-        if (converted == SQL_ERROR) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid character date parameter value");
-          return std::nullopt;
-        }
-        if (converted == SQL_SUCCESS_WITH_INFO) {
-          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                    "Character date parameter contains nonzero time");
-          return std::nullopt;
-        }
-        const auto date = format_date_parameter(parsed);
-        if (!date) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid character date parameter value");
-          return std::nullopt;
-        }
-        value = *date;
-      } else if (character_input &&
-                 query_param.type == QueryParameterType::Time) {
-        SQL_TIME_STRUCT parsed{};
-        const auto converted = TextDataConverter::convert_data(
-            value, SQL_C_TYPE_TIME, &parsed, sizeof(parsed), nullptr,
-            nullptr);
-        if (converted == SQL_ERROR) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid character time parameter value");
-          return std::nullopt;
-        }
-        if (converted == SQL_SUCCESS_WITH_INFO) {
-          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                    "Character time parameter contains nonzero fraction");
-          return std::nullopt;
-        }
-        const auto time = format_time_parameter(parsed);
-        if (!time) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid character time parameter value");
-          return std::nullopt;
-        }
-        value = *time;
-      } else if (character_input &&
-                 query_param.type == QueryParameterType::Timestamp) {
-        const auto quantum = timestamp_fractional_quantum(
-            implementation.precision);
-        if (!quantum) {
-          set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
-                    "Unsupported timestamp parameter precision");
-          return std::nullopt;
-        }
-        SQL_TIMESTAMP_STRUCT parsed{};
-        const auto converted = TextDataConverter::convert_data(
-            value, SQL_C_TYPE_TIMESTAMP, &parsed, sizeof(parsed), nullptr,
-            nullptr);
-        if (converted == SQL_ERROR) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid character timestamp parameter value");
-          return std::nullopt;
-        }
-        if (converted == SQL_SUCCESS_WITH_INFO ||
-            parsed.fraction % *quantum != 0) {
-          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                    "Character timestamp fraction exceeds parameter precision");
-          return std::nullopt;
-        }
-        const auto trimmed = ConnectionString::trim(value);
-        const bool time_only = trimmed.size() >= 8 &&
-            trimmed[2] == ':' && trimmed[5] == ':' &&
-            (trimmed.size() == 8 ||
-             (trimmed[8] == '.' && trimmed.size() > 9 &&
-              std::all_of(trimmed.begin() + 9, trimmed.end(),
-                          [](char digit) {
-                            return digit >= '0' && digit <= '9';
-                          })));
-        if (time_only) {
-          const auto date = format_date_parameter(SQL_DATE_STRUCT{
-              parsed.year, parsed.month, parsed.day});
-          if (!date) {
-            set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                      "Current local date is unavailable for timestamp");
-            return std::nullopt;
-          }
-          value = *date + " " + trimmed;
-        }
-      }
-
+    if (const auto* error = restricted_parameter_pair_error(value_type, declared_sql_type)) {
+      return reject(SQLSTATE_RESTRICTED_DATA_TYPE, error);
+    }
+    query_param.type = parameter_type_for(implementation.concise_type, value_type);
+    if (is_null) {
+      query_param.value = std::nullopt;
+    } else {
+      if (!read_value() || !normalize_value()) return false;
       // Normalization can expand a value (for example a time into a timestamp).
       if (value.size() > parameter_limit) return reject_parameter_limit();
       parameter_bytes += value.size();
       query_param.value = std::move(value);
-      param_values.push_back(std::move(query_param));
     }
-    
+    results.push_back(std::move(query_param));
+    return true;
+  }
+
+ private:
+  bool reject(const char* state, const char* message) {
+    return reject_parameter(statement, state, message);
+  }
+
+  bool reject_parameter_limit() {
+    return reject(SQLSTATE_GENERAL_ERROR, "Parameter bytes exceed configured limit");
+  }
+
+  const SQLLEN* length_pointer() const {
+    return fields.octet_length ? fields.octet_length : fields.indicator;
+  }
+
+  SQLLEN input_length() const {
+    const auto* pointer = length_pointer();
+    return pointer ? load_application_value<SQLLEN>(pointer) : application.octet_length;
+  }
+
+  template <class T>
+  bool read_signed_integer() {
+    signed_number = load_application_value<T>(fields.data);
+    value = std::to_string(*signed_number);
+    return true;
+  }
+
+  template <class T>
+  bool read_unsigned_integer() {
+    unsigned_number = load_application_value<T>(fields.data);
+    value = std::to_string(*unsigned_number);
+    return true;
+  }
+
+  bool read_value() {
+    switch (value_type) {
+      case SQL_C_CHAR: return read_char();
+      case SQL_C_WCHAR: return read_wchar();
+      case SQL_C_BINARY: return read_binary();
+      case SQL_C_STINYINT: return read_signed_integer<SQLSCHAR>();
+      case SQL_C_SSHORT: return read_signed_integer<SQLSMALLINT>();
+      case SQL_C_SLONG: return read_signed_integer<SQLINTEGER>();
+      case SQL_C_SBIGINT: return read_signed_integer<SQLBIGINT>();
+      case SQL_C_UTINYINT: return read_unsigned_integer<SQLCHAR>();
+      case SQL_C_USHORT: return read_unsigned_integer<SQLUSMALLINT>();
+      case SQL_C_ULONG: return read_unsigned_integer<SQLUINTEGER>();
+      case SQL_C_UBIGINT: return read_unsigned_integer<SQLUBIGINT>();
+      case SQL_C_NUMERIC: return read_numeric();
+      case SQL_C_FLOAT:
+        value = format_floating_parameter(load_application_value<SQLREAL>(fields.data));
+        return true;
+      case SQL_C_DOUBLE: return read_double();
+      case SQL_C_BIT: return read_bit();
+      case SQL_C_DATE:
+      case SQL_C_TYPE_DATE: return read_date();
+      case SQL_C_TIME:
+      case SQL_C_TYPE_TIME: return read_time();
+      case SQL_C_TIMESTAMP:
+      case SQL_C_TYPE_TIMESTAMP: return read_timestamp();
+      default: return reject(SQLSTATE_GENERAL_ERROR, "Unsupported C parameter type");
+    }
+  }
+
+  bool read_char() {
+    const auto* text = static_cast<const char*>(fields.data);
+    const auto length = input_length();
+    if (length == SQL_NTS || (length == 0 && !length_pointer())) {
+      std::size_t bytes = 0;
+      while (bytes < parameter_limit && text[bytes] != '\0') ++bytes;
+      if (bytes == parameter_limit && text[bytes] != '\0') {
+        return reject_parameter_limit();
+      }
+      value.assign(text, bytes);
+    } else if (length >= 0) {
+      if (static_cast<std::size_t>(length) > parameter_limit) {
+        return reject_parameter_limit();
+      }
+      value.assign(text, static_cast<std::size_t>(length));
+    } else {
+      return reject(SQLSTATE_GENERAL_ERROR, "Data-at-execution parameters are not supported yet");
+    }
+    return true;
+  }
+
+  bool read_wchar() {
+    const auto length = input_length();
+    SQLINTEGER units = SQL_NTS;
+    if (length != SQL_NTS && (length != 0 || length_pointer())) {
+      if (length < 0 || length % sizeof(SQLWCHAR) != 0 ||
+          static_cast<SQLULEN>(length / sizeof(SQLWCHAR)) >
+              static_cast<SQLULEN>(std::numeric_limits<SQLINTEGER>::max())) {
+        return reject(SQLSTATE_INVALID_STRING_LENGTH, "Invalid wide-character parameter length");
+      }
+      units = static_cast<SQLINTEGER>(length / sizeof(SQLWCHAR));
+    }
+    bool exceeded = false;
+    auto converted = sqlwchar_to_utf8_bounded(fields.data, units, parameter_limit, exceeded);
+    if (exceeded) return reject_parameter_limit();
+    if (!converted) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid wide-character parameter value");
+    }
+    value = std::move(*converted);
+    return true;
+  }
+
+  bool read_numeric() {
+    const auto formatted =
+        TextDataConverter::format_numeric(load_application_value<SQL_NUMERIC_STRUCT>(fields.data),
+                                          application.precision, application.scale);
+    if (!formatted) {
+      return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Numeric parameter exceeds APD precision or has invalid fields");
+    }
+    value = *formatted;
+    if (const auto limits = signed_integer_limits(declared_sql_type)) {
+      SQLBIGINT integer = 0;
+      if (TextDataConverter::convert_data(value, SQL_C_SBIGINT, &integer, 0, nullptr) == SQL_ERROR ||
+          integer < limits->minimum || integer > limits->maximum) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter is outside SQL integer range");
+      }
+      value = std::to_string(integer);
+    }
+    // ODBC SQL target policy validates the owning exact APD text without
+    // replacing it with a rounded floating representation.
+    if (declared_sql_type == SQL_REAL) {
+      SQLREAL checked = 0;
+      if (TextDataConverter::convert_data(value, SQL_C_FLOAT, &checked, 0, nullptr) == SQL_ERROR) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter is outside SQL_REAL range");
+      }
+    } else if (declared_sql_type == SQL_FLOAT || declared_sql_type == SQL_DOUBLE) {
+      SQLDOUBLE checked = 0;
+      if (TextDataConverter::convert_data(value, SQL_C_DOUBLE, &checked, 0, nullptr) == SQL_ERROR) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter is outside SQL floating range");
+      }
+    }
+    return true;
+  }
+
+  bool read_double() {
+    const auto number = load_application_value<SQLDOUBLE>(fields.data);
+    if (declared_sql_type == SQL_REAL) {
+      const auto narrowed = narrow_real_parameter(number);
+      if (!narrowed) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE, "Double parameter is outside SQL_REAL range");
+      }
+      value = format_floating_parameter(*narrowed);
+    } else {
+      value = format_floating_parameter(number);
+    }
+    return true;
+  }
+
+  bool read_bit() {
+    const auto bit = load_application_value<SQLCHAR>(fields.data);
+    if (bit > 1) {
+      return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE, "BIT parameter must be zero or one");
+    }
+    value = bit ? "1" : "0";
+    return true;
+  }
+
+  bool read_date() {
+    const auto formatted = format_date_parameter(load_application_value<SQL_DATE_STRUCT>(fields.data));
+    if (!formatted) {
+      return reject(invalid_temporal_parameter_state(query_param.type), "Invalid date parameter value");
+    }
+    if (query_param.type == QueryParameterType::Text && declared_sql_length < formatted->size()) {
+      return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Date parameter exceeds SQL character length");
+    }
+    value = query_param.type == QueryParameterType::Timestamp ? *formatted + " 00:00:00" : *formatted;
+    return true;
+  }
+
+  bool read_time() {
+    const auto formatted = format_time_parameter(load_application_value<SQL_TIME_STRUCT>(fields.data));
+    if (!formatted) {
+      return reject(invalid_temporal_parameter_state(query_param.type), "Invalid time parameter value");
+    }
+    if (query_param.type == QueryParameterType::Text && declared_sql_length < formatted->size()) {
+      return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Time parameter exceeds SQL character length");
+    }
+    if (query_param.type == QueryParameterType::Timestamp) {
+      const auto date = current_local_date_parameter();
+      if (!date) {
+        return reject(SQLSTATE_GENERAL_ERROR, "Current local date is unavailable");
+      }
+      value = *date + " " + *formatted;
+    } else {
+      value = *formatted;
+    }
+    return true;
+  }
+
+  bool read_timestamp() {
+    const auto timestamp = load_application_value<SQL_TIMESTAMP_STRUCT>(fields.data);
+    const auto date =
+        format_date_parameter(SQL_DATE_STRUCT{timestamp.year, timestamp.month, timestamp.day});
+    const auto time =
+        format_time_parameter(SQL_TIME_STRUCT{timestamp.hour, timestamp.minute, timestamp.second});
+    const auto target = query_param.type;
+    if ((target != QueryParameterType::Time && !date) || !time || timestamp.fraction >= 1000000000u) {
+      return reject(invalid_temporal_parameter_state(target), "Invalid timestamp parameter value");
+    }
+    if (target == QueryParameterType::Date) {
+      if (timestamp.hour != 0 || timestamp.minute != 0 || timestamp.second != 0 ||
+          timestamp.fraction != 0) {
+        return reject(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                      "Timestamp time fields cannot fit a date parameter");
+      }
+      value = *date;
+    } else if (target == QueryParameterType::Time) {
+      if (timestamp.fraction != 0) {
+        return reject(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                      "Timestamp fraction cannot fit a time parameter");
+      }
+      value = *time;
+    } else {
+      const bool character_target = target == QueryParameterType::Text;
+      std::uint32_t fractional_quantum = 1000u;
+      if (target == QueryParameterType::Timestamp) {
+        const auto quantum = timestamp_fractional_quantum(implementation.precision);
+        if (!quantum) {
+          return reject(SQLSTATE_INVALID_PRECISION_OR_SCALE,
+                        "Unsupported timestamp parameter precision");
+        }
+        fractional_quantum = *quantum;
+      }
+      if (!character_target && timestamp.fraction % fractional_quantum != 0) {
+        return reject(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                      "Timestamp fraction exceeds parameter precision");
+      }
+      char fraction[11]{};
+      std::string fractional_text;
+      if (character_target) {
+        std::snprintf(fraction, sizeof(fraction), ".%09u", timestamp.fraction);
+        fractional_text = fraction;
+        while (fractional_text.size() > 1 && fractional_text.back() == '0') {
+          fractional_text.pop_back();
+        }
+        if (fractional_text.size() == 1) {
+          fractional_text.clear();
+        }
+      } else {
+        std::snprintf(fraction, sizeof(fraction), ".%06u", timestamp.fraction / 1000u);
+        fractional_text = fraction;
+      }
+      value = *date + " " + *time + fractional_text;
+      if (character_target && declared_sql_length < value.size()) {
+        return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Timestamp parameter exceeds SQL character length");
+      }
+    }
+    return true;
+  }
+
+  bool read_binary() {
+    const auto length = input_length();
+    if (length < 0) {
+      return reject(SQLSTATE_INVALID_STRING_LENGTH, "Invalid binary parameter length");
+    }
+    if (static_cast<std::size_t>(length) > parameter_limit) {
+      return reject_parameter_limit();
+    }
+    if (query_param.type == QueryParameterType::Binary &&
+        static_cast<SQLULEN>(length) > declared_sql_length) {
+      return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION, "Binary parameter exceeds SQL binary length");
+    }
+    if (declared_sql_type == SQL_INTEGER) {
+      static_assert(sizeof(SQLINTEGER) == 4 && std::numeric_limits<SQLINTEGER>::is_signed);
+      if (length != static_cast<SQLLEN>(sizeof(SQLINTEGER))) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Binary INTEGER parameter requires exactly four bytes");
+      }
+      signed_number = load_application_value<SQLINTEGER>(fields.data);
+      value = std::to_string(*signed_number);
+    } else if (declared_sql_type == SQL_BIGINT) {
+      static_assert(sizeof(SQLBIGINT) == 8 && std::numeric_limits<SQLBIGINT>::is_signed);
+      if (length != static_cast<SQLLEN>(sizeof(SQLBIGINT))) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Binary BIGINT parameter requires exactly eight bytes");
+      }
+      signed_number = load_application_value<SQLBIGINT>(fields.data);
+      value = std::to_string(*signed_number);
+    } else {
+      value.assign(static_cast<const char*>(fields.data), static_cast<std::size_t>(length));
+      query_param.binary_input = true;
+    }
+    return true;
+  }
+
+  bool normalize_value() {
+    if (value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR) {
+      return normalize_character_number() && normalize_bit_target() && validate_character_decimal() &&
+             validate_character_target() && decode_binary_target() && normalize_temporal_target();
+    }
+    if (value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE) {
+      if (!normalize_floating()) return false;
+    } else if (value_type == SQL_C_NUMERIC) {
+      if (!normalize_bit_target() || !normalize_decimal()) return false;
+    } else if (signed_number || unsigned_number) {
+      // Includes native binary input bound to SQL_INTEGER or SQL_BIGINT.
+      if (!validate_integer()) return false;
+    } else if (value_type == SQL_C_BIT) {
+      return validate_integer();
+    } else {
+      return true;
+    }
+    if (declared_sql_length > 0 && is_character_sql_type(declared_sql_type) &&
+        static_cast<SQLULEN>(value.size()) > declared_sql_length) {
+      return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Numeric parameter exceeds SQL character length");
+    }
+    return true;
+  }
+
+  bool normalize_floating() {
+    const auto integer_limits = signed_integer_limits(declared_sql_type);
+    if (declared_sql_type == SQL_DECIMAL || declared_sql_type == SQL_NUMERIC) {
+      const double number = value_type == SQL_C_FLOAT
+                                ? static_cast<double>(load_application_value<SQLREAL>(fields.data))
+                                : load_application_value<SQLDOUBLE>(fields.data);
+      if (!std::isfinite(number)) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Nonfinite floating parameter cannot bind to SQL numeric");
+      }
+      if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
+        const auto digits = decimal_digits(value);
+        const auto available_digits = std::max<int>(0, declared_sql_precision - declared_sql_scale);
+        if (!digits || digits->whole > static_cast<std::size_t>(available_digits)) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Floating parameter exceeds SQL numeric precision");
+        }
+      }
+    }
+    if (integer_limits || implementation.concise_type == SQL_BIT) {
+      const double number = value_type == SQL_C_FLOAT
+                                ? static_cast<double>(load_application_value<SQLREAL>(fields.data))
+                                : load_application_value<SQLDOUBLE>(fields.data);
+      if (implementation.concise_type == SQL_BIT) {
+        if (!std::isfinite(number) || number < 0 || number >= 2) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Floating parameter is outside SQL_BIT range");
+        }
+        if (number != 0 && number != 1) {
+          return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                        "Floating parameter has fractional SQL_BIT value");
+        }
+        value = number == 0 ? "0" : "1";
+      } else {
+        const double truncated = std::trunc(number);
+        const double upper_exclusive = std::ldexp(1.0, integer_limits->value_bits);
+        if (!std::isfinite(number) || truncated < -upper_exclusive || truncated >= upper_exclusive) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Floating parameter is outside SQL integer range");
+        }
+        value = std::to_string(static_cast<SQLBIGINT>(truncated));
+      }
+    }
+    return true;
+  }
+
+  bool normalize_character_number() {
+    const auto integer_limits = signed_integer_limits(declared_sql_type);
+    if (integer_limits) {
+      if (!decimal_digits(value)) {
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Character parameter is not a numeric literal");
+      }
+      SQLBIGINT integer = 0;
+      const auto converted = TextDataConverter::convert_data(value, SQL_C_SBIGINT, &integer, 0, nullptr);
+      if (converted == SQL_ERROR) {
+        return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Character parameter is outside SQL integer range");
+      }
+      if (converted == SQL_SUCCESS_WITH_INFO || integer < integer_limits->minimum ||
+          integer > integer_limits->maximum) {
+        return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Character parameter loses digits as SQL integer");
+      }
+      value = std::to_string(integer);
+    }
+    if (declared_sql_type == SQL_REAL || declared_sql_type == SQL_FLOAT ||
+        declared_sql_type == SQL_DOUBLE) {
+      if (!decimal_digits(value)) {
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Character parameter is not a numeric literal");
+      }
+      if (declared_sql_type == SQL_REAL) {
+        SQLREAL number = 0;
+        if (TextDataConverter::convert_data(value, SQL_C_FLOAT, &number, 0, nullptr) == SQL_ERROR) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Character parameter is outside SQL_REAL range");
+        }
+        value = format_floating_parameter(number);
+      } else {
+        SQLDOUBLE number = 0;
+        if (TextDataConverter::convert_data(value, SQL_C_DOUBLE, &number, 0, nullptr) == SQL_ERROR) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Character parameter is outside SQL floating range");
+        }
+        value = format_floating_parameter(number);
+      }
+    }
+    return true;
+  }
+
+  bool normalize_bit_target() {
+    if (implementation.concise_type != SQL_BIT) return true;
+    switch (classify_bit_numeric_literal(value)) {
+      case BitNumericLiteral::Zero: value = "0"; break;
+      case BitNumericLiteral::One: value = "1"; break;
+      case BitNumericLiteral::Fraction:
+        return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Character parameter has fractional SQL_BIT value");
+      case BitNumericLiteral::OutOfRange:
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Character parameter is outside SQL_BIT range");
+      case BitNumericLiteral::Invalid:
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Character parameter is not a numeric literal");
+    }
+    return true;
+  }
+
+  bool validate_integer() {
+    const auto integer_limits = signed_integer_limits(declared_sql_type);
+    if (signed_number && integer_limits) {
+      if (*signed_number < integer_limits->minimum || *signed_number > integer_limits->maximum) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Signed parameter is outside SQL integer range");
+      }
+    }
+    if (unsigned_number && integer_limits) {
+      if (*unsigned_number > static_cast<SQLUBIGINT>(integer_limits->maximum)) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Unsigned parameter is outside SQL integer range");
+      }
+    }
+    if ((signed_number || unsigned_number) && implementation.concise_type == SQL_BIT && value != "0" &&
+        value != "1") {
+      return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE, "Integer parameter is outside SQL_BIT range");
+    }
+    if ((declared_sql_type == SQL_DECIMAL || declared_sql_type == SQL_NUMERIC) &&
+        declared_sql_precision > 0 && declared_sql_scale >= 0) {
+      const auto sign_size = value.front() == '-' ? std::size_t{1} : 0;
+      const auto whole_digits = value.size() - sign_size;
+      const auto available_digits = std::max<int>(0, declared_sql_precision - declared_sql_scale);
+      const bool is_zero = whole_digits == 1 && value[sign_size] == '0';
+      if (!is_zero && whole_digits > static_cast<std::size_t>(available_digits)) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      value_type == SQL_C_BIT ? "BIT parameter exceeds SQL numeric precision"
+                                              : "Integer parameter exceeds SQL numeric precision");
+      }
+    }
+    return true;
+  }
+
+  bool validate_character_decimal() {
+    if (declared_sql_type == SQL_DECIMAL || declared_sql_type == SQL_NUMERIC) {
+      const auto digits = decimal_digits(value);
+      if (!digits) {
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE,
+                      "Character parameter is not an ODBC numeric literal");
+      }
+      if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
+        const auto character_loss_state =
+            declared_sql_precision <= 38 && declared_sql_scale <= declared_sql_precision
+                ? SQLSTATE_STRING_DATA_RIGHT_TRUNCATION
+                : SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE;
+        const auto available_digits = std::max<int>(0, declared_sql_precision - declared_sql_scale);
+        if (digits->whole > static_cast<std::size_t>(available_digits)) {
+          return reject(character_loss_state, "Character parameter exceeds SQL numeric precision");
+        }
+        if (digits->fractional > static_cast<std::size_t>(declared_sql_scale)) {
+          return reject(character_loss_state, "Character parameter exceeds SQL numeric scale");
+        }
+      }
+    }
+    return true;
+  }
+
+  bool normalize_decimal() {
+    if ((declared_sql_type == SQL_DECIMAL || declared_sql_type == SQL_NUMERIC) &&
+        declared_sql_precision > 0 && declared_sql_scale >= 0) {
+      const auto digits = decimal_digits(value);
+      const auto available_digits = std::max<int>(0, declared_sql_precision - declared_sql_scale);
+      if (!digits || digits->whole > static_cast<std::size_t>(available_digits)) {
+        return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter exceeds SQL precision or scale");
+      }
+      if (digits->fractional > static_cast<std::size_t>(declared_sql_scale)) {
+        // Target policy stays in the adapter. Only known valid targets may
+        // discard fractional digits; whole capacity was checked above.
+        if (declared_sql_precision > 38 || declared_sql_scale > declared_sql_precision) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Numeric parameter exceeds SQL precision or scale");
+        }
+        const auto decimal = rs::util::rescale_decimal(
+            value, static_cast<std::size_t>(declared_sql_precision), declared_sql_scale);
+        const auto formatted = decimal ? rs::util::format_scaled_decimal(*decimal, 41) : std::nullopt;
+        if (!formatted) {
+          return reject(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Numeric parameter exceeds SQL precision or scale");
+        }
+        // C-to-SQL fractional loss permits SQL_SUCCESS. Publish owning text
+        // only after the exact bounded conversion succeeds.
+        value = *formatted;
+      }
+    }
+    return true;
+  }
+
+  bool validate_character_target() {
+    if (declared_sql_length > 0 &&
+        (declared_sql_type == SQL_CHAR || declared_sql_type == SQL_VARCHAR ||
+         declared_sql_type == SQL_LONGVARCHAR) &&
+        static_cast<SQLULEN>(value.size()) > declared_sql_length) {
+      return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Character parameter exceeds SQL byte length");
+    }
+    if (declared_sql_type == SQL_WCHAR || declared_sql_type == SQL_WVARCHAR ||
+        declared_sql_type == SQL_WLONGVARCHAR) {
+      if (!utf8_to_wide(value)) {
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Character parameter is not valid Unicode");
+      }
+      const auto character_count = std::count_if(
+          value.begin(), value.end(), [](unsigned char byte) { return (byte & 0xc0) != 0x80; });
+      if (declared_sql_length > 0 && static_cast<SQLULEN>(character_count) > declared_sql_length) {
+        return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Character parameter exceeds SQL character length");
+      }
+    }
+    return true;
+  }
+
+  bool decode_binary_target() {
+    if (query_param.type == QueryParameterType::Binary) {
+      std::size_t hex_length = value.size() / 2 * 2;
+      if (value_type == SQL_C_WCHAR) {
+        std::size_t character_count = 0;
+        std::size_t last_character_start = 0;
+        for (std::size_t position = 0; position < value.size(); ++position) {
+          const auto byte = static_cast<unsigned char>(value[position]);
+          if ((byte & 0xc0) != 0x80) {
+            ++character_count;
+            last_character_start = position;
+          }
+        }
+        hex_length = character_count % 2 == 0 ? value.size() : last_character_start;
+      }
+      const auto decoded = rs::util::decode_hex(std::string_view(value).substr(0, hex_length));
+      if (!decoded) {
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Character binary parameter is not hexadecimal");
+      }
+      if (static_cast<SQLULEN>(decoded->size()) > declared_sql_length) {
+        return reject(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Character binary parameter exceeds SQL binary length");
+      }
+      value = *decoded;
+    }
+    return true;
+  }
+
+  bool normalize_temporal_target() {
+    if ((query_param.type == QueryParameterType::Date || query_param.type == QueryParameterType::Time ||
+         query_param.type == QueryParameterType::Timestamp) &&
+        (has_temporal_timezone_suffix(value) || has_temporal_t_separator(value))) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid ODBC temporal parameter literal form");
+    }
+    switch (query_param.type) {
+      case QueryParameterType::Date: return normalize_character_date();
+      case QueryParameterType::Time: return normalize_character_time();
+      case QueryParameterType::Timestamp: return normalize_character_timestamp();
+      default: return true;
+    }
+  }
+
+  bool normalize_character_date() {
+    SQL_DATE_STRUCT parsed{};
+    const auto converted = TextDataConverter::convert_data(value, SQL_C_TYPE_DATE, &parsed,
+                                                           sizeof(parsed), nullptr, nullptr);
+    if (converted == SQL_ERROR) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid character date parameter value");
+    }
+    if (converted == SQL_SUCCESS_WITH_INFO) {
+      return reject(SQLSTATE_DATETIME_FIELD_OVERFLOW, "Character date parameter contains nonzero time");
+    }
+    const auto date = format_date_parameter(parsed);
+    if (!date) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid character date parameter value");
+    }
+    value = *date;
+    return true;
+  }
+
+  bool normalize_character_time() {
+    SQL_TIME_STRUCT parsed{};
+    const auto converted = TextDataConverter::convert_data(value, SQL_C_TYPE_TIME, &parsed,
+                                                           sizeof(parsed), nullptr, nullptr);
+    if (converted == SQL_ERROR) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid character time parameter value");
+    }
+    if (converted == SQL_SUCCESS_WITH_INFO) {
+      return reject(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                    "Character time parameter contains nonzero fraction");
+    }
+    const auto time = format_time_parameter(parsed);
+    if (!time) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid character time parameter value");
+    }
+    value = *time;
+    return true;
+  }
+
+  bool normalize_character_timestamp() {
+    const auto quantum = timestamp_fractional_quantum(implementation.precision);
+    if (!quantum) {
+      return reject(SQLSTATE_INVALID_PRECISION_OR_SCALE, "Unsupported timestamp parameter precision");
+    }
+    SQL_TIMESTAMP_STRUCT parsed{};
+    const auto converted = TextDataConverter::convert_data(value, SQL_C_TYPE_TIMESTAMP, &parsed,
+                                                           sizeof(parsed), nullptr, nullptr);
+    if (converted == SQL_ERROR) {
+      return reject(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid character timestamp parameter value");
+    }
+    if (converted == SQL_SUCCESS_WITH_INFO || parsed.fraction % *quantum != 0) {
+      return reject(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                    "Character timestamp fraction exceeds parameter precision");
+    }
+    const auto trimmed = ConnectionString::trim(value);
+    const bool time_only =
+        trimmed.size() >= 8 && trimmed[2] == ':' && trimmed[5] == ':' &&
+        (trimmed.size() == 8 || (trimmed[8] == '.' && trimmed.size() > 9 &&
+                                 std::all_of(trimmed.begin() + 9, trimmed.end(),
+                                             [](char digit) { return digit >= '0' && digit <= '9'; })));
+    if (time_only) {
+      const auto date = format_date_parameter(SQL_DATE_STRUCT{parsed.year, parsed.month, parsed.day});
+      if (!date) {
+        return reject(SQLSTATE_INVALID_CHARACTER_VALUE,
+                      "Current local date is unavailable for timestamp");
+      }
+      value = *date + " " + trimmed;
+    }
+    return true;
+  }
+};
+
+std::optional<std::vector<rs::core::database::QueryParameter>> ODBCStatement::materialize_parameter_set(
+    std::uintptr_t input_offset, SQLULEN set_index, bool array, SQLULEN bind_stride,
+    std::span<const ParameterInputBase> bases, std::size_t& parameter_bytes,
+    std::span<const ParameterConversionRecord> captured_application,
+    std::span<const ParameterConversionRecord> captured_implementation,
+    std::optional<std::size_t> selected) {
+  const auto count = static_cast<std::size_t>(parameter_count_);
+  const bool captured = !captured_application.empty();
+  const auto application_descriptor =
+      captured ? std::shared_ptr<ODBCDescriptor>{} : descriptor(app_param_descriptor_);
+  const auto implementation_descriptor =
+      captured ? std::shared_ptr<ODBCDescriptor>{} : descriptor(imp_param_descriptor_);
+  if ((array && bases.size() != count) ||
+      (captured ? captured_application.size() : application_descriptor->record_count()) < count ||
+      (captured ? captured_implementation.size() : implementation_descriptor->record_count()) < count) {
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Not all statement parameters are bound");
+    return std::nullopt;
+  }
+  const auto& input_limits = conn_->input_limits();
+  if (count > input_limits.max_parameters) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Parameter count exceeds configured limit");
+    return std::nullopt;
+  }
+  std::vector<rs::core::database::QueryParameter> param_values;
+  param_values.reserve(selected ? 1 : count);
+  const ParameterBindingLayout layout{input_offset, set_index, array, bind_stride};
+  const auto first = selected ? static_cast<SQLSMALLINT>(*selected) : 0;
+  const auto end = selected ? static_cast<SQLSMALLINT>(*selected + 1) : parameter_count_;
+  for (SQLSMALLINT index = first; index < end; ++index) {
+    const auto application = captured ? captured_application[index]
+                                      : conversion_record(*application_descriptor->record(index));
+    const auto implementation = captured ? captured_implementation[index]
+                                         : conversion_record(*implementation_descriptor->record(index));
+    const auto base = array ? bases[index]
+                            : ParameterInputBase{application.data_ptr, application.indicator_ptr,
+                                                 application.octet_length_ptr};
+    const auto limit = std::min(input_limits.max_parameter_bytes,
+                                input_limits.max_parameter_total_bytes - parameter_bytes);
+    ParameterConversion conversion(*this, application, implementation, limit);
+    if (!conversion.append(layout, base, parameter_bytes, param_values)) return std::nullopt;
+  }
   return param_values;
 }
 
