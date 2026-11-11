@@ -1261,7 +1261,7 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_routine_catalog(
 
 // A catalog request keeps the same connection and absolute deadline while its
 // selected route constructs native commands and normalizes their responses.
-struct PgDatabaseConnection::CatalogExecution {
+struct PgDatabaseConnection::RedshiftCatalogExecution {
   PgDatabaseConnection& connection;
   rs::util::Deadline deadline;
 
@@ -1473,7 +1473,6 @@ struct PgDatabaseConnection::CatalogExecution {
 
   BackendResult<void> prepare_identifier_request(std::optional<CatalogRequest>& native) {
     const bool identifier_show =
-        connection.catalog_profile_ == PgCatalogProfile::Redshift &&
         (std::holds_alternative<TablesCatalogRequest>(*native) ||
          std::holds_alternative<ColumnsCatalogRequest>(*native)) &&
         !std::visit([](const auto& value) { return value.name_matches.existing(); }, *native);
@@ -1907,7 +1906,6 @@ struct PgDatabaseConnection::CatalogExecution {
 
   BackendResult<QueryResult> dispatch(const CatalogRequest& native,
                                       const CatalogRequest& semantic_request) {
-    if (connection.catalog_profile_ != PgCatalogProfile::Redshift) return unsupported();
     if (auto discovery = scoped_discovery(native, semantic_request)) return std::move(*discovery);
     if (std::holds_alternative<ProceduresCatalogRequest>(native) ||
         std::holds_alternative<ProcedureColumnsCatalogRequest>(native)) {
@@ -1953,17 +1951,21 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(const CatalogRe
   if (!native)
     return local_backend_error(LocalFailure::InvalidInput, "Invalid catalog name semantics",
                                BackendOperation::ExecuteCatalog, session_state());
-  CatalogExecution execution{*this, deadline};
-  if (const auto* special = std::get_if<SpecialColumnsCatalogRequest>(&*native);
-      catalog_profile_ == PgCatalogProfile::Redshift && special &&
-      special->identifier == SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
-      special->scope == SpecialColumnsCatalogRequest::Scope::CurrentRow) {
-    return execution.row_identity(*special);
+  RedshiftCatalogExecution execution{*this, deadline};
+  if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    if (const auto* special = std::get_if<SpecialColumnsCatalogRequest>(&*native);
+        special && special->identifier == SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
+        special->scope == SpecialColumnsCatalogRequest::Scope::CurrentRow) {
+      return execution.row_identity(*special);
+    }
+    const auto semantic_request = *native;
+    auto prepared = execution.prepare_identifier_request(native);
+    if (!prepared) return prepared.backend_error();
+    return execution.dispatch(*native, semantic_request);
   }
-  const auto semantic_request = *native;
-  auto prepared = execution.prepare_identifier_request(native);
-  if (!prepared) return prepared.backend_error();
-  return execution.dispatch(*native, semantic_request);
+  // PostgreSQL exposes catalog_queries() for generated SQL. Direct calls to the
+  // native execution facet keep its unsupported result for that profile.
+  return execution.unsupported();
 }
 
 BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(

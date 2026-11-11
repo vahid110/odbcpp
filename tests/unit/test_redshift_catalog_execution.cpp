@@ -272,6 +272,24 @@ TEST(RedshiftCatalogExecution, FacetIsExplicitProfileOnly) {
   no_execution(postgres);
 }
 
+TEST(RedshiftCatalogExecution, PostgreSqlPrimaryKeysUseGeneratedSqlAndRedshiftSelectsNativeExecution) {
+  PgDatabaseConnection postgres(nullptr, std::nullopt, PgCatalogProfile::PostgreSQL);
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const PrimaryKeysCatalogRequest keys{std::nullopt, "public", "route_probe"};
+
+  EXPECT_EQ(nullptr, postgres.catalog_execution());
+  EXPECT_FALSE(postgres.selects_catalog_request(keys));
+  ASSERT_NE(nullptr, postgres.catalog_queries());
+  const auto sql = postgres.catalog_queries()->catalog_query(keys);
+  ASSERT_TRUE(sql);
+  EXPECT_NE(std::string::npos, sql->find("FROM information_schema.table_constraints"));
+  EXPECT_NE(std::string::npos, sql->find("constraints.constraint_type = 'PRIMARY KEY'"));
+  EXPECT_NE(std::string::npos, sql->find("route_probe"));
+
+  ASSERT_NE(nullptr, redshift.catalog_execution());
+  EXPECT_TRUE(redshift.catalog_execution()->selects_catalog_request(keys));
+}
+
 namespace {
 class EncodingSpySession final : public SpySession {
  public:
