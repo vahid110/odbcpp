@@ -61,9 +61,9 @@ or prevent statement handle reuse:
   and parameter bindings via `SQLFreeStmt(..., SQL_RESET_PARAMS)` allows subsequent
   direct execution (`SQLExecDirect`) and prepared parameterized execution
   (`SQLPrepare` + `SQLBindParameter` + `SQLExecute`) to succeed on the same handle.
-- In manual-transaction mode, connection recovery after a server error via
-  `SQLEndTran(..., SQL_ROLLBACK)` is qualified in integration tests
-  (`tests/integration/it_prepared_statements_real.cpp:5305`).
+- In manual-transaction mode, connection recovery after a rejected prepared
+  batch via `SQLEndTran(..., SQL_ROLLBACK)` is not currently covered by automated
+  tests and remains open debt.
 
 ## Integration test assertions and intentional behavior change
 
