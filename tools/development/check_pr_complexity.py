@@ -25,14 +25,17 @@ from typing import Any
 DEFAULT_CCN_THRESHOLD = 25
 DEFAULT_NLOC_THRESHOLD = 100
 DEFAULT_MIN_TOKENS = 50
-PINNED_JSCPD_VERSION = "jscpd@5.4.3"
 
 SUPPORTED_EXTENSIONS = {
+    ".c",
     ".cpp",
     ".cc",
     ".cxx",
     ".h",
     ".hpp",
+    ".inl",
+    ".ipp",
+    ".tpp",
     ".py",
     ".cs",
 }
@@ -46,6 +49,22 @@ SIGNATURE_COMMENT_PATTERN = re.compile(
     r"(?://|/\*+|#)\s*(?:NOLINT\s*\(\s*complexity\s*\)|lizard\s*:\s*ignore)",
     re.IGNORECASE,
 )
+
+TEMPLATE_PATTERN = re.compile(r"^template\s*<.*?>\s*$")
+ATTRIBUTE_PATTERN = re.compile(r"^\[\[[a-zA-Z0-9_:]+(?:\(.*?\))?\]\]\s*$")
+DECORATOR_PATTERN = re.compile(r"^@[a-zA-Z0-9_.]+(?:\(.*?\))?\s*$")
+
+
+class ChangedLines(set):
+    """Set of added 1-based line numbers, with deletion anchors tracking deleted line boundaries."""
+
+    def __init__(
+        self,
+        added_lines: set[int] | None = None,
+        deleted_anchors: set[tuple[int, int]] | None = None,
+    ) -> None:
+        super().__init__(added_lines or ())
+        self.deleted_anchors: set[tuple[int, int]] = set(deleted_anchors or ())
 
 
 @dataclass(frozen=True)
@@ -64,48 +83,83 @@ def is_supported_source_file(path: str) -> bool:
     return suffix in SUPPORTED_EXTENSIONS
 
 
-def parse_changed_lines(diff: str) -> set[int]:
-    """Extract 1-based line numbers added or modified in the new file from a unified diff."""
-    changed = set()
+def parse_changed_lines(diff: str) -> ChangedLines:
+    """Extract added 1-based line numbers and deletion anchors from a unified diff."""
+    added: set[int] = set()
+    deleted_anchors: set[tuple[int, int]] = set()
     current_line = 0
+    in_hunk = False
+
     for line in diff.splitlines():
-        if line.startswith("@@"):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
             match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
             if match:
-                old_count = int(match.group(2)) if match.group(2) else 1
+                old_count = int(match.group(2)) if match.group(2) is not None else 1
                 new_start = int(match.group(3))
-                new_count = int(match.group(4)) if match.group(4) else 1
+                new_count = int(match.group(4)) if match.group(4) is not None else 1
                 current_line = new_start
                 if old_count > 0 and new_count == 0:
-                    # Pure deletion hunk; attribute deletion anchor to enclosing line
-                    changed.add(max(1, new_start))
-        elif line.startswith("+") and not line.startswith("+++"):
-            changed.add(current_line)
+                    # Pure deletion hunk; anchor spans new_start and new_start + 1
+                    deleted_anchors.add((new_start, new_start + 1))
+        elif in_hunk and line.startswith("+"):
+            added.add(current_line)
             current_line += 1
-        elif line.startswith("-") and not line.startswith("---"):
+        elif in_hunk and line.startswith("-"):
             pass
-        elif line.startswith(" "):
+        elif in_hunk and line.startswith(" "):
             current_line += 1
-    return changed
+
+    return ChangedLines(added_lines=added, deleted_anchors=deleted_anchors)
+
+
+def _strip_string_literals(line: str) -> str:
+    """Remove string literals so comments inside strings are not matched as exemptions."""
+    return re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '""', line)
+
+
+def _is_attribute_or_decorator_or_template(line: str) -> bool:
+    """Return True if line is strictly a C++ template header, C++ attribute, or Python decorator."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if TEMPLATE_PATTERN.match(stripped):
+        return True
+    if ATTRIBUTE_PATTERN.match(stripped):
+        return True
+    if DECORATOR_PATTERN.match(stripped):
+        return True
+    return False
 
 
 def has_exemption(code_lines: list[str], start_line: int) -> bool:
-    """Check if the function definition line or the non-blank line immediately preceding it has an exemption."""
-    # Check signature line (1-based index)
+    """Check if the function definition line or preceding lines have an exemption."""
+    # Check signature line (1-based index), stripping string literals
     if 1 <= start_line <= len(code_lines):
-        if SIGNATURE_COMMENT_PATTERN.search(code_lines[start_line - 1]):
+        sig_line = _strip_string_literals(code_lines[start_line - 1])
+        if SIGNATURE_COMMENT_PATTERN.search(sig_line):
             return True
 
-    # Check non-blank lines directly preceding start_line
+    # Check non-blank lines preceding start_line, skipping attributes, decorators, templates
     line_idx = start_line - 2
-    while line_idx >= 0 and line_idx >= start_line - 4:
-        stripped = code_lines[line_idx].strip()
+    checked_lines = 0
+    while line_idx >= 0 and checked_lines < 10:
+        line = code_lines[line_idx]
+        stripped = line.strip()
+        line_idx -= 1
         if not stripped:
-            line_idx -= 1
             continue
-        if PRECEDING_COMMENT_PATTERN.search(code_lines[line_idx]):
+        checked_lines += 1
+        # Stop at preprocessor directives (#include, #define, #pragma)
+        if stripped.startswith("#") and not PRECEDING_COMMENT_PATTERN.search(line):
+            break
+        if PRECEDING_COMMENT_PATTERN.search(line):
             return True
-        # If preceding non-blank line is not an exemption comment, do not scan further
+        if _is_attribute_or_decorator_or_template(stripped):
+            continue
+        # Preceding non-blank line is regular code or another block delimiter; stop scanning
         break
 
     return False
@@ -114,7 +168,7 @@ def has_exemption(code_lines: list[str], start_line: int) -> bool:
 def check_source_complexity(
     file_path: str,
     code: str,
-    changed_lines: set[int],
+    changed_lines: set[int] | ChangedLines,
     ccn_limit: int = DEFAULT_CCN_THRESHOLD,
     nloc_limit: int = DEFAULT_NLOC_THRESHOLD,
 ) -> list[Finding]:
@@ -124,17 +178,23 @@ def check_source_complexity(
     except ImportError:
         sys.stderr.write(
             "ERROR: 'lizard' Python package is not installed.\n"
-            "Install it via: python3 -m pip install lizard==1.26.0\n"
+            "Install it via: python3 -m pip install --require-hashes -r tools/ci/requirements-pr-gates.txt\n"
         )
         raise
 
     findings: list[Finding] = []
     file_info = lizard.analyze_file.analyze_source_code(file_path, code)
     code_lines = code.splitlines()
+    deleted_anchors = getattr(changed_lines, "deleted_anchors", set())
 
     for func in file_info.function_list:
         func_lines = set(range(func.start_line, func.end_line + 1))
-        if not (func_lines & changed_lines):
+        has_added = bool(func_lines & changed_lines)
+        has_deletion = any(
+            func.start_line <= before and after <= func.end_line
+            for before, after in deleted_anchors
+        )
+        if not (has_added or has_deletion):
             continue
 
         if has_exemption(code_lines, func.start_line):
@@ -185,40 +245,74 @@ def normalize_repo_path(raw_name: str, root: Path) -> str:
     return norm[2:] if norm.startswith("./") else norm
 
 
+def _validate_duplication_report_schema(report: Any) -> None:
+    if not isinstance(report, dict):
+        raise ValueError("jscpd report root must be a JSON object")
+    if "duplicates" not in report or not isinstance(report["duplicates"], list):
+        raise ValueError("jscpd report missing 'duplicates' array")
+    if "statistics" not in report or not isinstance(report["statistics"], dict):
+        raise ValueError("jscpd report missing 'statistics' object")
+
+
+def _validate_duplication_entry(idx: int, dup: Any) -> None:
+    if not isinstance(dup, dict):
+        raise ValueError(f"jscpd duplicate entry {idx} must be a JSON object")
+    if "tokens" not in dup or not isinstance(dup["tokens"], int):
+        raise ValueError(f"jscpd duplicate entry {idx} missing integer 'tokens'")
+    for key in ("firstFile", "secondFile"):
+        if key not in dup or not isinstance(dup[key], dict):
+            raise ValueError(f"jscpd duplicate entry {idx} missing '{key}' object")
+        file_obj = dup[key]
+        if not file_obj.get("name") or not isinstance(file_obj["name"], str):
+            raise ValueError(f"jscpd duplicate entry {idx} '{key}' missing string 'name'")
+        if "start" not in file_obj or not isinstance(file_obj["start"], int):
+            raise ValueError(f"jscpd duplicate entry {idx} '{key}' missing integer 'start'")
+        if "end" not in file_obj or not isinstance(file_obj["end"], int):
+            raise ValueError(f"jscpd duplicate entry {idx} '{key}' missing integer 'end'")
+
+
 def evaluate_duplication_report(
     report: dict[str, Any],
-    changed_by_file: dict[str, set[int]],
+    changed_by_file: dict[str, Any],
     min_tokens: int = DEFAULT_MIN_TOKENS,
     root: Path | None = None,
 ) -> list[Finding]:
-    """Evaluate jscpd JSON report and flag duplicate blocks that intersect changed lines."""
+    """Evaluate jscpd JSON report and flag duplicate blocks that intersect changed lines.
+
+    Fails closed if the report schema or entries deviate from expected contract.
+    """
+    _validate_duplication_report_schema(report)
+
     findings: list[Finding] = []
     seen = set()
     repo_root = root or Path.cwd()
 
-    for dup in report.get("duplicates", []):
-        tokens = dup.get("tokens", 0)
-        if tokens < min_tokens:
+    for idx, dup in enumerate(report["duplicates"]):
+        _validate_duplication_entry(idx, dup)
+
+        tokens = dup["tokens"]
+        # Duplicate code block must exceed min_tokens (threshold is <= min_tokens)
+        if tokens <= min_tokens:
             continue
 
-        first = dup.get("firstFile", {})
-        second = dup.get("secondFile", {})
+        first = dup["firstFile"]
+        second = dup["secondFile"]
 
         for current, other in ((first, second), (second, first)):
-            curr_name = current.get("name", "")
+            curr_name = current["name"]
             norm_name = normalize_repo_path(curr_name, repo_root)
 
             if norm_name not in changed_by_file:
                 continue
 
-            curr_start = current.get("start", 0)
-            curr_end = current.get("end", 0)
+            curr_start = current["start"]
+            curr_end = current["end"]
             dup_range = set(range(curr_start, curr_end + 1))
 
             if dup_range & changed_by_file[norm_name]:
-                other_name = normalize_repo_path(other.get("name", ""), repo_root)
-                other_start = other.get("start", 0)
-                other_end = other.get("end", 0)
+                other_name = normalize_repo_path(other["name"], repo_root)
+                other_start = other["start"]
+                other_end = other["end"]
                 key = (norm_name, curr_start, curr_end, other_name, other_start)
                 if key in seen:
                     continue
@@ -246,24 +340,36 @@ def run_jscpd(
     min_tokens: int = DEFAULT_MIN_TOKENS,
     timeout_seconds: int = 45,
 ) -> dict[str, Any]:
-    """Execute jscpd via pinned npx or local binary and return parsed JSON report, failing closed on errors."""
-    jscpd_bin = shutil.which("jscpd")
+    """Execute jscpd via local locked binary or system tool and return parsed JSON report, failing closed on errors."""
+    local_locked_bin = root / "tools" / "ci" / "duplication" / "node_modules" / ".bin" / "jscpd"
+    system_jscpd = shutil.which("jscpd")
     npx_bin = shutil.which("npx")
 
-    if not jscpd_bin and not npx_bin:
+    if local_locked_bin.is_file() and os.access(local_locked_bin, os.X_OK):
+        cmd = [str(local_locked_bin)]
+    elif system_jscpd:
+        cmd = [system_jscpd]
+    elif npx_bin:
+        cmd = [npx_bin, "--no-install", "jscpd"]
+    else:
         raise RuntimeError(
-            "Neither 'jscpd' nor 'npx' was found on PATH. "
-            "Install Node.js or run with --skip-duplication if intentionally omitting."
+            "Neither locked 'tools/ci/duplication/node_modules/.bin/jscpd' nor system 'jscpd' / 'npx' was found. "
+            "Install dependencies via 'npm ci --prefix tools/ci/duplication' or pass --skip-duplication."
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         output_dir = Path(tmpdir) / "jscpd-output"
-        cmd = [jscpd_bin] if jscpd_bin else [npx_bin, "--yes", PINNED_JSCPD_VERSION]
+
+        config_file = root / "tools" / "ci" / "duplication" / ".jscpd.json"
+        if config_file.is_file():
+            cmd.extend(["--config", str(config_file)])
 
         cmd.extend([
-            str(root),
+            ".",
             "-k", str(min_tokens),
-            "--ignore", "**/.git/**,build,build-*/**,build/**,**/.codex/**,**/.gemini/**,**/worktrees/**,**/node_modules/**,**/tests/fixtures/**",
+            "-l", "10",
+            "-p", "**/*.{cpp,c,cc,cxx,h,hpp,py,cs,inl,ipp,tpp}",
+            "--ignore", ".git/**,build/**,build-*/**,.codex/**,.gemini/**,worktrees/**,tools/ci/duplication/node_modules/**",
             "-r", "json",
             "--output", str(output_dir),
             "--silent",
@@ -338,9 +444,14 @@ def collect_changed_files(
     base_ref: str,
     head_ref: str | None,
     paths: list[str],
-) -> tuple[dict[str, set[int]], list[str]]:
+) -> tuple[dict[str, ChangedLines], list[str]]:
     """Determine changed source files and changed line numbers."""
-    refs = [base_ref] + ([head_ref] if head_ref else [])
+    try:
+        effective_base = git_cmd(root, "merge-base", base_ref, head_ref or "HEAD").strip()
+    except subprocess.CalledProcessError:
+        effective_base = base_ref
+
+    refs = [effective_base] + ([head_ref] if head_ref else [])
 
     diff_args = ["diff", "--name-only", "--no-renames", "-z", *refs]
     if paths:
@@ -356,32 +467,41 @@ def collect_changed_files(
         raw_untracked = git_cmd(root, *ls_args).split("\0")
         changed_paths.update(p for p in raw_untracked if p)
 
-    changed_by_file: dict[str, set[int]] = {}
+    changed_by_file: dict[str, ChangedLines] = {}
     source_files: list[str] = []
 
     for path_str in sorted(changed_paths):
         if not is_supported_source_file(path_str):
             continue
 
-        target_path = root / path_str
-        if not target_path.exists():
-            # File was deleted in this change
-            continue
+        if head_ref:
+            if not file_exists_at_ref(root, head_ref, path_str):
+                # File was deleted in head_ref
+                continue
+        else:
+            target_path = root / path_str
+            if not target_path.exists():
+                # File was deleted in working tree
+                continue
 
         source_files.append(path_str)
         try:
             file_diff = git_cmd(root, "diff", "-U0", "--no-renames", *refs, "--", path_str)
             changed_lines = parse_changed_lines(file_diff)
-        except subprocess.CalledProcessError:
-            changed_lines = set()
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"git diff failed for '{path_str}': {e}") from e
 
         # Check if file was newly created in this change
-        if not file_exists_at_ref(root, base_ref, path_str):
+        if not file_exists_at_ref(root, effective_base, path_str):
             try:
-                num_lines = len(target_path.read_text(encoding="utf-8", errors="replace").splitlines())
-                changed_lines = set(range(1, num_lines + 1))
-            except OSError:
-                changed_lines = set()
+                if head_ref:
+                    code = git_cmd(root, "show", f"{head_ref}:{path_str}")
+                else:
+                    code = (root / path_str).read_text(encoding="utf-8", errors="replace")
+                num_lines = len(code.splitlines())
+                changed_lines = ChangedLines(added_lines=set(range(1, num_lines + 1)))
+            except (OSError, subprocess.CalledProcessError):
+                changed_lines = ChangedLines()
 
         changed_by_file[path_str] = changed_lines
 
@@ -391,20 +511,33 @@ def collect_changed_files(
 def run_complexity_checks(
     root: Path,
     source_files: list[str],
-    changed_by_file: dict[str, set[int]],
+    changed_by_file: dict[str, ChangedLines],
     ccn_limit: int,
     nloc_limit: int,
+    head_ref: str | None = None,
 ) -> list[Finding]:
     """Execute Lizard complexity checks across all changed files."""
     findings: list[Finding] = []
     for path_str in source_files:
-        target_file = root / path_str
-        if not target_file.exists():
-            continue
-
         try:
-            code = target_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            if head_ref:
+                code = git_cmd(root, "show", f"{head_ref}:{path_str}")
+            else:
+                target_file = root / path_str
+                if not target_file.exists():
+                    continue
+                code = target_file.read_text(encoding="utf-8", errors="replace")
+        except (OSError, subprocess.CalledProcessError) as e:
+            findings.append(
+                Finding(
+                    file=path_str,
+                    line=1,
+                    metric="ERROR",
+                    metric_value=0,
+                    threshold=0,
+                    reason=f"Failed to read source file: {e}",
+                )
+            )
             continue
 
         file_findings = check_source_complexity(
@@ -478,15 +611,44 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError:
         root = Path.cwd()
 
-    base_ref = resolve_base_ref(root, args.base)
-    changed_by_file, source_files = collect_changed_files(root, base_ref, args.head, args.paths)
-
     all_findings: list[Finding] = []
 
+    try:
+        base_ref = resolve_base_ref(root, args.base)
+        changed_by_file, source_files = collect_changed_files(root, base_ref, args.head, args.paths)
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        all_findings.append(
+            Finding(
+                file="git",
+                line=1,
+                metric="ERROR",
+                metric_value=0,
+                threshold=0,
+                reason=f"Failed to collect changed files: {e}",
+            )
+        )
+        base_ref = args.base or "unknown"
+        changed_by_file = {}
+        source_files = []
+
     # 1. Lizard complexity
-    if not args.skip_complexity:
-        findings = run_complexity_checks(root, source_files, changed_by_file, args.ccn, args.nloc)
-        all_findings.extend(findings)
+    if not args.skip_complexity and source_files:
+        try:
+            findings = run_complexity_checks(
+                root, source_files, changed_by_file, args.ccn, args.nloc, head_ref=args.head
+            )
+            all_findings.extend(findings)
+        except ImportError as e:
+            all_findings.append(
+                Finding(
+                    file="lizard",
+                    line=1,
+                    metric="ERROR",
+                    metric_value=0,
+                    threshold=0,
+                    reason=f"Lizard import error: {e}",
+                )
+            )
 
     # 2. jscpd duplication
     if not args.skip_duplication and changed_by_file:
@@ -499,7 +661,7 @@ def main(argv: list[str] | None = None) -> int:
                 root=root,
             )
             all_findings.extend(dup_findings)
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
             all_findings.append(
                 Finding(
                     file="jscpd",

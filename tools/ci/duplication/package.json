@@ -1,0 +1,9 @@
+{
+  "name": "odbcpp-pr-duplication",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PR code duplication gate dependencies",
+  "dependencies": {
+    "jscpd": "5.4.3"
+  }
+}
