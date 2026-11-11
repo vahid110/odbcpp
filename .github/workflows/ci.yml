@@ -129,10 +129,10 @@ jobs:
         if: matrix.product == 'POSTGRESQL'
         run: |
           set -o pipefail
-          python3 -m pip install --no-cache-dir lizard
-          python3 -B tools/development/check_pr_complexity.py \
-            --base "${{ github.event.pull_request.base.sha || 'origin/main' }}"
           status=0
+          python3 -m pip install --no-cache-dir lizard==1.26.0 || status=1
+          python3 -B tools/development/check_pr_complexity.py \
+            --base "${{ github.event.pull_request.base.sha || 'origin/main' }}" || status=1
           for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
             echo "::group::$test"
             # A file that runs no test (for example, no unittest.main()) also fails.
