@@ -203,6 +203,31 @@ TEST(DriverLoggerTest, WritesEscapedStructuredJson) {
   remove_directory(directory);
 }
 
+TEST(DriverLoggerTest, ReopeningFileAppendsWithoutLosingEarlierRecords) {
+  const auto directory = temporary_directory("odbcpp-append-log");
+  const auto path = directory / "driver.log";
+  LoggingOptions options;
+  options.level = LogLevel::Info;
+  options.sinks = {LogSink::File};
+  options.file = path.string();
+  options.asynchronous = false;
+
+  {
+    const auto logger = DriverLogger::create(options, 1);
+    logger->log(LogLevel::Info, "query_completed", "First connection");
+  }
+  const auto first = read_file(path);
+  ASSERT_NE(std::string::npos, first.find("event=query_completed"));
+  {
+    const auto logger = DriverLogger::create(options, 2);
+    logger->log(LogLevel::Info, "connection_closed", "Second connection");
+  }
+  const auto combined = read_file(path);
+  EXPECT_TRUE(combined.starts_with(first));
+  EXPECT_NE(std::string::npos, combined.find("event=connection_closed", first.size()));
+  remove_directory(directory);
+}
+
 #ifndef _WIN32
 // A configured log path that is a symbolic link is refused before the rotating
 // sink can append to or rename its target; a new file is owner-only.
@@ -291,8 +316,7 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
 // A sentinel victim file's content and mode must remain unchanged when an
 // attempted log-open fails because the configured path is a symlink to the
 // victim.  This is the core TOCTOU content-preservation check: O_NOFOLLOW in
-// prepare_log_file must prevent the open from reaching the victim at all, so
-// spdlog's fopen("wb") is never reached.
+// prepare_log_file rejects the link before spdlog opens the log for append.
 TEST(DriverLoggerTest, VictimContentAndModePreservedWhenLogPathIsSymlink) {
   const auto directory = temporary_directory("odbcpp-victim-preserve");
   const auto victim = directory / "victim.txt";
