@@ -251,7 +251,8 @@ void prepare_log_file(const spdlog::filename_t& path, bool rotating) {
     }
   }
 
-  // Prepare the path without changing existing contents on a normal reopen.
+  // A normal reopen preserves existing contents. O_NONBLOCK lets us reject
+  // a FIFO without waiting for a reader before the descriptor check.
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
   if (fd < 0) {
     throw std::runtime_error("LogFile cannot be opened: " +

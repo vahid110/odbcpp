@@ -316,8 +316,7 @@ TEST(DriverLoggerTest, LogFileIsCreatedOwnerOnlyAndNeverThroughASymlink) {
 // A sentinel victim file's content and mode must remain unchanged when an
 // attempted log-open fails because the configured path is a symlink to the
 // victim.  This is the core TOCTOU content-preservation check: O_NOFOLLOW in
-// prepare_log_file must prevent the open from reaching the victim at all, so
-// spdlog's fopen("wb") is never reached.
+// prepare_log_file rejects the link before spdlog opens the log for append.
 TEST(DriverLoggerTest, VictimContentAndModePreservedWhenLogPathIsSymlink) {
   const auto directory = temporary_directory("odbcpp-victim-preserve");
   const auto victim = directory / "victim.txt";
