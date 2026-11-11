@@ -26,13 +26,18 @@ the caller-supplied fallback (`42000` `SQLSTATE_SYNTAX_ERROR` or `HY000`
 `SQLSTATE_GENERAL_ERROR`). By preserving `42601`:
 1. Applications, ORMs, and Driver Managers can distinguish a concrete syntax error
    (`42601`) from general access rule violations or ambiguous errors (`42000`).
-2. Diagnostic parity is maintained with vendor ODBC drivers (Amazon native
-   2.2.4.0 and Amazon/Simba 1.6.3.1008 both return `42601`).
+2. Diagnostic parity is maintained with vendor ODBC drivers (observed in vendor
+   probes with Amazon native 2.2.4.0 and Amazon/Simba 1.6.3.1008 both returning `42601`;
+   live Redshift cluster qualification remains open debt).
 3. Arbitrary internal or undocumented vendor states are not blindly passed through:
    unmapped vendor-specific states continue to fall back to the caller-supplied
    fallback (`HY000` or `42000`).
 4. Driver-internal syntax errors (such as escape syntax parsing in ODBCPP's escape
    parser) remain `42000` (`SQLSTATE_SYNTAX_ERROR`).
+5. Driver-generated SQL paths (such as catalog discovery queries or session isolation
+   queries) that receive a server-side syntax rejection (`42601`) surface `42601`
+   rather than collapsing to generic `HY000`. Server syntax errors on driver-generated
+   queries indicate dialect incompatibility between the driver and backend version.
 
 ### ODBC 2.x diagnostic behavior
 
