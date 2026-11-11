@@ -3560,7 +3560,9 @@ TEST_F(PreparedStatementIntegrationTest,
     // an explicit metadata request rather than on the count-only API.
     SQLSMALLINT result_columns = 66;
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &result_columns));
-    expect_state("42000");
+    // Deferred statement description rejects "SELECT ? FROM" with native syntax
+    // error 42601, preserved rather than collapsed to generic 42000 per #226.
+    expect_state("42601");
     // iODBC 3.52.16 passes the driver its own column count and copies it to
     // the application even when the driver fails.
     EXPECT_EQ(odbcpp::test::dm::value(
@@ -3569,7 +3571,7 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
         hstmt, 1, &data_type, &parameter_size, &decimal_digits,
         &nullable));
-    expect_state("42000");
+    expect_state("42601");
     EXPECT_EQ(62, data_type);
     EXPECT_EQ(63u, parameter_size);
     EXPECT_EQ(64, decimal_digits);
