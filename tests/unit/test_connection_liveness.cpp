@@ -60,8 +60,10 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
     if (bytes.size() > 5 && bytes.front() == std::byte{'Q'}) {
-      input_.clear();
-      offset_ = 0;
+      if (offset_ == input_.size()) {
+        input_.clear();
+        offset_ = 0;
+      }
       active_error_ = SimulatedWireError::None;
       const std::string_view request(reinterpret_cast<const char*>(bytes.data()), bytes.size());
       const std::string_view query = request.substr(5);
@@ -84,7 +86,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         frame('Z', "I");
       }
     } else if (bytes.size() > 5 && (bytes.front() == std::byte{'P'} || bytes.front() == std::byte{'D'})) {
-      if (bytes.front() == std::byte{'P'}) {
+      if (offset_ == input_.size()) {
         input_.clear();
         offset_ = 0;
       }
