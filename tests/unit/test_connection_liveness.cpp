@@ -68,6 +68,12 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
+    if (active_error_ == SimulatedWireError::Network) {
+      return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
+    }
+    if (active_error_ == SimulatedWireError::Timeout) {
+      return {rs::util::DbErrorCode::Timeout, "simulated query timeout"};
+    }
     if (++session_sends_ == 1) {
       return rs::core::transport::IOResult{bytes.size(), false};
     }
@@ -75,7 +81,6 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
       input_.clear();
       offset_ = 0;
     }
-    active_error_ = SimulatedWireError::None;
 
     const auto queries = extract_queries(bytes);
     const bool matches_simulated_error =
