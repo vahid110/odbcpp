@@ -28,6 +28,14 @@ struct ConnectionAuthenticationTestAccess {
 };
 }
 namespace {
+static std::string_view strip_trailing_sql(std::string_view s) {
+  while (!s.empty() && (s.back() == '\0' || s.back() == ';' || s.back() == ' ' ||
+                        s.back() == '\r' || s.back() == '\n' || s.back() == '\t')) {
+    s.remove_suffix(1);
+  }
+  return s;
+}
+
 enum class SimulatedWireError {
   None,
   Network,
@@ -73,7 +81,8 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     const bool matches_simulated_error =
         facts_->simulated_error != SimulatedWireError::None &&
         std::any_of(queries.begin(), queries.end(), [&](std::string_view q) {
-          return facts_->simulated_error_query.empty() || q.starts_with(facts_->simulated_error_query);
+          return facts_->simulated_error_query.empty() ||
+                 strip_trailing_sql(q) == strip_trailing_sql(facts_->simulated_error_query);
         });
 
     if (matches_simulated_error) {
@@ -87,7 +96,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
 
     const bool matches_begin =
         std::any_of(queries.begin(), queries.end(), [](std::string_view q) {
-          return q.starts_with("BEGIN");
+          return strip_trailing_sql(q) == "BEGIN";
         });
 
     if (matches_begin) {
@@ -96,7 +105,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
       return rs::core::transport::IOResult{bytes.size(), false};
     }
 
-    if (!error_sent_) {
+    if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
       if (!prior_fields_.empty()) {
         frame('E', prior_fields_);
       }
@@ -615,6 +624,8 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
   facts->simulated_error_query = "SELECT 1";
   SQLCHAR drop_wire_query[] = "SELECT 1";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, drop_wire_query, SQL_NTS));
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+  EXPECT_TRUE(facts->simulated_error_query.empty());
   SQLCHAR drop_stmt_state[6]{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, drop_stmt_state, nullptr, nullptr, 0, nullptr));
   EXPECT_STREQ("08S01", reinterpret_cast<char*>(drop_stmt_state));
@@ -676,6 +687,8 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
   facts->simulated_error_query = "SELECT 1";
   SQLCHAR timeout_query[] = "SELECT 1";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, timeout_query, SQL_NTS));
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+  EXPECT_TRUE(facts->simulated_error_query.empty());
   SQLCHAR timeout_stmt_state[6]{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, timeout_stmt_state, nullptr, nullptr, 0, nullptr));
   EXPECT_STREQ("HYT00", reinterpret_cast<char*>(timeout_stmt_state));
