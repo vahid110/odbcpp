@@ -238,11 +238,13 @@ def normalize_repo_path(raw_name: str, root: Path) -> str:
     path_obj = Path(raw_name)
     if path_obj.is_absolute():
         try:
-            return str(path_obj.relative_to(root))
+            rel = path_obj.relative_to(root)
+            return rel.as_posix()
         except ValueError:
-            return str(path_obj)
+            return path_obj.as_posix()
     norm = os.path.relpath(root / path_obj, start=str(root))
-    return norm[2:] if norm.startswith("./") else norm
+    norm_posix = norm.replace("\\", "/")
+    return norm_posix[2:] if norm_posix.startswith("./") else norm_posix
 
 
 def _validate_duplication_report_schema(report: Any) -> None:
@@ -524,8 +526,8 @@ def collect_changed_files(
                     code = (root / path_str).read_text(encoding="utf-8", errors="replace")
                 num_lines = len(code.splitlines())
                 changed_lines = ChangedLines(added_lines=set(range(1, num_lines + 1)))
-            except (OSError, subprocess.CalledProcessError):
-                changed_lines = ChangedLines()
+            except (OSError, subprocess.CalledProcessError) as e:
+                raise RuntimeError(f"failed reading newly created file '{path_str}': {e}") from e
 
         changed_by_file[path_str] = changed_lines
 

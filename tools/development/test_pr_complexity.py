@@ -436,6 +436,7 @@ class MainCliTests(unittest.TestCase):
         root = Path("/repo/root")
         self.assertEqual("src/file.cpp", checker.normalize_repo_path("/repo/root/src/file.cpp", root))
         self.assertEqual("src/file.cpp", checker.normalize_repo_path("src/file.cpp", root))
+        self.assertEqual("src/file.cpp", checker.normalize_repo_path("src\\file.cpp", root))
 
 
 class IntegrationTests(unittest.TestCase):
