@@ -68,14 +68,11 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
-    if (active_error_ != SimulatedWireError::None) {
-      const auto err = std::exchange(active_error_, SimulatedWireError::None);
-      if (err == SimulatedWireError::Network) {
-        return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
-      }
-      if (err == SimulatedWireError::Timeout) {
-        return {rs::util::DbErrorCode::Timeout, "simulated query timeout"};
-      }
+    if (active_error_ == SimulatedWireError::Network) {
+      return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
+    }
+    if (active_error_ == SimulatedWireError::Timeout) {
+      return {rs::util::DbErrorCode::Timeout, "simulated query timeout"};
     }
     if (++session_sends_ == 1) {
       return rs::core::transport::IOResult{bytes.size(), false};
@@ -131,14 +128,11 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> bytes, rs::util::Deadline) override {
     ++facts_->reads;
-    if (active_error_ != SimulatedWireError::None) {
-      const auto err = std::exchange(active_error_, SimulatedWireError::None);
-      if (err == SimulatedWireError::Network) {
-        return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
-      }
-      if (err == SimulatedWireError::Timeout) {
-        return {rs::util::DbErrorCode::Timeout, "simulated query timeout"};
-      }
+    if (active_error_ == SimulatedWireError::Network) {
+      return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
+    }
+    if (active_error_ == SimulatedWireError::Timeout) {
+      return {rs::util::DbErrorCode::Timeout, "simulated query timeout"};
     }
     if (offset_ == input_.size()) {
       ++facts_->reads_after_error;
@@ -271,7 +265,7 @@ TEST(TerminalErrorResponseTest, OrdinaryErrorDrainsReadyAndRemainsReusable) {
   EXPECT_TRUE(connection.execute_query("SELECT recover", deadline));
 }
 
-TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndStatelessAcrossSessions) {
+TEST(TerminalErrorResponseTest, SimulatedErrorLatchesUntilReconnect) {
   using namespace rs::core::database;
   const auto facts = std::make_shared<TerminalResponseFacts>();
   auto wire = std::make_unique<TerminalResponseWire>(facts, "SERROR\0C22012\0Mtest\0", true);
@@ -298,40 +292,53 @@ TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndStatelessAcrossSession
     return s;
   };
 
-  // Send an unrelated query first - must succeed without triggering fault
+  // Pre-query message: unrelated query succeeds without triggering fault
   const std::string query_ok = make_q_frame("SELECT ok");
   auto send_ok = wire_ptr->send(std::as_bytes(std::span(query_ok)), deadline);
   ASSERT_TRUE(send_ok);
   EXPECT_EQ(SimulatedWireError::Network, facts->simulated_error);
 
-  // Read response for the unrelated query - gets completion frames
   std::byte recv_buf[64]{};
   auto read_ok = wire_ptr->recv(recv_buf, deadline);
   ASSERT_TRUE(read_ok);
 
-  // Target query consumes simulated_error and latches active_error_
+  // Target query: send succeeds, fault arming is consumed, fault latches
   const std::string query_fault = make_q_frame("SELECT fault");
   auto send_fault = wire_ptr->send(std::as_bytes(std::span(query_fault)), deadline);
   ASSERT_TRUE(send_fault);
   EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
   EXPECT_TRUE(facts->simulated_error_query.empty());
 
-  // recv() surfaces the simulated network error and resets active_error_ to None
+  // recv() surfaces the simulated transport loss
   auto read_fault = wire_ptr->recv(recv_buf, deadline);
   ASSERT_TRUE(read_fault.has_error());
   EXPECT_EQ(rs::util::DbErrorCode::NetworkError, read_fault.error());
 
-  // Follow-up query in the same session must receive normal completion frames
-  const std::string query_followup = make_q_frame("SELECT followup");
-  auto send_followup = wire_ptr->send(std::as_bytes(std::span(query_followup)), deadline);
-  ASSERT_TRUE(send_followup);
-  auto read_followup = wire_ptr->recv(recv_buf, deadline);
-  ASSERT_TRUE(read_followup);
+  // Fault remains latched in the same session: retries and follow-up sends/receives continue to fail
+  const std::string query_retry = make_q_frame("SELECT retry");
+  auto send_retry = wire_ptr->send(std::as_bytes(std::span(query_retry)), deadline);
+  ASSERT_TRUE(send_retry.has_error());
+  EXPECT_EQ(rs::util::DbErrorCode::NetworkError, send_retry.error());
 
-  // connect() completely resets mock state
+  auto read_retry = wire_ptr->recv(recv_buf, deadline);
+  ASSERT_TRUE(read_retry.has_error());
+  EXPECT_EQ(rs::util::DbErrorCode::NetworkError, read_retry.error());
+
+  // Reconnecting completely clears latched failure and restores session
   auto connect_result = wire_ptr->connect("localhost", 5432, deadline);
   ASSERT_TRUE(connect_result);
   EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+
+  // Reconnected session executes normally
+  auto send_reconnected_startup = wire_ptr->send(dummy_startup, deadline);
+  ASSERT_TRUE(send_reconnected_startup);
+
+  const std::string query_fresh = make_q_frame("SELECT fresh");
+  auto send_fresh = wire_ptr->send(std::as_bytes(std::span(query_fresh)), deadline);
+  ASSERT_TRUE(send_fresh);
+
+  auto read_fresh = wire_ptr->recv(recv_buf, deadline);
+  ASSERT_TRUE(read_fresh);
 }
 
 TEST(TerminalErrorResponseTest, OnlyTerminalErrorMayFollowOrdinaryError) {
