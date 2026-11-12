@@ -60,58 +60,54 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
-    const auto query = extract_query(bytes);
-    if (bytes.size() > 5 && bytes.front() == std::byte{'Q'}) {
-      if (offset_ == input_.size()) {
-        input_.clear();
-        offset_ = 0;
+    if (++session_sends_ == 1) {
+      return rs::core::transport::IOResult{bytes.size(), false};
+    }
+    if (offset_ == input_.size()) {
+      input_.clear();
+      offset_ = 0;
+    }
+    active_error_ = SimulatedWireError::None;
+
+    const auto queries = extract_queries(bytes);
+    const bool matches_simulated_error =
+        facts_->simulated_error != SimulatedWireError::None &&
+        std::any_of(queries.begin(), queries.end(), [&](std::string_view q) {
+          return facts_->simulated_error_query.empty() || q.starts_with(facts_->simulated_error_query);
+        });
+
+    if (matches_simulated_error) {
+      active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+      facts_->simulated_error_query.clear();
+      error_sent_ = true;
+      input_.clear();
+      offset_ = 0;
+      return rs::core::transport::IOResult{bytes.size(), false};
+    }
+
+    const bool matches_begin =
+        std::any_of(queries.begin(), queries.end(), [](std::string_view q) {
+          return q.starts_with("BEGIN");
+        });
+
+    if (matches_begin) {
+      frame('C', std::string_view("BEGIN\0", 6));
+      frame('Z', "T");
+      return rs::core::transport::IOResult{bytes.size(), false};
+    }
+
+    if (!error_sent_) {
+      if (!prior_fields_.empty()) {
+        frame('E', prior_fields_);
       }
-      active_error_ = SimulatedWireError::None;
-      if (query.starts_with("BEGIN")) {
-        frame('C', std::string_view("BEGIN\0", 6));
-        frame('Z', "T");
-      } else if (facts_->simulated_error != SimulatedWireError::None &&
-                 (facts_->simulated_error_query.empty() || query.starts_with(facts_->simulated_error_query))) {
-        active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
-        facts_->simulated_error_query.clear();
-        error_sent_ = true;
-      } else if (query.starts_with("SELECT pg_terminate_backend") || query.starts_with("SELECT fatal") || !error_sent_) {
-        if (!prior_fields_.empty()) {
-          frame('E', prior_fields_);
-        }
-        frame('E', fields_);
-        error_sent_ = true;
-        if (recoverable_) {
-          frame('Z', "I");
-        }
-      } else {
-        frame('C', std::string_view("SELECT 0\0", 9));
+      frame('E', fields_);
+      error_sent_ = true;
+      if (recoverable_) {
         frame('Z', "I");
       }
-    } else if (bytes.size() > 5 && (bytes.front() == std::byte{'P'} || bytes.front() == std::byte{'D'})) {
-      if (offset_ == input_.size()) {
-        input_.clear();
-        offset_ = 0;
-      }
-      active_error_ = SimulatedWireError::None;
-      if (facts_->simulated_error != SimulatedWireError::None &&
-          (facts_->simulated_error_query.empty() || (!query.empty() && query.starts_with(facts_->simulated_error_query)))) {
-        active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
-        facts_->simulated_error_query.clear();
-        error_sent_ = true;
-      } else if (!error_sent_) {
-        if (!prior_fields_.empty()) {
-          frame('E', prior_fields_);
-        }
-        frame('E', fields_);
-        error_sent_ = true;
-        if (recoverable_) {
-          frame('Z', "I");
-        }
-      } else {
-        frame('C', std::string_view("SELECT 0\0", 9));
-        frame('Z', "I");
-      }
+    } else {
+      frame('C', std::string_view("SELECT 0\0", 9));
+      frame('Z', "I");
     }
     return rs::core::transport::IOResult{bytes.size(), false};
   }
@@ -138,6 +134,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   void reset_state() {
     input_.clear();
     offset_ = 0;
+    session_sends_ = 0;
     error_sent_ = false;
     active_error_ = SimulatedWireError::None;
     facts_->simulated_error = SimulatedWireError::None;
@@ -147,14 +144,38 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     frame('R', std::string(4, '\0'));
     frame('Z', "I");
   }
-  static std::string_view extract_query(std::span<const std::byte> bytes) {
-    if (bytes.size() > 5 && bytes.front() == std::byte{'Q'}) {
-      return std::string_view(reinterpret_cast<const char*>(bytes.data() + 5), bytes.size() - 5);
+  static std::vector<std::string_view> extract_queries(std::span<const std::byte> bytes) {
+    std::vector<std::string_view> queries;
+    std::size_t offset = 0;
+    while (offset + 5 <= bytes.size()) {
+      const char tag = static_cast<char>(bytes[offset]);
+      const uint32_t len = (static_cast<uint32_t>(bytes[offset + 1]) << 24) |
+                           (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+                           (static_cast<uint32_t>(bytes[offset + 3]) << 8) |
+                           static_cast<uint32_t>(bytes[offset + 4]);
+      if (len < 4 || offset + 1 + len > bytes.size()) {
+        break;
+      }
+      const char* payload = reinterpret_cast<const char*>(bytes.data() + offset + 5);
+      const std::size_t payload_len = len - 4;
+      if (tag == 'Q') {
+        const char* nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
+        queries.emplace_back(payload, nul ? static_cast<std::size_t>(nul - payload) : payload_len);
+      } else if (tag == 'P') {
+        // Parse message layout:
+        // C-string: statement name (ends at first '\0')
+        // C-string: SQL query (ends at next '\0')
+        const char* stmt_nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
+        if (stmt_nul != nullptr && stmt_nul + 1 < payload + payload_len) {
+          const char* sql_start = stmt_nul + 1;
+          const std::size_t remaining = static_cast<std::size_t>((payload + payload_len) - sql_start);
+          const char* sql_nul = static_cast<const char*>(std::memchr(sql_start, '\0', remaining));
+          queries.emplace_back(sql_start, sql_nul ? static_cast<std::size_t>(sql_nul - sql_start) : remaining);
+        }
+      }
+      offset += 1 + len;
     }
-    if (bytes.size() > 6 && bytes.front() == std::byte{'P'}) {
-      return std::string_view(reinterpret_cast<const char*>(bytes.data() + 6), bytes.size() - 6);
-    }
-    return {};
+    return queries;
   }
   void frame(char tag, std::string_view payload) {
     input_.push_back(static_cast<std::byte>(tag));
@@ -170,6 +191,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   std::string fields_, prior_fields_, initial_prior_fields_;
   std::vector<std::byte> input_;
   std::size_t offset_{};
+  unsigned session_sends_{};
   bool recoverable_{}, initial_recoverable_{}, error_sent_{};
   SimulatedWireError active_error_{SimulatedWireError::None};
 };
