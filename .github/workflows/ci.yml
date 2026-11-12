@@ -125,11 +125,15 @@ jobs:
       # Every tooling unit test under tools/ runs here, so none can silently rot.
       # Windows-only tests run in the Windows PR job; test_spdlog_fmt_patch needs
       # build inputs and runs under CTest.
-      - name: Run tooling unit tests offline
+      - name: Run tooling unit tests and PR gates
         if: matrix.product == 'POSTGRESQL'
         run: |
           set -o pipefail
           status=0
+          npm ci --prefix tools/ci/duplication || status=1
+          python3 -m pip install --no-cache-dir --require-hashes -r tools/ci/requirements-pr-gates.txt || status=1
+          python3 -B tools/development/check_pr_complexity.py \
+            --base "${{ github.base_ref && format('origin/{0}', github.base_ref) || 'origin/main' }}" || status=1
           for test in $(git ls-files 'tools/*.py' | grep -E '/test_[^/]*\.py$' | grep -v -E '/test_windows_|/test_spdlog_fmt_patch\.py$'); do
             echo "::group::$test"
             # A file that runs no test (for example, no unittest.main()) also fails.

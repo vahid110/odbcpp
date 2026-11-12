@@ -1,0 +1,17 @@
+{
+  "threshold": 0,
+  "minTokens": 50,
+  "minLines": 10,
+  "reporters": ["json"],
+  "silent": true,
+  "noTips": true,
+  "ignore": [
+    ".git/**",
+    "build/**",
+    "build-*/**",
+    ".codex/**",
+    ".gemini/**",
+    "worktrees/**",
+    "tools/ci/duplication/node_modules/**"
+  ]
+}
