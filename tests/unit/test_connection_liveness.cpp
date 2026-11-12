@@ -37,6 +37,7 @@ enum class SimulatedWireError {
 struct TerminalResponseFacts {
   unsigned sends{}, reads{}, reads_after_error{}, closes{};
   SimulatedWireError simulated_error{SimulatedWireError::None};
+  std::string simulated_error_query{};
 };
 
 // A terminal ErrorResponse is the last available frame. No Z and no EOF are
@@ -70,8 +71,10 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
       if (query.starts_with("BEGIN")) {
         frame('C', std::string_view("BEGIN\0", 6));
         frame('Z', "T");
-      } else if (facts_->simulated_error != SimulatedWireError::None) {
+      } else if (facts_->simulated_error != SimulatedWireError::None &&
+                 (facts_->simulated_error_query.empty() || query.starts_with(facts_->simulated_error_query))) {
         active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+        facts_->simulated_error_query.clear();
       } else if (query.starts_with("SELECT pg_terminate_backend") || query.starts_with("SELECT fatal") || !error_sent_) {
         if (!prior_fields_.empty()) {
           frame('E', prior_fields_);
@@ -135,6 +138,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     error_sent_ = false;
     active_error_ = SimulatedWireError::None;
     facts_->simulated_error = SimulatedWireError::None;
+    facts_->simulated_error_query.clear();
     prior_fields_ = initial_prior_fields_;
     recoverable_ = initial_recoverable_;
     frame('R', std::string(4, '\0'));
@@ -574,6 +578,7 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
   ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, input, SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   facts->simulated_error = SimulatedWireError::Network;
+  facts->simulated_error_query = "SELECT 1";
   SQLCHAR drop_wire_query[] = "SELECT 1";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, drop_wire_query, SQL_NTS));
   SQLCHAR drop_stmt_state[6]{};
@@ -634,6 +639,7 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
   ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, input, SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   facts->simulated_error = SimulatedWireError::Timeout;
+  facts->simulated_error_query = "SELECT 1";
   SQLCHAR timeout_query[] = "SELECT 1";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, timeout_query, SQL_NTS));
   SQLCHAR timeout_stmt_state[6]{};
