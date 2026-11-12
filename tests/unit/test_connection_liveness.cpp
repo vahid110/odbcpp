@@ -60,10 +60,8 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
     if (bytes.size() > 5 && bytes.front() == std::byte{'Q'}) {
-      if (offset_ == input_.size()) {
-        input_.clear();
-        offset_ = 0;
-      }
+      input_.clear();
+      offset_ = 0;
       active_error_ = SimulatedWireError::None;
       const std::string_view request(reinterpret_cast<const char*>(bytes.data()), bytes.size());
       const std::string_view query = request.substr(5);
@@ -71,7 +69,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         frame('C', std::string_view("BEGIN\0", 6));
         frame('Z', "T");
       } else if (facts_->simulated_error != SimulatedWireError::None) {
-        active_error_ = facts_->simulated_error;
+        active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
       } else if (query.starts_with("SELECT pg_terminate_backend") || query.starts_with("SELECT fatal") || !error_sent_) {
         if (!prior_fields_.empty()) {
           frame('E', prior_fields_);
@@ -86,25 +84,25 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         frame('Z', "I");
       }
     } else if (bytes.size() > 5 && (bytes.front() == std::byte{'P'} || bytes.front() == std::byte{'D'})) {
-      if (offset_ == input_.size()) {
+      if (bytes.front() == std::byte{'P'}) {
         input_.clear();
         offset_ = 0;
       }
-      active_error_ = facts_->simulated_error;
-      if (active_error_ == SimulatedWireError::None) {
-        if (!error_sent_) {
-          if (!prior_fields_.empty()) {
-            frame('E', prior_fields_);
-          }
-          frame('E', fields_);
-          error_sent_ = true;
-          if (recoverable_) {
-            frame('Z', "I");
-          }
-        } else {
-          frame('C', std::string_view("SELECT 0\0", 9));
+      active_error_ = SimulatedWireError::None;
+      if (facts_->simulated_error != SimulatedWireError::None) {
+        active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+      } else if (!error_sent_) {
+        if (!prior_fields_.empty()) {
+          frame('E', prior_fields_);
+        }
+        frame('E', fields_);
+        error_sent_ = true;
+        if (recoverable_) {
           frame('Z', "I");
         }
+      } else {
+        frame('C', std::string_view("SELECT 0\0", 9));
+        frame('Z', "I");
       }
     }
     return rs::core::transport::IOResult{bytes.size(), false};
@@ -134,6 +132,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     offset_ = 0;
     error_sent_ = false;
     active_error_ = SimulatedWireError::None;
+    facts_->simulated_error = SimulatedWireError::None;
     prior_fields_ = initial_prior_fields_;
     recoverable_ = initial_recoverable_;
     frame('R', std::string(4, '\0'));
