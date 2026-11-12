@@ -52,9 +52,6 @@ public:
   
   // Read native Windows registration or platform odbcinst.ini defaults
   static std::map<std::string, std::string> read_driver_config(const std::string& driver_name);
-  
-  // Check if driver exists in system
-  static bool driver_exists(const std::string& driver_name);
 
 private:
   static std::map<std::string, std::string> parse_ini_section(std::ifstream& file, const std::string& section_name);

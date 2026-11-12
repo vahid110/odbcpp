@@ -640,9 +640,6 @@ public:
   // Parameter metadata (IPD)
   SQLRETURN describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
-  
-  bool has_results() const { return !result_rows_.empty(); }
-  size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
   friend class ODBCDescriptor;

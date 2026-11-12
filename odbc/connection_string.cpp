@@ -276,11 +276,6 @@ std::map<std::string, std::string> DSNReader::read_driver_config(const std::stri
   return {}; // Driver not found
 }
 
-bool DSNReader::driver_exists(const std::string& driver_name) {
-  auto config = read_driver_config(driver_name);
-  return !config.empty();
-}
-
 std::map<std::string, std::string> DSNReader::parse_ini_section(std::ifstream& file, const std::string& section_name) {
   std::map<std::string, std::string> params;
   std::string line;
