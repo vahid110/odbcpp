@@ -85,6 +85,8 @@ protected:
       std::span<const ParsedColumnProvenance> provenance, rs::util::Deadline deadline) override;
 
 private:
+  struct DatabaseDiscovery;
+  struct RedshiftCatalogExecution;
   BackendResult<QueryResult> execute_database_discovery(const CatalogRequest& request,
       const CatalogRequest& semantic_request, CatalogDatabaseScope scope, rs::util::Deadline deadline);
   BackendResult<QueryResult> execute_routine_catalog(const CatalogRequest& request, rs::util::Deadline deadline);

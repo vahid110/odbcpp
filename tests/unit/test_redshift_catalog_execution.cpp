@@ -272,6 +272,31 @@ TEST(RedshiftCatalogExecution, FacetIsExplicitProfileOnly) {
   no_execution(postgres);
 }
 
+TEST(RedshiftCatalogExecution, PostgreSqlPrimaryKeysUseGeneratedSqlAndRedshiftSelectsNativeExecution) {
+  PgDatabaseConnection postgres(nullptr, std::nullopt, PgCatalogProfile::PostgreSQL);
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const PrimaryKeysCatalogRequest keys{std::nullopt, "public", "route_probe"};
+
+  EXPECT_EQ(nullptr, postgres.catalog_execution());
+  EXPECT_FALSE(postgres.selects_catalog_request(keys));
+  ASSERT_NE(nullptr, postgres.catalog_queries());
+  const auto sql = postgres.catalog_queries()->catalog_query(keys);
+  ASSERT_TRUE(sql);
+  EXPECT_NE(std::string::npos, sql->find("FROM information_schema.table_constraints"));
+  EXPECT_NE(std::string::npos, sql->find("constraints.constraint_type = 'PRIMARY KEY'"));
+  EXPECT_NE(std::string::npos, sql->find("route_probe"));
+
+  SpySession connected_postgres(PgCatalogProfile::PostgreSQL);
+  ASSERT_TRUE(connected_postgres.is_connected());
+  const auto direct = connected_postgres.execute_catalog(keys, rs::util::Deadline::max());
+  ASSERT_FALSE(direct);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), direct.error());
+  no_execution(connected_postgres);
+
+  ASSERT_NE(nullptr, redshift.catalog_execution());
+  EXPECT_TRUE(redshift.catalog_execution()->selects_catalog_request(keys));
+}
+
 namespace {
 class EncodingSpySession final : public SpySession {
  public:
