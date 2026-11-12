@@ -1028,7 +1028,9 @@ TEST_F(NativeSqlIntegrationTest, NoScanBypassesEscapeTranslation) {
                            reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON), 0));
   SQLCHAR escaped[] = "SELECT {fn UCASE('unchanged')}";
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, escaped, SQL_NTS));
-  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  // With NOSCAN enabled, {fn ...} reaches PostgreSQL unescaped; server rejects
+  // with native syntax error 42601, preserved per #226.
+  EXPECT_EQ("42601", diagnostic_state(SQL_HANDLE_STMT, statement_));
 
   ASSERT_EQ(SQL_SUCCESS,
             SQLSetStmtAttr(statement_, SQL_ATTR_NOSCAN,

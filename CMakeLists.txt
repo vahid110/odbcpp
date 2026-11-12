@@ -169,6 +169,39 @@ elseif(APPLE)
     "LINKER:-exported_symbols_list,${_driver_export_control}")
   set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
     LINK_DEPENDS "${_driver_export_control}")
+  if(ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC")
+    execute_process(
+      COMMAND "${CMAKE_LINKER}" -v
+      RESULT_VARIABLE _static_linker_result
+      OUTPUT_VARIABLE _static_linker_output
+      ERROR_VARIABLE _static_linker_error
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_STRIP_TRAILING_WHITESPACE)
+    set(_combined_linker_identity "${_static_linker_output}${_static_linker_error}")
+    if(NOT _static_linker_result EQUAL 0 OR
+       NOT _combined_linker_identity MATCHES "PROGRAM:ld[ \t]+PROJECT:ld(64)?-")
+      message(FATAL_ERROR
+        "macOS BUNDLED_STATIC evidence requires Apple ld: "
+        "${_static_linker_error}${_static_linker_output}")
+    endif()
+    string(REGEX MATCH "(@\\(#\\))?PROGRAM:ld[ \t]+PROJECT:ld(64)?-[^\r\n]+"
+      ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY
+      "${_combined_linker_identity}")
+    string(TIMESTAMP _crypto_map_ts "%Y%m%d%H%M%S")
+    string(RANDOM LENGTH 16 ALPHABET "0123456789abcdef" _crypto_map_rand)
+    set(_crypto_map_nonce "${_crypto_map_ts}-${_crypto_map_rand}")
+    set(ODBCPP_CRYPTO_STATIC_LINK_MAP
+        "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link-${_crypto_map_nonce}.map")
+    file(REMOVE "${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
+    target_link_options(${PROJECT_NAME}_driver PRIVATE
+      "LINKER:-map,${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
+    set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
+      ADDITIONAL_CLEAN_FILES "${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
+    add_custom_command(
+      TARGET ${PROJECT_NAME}_driver PRE_LINK
+      COMMAND "${CMAKE_COMMAND}" -E rm -f "${ODBCPP_CRYPTO_STATIC_LINK_MAP}"
+      COMMENT "Removing stale Apple ld linker map before driver link")
+  endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(_driver_export_control "${CMAKE_CURRENT_BINARY_DIR}/odbcpp.exports.map")
   file(WRITE "${_driver_export_control}" "{\n  global:\n")
