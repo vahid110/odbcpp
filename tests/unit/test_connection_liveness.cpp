@@ -76,47 +76,130 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
       offset_ = 0;
     }
 
-    const auto queries = extract_queries(bytes);
-    const bool matches_simulated_error =
-        facts_->simulated_error != SimulatedWireError::None &&
-        std::any_of(queries.begin(), queries.end(), [&](std::string_view q) {
-          return facts_->simulated_error_query.empty() ||
-                 strip_trailing_sql(q) == strip_trailing_sql(facts_->simulated_error_query);
-        });
-
-    if (matches_simulated_error) {
-      active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
-      facts_->simulated_error_query.clear();
-      error_sent_ = true;
-      input_.clear();
-      offset_ = 0;
-      return rs::core::transport::IOResult{bytes.size(), false};
-    }
-
-    const bool matches_begin =
-        std::any_of(queries.begin(), queries.end(), [](std::string_view q) {
-          return strip_trailing_sql(q) == "BEGIN";
-        });
-
-    if (matches_begin) {
-      frame('C', std::string_view("BEGIN\0", 6));
-      frame('Z', "T");
-      return rs::core::transport::IOResult{bytes.size(), false};
-    }
-
-    if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
-      if (!prior_fields_.empty()) {
-        frame('E', prior_fields_);
+    std::size_t offset = 0;
+    bool handled_any = false;
+    while (offset + 5 <= bytes.size()) {
+      const char tag = static_cast<char>(bytes[offset]);
+      const uint32_t len = (static_cast<uint32_t>(bytes[offset + 1]) << 24) |
+                           (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+                           (static_cast<uint32_t>(bytes[offset + 3]) << 8) |
+                           static_cast<uint32_t>(bytes[offset + 4]);
+      if (len < 4 || offset + 1 + len > bytes.size()) {
+        break;
       }
-      frame('E', fields_);
-      error_sent_ = true;
-      if (recoverable_) {
+      handled_any = true;
+      const char* payload = reinterpret_cast<const char*>(bytes.data() + offset + 5);
+      const std::size_t payload_len = len - 4;
+
+      if (tag == 'Q') {
+        const char* nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
+        const std::string_view query(payload, nul ? static_cast<std::size_t>(nul - payload) : payload_len);
+        const bool matches_simulated =
+            facts_->simulated_error != SimulatedWireError::None &&
+            (facts_->simulated_error_query.empty() ||
+             strip_trailing_sql(query) == strip_trailing_sql(facts_->simulated_error_query));
+
+        if (matches_simulated) {
+          active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+          facts_->simulated_error_query.clear();
+          error_sent_ = true;
+          break;
+        }
+
+        if (strip_trailing_sql(query) == "BEGIN") {
+          frame('C', std::string_view("BEGIN\0", 6));
+          frame('Z', "T");
+        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+          if (!prior_fields_.empty()) {
+            frame('E', prior_fields_);
+          }
+          frame('E', fields_);
+          error_sent_ = true;
+          if (recoverable_) {
+            frame('Z', "I");
+          }
+        } else {
+          frame('C', std::string_view("SELECT 0\0", 9));
+          frame('Z', "I");
+        }
+      } else if (tag == 'P') {
+        const char* stmt_nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
+        std::string_view sql;
+        if (stmt_nul != nullptr && stmt_nul + 1 < payload + payload_len) {
+          const char* sql_start = stmt_nul + 1;
+          const std::size_t remaining = static_cast<std::size_t>((payload + payload_len) - sql_start);
+          const char* sql_nul = static_cast<const char*>(std::memchr(sql_start, '\0', remaining));
+          sql = std::string_view(sql_start, sql_nul ? static_cast<std::size_t>(sql_nul - sql_start) : remaining);
+        }
+        const bool matches_simulated =
+            facts_->simulated_error != SimulatedWireError::None &&
+            (facts_->simulated_error_query.empty() ||
+             strip_trailing_sql(sql) == strip_trailing_sql(facts_->simulated_error_query));
+
+        if (matches_simulated) {
+          active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+          facts_->simulated_error_query.clear();
+          error_sent_ = true;
+          break;
+        }
+
+        if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+          if (!prior_fields_.empty()) {
+            frame('E', prior_fields_);
+          }
+          frame('E', fields_);
+          error_sent_ = true;
+          if (recoverable_) {
+            frame('Z', "I");
+          }
+          break;
+        }
+
+        frame('1', {});
+      } else if (tag == 'B') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('2', {});
+      } else if (tag == 'D') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('n', {});
+      } else if (tag == 'E') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('C', std::string_view("SELECT 0\0", 9));
+      } else if (tag == 'S') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('Z', "I");
+      } else if (tag == 'H') {
+        // Flush message: no response frame
+      } else if (tag == 'X') {
+        // Terminate: no response frame
+      }
+      offset += 1 + len;
+    }
+
+    if (!handled_any && offset_ == input_.size()) {
+      if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+        if (!prior_fields_.empty()) {
+          frame('E', prior_fields_);
+        }
+        frame('E', fields_);
+        error_sent_ = true;
+        if (recoverable_) {
+          frame('Z', "I");
+        }
+      } else {
+        frame('C', std::string_view("SELECT 0\0", 9));
         frame('Z', "I");
       }
-    } else {
-      frame('C', std::string_view("SELECT 0\0", 9));
-      frame('Z', "I");
     }
+
     return rs::core::transport::IOResult{bytes.size(), false};
   }
   rs::util::Result<rs::core::transport::IOResult> recv(
@@ -154,39 +237,6 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     recoverable_ = initial_recoverable_;
     frame('R', std::string(4, '\0'));
     frame('Z', "I");
-  }
-  static std::vector<std::string_view> extract_queries(std::span<const std::byte> bytes) {
-    std::vector<std::string_view> queries;
-    std::size_t offset = 0;
-    while (offset + 5 <= bytes.size()) {
-      const char tag = static_cast<char>(bytes[offset]);
-      const uint32_t len = (static_cast<uint32_t>(bytes[offset + 1]) << 24) |
-                           (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
-                           (static_cast<uint32_t>(bytes[offset + 3]) << 8) |
-                           static_cast<uint32_t>(bytes[offset + 4]);
-      if (len < 4 || offset + 1 + len > bytes.size()) {
-        break;
-      }
-      const char* payload = reinterpret_cast<const char*>(bytes.data() + offset + 5);
-      const std::size_t payload_len = len - 4;
-      if (tag == 'Q') {
-        const char* nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
-        queries.emplace_back(payload, nul ? static_cast<std::size_t>(nul - payload) : payload_len);
-      } else if (tag == 'P') {
-        // Parse message layout:
-        // C-string: statement name (ends at first '\0')
-        // C-string: SQL query (ends at next '\0')
-        const char* stmt_nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
-        if (stmt_nul != nullptr && stmt_nul + 1 < payload + payload_len) {
-          const char* sql_start = stmt_nul + 1;
-          const std::size_t remaining = static_cast<std::size_t>((payload + payload_len) - sql_start);
-          const char* sql_nul = static_cast<const char*>(std::memchr(sql_start, '\0', remaining));
-          queries.emplace_back(sql_start, sql_nul ? static_cast<std::size_t>(sql_nul - sql_start) : remaining);
-        }
-      }
-      offset += 1 + len;
-    }
-    return queries;
   }
   void frame(char tag, std::string_view payload) {
     input_.push_back(static_cast<std::byte>(tag));
