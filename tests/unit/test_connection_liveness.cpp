@@ -60,14 +60,13 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
+    const auto query = extract_query(bytes);
     if (bytes.size() > 5 && bytes.front() == std::byte{'Q'}) {
       if (offset_ == input_.size()) {
         input_.clear();
         offset_ = 0;
       }
       active_error_ = SimulatedWireError::None;
-      const std::string_view request(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-      const std::string_view query = request.substr(5);
       if (query.starts_with("BEGIN")) {
         frame('C', std::string_view("BEGIN\0", 6));
         frame('Z', "T");
@@ -75,6 +74,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
                  (facts_->simulated_error_query.empty() || query.starts_with(facts_->simulated_error_query))) {
         active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
         facts_->simulated_error_query.clear();
+        error_sent_ = true;
       } else if (query.starts_with("SELECT pg_terminate_backend") || query.starts_with("SELECT fatal") || !error_sent_) {
         if (!prior_fields_.empty()) {
           frame('E', prior_fields_);
@@ -94,8 +94,11 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         offset_ = 0;
       }
       active_error_ = SimulatedWireError::None;
-      if (facts_->simulated_error != SimulatedWireError::None) {
+      if (facts_->simulated_error != SimulatedWireError::None &&
+          (facts_->simulated_error_query.empty() || (!query.empty() && query.starts_with(facts_->simulated_error_query)))) {
         active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+        facts_->simulated_error_query.clear();
+        error_sent_ = true;
       } else if (!error_sent_) {
         if (!prior_fields_.empty()) {
           frame('E', prior_fields_);
@@ -143,6 +146,15 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     recoverable_ = initial_recoverable_;
     frame('R', std::string(4, '\0'));
     frame('Z', "I");
+  }
+  static std::string_view extract_query(std::span<const std::byte> bytes) {
+    if (bytes.size() > 5 && bytes.front() == std::byte{'Q'}) {
+      return std::string_view(reinterpret_cast<const char*>(bytes.data() + 5), bytes.size() - 5);
+    }
+    if (bytes.size() > 6 && bytes.front() == std::byte{'P'}) {
+      return std::string_view(reinterpret_cast<const char*>(bytes.data() + 6), bytes.size() - 6);
+    }
+    return {};
   }
   void frame(char tag, std::string_view payload) {
     input_.push_back(static_cast<std::byte>(tag));
