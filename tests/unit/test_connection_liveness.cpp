@@ -51,6 +51,9 @@ struct TerminalResponseFacts {
 // A terminal ErrorResponse is the last available frame. No Z and no EOF are
 // supplied. Any attempted following read is counted and returns a synthetic
 // timeout instead of sleeping, so the regression fails without a wall-clock wait.
+// Simulated wire errors (Network transport loss / Timeout) are one-shot on target
+// queries, preserving protocol framing for multi-message flights while latching
+// until read completion without permanently poisoning the mock session.
 class TerminalResponseWire final : public rs::core::transport::ITransport {
  public:
   TerminalResponseWire(std::shared_ptr<TerminalResponseFacts> facts,
