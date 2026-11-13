@@ -28,35 +28,167 @@ struct ConnectionAuthenticationTestAccess {
 };
 }
 namespace {
+static std::string_view strip_trailing_sql(std::string_view s) {
+  while (!s.empty() && (s.back() == '\0' || s.back() == ';' || s.back() == ' ' ||
+                        s.back() == '\r' || s.back() == '\n' || s.back() == '\t')) {
+    s.remove_suffix(1);
+  }
+  return s;
+}
+
+enum class SimulatedWireError {
+  None,
+  Network,
+  Timeout,
+};
+
 struct TerminalResponseFacts {
   unsigned sends{}, reads{}, reads_after_error{}, closes{};
+  SimulatedWireError simulated_error{SimulatedWireError::None};
+  std::string simulated_error_query{};
 };
 
 // A terminal ErrorResponse is the last available frame. No Z and no EOF are
 // supplied. Any attempted following read is counted and returns a synthetic
 // timeout instead of sleeping, so the regression fails without a wall-clock wait.
+// Simulated wire errors (Network transport loss / Timeout) are one-shot on target
+// queries, preserving protocol framing for multi-message flights while latching
+// until read completion without permanently poisoning the mock session.
 class TerminalResponseWire final : public rs::core::transport::ITransport {
  public:
   TerminalResponseWire(std::shared_ptr<TerminalResponseFacts> facts,
                        std::string fields, bool recoverable = false,
                        std::string prior_fields = {})
       : facts_(std::move(facts)), fields_(std::move(fields)),
-        prior_fields_(std::move(prior_fields)), recoverable_(recoverable) {
-    frame('R', std::string(4, '\0'));
-    frame('Z', "I");
+        initial_prior_fields_(std::move(prior_fields)),
+        initial_recoverable_(recoverable) {
+    reset_state();
   }
   rs::util::Result<void> connect(std::string_view, uint16_t, rs::util::Deadline) override {
+    reset_state();
     return {};
   }
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> bytes, rs::util::Deadline) override {
-    if (++facts_->sends > 1) {
-      input_.clear(); offset_ = 0;
-      const std::string_view request(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-      if (bytes.size() > 5 && bytes.front() == std::byte{'Q'} && request.substr(5).starts_with("BEGIN")) {
-        frame('C', std::string_view("BEGIN\0", 6));
-        frame('Z', "T");
-      } else if (!error_sent_) {
+    ++facts_->sends;
+    if (++session_sends_ == 1) {
+      return rs::core::transport::IOResult{bytes.size(), false};
+    }
+    if (offset_ == input_.size()) {
+      input_.clear();
+      offset_ = 0;
+    }
+
+    std::size_t offset = 0;
+    bool handled_any = false;
+    while (offset + 5 <= bytes.size()) {
+      const char tag = static_cast<char>(bytes[offset]);
+      const uint32_t len = (static_cast<uint32_t>(bytes[offset + 1]) << 24) |
+                           (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+                           (static_cast<uint32_t>(bytes[offset + 3]) << 8) |
+                           static_cast<uint32_t>(bytes[offset + 4]);
+      if (len < 4 || offset + 1 + len > bytes.size()) {
+        break;
+      }
+      handled_any = true;
+      const char* payload = reinterpret_cast<const char*>(bytes.data() + offset + 5);
+      const std::size_t payload_len = len - 4;
+
+      if (tag == 'Q') {
+        const char* nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
+        const std::string_view query(payload, nul ? static_cast<std::size_t>(nul - payload) : payload_len);
+        const bool matches_simulated =
+            facts_->simulated_error != SimulatedWireError::None &&
+            (facts_->simulated_error_query.empty() ||
+             strip_trailing_sql(query) == strip_trailing_sql(facts_->simulated_error_query));
+
+        if (matches_simulated) {
+          active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+          facts_->simulated_error_query.clear();
+          error_sent_ = true;
+          break;
+        }
+
+        if (strip_trailing_sql(query) == "BEGIN") {
+          frame('C', std::string_view("BEGIN\0", 6));
+          frame('Z', "T");
+        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+          if (!prior_fields_.empty()) {
+            frame('E', prior_fields_);
+          }
+          frame('E', fields_);
+          error_sent_ = true;
+          if (recoverable_) {
+            frame('Z', "I");
+          }
+        } else {
+          frame('C', std::string_view("SELECT 0\0", 9));
+          frame('Z', "I");
+        }
+      } else if (tag == 'P') {
+        const char* stmt_nul = static_cast<const char*>(std::memchr(payload, '\0', payload_len));
+        std::string_view sql;
+        if (stmt_nul != nullptr && stmt_nul + 1 < payload + payload_len) {
+          const char* sql_start = stmt_nul + 1;
+          const std::size_t remaining = static_cast<std::size_t>((payload + payload_len) - sql_start);
+          const char* sql_nul = static_cast<const char*>(std::memchr(sql_start, '\0', remaining));
+          sql = std::string_view(sql_start, sql_nul ? static_cast<std::size_t>(sql_nul - sql_start) : remaining);
+        }
+        const bool matches_simulated =
+            facts_->simulated_error != SimulatedWireError::None &&
+            (facts_->simulated_error_query.empty() ||
+             strip_trailing_sql(sql) == strip_trailing_sql(facts_->simulated_error_query));
+
+        if (matches_simulated) {
+          active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
+          facts_->simulated_error_query.clear();
+          error_sent_ = true;
+          break;
+        }
+
+        if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+          if (!prior_fields_.empty()) {
+            frame('E', prior_fields_);
+          }
+          frame('E', fields_);
+          error_sent_ = true;
+          if (recoverable_) {
+            frame('Z', "I");
+          }
+          break;
+        }
+
+        frame('1', {});
+      } else if (tag == 'B') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('2', {});
+      } else if (tag == 'D') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('n', {});
+      } else if (tag == 'E') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('C', std::string_view("SELECT 0\0", 9));
+      } else if (tag == 'S') {
+        if (active_error_ != SimulatedWireError::None) {
+          break;
+        }
+        frame('Z', "I");
+      } else if (tag == 'H') {
+        // Flush message: no response frame
+      } else if (tag == 'X') {
+        // Terminate: no response frame
+      }
+      offset += 1 + len;
+    }
+
+    if (!handled_any && offset_ == input_.size()) {
+      if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
         if (!prior_fields_.empty()) {
           frame('E', prior_fields_);
         }
@@ -70,11 +202,21 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         frame('Z', "I");
       }
     }
+
     return rs::core::transport::IOResult{bytes.size(), false};
   }
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> bytes, rs::util::Deadline) override {
     ++facts_->reads;
+    if (active_error_ != SimulatedWireError::None) {
+      const auto err = std::exchange(active_error_, SimulatedWireError::None);
+      if (err == SimulatedWireError::Network) {
+        return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
+      }
+      if (err == SimulatedWireError::Timeout) {
+        return {rs::util::DbErrorCode::Timeout, "simulated query timeout"};
+      }
+    }
     if (offset_ == input_.size()) {
       ++facts_->reads_after_error;
       return {rs::util::DbErrorCode::Timeout, "held-open terminal response has no next frame"};
@@ -86,6 +228,19 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   void close() noexcept override { ++facts_->closes; }
 
  private:
+  void reset_state() {
+    input_.clear();
+    offset_ = 0;
+    session_sends_ = 0;
+    error_sent_ = false;
+    active_error_ = SimulatedWireError::None;
+    facts_->simulated_error = SimulatedWireError::None;
+    facts_->simulated_error_query.clear();
+    prior_fields_ = initial_prior_fields_;
+    recoverable_ = initial_recoverable_;
+    frame('R', std::string(4, '\0'));
+    frame('Z', "I");
+  }
   void frame(char tag, std::string_view payload) {
     input_.push_back(static_cast<std::byte>(tag));
     const auto size = static_cast<std::uint32_t>(payload.size() + 4);
@@ -97,10 +252,12 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     }
   }
   std::shared_ptr<TerminalResponseFacts> facts_;
-  std::string fields_, prior_fields_;
+  std::string fields_, prior_fields_, initial_prior_fields_;
   std::vector<std::byte> input_;
   std::size_t offset_{};
-  bool recoverable_{}, error_sent_{};
+  unsigned session_sends_{};
+  bool recoverable_{}, initial_recoverable_{}, error_sent_{};
+  SimulatedWireError active_error_{SimulatedWireError::None};
 };
 
 constexpr char fatal_response_fields[] = "SFATAL\0C57P01\0Mnative terminal marker\0";
@@ -156,6 +313,74 @@ TEST(TerminalErrorResponseTest, OrdinaryErrorDrainsReadyAndRemainsReusable) {
   EXPECT_EQ(0u, facts->reads_after_error);
   EXPECT_EQ(0u, facts->closes);
   EXPECT_TRUE(connection.execute_query("SELECT recover", deadline));
+}
+
+TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndRecovers) {
+  using namespace rs::core::database;
+  const auto facts = std::make_shared<TerminalResponseFacts>();
+  auto wire = std::make_unique<TerminalResponseWire>(facts, "SERROR\0C22012\0Mtest\0", true);
+  auto* wire_ptr = wire.get();
+
+  facts->simulated_error = SimulatedWireError::Network;
+  facts->simulated_error_query = "SELECT fault";
+
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+  std::byte dummy_startup[16]{};
+  auto send_startup = wire_ptr->send(dummy_startup, deadline);
+  ASSERT_TRUE(send_startup);
+
+  auto make_q_frame = [](std::string_view sql) {
+    std::string s;
+    s.push_back('Q');
+    const uint32_t len = static_cast<uint32_t>(sql.size() + 1 + 4);
+    s.push_back(static_cast<char>((len >> 24) & 0xFF));
+    s.push_back(static_cast<char>((len >> 16) & 0xFF));
+    s.push_back(static_cast<char>((len >> 8) & 0xFF));
+    s.push_back(static_cast<char>(len & 0xFF));
+    s.append(sql);
+    s.push_back('\0');
+    return s;
+  };
+
+  // Pre-query message: unrelated query succeeds without triggering fault
+  const std::string query_ok = make_q_frame("SELECT ok");
+  auto send_ok = wire_ptr->send(std::as_bytes(std::span(query_ok)), deadline);
+  ASSERT_TRUE(send_ok);
+  EXPECT_EQ(SimulatedWireError::Network, facts->simulated_error);
+
+  std::byte recv_buf[64]{};
+  auto read_ok = wire_ptr->recv(recv_buf, deadline);
+  ASSERT_TRUE(read_ok);
+
+  // Target query: send succeeds, fault arming is consumed, active_error_ latches without premature write failure
+  const std::string query_fault = make_q_frame("SELECT fault");
+  auto send_fault = wire_ptr->send(std::as_bytes(std::span(query_fault)), deadline);
+  ASSERT_TRUE(send_fault);
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+  EXPECT_TRUE(facts->simulated_error_query.empty());
+
+  // Follow-up protocol write in same flight (e.g. Sync/cleanup) does not burn the error before read
+  std::byte sync_msg[] = {std::byte{'S'}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{4}};
+  auto send_sync = wire_ptr->send(sync_msg, deadline);
+  ASSERT_TRUE(send_sync);
+
+  // recv() surfaces the simulated transport loss and consumes active_error_
+  auto read_fault = wire_ptr->recv(recv_buf, deadline);
+  ASSERT_TRUE(read_fault.has_error());
+  EXPECT_EQ(rs::util::DbErrorCode::NetworkError, read_fault.error());
+
+  // Subsequent query in the same session is not permanently poisoned: gets valid completion frames
+  const std::string query_followup = make_q_frame("SELECT followup");
+  auto send_followup = wire_ptr->send(std::as_bytes(std::span(query_followup)), deadline);
+  ASSERT_TRUE(send_followup);
+
+  auto read_followup = wire_ptr->recv(recv_buf, deadline);
+  ASSERT_TRUE(read_followup);
+
+  // connect() completely resets mock state
+  auto connect_result = wire_ptr->connect("localhost", 5432, deadline);
+  ASSERT_TRUE(connect_result);
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
 }
 
 TEST(TerminalErrorResponseTest, OnlyTerminalErrorMayFollowOrdinaryError) {
@@ -321,10 +546,16 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
     EXPECT_EQ(0u, facts->reads);
     EXPECT_EQ(0u, facts->sends);
 
-    // Length-only query on unconnected handle
+    // Length-only query on unconnected handle (ANSI and Wide)
     SQLINTEGER len_only = -73;
     EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
     EXPECT_EQ(-73, len_only);
+    EXPECT_EQ(0u, facts->reads);
+    EXPECT_EQ(0u, facts->sends);
+
+    SQLINTEGER len_only_w = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_w));
+    EXPECT_EQ(-73, len_only_w);
     EXPECT_EQ(0u, facts->reads);
     EXPECT_EQ(0u, facts->sends);
 
@@ -371,10 +602,16 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
     EXPECT_EQ(connected_reads, facts->reads);
     EXPECT_EQ(connected_sends, facts->sends);
 
-    // Length-only query on open handle
+    // Length-only query on open handle (ANSI and Wide)
     SQLINTEGER len_only = -73;
     EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
     EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only);
+    EXPECT_EQ(connected_reads, facts->reads);
+    EXPECT_EQ(connected_sends, facts->sends);
+
+    SQLINTEGER len_only_w = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_w));
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only_w);
     EXPECT_EQ(connected_reads, facts->reads);
     EXPECT_EQ(connected_sends, facts->sends);
 
@@ -424,10 +661,16 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
     EXPECT_EQ(broken_reads, facts->reads);
     EXPECT_EQ(broken_sends, facts->sends);
 
-    // Length-only query on broken handle
+    // Length-only query on broken handle (ANSI and Wide)
     SQLINTEGER len_only = -73;
     EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
     EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only);
+    EXPECT_EQ(broken_reads, facts->reads);
+    EXPECT_EQ(broken_sends, facts->sends);
+
+    SQLINTEGER len_only_w = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_w));
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only_w);
     EXPECT_EQ(broken_reads, facts->reads);
     EXPECT_EQ(broken_sends, facts->sends);
 
@@ -473,10 +716,16 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
     EXPECT_EQ(dc_reads, facts->reads);
     EXPECT_EQ(dc_sends, facts->sends);
 
-    // Length-only query post-disconnect
+    // Length-only query post-disconnect (ANSI and Wide)
     SQLINTEGER len_only = -73;
     EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only));
     EXPECT_EQ(-73, len_only);
+    EXPECT_EQ(dc_reads, facts->reads);
+    EXPECT_EQ(dc_sends, facts->sends);
+
+    SQLINTEGER len_only_w = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_w));
+    EXPECT_EQ(-73, len_only_w);
     EXPECT_EQ(dc_reads, facts->reads);
     EXPECT_EQ(dc_sends, facts->sends);
 
@@ -490,6 +739,140 @@ TEST(TerminalErrorResponseTest, ConnectionDeadPassiveObservationAcrossAllLifecyc
     EXPECT_EQ(dc_sends, facts->sends);
   }
 
+  // 5. Broken connection state (dropped-wire / transport loss):
+  // Reconnect the handle to establish a fresh active session, then induce transport loss.
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, input, SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  facts->simulated_error = SimulatedWireError::Network;
+  facts->simulated_error_query = "SELECT 1";
+  SQLCHAR drop_wire_query[] = "SELECT 1";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, drop_wire_query, SQL_NTS));
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+  EXPECT_TRUE(facts->simulated_error_query.empty());
+  SQLCHAR drop_stmt_state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, drop_stmt_state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("08S01", reinterpret_cast<char*>(drop_stmt_state));
+
+  const auto dropped_reads = facts->reads;
+  const auto dropped_sends = facts->sends;
+
+  {
+    SQLUINTEGER dead_ansi = SQL_CD_FALSE;
+    SQLINTEGER len_ansi = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_ansi, sizeof(dead_ansi), &len_ansi));
+    EXPECT_EQ(SQL_CD_TRUE, dead_ansi);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_ansi);
+    EXPECT_EQ(dropped_reads, facts->reads);
+    EXPECT_EQ(dropped_sends, facts->sends);
+
+    SQLUINTEGER dead_wide = SQL_CD_FALSE;
+    SQLINTEGER len_wide = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_wide, sizeof(dead_wide), &len_wide));
+    EXPECT_EQ(SQL_CD_TRUE, dead_wide);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_wide);
+    EXPECT_EQ(dropped_reads, facts->reads);
+    EXPECT_EQ(dropped_sends, facts->sends);
+
+    // Length-only query on dropped-wire handle (ANSI and Wide)
+    SQLINTEGER len_only_ansi = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_ansi));
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only_ansi);
+    EXPECT_EQ(dropped_reads, facts->reads);
+    EXPECT_EQ(dropped_sends, facts->sends);
+
+    SQLINTEGER len_only_wide = -73;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_wide));
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLUINTEGER)), len_only_wide);
+    EXPECT_EQ(dropped_reads, facts->reads);
+    EXPECT_EQ(dropped_sends, facts->sends);
+
+    // Rejection of setting read-only attribute on dropped-wire connection
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(dropped_reads, facts->reads);
+    EXPECT_EQ(dropped_sends, facts->sends);
+  }
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  facts->simulated_error = SimulatedWireError::None;
+
+  // 6. Disconnected state (timeout-retired):
+  // Reconnect the handle, then induce statement timeout retirement.
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, input, SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  facts->simulated_error = SimulatedWireError::Timeout;
+  facts->simulated_error_query = "SELECT 1";
+  SQLCHAR timeout_query[] = "SELECT 1";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(stmt, timeout_query, SQL_NTS));
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+  EXPECT_TRUE(facts->simulated_error_query.empty());
+  SQLCHAR timeout_stmt_state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, timeout_stmt_state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("HYT00", reinterpret_cast<char*>(timeout_stmt_state));
+
+  const auto timeout_reads = facts->reads;
+  const auto timeout_sends = facts->sends;
+
+  {
+    constexpr SQLUINTEGER canary_timeout_ansi = 0xBEBEBEBE;
+    SQLUINTEGER dead_ansi = canary_timeout_ansi;
+    SQLINTEGER len_ansi = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_ansi, sizeof(dead_ansi), &len_ansi));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(canary_timeout_ansi, dead_ansi);
+    EXPECT_EQ(-73, len_ansi);
+    EXPECT_EQ(timeout_reads, facts->reads);
+    EXPECT_EQ(timeout_sends, facts->sends);
+
+    constexpr SQLUINTEGER canary_timeout_wide = 0xEDEDEDED;
+    SQLUINTEGER dead_wide = canary_timeout_wide;
+    SQLINTEGER len_wide = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, &dead_wide, sizeof(dead_wide), &len_wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(canary_timeout_wide, dead_wide);
+    EXPECT_EQ(-73, len_wide);
+    EXPECT_EQ(timeout_reads, facts->reads);
+    EXPECT_EQ(timeout_sends, facts->sends);
+
+    // Length-only query post-timeout (ANSI and Wide)
+    SQLINTEGER len_only_ansi = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_ansi));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(-73, len_only_ansi);
+    EXPECT_EQ(timeout_reads, facts->reads);
+    EXPECT_EQ(timeout_sends, facts->sends);
+
+    SQLINTEGER len_only_wide = -73;
+    EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, nullptr, 0, &len_only_wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("08003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(-73, len_only_wide);
+    EXPECT_EQ(timeout_reads, facts->reads);
+    EXPECT_EQ(timeout_sends, facts->sends);
+
+    // Rejection of setting read-only attribute on timeout-retired connection
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(dbc, SQL_ATTR_CONNECTION_DEAD, reinterpret_cast<SQLPOINTER>(SQL_CD_FALSE), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+    EXPECT_EQ(timeout_reads, facts->reads);
+    EXPECT_EQ(timeout_sends, facts->sends);
+  }
+
+  facts->simulated_error = SimulatedWireError::None;
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, env));
 }
