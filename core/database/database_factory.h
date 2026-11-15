@@ -2,6 +2,7 @@
 #include "odbcpp/database/i_database_connection.h"
 #include "odbcpp/transport/i_transport.h"
 #include <memory>
+#include <string>
 
 namespace rs::core::database {
 
@@ -30,6 +31,12 @@ public:
   
   // Get the database type this build was compiled for
   static DatabaseType get_compiled_database_type();
+
+  // Deprecated legacy utility functions
+  [[deprecated("Legacy connection routing; use compiled_backend or explicit type create_connection")]]
+  static DatabaseType detect_from_url(const std::string& connection_url);
+  [[deprecated("Legacy connection routing; use compiled_backend or explicit type create_connection")]]
+  static DatabaseType detect_from_port(uint16_t port);
 };
 
 } // namespace rs::core::database

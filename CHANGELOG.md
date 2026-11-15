@@ -67,8 +67,11 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Column binding example and documentation
 - Development roadmap and changelog
 
+### Deprecated
+- Deprecated uncalled legacy helper functions across driver headers (`DatabaseFactory::detect_from_url`/`detect_from_port`, `DSNReader::driver_exists`, and `ODBCStatement::has_results`/`get_column_count`) with `[[deprecated]]` annotations in preparation for future removal (#249, #260).
+
 ### Removed
-- Pruned uncalled internal helper functions across private driver components: `DatabaseFactory::detect_from_url`/`detect_from_port`, `GenericDatabaseConnection::write_all`/`read_message`, `PgProtocolParser::decode_auth`, `DSNReader::driver_exists`, and `ODBCStatement::has_results`/`get_column_count` (#249, #260). These headers are internal driver implementation sources (`cmake/internal-headers/composition.txt`); the public SDK interface in `sdk/include/odbcpp/` is unchanged.
+- Pruned uncalled private helper functions across private driver components: `GenericDatabaseConnection::write_all`/`read_message` and `PgProtocolParser::decode_auth` (#249, #260).
 
 ### Changed
 - Preserved PostgreSQL and Amazon Redshift native syntax error SQLSTATE `42601` rather than collapsing to generic caller fallback (`42000` or `HY000`) for rejected prepared multi-statement batches and server-side syntax errors, matching native and Simba vendor driver diagnostics (#226). Applications running in ODBC 2.x mode receive native `42601` directly without Driver Manager translation to `37000`.
