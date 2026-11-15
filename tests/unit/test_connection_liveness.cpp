@@ -118,11 +118,12 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         if (matches_simulated) {
           active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
           facts_->simulated_error_query.clear();
-          error_sent_ = true;
+          frame('C', std::string_view("SELECT 0\0", 9));
+          frame('Z', "I");
         } else if (strip_trailing_sql(query) == "BEGIN") {
           frame('C', std::string_view("BEGIN\0", 6));
           frame('Z', "T");
-        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None && !fields_.empty()) {
           if (!prior_fields_.empty()) {
             frame('E', prior_fields_);
           }
@@ -152,8 +153,8 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         if (matches_simulated) {
           active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
           facts_->simulated_error_query.clear();
-          error_sent_ = true;
-        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+          frame('1', {});
+        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None && !fields_.empty()) {
           if (!prior_fields_.empty()) {
             frame('E', prior_fields_);
           }
@@ -166,19 +167,19 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
           frame('1', {});
         }
       } else if (tag == 'B') {
-        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+        if (!error_sent_ || recoverable_) {
           frame('2', {});
         }
       } else if (tag == 'D') {
-        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+        if (!error_sent_ || recoverable_) {
           frame('n', {});
         }
       } else if (tag == 'E') {
-        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+        if (!error_sent_ || recoverable_) {
           frame('C', std::string_view("SELECT 0\0", 9));
         }
       } else if (tag == 'S') {
-        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+        if (!error_sent_ || recoverable_) {
           frame('Z', "I");
         }
       } else if (tag == 'H') {
@@ -212,6 +213,8 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
     ++facts_->reads;
     if (active_error_ != SimulatedWireError::None) {
       const auto err = std::exchange(active_error_, SimulatedWireError::None);
+      input_.clear();
+      offset_ = 0;
       if (err == SimulatedWireError::Network) {
         return {rs::util::DbErrorCode::NetworkError, "simulated transport loss / dropped wire"};
       }
@@ -389,7 +392,7 @@ TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndRecovers) {
 TEST(TerminalErrorResponseTest, BatchedExtendedQueryFlightPreservesFramingAcrossFault) {
   using namespace rs::core::database;
   const auto facts = std::make_shared<TerminalResponseFacts>();
-  auto wire = std::make_unique<TerminalResponseWire>(facts, "SERROR\0C22012\0Mtest\0", true);
+  auto wire = std::make_unique<TerminalResponseWire>(facts, "", true);
   auto* wire_ptr = wire.get();
 
   facts->simulated_error = SimulatedWireError::Network;
@@ -470,6 +473,25 @@ TEST(TerminalErrorResponseTest, BatchedExtendedQueryFlightPreservesFramingAcross
   auto read_result = wire_ptr->recv(recv_buf, deadline);
   ASSERT_TRUE(read_result.has_error());
   EXPECT_EQ(rs::util::DbErrorCode::NetworkError, read_result.error());
+
+  // Subsequent query executes cleanly without residual error
+  std::string q_normal;
+  q_normal.push_back('Q');
+  const std::string sql_normal = "SELECT 1";
+  const uint32_t q_len = static_cast<uint32_t>(sql_normal.size() + 1 + 4);
+  q_normal.push_back(static_cast<char>((q_len >> 24) & 0xFF));
+  q_normal.push_back(static_cast<char>((q_len >> 16) & 0xFF));
+  q_normal.push_back(static_cast<char>((q_len >> 8) & 0xFF));
+  q_normal.push_back(static_cast<char>(q_len & 0xFF));
+  q_normal.append(sql_normal);
+  q_normal.push_back('\0');
+
+  auto send_normal = wire_ptr->send(std::as_bytes(std::span(q_normal)), deadline);
+  ASSERT_TRUE(send_normal);
+  std::byte recv_normal[64]{};
+  auto read_normal = wire_ptr->recv(recv_normal, deadline);
+  ASSERT_TRUE(read_normal);
+  EXPECT_EQ(std::byte{'C'}, recv_normal[0]);
 }
 
 TEST(TerminalErrorResponseTest, OnlyTerminalErrorMayFollowOrdinaryError) {
