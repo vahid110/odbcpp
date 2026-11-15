@@ -2,7 +2,6 @@
 #include "odbcpp/database/i_database_connection.h"
 #include "odbcpp/transport/i_transport.h"
 #include <memory>
-#include <string>
 
 namespace rs::core::database {
 
