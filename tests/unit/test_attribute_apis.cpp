@@ -532,6 +532,13 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
   EXPECT_EQ(-73, dead_len);
 
+  SQLINTEGER dead_len_w = -73;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttrW(connection_, SQL_ATTR_CONNECTION_DEAD, nullptr,
+                               0, &dead_len_w));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(-73, dead_len_w);
+
   EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
                               integer_value(SQL_MODE_READ_WRITE), 0));
