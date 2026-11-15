@@ -119,10 +119,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
           active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
           facts_->simulated_error_query.clear();
           error_sent_ = true;
-          break;
-        }
-
-        if (strip_trailing_sql(query) == "BEGIN") {
+        } else if (strip_trailing_sql(query) == "BEGIN") {
           frame('C', std::string_view("BEGIN\0", 6));
           frame('Z', "T");
         } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
@@ -156,10 +153,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
           active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
           facts_->simulated_error_query.clear();
           error_sent_ = true;
-          break;
-        }
-
-        if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
+        } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None) {
           if (!prior_fields_.empty()) {
             frame('E', prior_fields_);
           }
@@ -168,30 +162,25 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
           if (recoverable_) {
             frame('Z', "I");
           }
-          break;
+        } else {
+          frame('1', {});
         }
-
-        frame('1', {});
       } else if (tag == 'B') {
-        if (active_error_ != SimulatedWireError::None) {
-          break;
+        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+          frame('2', {});
         }
-        frame('2', {});
       } else if (tag == 'D') {
-        if (active_error_ != SimulatedWireError::None) {
-          break;
+        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+          frame('n', {});
         }
-        frame('n', {});
       } else if (tag == 'E') {
-        if (active_error_ != SimulatedWireError::None) {
-          break;
+        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+          frame('C', std::string_view("SELECT 0\0", 9));
         }
-        frame('C', std::string_view("SELECT 0\0", 9));
       } else if (tag == 'S') {
-        if (active_error_ != SimulatedWireError::None) {
-          break;
+        if (active_error_ == SimulatedWireError::None && (!error_sent_ || recoverable_)) {
+          frame('Z', "I");
         }
-        frame('Z', "I");
       } else if (tag == 'H') {
         // Flush message: no response frame
       } else if (tag == 'X') {
@@ -395,6 +384,92 @@ TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndRecovers) {
   auto connect_result = wire_ptr->connect("localhost", 5432, deadline);
   ASSERT_TRUE(connect_result);
   EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+}
+
+TEST(TerminalErrorResponseTest, BatchedExtendedQueryFlightPreservesFramingAcrossFault) {
+  using namespace rs::core::database;
+  const auto facts = std::make_shared<TerminalResponseFacts>();
+  auto wire = std::make_unique<TerminalResponseWire>(facts, "SERROR\0C22012\0Mtest\0", true);
+  auto* wire_ptr = wire.get();
+
+  facts->simulated_error = SimulatedWireError::Network;
+  facts->simulated_error_query = "SELECT fault";
+
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+
+  // Build a single batched buffer containing Parse(SELECT fault) + Bind + Describe + Execute + Sync
+  std::string flight;
+  // Parse
+  flight.push_back('P');
+  const std::string sql = "SELECT fault";
+  const uint32_t p_len = static_cast<uint32_t>(1 + sql.size() + 1 + 2 + 4);
+  flight.push_back(static_cast<char>((p_len >> 24) & 0xFF));
+  flight.push_back(static_cast<char>((p_len >> 16) & 0xFF));
+  flight.push_back(static_cast<char>((p_len >> 8) & 0xFF));
+  flight.push_back(static_cast<char>(p_len & 0xFF));
+  flight.push_back('\0'); // unnamed statement
+  flight.append(sql);
+  flight.push_back('\0');
+  flight.push_back('\0');
+  flight.push_back('\0'); // 0 parameter types
+
+  // Bind
+  flight.push_back('B');
+  const uint32_t b_len = 12;
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(static_cast<char>(b_len));
+  flight.push_back('\0');
+  flight.push_back('\0'); // unnamed portal, unnamed statement
+  flight.push_back(0);
+  flight.push_back(0); // 0 parameter formats
+  flight.push_back(0);
+  flight.push_back(0); // 0 parameters
+  flight.push_back(0);
+  flight.push_back(0); // 0 result formats
+
+  // Describe
+  flight.push_back('D');
+  const uint32_t d_len = 6;
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(static_cast<char>(d_len));
+  flight.push_back('P');
+  flight.push_back('\0'); // portal
+
+  // Execute
+  flight.push_back('E');
+  const uint32_t e_len = 9;
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(static_cast<char>(e_len));
+  flight.push_back('\0'); // unnamed portal
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(0); // 0 max rows
+
+  // Sync
+  flight.push_back('S');
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(0);
+  flight.push_back(4);
+
+  // Sending the entire batched flight in one send call parses all messages without early break
+  auto send_result = wire_ptr->send(std::as_bytes(std::span(flight)), deadline);
+  ASSERT_TRUE(send_result);
+  EXPECT_EQ(flight.size(), send_result.value().n);
+  EXPECT_EQ(SimulatedWireError::None, facts->simulated_error);
+
+  // Recv surfaces the simulated error on read
+  std::byte recv_buf[64]{};
+  auto read_result = wire_ptr->recv(recv_buf, deadline);
+  ASSERT_TRUE(read_result.has_error());
+  EXPECT_EQ(rs::util::DbErrorCode::NetworkError, read_result.error());
 }
 
 TEST(TerminalErrorResponseTest, OnlyTerminalErrorMayFollowOrdinaryError) {
