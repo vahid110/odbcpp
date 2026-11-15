@@ -118,6 +118,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         if (matches_simulated) {
           active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
           facts_->simulated_error_query.clear();
+          error_sent_ = true;
           frame('C', std::string_view("SELECT 0\0", 9));
           frame('Z', "I");
         } else if (strip_trailing_sql(query) == "BEGIN") {
@@ -153,6 +154,7 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
         if (matches_simulated) {
           active_error_ = std::exchange(facts_->simulated_error, SimulatedWireError::None);
           facts_->simulated_error_query.clear();
+          error_sent_ = true;
           frame('1', {});
         } else if (!error_sent_ && facts_->simulated_error == SimulatedWireError::None && !fields_.empty()) {
           if (!prior_fields_.empty()) {
@@ -167,17 +169,11 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
           frame('1', {});
         }
       } else if (tag == 'B') {
-        if (!error_sent_ || recoverable_) {
-          frame('2', {});
-        }
+        frame('2', {});
       } else if (tag == 'D') {
-        if (!error_sent_ || recoverable_) {
-          frame('n', {});
-        }
+        frame('n', {});
       } else if (tag == 'E') {
-        if (!error_sent_ || recoverable_) {
-          frame('C', std::string_view("SELECT 0\0", 9));
-        }
+        frame('C', std::string_view("SELECT 0\0", 9));
       } else if (tag == 'S') {
         if (!error_sent_ || recoverable_) {
           frame('Z', "I");
@@ -392,7 +388,7 @@ TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndRecovers) {
 TEST(TerminalErrorResponseTest, BatchedExtendedQueryFlightPreservesFramingAcrossFault) {
   using namespace rs::core::database;
   const auto facts = std::make_shared<TerminalResponseFacts>();
-  auto wire = std::make_unique<TerminalResponseWire>(facts, "", true);
+  auto wire = std::make_unique<TerminalResponseWire>(facts, "SERROR\0C22012\0Mtest\0", true);
   auto* wire_ptr = wire.get();
 
   facts->simulated_error = SimulatedWireError::Network;
