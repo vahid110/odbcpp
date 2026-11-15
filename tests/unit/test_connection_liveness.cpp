@@ -71,8 +71,21 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> bytes, rs::util::Deadline) override {
     ++facts_->sends;
-    if (++session_sends_ == 1) {
-      return rs::core::transport::IOResult{bytes.size(), false};
+    // Protocol handshake detection: StartupMessage, SSLRequest, or CancelRequest packets
+    // begin with a 4-byte total length matching bytes.size() followed by protocol version code,
+    // distinguishing them from frontend query messages which start with a 1-byte message tag.
+    if (bytes.size() >= 8) {
+      const uint32_t len = (static_cast<uint32_t>(bytes[0]) << 24) |
+                           (static_cast<uint32_t>(bytes[1]) << 16) |
+                           (static_cast<uint32_t>(bytes[2]) << 8) |
+                           static_cast<uint32_t>(bytes[3]);
+      const uint32_t code = (static_cast<uint32_t>(bytes[4]) << 24) |
+                            (static_cast<uint32_t>(bytes[5]) << 16) |
+                            (static_cast<uint32_t>(bytes[6]) << 8) |
+                            static_cast<uint32_t>(bytes[7]);
+      if (len == bytes.size() && (code == 80877103u || code == 80877102u || code == 196608u || (code >> 16) == 3u)) {
+        return rs::core::transport::IOResult{bytes.size(), false};
+      }
     }
     if (offset_ == input_.size()) {
       input_.clear();
@@ -231,7 +244,6 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   void reset_state() {
     input_.clear();
     offset_ = 0;
-    session_sends_ = 0;
     error_sent_ = false;
     active_error_ = SimulatedWireError::None;
     facts_->simulated_error = SimulatedWireError::None;
@@ -255,7 +267,6 @@ class TerminalResponseWire final : public rs::core::transport::ITransport {
   std::string fields_, prior_fields_, initial_prior_fields_;
   std::vector<std::byte> input_;
   std::size_t offset_{};
-  unsigned session_sends_{};
   bool recoverable_{}, initial_recoverable_{}, error_sent_{};
   SimulatedWireError active_error_{SimulatedWireError::None};
 };
@@ -325,9 +336,12 @@ TEST(TerminalErrorResponseTest, SimulatedErrorIsOneShotAndRecovers) {
   facts->simulated_error_query = "SELECT fault";
 
   const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
-  std::byte dummy_startup[16]{};
-  auto send_startup = wire_ptr->send(dummy_startup, deadline);
+  // Handshake verification: StartupMessage packet is identified by wire format and consumed
+  // without triggering query fault or relying on call sequencing counters.
+  const uint8_t startup_bytes[] = {0, 0, 0, 8, 0, 3, 0, 0};
+  auto send_startup = wire_ptr->send(std::as_bytes(std::span(startup_bytes)), deadline);
   ASSERT_TRUE(send_startup);
+  EXPECT_EQ(SimulatedWireError::Network, facts->simulated_error);
 
   auto make_q_frame = [](std::string_view sql) {
     std::string s;
