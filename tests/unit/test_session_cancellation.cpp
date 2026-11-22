@@ -291,6 +291,120 @@ TEST(SessionCancellationTest, CompletedBeforeClaimIsIdleNoopAndExpiredClaimSends
   }
 }
 
+// Query timeout (#229). Expiry of an armed, fully dispatched single statement
+// sends one CancelRequest at the deadline and drains for a bounded grace. Only
+// a confirmed server cancellation keeps the session; every other outcome retires.
+namespace {
+constexpr auto kTimeoutGrace = 2s;
+constexpr auto kSlack = 750ms;
+}
+
+TEST(SessionCancellationTest, QueryTimeoutSendsCancelAndConfirmedDrainKeepsSessionReusable) {
+  auto script=std::make_shared<Script>();
+  postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+  auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+  const auto started=Deadline::clock::now();
+  const auto deadline=started+300ms;
+  auto operation=connection.arm_cancellation(20,deadline); ASSERT_TRUE(operation);
+  auto result=connection.execute_query("SELECT 0",deadline);
+  const auto returned=Deadline::clock::now();
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+  EXPECT_EQ("57014",result.backend_error().native_state.value_or(""));
+  EXPECT_EQ(SessionDisposition::Reusable,result.backend_error().disposition);
+  EXPECT_GE(returned,deadline);
+  EXPECT_LT(returned,deadline+kTimeoutGrace+kSlack);
+  EXPECT_EQ(expected_packet,script->packet);
+  EXPECT_EQ(1,script->secondary_connects);
+  EXPECT_LE(script->secondary_deadline,deadline+kTimeoutGrace);
+  EXPECT_GT(script->secondary_deadline,deadline);
+  const auto outcome=connection.finish_cancellation(operation);
+  // A driver-initiated timeout cancel is not an application SQLCancel claim.
+  EXPECT_FALSE(outcome.claimed); EXPECT_FALSE(outcome.retire);
+  EXPECT_TRUE(connection.is_connected());
+  EXPECT_EQ(SessionState::Idle,connection.session_state());
+  EXPECT_EQ(0,script->closes);
+  script->reply=normal_idle;
+  auto recovered=connection.execute_query("SELECT 0",Deadline::clock::now()+2s);
+  ASSERT_TRUE(recovered.has_value()) << recovered.error_message();
+  EXPECT_EQ(2,script->queries); EXPECT_EQ(1,script->secondary_connects);
+}
+
+TEST(SessionCancellationTest, QueryTimeoutCancelWithoutConfirmationRetiresWhenGraceExpires) {
+  auto script=std::make_shared<Script>();
+  script->reply=Bytes{}; script->hold_main_eof=true;
+  postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+  auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+  const auto deadline=Deadline::clock::now()+300ms;
+  auto operation=connection.arm_cancellation(21,deadline); ASSERT_TRUE(operation);
+  auto result=connection.execute_query("SELECT 0",deadline);
+  const auto returned=Deadline::clock::now();
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+  EXPECT_EQ(SessionDisposition::Retire,result.backend_error().disposition);
+  EXPECT_GE(returned,deadline+kTimeoutGrace-kSlack);
+  EXPECT_LT(returned,deadline+kTimeoutGrace+kSlack);
+  EXPECT_EQ(expected_packet,script->packet);
+  EXPECT_FALSE(connection.is_connected()); EXPECT_EQ(1,script->closes);
+  EXPECT_TRUE(connection.finish_cancellation(operation).retire || !connection.is_connected());
+  EXPECT_FALSE(connection.arm_cancellation(22,Deadline::max()));
+}
+
+TEST(SessionCancellationTest, UnarmedQueryTimeoutSendsNothingAndRetiresAtDeadline) {
+  auto script=std::make_shared<Script>();
+  postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+  auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+  const auto deadline=Deadline::clock::now()+300ms;
+  auto result=connection.execute_query("SELECT 0",deadline);
+  const auto returned=Deadline::clock::now();
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+  EXPECT_EQ(SessionDisposition::Retire,result.backend_error().disposition);
+  EXPECT_LT(returned,deadline+kSlack);
+  EXPECT_TRUE(script->packet.empty()); EXPECT_EQ(0,script->secondary_connects);
+  EXPECT_FALSE(connection.is_connected()); EXPECT_EQ(1,script->closes);
+}
+
+TEST(SessionCancellationTest, FailedTimeoutCancelExchangeRetiresWithoutWaitingForGrace) {
+  for (const int mode : {0,1}) {
+    auto script=std::make_shared<Script>(); script->peer_eof=false; script->peer_throw=mode==1;
+    postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+    auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+    const auto deadline=Deadline::clock::now()+300ms;
+    auto operation=connection.arm_cancellation(23,deadline); ASSERT_TRUE(operation);
+    auto result=connection.execute_query("SELECT 0",deadline);
+    const auto returned=Deadline::clock::now();
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Retire,result.backend_error().disposition);
+    EXPECT_LT(returned,deadline+kSlack);
+    EXPECT_EQ(1,script->secondary_connects); EXPECT_EQ(1,script->peer_closes);
+    EXPECT_FALSE(connection.is_connected()); EXPECT_EQ(1,script->closes);
+    EXPECT_TRUE(connection.finish_cancellation(operation).retire || !connection.is_connected());
+  }
+}
+
+TEST(SessionCancellationTest, NormalCompletionAfterEscapedTimeoutCancelStaysTimeoutAndRetires) {
+  auto script=std::make_shared<Script>(); script->reply=normal_idle;
+  postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+  auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+  const auto deadline=Deadline::clock::now()+300ms;
+  auto operation=connection.arm_cancellation(24,deadline); ASSERT_TRUE(operation);
+  auto result=connection.execute_query("SELECT 0",deadline);
+  // The server completed the statement after the deadline. A success is never
+  // published late, and the outcome is uncertain to the caller (it may have
+  // run): report the timeout, and never reuse a session an escaped
+  // CancelRequest could still reach.
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+  EXPECT_FALSE(result.backend_error().native_state.has_value());
+  EXPECT_EQ(SessionDisposition::Retire,result.backend_error().disposition);
+  EXPECT_EQ(expected_packet,script->packet);
+  const auto outcome=connection.finish_cancellation(operation);
+  EXPECT_FALSE(outcome.claimed);
+  EXPECT_FALSE(connection.is_connected()); EXPECT_EQ(1,script->closes);
+}
+
 // Public adapter tests use the real PostgreSQL parser/session and the existing
 // per-connection provider seam. Only transport I/O is synthetic.
 #include "core/database/postgres/pg_backend_provider.h"
@@ -790,6 +904,73 @@ TEST_P(PublicCancellationTest, EarlierLocalPublicationClaimPreventsResolverDispa
   EXPECT_EQ(7, bound_output.value); EXPECT_EQ(0x12345678u, bound_output.before); EXPECT_EQ(0x87654321u, bound_output.after);
   script->hold_normalization = false; script->queued_replies.clear(); script->reply = integer_row;
   EXPECT_EQ(SQL_SUCCESS, execute(stmt)); EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(3, script->queries); EXPECT_EQ(0, script->closes);
+}
+
+TEST_P(PublicCancellationTest, QueryTimeoutCancelsOnServerReturnsHyt00AndKeepsConfirmedConnection) {
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0));
+  // The scripted server answers only after it receives the CancelRequest.
+  const auto started=std::chrono::steady_clock::now();
+  EXPECT_EQ(SQL_ERROR,execute(stmt));
+  const auto elapsed=std::chrono::steady_clock::now()-started;
+  EXPECT_EQ("HYT00",state());
+  EXPECT_GE(elapsed,1s); EXPECT_LT(elapsed,1s+kTimeoutGrace+kSlack);
+  EXPECT_EQ(expected_packet,script->packet); EXPECT_EQ(1,script->secondary_connects);
+  SQLUINTEGER dead=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CD_FALSE),dead);
+  EXPECT_EQ(0,script->closes);
+  // Same physical session, no reconnect: the confirmed cancel left it Idle.
+  script->reply=integer_row;script->release=true;
+  ASSERT_EQ(SQL_SUCCESS,execute(stmt)); EXPECT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  SQLINTEGER value=-1;SQLLEN indicator=-1;
+  EXPECT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&value,sizeof(value),&indicator));EXPECT_EQ(7,value);
+  EXPECT_EQ(2,script->queries); EXPECT_EQ(0,script->closes); EXPECT_EQ(1,script->secondary_connects);
+}
+
+TEST_P(PublicCancellationTest, PreparedQueryTimeoutInTransactionRequiresExplicitRollbackThenReusesSession) {
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
+  const auto begin=literal({'C',0,0,0,10,'B','E','G','I','N',0,'Z',0,0,0,5,'T'});
+  auto rows_in_transaction=integer_row;rows_in_transaction.back()=std::byte{'T'};
+  script->queued_replies={begin,rows_in_transaction};script->release=true;
+  ASSERT_EQ(SQL_SUCCESS,execute(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  script->release=false;script->query_sent=false;
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&bound_parameter_status,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&bound_processed,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&bound_input,sizeof(bound_input),&bound_input_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0));
+  // The server cancels the statement inside the open transaction: READY 'E'.
+  script->reply=cancelled_idle;script->reply.back()=std::byte{'E'};
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("HYT00",state());
+  EXPECT_EQ(SQL_PARAM_ERROR,bound_parameter_status);EXPECT_EQ(1u,bound_processed);
+  EXPECT_EQ(expected_packet,script->packet);EXPECT_EQ(0,script->closes);
+  // The failed transaction is never committed or retried implicitly.
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc));
+  script->reply=literal({'C',0,0,0,13,'R','O','L','L','B','A','C','K',0,'Z',0,0,0,5,'I'});script->release=true;
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  bound_input=11;script->reply=literal({'1',0,0,0,4,'2',0,0,0,4});
+  script->reply.insert(script->reply.end(),rows_in_transaction.begin(),rows_in_transaction.end());
+  script->queued_replies={begin,script->reply};
+  EXPECT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(SQL_PARAM_SUCCESS,bound_parameter_status);
+  EXPECT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  SQLINTEGER output=-1;SQLLEN length=-1;
+  EXPECT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output,sizeof(output),&length));EXPECT_EQ(7,output);
+  EXPECT_EQ(1,script->secondary_connects);EXPECT_EQ(0,script->closes);EXPECT_EQ(6,script->queries);
+}
+
+TEST_P(PublicCancellationTest, QueryTimeoutWithoutServerConfirmationRetiresAndNeverRetries) {
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0));
+  script->reply=Bytes{};script->hold_main_eof=true;
+  const auto started=std::chrono::steady_clock::now();
+  EXPECT_EQ(SQL_ERROR,execute(stmt));
+  const auto elapsed=std::chrono::steady_clock::now()-started;
+  EXPECT_EQ("HYT00",state());
+  EXPECT_LT(elapsed,1s+kTimeoutGrace+kSlack);
+  EXPECT_EQ(expected_packet,script->packet); EXPECT_EQ(1,script->secondary_connects);
+  EXPECT_EQ(1,script->queries); // the timed-out statement is never re-sent
+  SQLUINTEGER dead=73;
+  EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr));EXPECT_EQ(73u,dead);
+  EXPECT_EQ(1,script->closes);
 }
 
 INSTANTIATE_TEST_SUITE_P(CancelEntryPoints, PublicCancellationTest,
