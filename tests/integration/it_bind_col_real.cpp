@@ -512,12 +512,15 @@ TEST_F(BindColIntegrationTest, QueryTimeoutUsesTransportDeadline) {
         SQLCHAR sqlstate[6]{};
         const auto diagnostic = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
             sqlstate, nullptr, nullptr, 0, nullptr);
+        // 1 s timeout, plus at most the 2 s cancellation grace (#229), plus 1 s
+        // of scheduling slack. Redshift may confirm the cancel or not within
+        // the grace; both outcomes return HYT00 within this bound.
         const bool expected = result == SQL_ERROR && diagnostic == SQL_SUCCESS &&
             std::strcmp(reinterpret_cast<char*>(sqlstate), "HYT00") == 0 &&
-            elapsed < std::chrono::seconds(3);
+            elapsed < std::chrono::seconds(4);
         blocker.waiter_result(expected);
         EXPECT_EQ(SQL_ERROR, result);
-        EXPECT_LT(elapsed, std::chrono::seconds(3));
+        EXPECT_LT(elapsed, std::chrono::seconds(4));
         EXPECT_EQ(SQL_SUCCESS, diagnostic);
         EXPECT_STREQ("HYT00", reinterpret_cast<char*>(sqlstate));
         ASSERT_TRUE(blocker.finish());
@@ -538,6 +541,20 @@ TEST_F(BindColIntegrationTest, QueryTimeoutUsesTransportDeadline) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("HYT00", reinterpret_cast<char*>(sqlstate));
+
+    // PostgreSQL acknowledges the CancelRequest for pg_sleep immediately
+    // (#229): the statement was cancelled on the server and the same session
+    // stays usable, with no reconnect.
+    SQLUINTEGER dead = 73;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(hdbc, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr));
+    EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CD_FALSE), dead);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_QUERY_TIMEOUT, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER value = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG, &value, sizeof(value), nullptr));
+    EXPECT_EQ(1, value);
 }
 
 // Test basic column binding with different data types

@@ -4151,7 +4151,9 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
                   {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
                   {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      if (timeout) conn_->close_connection();
+      // A timeout the server confirmed as cancelled leaves a legal session.
+      if (timeout && result.backend_error().disposition == rs::core::database::SessionDisposition::Retire)
+        conn_->close_connection();
       return SQL_ERROR;
     }
 
@@ -7942,7 +7944,9 @@ SQLRETURN ODBCStatement::dispatch_owning_parameters(
                   {"native_sqlstate", native_error_sqlstate_for_log(result.backend_error()), rs::core::logging::FieldSensitivity::Public},
                   {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      if (timeout) conn_->close_connection();
+      // A timeout the server confirmed as cancelled leaves a legal session.
+      if (timeout && result.backend_error().disposition == rs::core::database::SessionDisposition::Retire)
+        conn_->close_connection();
       return complete_parameter_set(SQL_ERROR,input);
     }
 
