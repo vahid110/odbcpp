@@ -56,23 +56,32 @@ When `SQL_ATTR_QUERY_TIMEOUT` (or the `QUERYTIMEOUT` default) expires while a
 single statement is running, the driver asks the server to cancel it. It sends
 one cancellation request at the deadline and waits at most **2 seconds** more
 for the server's answer, so `SQLExecute`/`SQLExecDirect` can return up to that
-long after the timeout. The call then fails with `HYT00` in every case:
+long after the timeout. The call then fails with `HYT00`, and the diagnostic
+record keeps the server's native SQLSTATE when there is one:
 
-- **The server confirmed the cancellation** (native SQLSTATE `57014` is kept in
-  the diagnostic record): the statement did not complete and the connection
-  stays usable. Inside a manual-commit transaction the transaction is now
-  failed; roll it back explicitly before continuing.
-- **No confirmation within the grace, the cancellation could not be sent, or
-  the statement finished during the grace:** the driver closes the connection.
-  Its effects are unknown. It may have committed.
+- **The server confirmed the cancellation** (native `57014`): the statement was
+  interrupted, and the connection stays usable. Its current transaction was
+  rolled back. In manual-commit mode the transaction is left failed: roll it
+  back explicitly before continuing.
+- **Anything else:** the driver closes the connection. That covers no
+  confirmation within the grace, a cancellation that could not be sent, a
+  statement that finished during the grace, and one that failed with its own
+  error during the grace (for example `23505`, kept as the native state).
 
-A timeout is therefore **not proof that a statement was rolled back or never
-ran**, unless the server confirmed the cancellation. The driver never retries a
-timed-out statement. Before re-running a write, check its effect, or make the
-write idempotent. Cancellation on timeout applies to a single statement.
-Compound SQL (several statements in one call) still times out by closing the
-connection, without a server cancellation. An explicit `SQLCancel` keeps its
-own rules and never extends the statement deadline.
+A confirmed cancellation proves only that the statement was interrupted and
+its open transaction did not commit. It does **not** prove that nothing ran.
+Work the statement had already committed, or work outside the transaction, can
+remain. Examples are a procedure that commits internally (`CALL`), sequence
+values (`nextval`), remote calls (`dblink_exec`) and maintenance commands. A
+timeout is therefore never proof that a write had no effect. The driver never
+retries a timed-out statement. Before re-running a write, check its effect, or
+make the write idempotent.
+
+Cancellation on timeout applies to a single statement. Compound SQL (several
+statements in one call) still times out by closing the connection, without a
+server cancellation. An explicit `SQLCancel` keeps its own rules and never
+extends the statement deadline. An `SQLCancel` that races the driver's own
+timeout cancellation returns `SQL_SUCCESS` and sends nothing more.
 
 ## Connection configuration and security
 

@@ -936,6 +936,10 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     }
   }
 
+  // A CancelRequest sent at the deadline makes every later outcome a timeout
+  // unless the server confirmed it: nothing is published as definite after
+  // the deadline. Retirement below may clear the per-operation state.
+  const bool timeout_claimed = timeout_cancel_deadline_.has_value();
   if (cancellation_phase_active_ && cancellation_operation_) {
     const auto outcome = cancellation_operation_->drained(true);
     timeout_cancel_confirmed_ = timeout_cancel_deadline_ && cancellation_operation_->timeout_cancelled();
@@ -961,6 +965,14 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
         // cancellation state as evidence that the statement did not complete.
         BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
             "Query timeout expired; the server confirmed the statement was cancelled"};
+        error.native_state = std::move(query_error_sqlstate);
+        return error;
+      }
+      if (timeout_claimed) {
+        // The statement failed on its own during the grace (for example a
+        // unique violation). The session has retired; keep the server state.
+        BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+            "Query timeout expired; the server reported an error before confirming cancellation"};
         error.native_state = std::move(query_error_sqlstate);
         return error;
       }

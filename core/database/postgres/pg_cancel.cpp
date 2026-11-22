@@ -155,7 +155,9 @@ class PgCancellation final : public SessionCancellationWire {
       // This query belongs to the main owner's unsupported type discovery.
       if (phase_ == Phase::Resolver) return false;
       if (error_before_claim_) return false;
-      if (claimed_) return secondary_done_ && secondary_ok_;
+      // The driver's own timeout CancelRequest already ends this request: an
+      // application cancel racing it is honoured, never a second packet.
+      if (claimed_) return timeout_claim_ || (secondary_done_ && secondary_ok_);
       if (!wait_->freeze(original_, Deadline::clock::now())) return false;
       claimed_ = true;
       const auto cutoff = wait_->effective(original_);
