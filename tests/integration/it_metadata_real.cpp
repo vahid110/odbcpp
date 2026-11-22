@@ -5888,7 +5888,9 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) 
         EXPECT_EQ(1, columns);
         ASSERT_TRUE(blocker.lock());
         ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)1, 0));
-        const auto sql = blocker.waiter_sql();
+        // Compound SQL is outside timeout cancellation (#229), so the timeout
+        // still closes the session internally: the path this case covers.
+        const auto sql = blocker.waiter_sql() + "; SELECT 1";
         const auto started = std::chrono::steady_clock::now();
         const auto result = SQLExecDirect(other,
             reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
@@ -5926,7 +5928,10 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) 
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(1, columns);
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(1, columns);
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)1, 0));
-    ASSERT_EQ(SQL_ERROR, SQLExecDirect(other, (SQLCHAR*)"SELECT pg_sleep(2)", SQL_NTS));
+    // A single statement would now be cancelled on the server and keep the
+    // session (#229, BindColIntegrationTest.QueryTimeoutUsesTransportDeadline).
+    // Compound SQL is outside timeout cancellation and still closes it.
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(other, (SQLCHAR*)"SELECT pg_sleep(2); SELECT 1", SQL_NTS));
     EXPECT_EQ("HYT00", diagnostic_state(SQL_HANDLE_STMT, other));
     // The driver closed the session internally, but the manager still has the
     // connection open, so it refuses the reconnect itself and the rest of the
