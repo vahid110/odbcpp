@@ -405,6 +405,48 @@ TEST(SessionCancellationTest, NormalCompletionAfterEscapedTimeoutCancelStaysTime
   EXPECT_FALSE(connection.is_connected()); EXPECT_EQ(1,script->closes);
 }
 
+TEST(SessionCancellationTest, ServerErrorDuringTimeoutGraceStaysTimeoutWithNativeStateAndRetires) {
+  // The statement fails on its own (unique violation) after the CancelRequest
+  // was delivered. Nothing is published as a definite outcome after the
+  // deadline: the caller sees the timeout, the server's state is retained.
+  auto script=std::make_shared<Script>();
+  script->reply=literal({'E',0,0,0,25,'S','E','R','R','O','R',0,'C','2','3','5','0','5',0,'M','d','u','p','e',0,0,
+      'Z',0,0,0,5,'I'});
+  postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+  auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+  const auto deadline=Deadline::clock::now()+300ms;
+  auto operation=connection.arm_cancellation(25,deadline); ASSERT_TRUE(operation);
+  auto result=connection.execute_query("SELECT 0",deadline);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+  EXPECT_EQ("23505",result.backend_error().native_state.value_or(""));
+  EXPECT_EQ(SessionDisposition::Retire,result.backend_error().disposition);
+  EXPECT_EQ(expected_packet,script->packet);
+  EXPECT_FALSE(connection.finish_cancellation(operation).claimed);
+  EXPECT_FALSE(connection.is_connected()); EXPECT_EQ(1,script->closes);
+}
+
+TEST(SessionCancellationTest, ApplicationCancelDuringDriverTimeoutExchangeSucceedsWithoutSecondPacket) {
+  auto script=std::make_shared<Script>(); script->hold_eof=true;
+  postgres::PgDatabaseConnection connection(std::make_unique<Wire>(script));
+  auto connected=connection.connect(settings()); ASSERT_TRUE(connected) << connected.error_message();
+  const auto deadline=Deadline::clock::now()+300ms;
+  auto operation=connection.arm_cancellation(26,deadline); ASSERT_TRUE(operation);
+  auto execution=std::async(std::launch::async,[&] {return connection.execute_query("SELECT 0",deadline);});
+  {
+    std::unique_lock lock(script->mutex);
+    ASSERT_TRUE(script->changed.wait_for(lock,3s,[&]{return script->peer_waiting;}));
+  }
+  // The driver's own CancelRequest is in flight: an SQLCancel arriving now is
+  // already being honoured and must neither fail nor open a second peer.
+  EXPECT_TRUE(operation->request());
+  {std::lock_guard lock(script->mutex);script->release_eof=true;script->changed.notify_all();}
+  auto result=execution.get(); ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Timeout,result.backend_error().error_class);
+  EXPECT_EQ(1,script->secondary_connects); EXPECT_EQ(1,script->captures);
+  (void)connection.finish_cancellation(operation);
+}
+
 // Public adapter tests use the real PostgreSQL parser/session and the existing
 // per-connection provider seam. Only transport I/O is synthetic.
 #include "core/database/postgres/pg_backend_provider.h"
