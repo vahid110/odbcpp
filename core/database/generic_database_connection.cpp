@@ -1129,13 +1129,6 @@ std::optional<std::string> GenericDatabaseConnection::get_parameter_status(std::
   return it->second;
 }
 
-void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
-  auto result = write_all_result(data, deadline);
-  if (result.has_error()) {
-    rs::util::unwrap_or_throw(std::move(result));
-  }
-}
-
 rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline,
     bool enforce_deadline) {
   size_t offset = 0;
@@ -1163,14 +1156,6 @@ rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::ve
     offset += result->n;
   }
   return rs::util::Result<void>{};
-}
-
-std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadline deadline) {
-  auto result = read_message_result(deadline);
-  if (result.has_error()) {
-    rs::util::unwrap_or_throw(std::move(result));
-  }
-  return std::move(*result);
 }
 
 bool GenericDatabaseConnection::cancel_at_deadline(rs::util::Deadline& deadline) noexcept {

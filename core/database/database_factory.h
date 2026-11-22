@@ -31,9 +31,11 @@ public:
   
   // Get the database type this build was compiled for
   static DatabaseType get_compiled_database_type();
-  
-  // Utility functions
+
+  // Deprecated legacy utility functions
+  [[deprecated("Legacy connection routing; use compiled_backend or explicit type create_connection")]]
   static DatabaseType detect_from_url(const std::string& connection_url);
+  [[deprecated("Legacy connection routing; use compiled_backend or explicit type create_connection")]]
   static DatabaseType detect_from_port(uint16_t port);
 };
 

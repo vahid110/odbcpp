@@ -1238,20 +1238,6 @@ std::string PgProtocolParser::md5_hex(const void* data, size_t n) {
   return out;
 }
 
-rs::pg::Authentication PgProtocolParser::decode_auth(const std::vector<std::byte>& payload) {
-  if (payload.size() < 4) throw std::runtime_error("Auth payload too short");
-  
-  rs::pg::Authentication a{};
-  const auto* p = reinterpret_cast<const unsigned char*>(payload.data());
-  a.raw_code = (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
-  
-  if (a.raw_code == 5 && payload.size() >= 8) {
-    std::memcpy(a.md5_salt.data(), payload.data() + 4, 4);
-  }
-  
-  return a;
-}
-
 rs::pg::ErrorResponse PgProtocolParser::decode_error_fields(
     const std::vector<std::byte>& payload) {
   rs::pg::ErrorResponse e{};

@@ -641,7 +641,9 @@ public:
   SQLRETURN describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
   
+  [[deprecated("Legacy inline helper; check result_rows_ or result set state through ODBC APIs")]]
   bool has_results() const { return !result_rows_.empty(); }
+  [[deprecated("Legacy inline helper; use SQLNumResultCols or result set descriptors")]]
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
