@@ -68,7 +68,6 @@ public:
 private:
   const PgCatalogProfile profile_;
   static std::string md5_hex(const void* data, size_t n);
-  static rs::pg::Authentication decode_auth(const std::vector<std::byte>& payload);
   static rs::pg::ErrorResponse decode_error_fields(
       const std::vector<std::byte>& payload);
   std::unique_ptr<ScramSha256Client> scram_client_;

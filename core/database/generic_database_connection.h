@@ -143,10 +143,6 @@ private:
   bool transport_closed_after_failure_{false};
   bool peer_identity_verified_ = false;
   
-  // Exception-based methods (for backward compatibility)
-  void write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline);
-  std::vector<std::byte> read_message(rs::util::Deadline deadline);
-  
   // Result-based methods (internal implementation)
   rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline,
       bool enforce_deadline = false);
