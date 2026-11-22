@@ -78,7 +78,7 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Verified TLS without `SSLCAFILE`/`SSLCADIR` now uses the operating-system trust store instead of the crypto provider's compiled default verify paths
 - Installation now includes the shared ODBC driver library
 - ODBC login and query timeouts now drive transport deadlines and report HYT01/HYT00
-- Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream
+- Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream. A query timeout on a single statement now first asks the server to cancel it, waiting at most 2 seconds after the deadline. The connection stays usable only when the server confirms the cancellation (`HYT00`, native `57014`); otherwise it closes as before. A timeout does not prove a statement did not run, and the driver never retries it. See [query timeouts](docs/application-api.md#query-timeouts-and-uncertain-outcomes).
 - SQLGetData now reports the remaining length before each chunk and returns SQL_NO_DATA after exhaustion
 - Continuous integration now builds the native POSTGRESQL target on Linux and Windows
 - Result conversions use PostgreSQL column metadata instead of assuming SQL_VARCHAR

@@ -19,6 +19,12 @@
 namespace rs::core::database {
 namespace {
 
+// Bounded, documented grace after a query timeout (#229): one CancelRequest is
+// sent at the deadline and the response is drained for at most this long. It
+// stays within the CancellationWait budget and never applies twice.
+constexpr auto kQueryTimeoutCancelGrace =
+    std::chrono::duration_cast<rs::util::Deadline::clock::duration>(std::chrono::seconds{2});
+
 constexpr std::uint32_t kShortFrameLimit = 30000;
 constexpr std::uint32_t kLargeFrameLimit = 0x3fffffff;
 
@@ -391,6 +397,8 @@ bool GenericDatabaseConnection::is_connected() const {
 }
 
 void GenericDatabaseConnection::mark_transport_failed() noexcept {
+  timeout_cancel_deadline_.reset();
+  timeout_cancel_confirmed_ = false;
   if (cancellation_operation_) cancellation_operation_->seal();
   forget_backend_key();
   const bool was_connected = connected_;
@@ -414,12 +422,21 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
         error.error_class == BackendErrorClass::Tls ||
         error.error_class == BackendErrorClass::Unknown ||
         error.error_class == BackendErrorClass::ResourceLimit;
-    if (ambiguous) mark_transport_failed();
+    // A confirmed server cancellation after a query timeout drained to READY:
+    // the outcome is known (the statement did not complete) and the session is
+    // as legal as after an SQLCancel. Every unconfirmed timeout still retires.
+    const bool confirmed_timeout = error.error_class == BackendErrorClass::Timeout &&
+        timeout_cancel_confirmed_;
+    if (ambiguous && !confirmed_timeout) mark_transport_failed();
+    timeout_cancel_deadline_.reset();
+    timeout_cancel_confirmed_ = false;
     error.session_state = session_state_;
     error.disposition = !connected_ ? SessionDisposition::Retire :
         session_state_ == SessionState::Idle ? SessionDisposition::Reusable :
         SessionDisposition::ResetRequired;
   } else {
+    timeout_cancel_deadline_.reset();
+    timeout_cancel_confirmed_ = false;
     const auto annotate = [&](QueryResult& item) {
       if (!item.error) return;
       item.error->operation = operation;
@@ -921,6 +938,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
 
   if (cancellation_phase_active_ && cancellation_operation_) {
     const auto outcome = cancellation_operation_->drained(true);
+    timeout_cancel_confirmed_ = timeout_cancel_deadline_ && cancellation_operation_->timeout_cancelled();
     cancellation_phase_active_ = false;
     if (auto* carrier = dynamic_cast<rs::core::transport::IServerCancelTransport*>(transport_.get()))
       carrier->cancellation_wait({});
@@ -938,6 +956,14 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     }
     if (query_error &&
         (result.error.has_value() || result.additional_results.empty())) {
+      if (timeout_cancel_confirmed_) {
+        // Report the expiry the application asked for, with the server's own
+        // cancellation state as evidence that the statement did not complete.
+        BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+            "Query timeout expired; the server confirmed the statement was cancelled"};
+        error.native_state = std::move(query_error_sqlstate);
+        return error;
+      }
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
                          "Query error: " + *query_error};
       error.native_state = std::move(query_error_sqlstate);
@@ -1147,8 +1173,28 @@ std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadlin
   return std::move(*result);
 }
 
+bool GenericDatabaseConnection::cancel_at_deadline(rs::util::Deadline& deadline) noexcept {
+  // One bounded attempt per operation, only for an armed, dispatched request.
+  // The grace is fixed and documented; it never applies to an unlimited
+  // deadline, connection setup, cleanup or a second expiry.
+  if (timeout_cancel_deadline_ || !connected_ || !cancellation_phase_active_ ||
+      !cancellation_operation_ || deadline == rs::util::Deadline::max()) return false;
+  // The grace is anchored to the original deadline, not to when expiry was
+  // observed, so a slow observation never lengthens the caller's bound.
+  const auto now = rs::util::Clock::now();
+  if (now < deadline || deadline.time_since_epoch() >
+      rs::util::Deadline::clock::duration::max() - kQueryTimeoutCancelGrace) return false;
+  const auto grace = deadline + kQueryTimeoutCancelGrace;
+  if (grace <= now) return false;
+  if (!cancellation_operation_->request_at_timeout(grace)) return false;
+  timeout_cancel_deadline_ = grace;
+  deadline = grace;
+  return true;
+}
+
 rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message_result(rs::util::Deadline deadline, std::size_t remaining_bytes,
     bool enforce_deadline) {
+  if (timeout_cancel_deadline_) deadline = *timeout_cancel_deadline_;
   if (remaining_bytes < 5) {
     mark_transport_failed();
     return {rs::util::DbErrorCode::ResourceLimit, "Database response byte limit exceeded"};
@@ -1159,12 +1205,16 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   
   while (offset < 5) {
     if (enforce_deadline && rs::util::Clock::now() >= deadline) {
+      if (cancel_at_deadline(deadline)) continue;
       mark_transport_failed();
       return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     }
     const auto requested = header.size() - offset;
     auto result = transport_->recv(std::span<std::byte>(header.data() + offset, requested), deadline);
     if (result.has_error()) {
+      // A transport timeout consumes no bytes; the stream stays framed.
+      if (enforce_deadline && result.error() == rs::util::make_error_code(rs::util::DbErrorCode::Timeout) &&
+          cancel_at_deadline(deadline)) continue;
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
           result.error(), result.error_message()};
@@ -1224,6 +1274,7 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
 
   while (message.size() < total_length) {
     if (enforce_deadline && rs::util::Clock::now() >= deadline) {
+      if (cancel_at_deadline(deadline)) continue;
       mark_transport_failed();
       return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     }
@@ -1235,6 +1286,10 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
         std::span<std::byte>(message.data() + message_offset, requested),
         deadline);
     if (result.has_error()) {
+      if (enforce_deadline && result.error() == rs::util::make_error_code(rs::util::DbErrorCode::Timeout)) {
+        message.resize(message_offset);
+        if (cancel_at_deadline(deadline)) continue;
+      }
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
           result.error(), result.error_message()};
