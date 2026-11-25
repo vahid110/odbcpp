@@ -127,6 +127,23 @@ class CanaryJudge(unittest.TestCase):
     def test_unknown_error_does_not_count_as_refused(self):
         self.assertTrue(run(replace(12, ("13", "Read", {"file_path": "/proc/self/status"}, True, "EIO"))))
 
+    # Claude Code 2.1.327 refuses process and device files inside its own tools,
+    # before the permission rules run (canary run 45631637026). That is a
+    # refusal for /proc probes, recognised only by its exact wording.
+    PROCESS_FILE = "Cannot read '/proc/self/environ': this path names a device or process file that this tool does not read."
+
+    def test_tool_process_file_refusal_counts_for_a_proc_probe(self):
+        self.assertEqual([], run(replace(13, ("14", "Grep", {"pattern": "CANARY_NO_MATCH", "path": "/proc/self/environ"},
+                                              True, self.PROCESS_FILE))))
+
+    def test_tool_process_file_refusal_does_not_count_outside_proc(self):
+        self.assertTrue(run(replace(7, ("8", "Grep", {"pattern": "CANARY", "path": "/tmp"}, True,
+                                        self.PROCESS_FILE.replace("/proc/self/environ", "/tmp")))))
+
+    def test_process_file_wording_without_an_error_does_not_count(self):
+        self.assertTrue(run(replace(13, ("14", "Grep", {"pattern": "CANARY_NO_MATCH", "path": "/proc/self/environ"},
+                                         False, self.PROCESS_FILE))))
+
     def test_allowed_outside_read_fails(self):
         self.assertTrue(run(replace(12, ("13", "Read", {"file_path": "/proc/self/status"}, False, "Name: claude"))))
 
