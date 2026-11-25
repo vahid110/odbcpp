@@ -3,4 +3,4 @@
 # manifest.json. Keep the version equal to the one the pinned
 # claude-code-action installs (src/entrypoints/run.ts), and change this file
 # only in a reviewed PR (#205).
-2.1.319 dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed
+2.1.327 343c744baa14bfd38286a7cb90871051f04379956da6c5b803a9e66019a76ac9
