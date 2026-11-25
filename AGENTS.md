@@ -17,6 +17,8 @@ authority beyond them.
   changes on purpose, say which assertions changed and why.
 - Every changed control body containing GoogleTest macros has braces; run
   `tools/development/check_changed_gtest_control_flow.py --base <base>`.
+- Changed functions meet CCN <= 25 and NLOC <= 100, and duplication <= 50 tokens;
+  run `tools/development/check_pr_complexity.py --base <base>`.
 - Configure products as `POSTGRESQL` or `REDSHIFT` and keep the explicit
   Driver Manager, SQLWCHAR and crypto profiles.
 

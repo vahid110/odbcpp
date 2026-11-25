@@ -56,6 +56,24 @@ def unrestricted_pr_trigger(text):
         raise ValueError('PR trigger must include all bases, paths and draft PRs')
 
 
+def _verify_step_conditions(block):
+    for step in re.split(r'(?m)^      - ', block)[1:]:
+        if re.search(r'(?m)^        if:', step):
+            condition = re.findall(r'(?m)^        if: (.*)$', step)
+            if step.startswith(('name: Verify actual offline execution\n',
+                                'name: Retain offline Driver Manager evidence\n')):
+                allowed = ['always()']
+            elif step.startswith(('name: Run tooling unit tests and PR gates\n',
+                                  'name: Run Windows tooling unit tests offline\n')):
+                allowed = ["matrix.product == 'POSTGRESQL'"]
+            elif step.startswith('name: Run offline Driver Manager subset\n'):
+                allowed = ["${{ !cancelled() && steps.build.outcome == 'success' }}"]
+            else:
+                allowed = None
+            if condition != allowed:
+                raise ValueError('only evidence, tooling-once and post-build DM steps may be conditional')
+
+
 def build_contract(block, platform):
     required = ["if: github.event_name == 'pull_request'", 'timeout-minutes: 60',
                 'product: [POSTGRESQL, REDSHIFT]', 'fail-fast: false',
@@ -79,21 +97,7 @@ def build_contract(block, platform):
         raise ValueError('missing exact PR build profile/source/bound')
     if len(re.findall(r'^    if:', block, re.M)) != 1:
         raise ValueError('build must not be conditional on draft/path/status')
-    for step in re.split(r'(?m)^      - ', block)[1:]:
-        if re.search(r'(?m)^        if:', step):
-            condition = re.findall(r'(?m)^        if: (.*)$', step)
-            if step.startswith(('name: Verify actual offline execution\n',
-                                'name: Retain offline Driver Manager evidence\n')):
-                allowed = ['always()']
-            elif step.startswith(('name: Run tooling unit tests offline\n',
-                                  'name: Run Windows tooling unit tests offline\n')):
-                allowed = ["matrix.product == 'POSTGRESQL'"]
-            elif step.startswith('name: Run offline Driver Manager subset\n'):
-                allowed = ["${{ !cancelled() && steps.build.outcome == 'success' }}"]
-            else:
-                allowed = None
-            if condition != allowed:
-                raise ValueError('only evidence, tooling-once and post-build DM steps may be conditional')
+    _verify_step_conditions(block)
     build = 'build-pr-ubuntu' if platform == 'Ubuntu' else 'build-pr-windows'
     config = '' if platform == 'Ubuntu' else ' -C Release'
     expected_ctest = [

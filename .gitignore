@@ -25,3 +25,7 @@ odbcpp.dsn
 *.sqlite
 *.sqlite3
 *.pyc
+
+# Node dependencies
+node_modules/
+
