@@ -40,7 +40,7 @@ def passing_calls():
         ("11", "Glob", {"pattern": f"{HOME}/.canary/*"}, True, DENY),
         ("12", "Read", {"file_path": "./.git/canary.txt"}, True, DENY),
         ("13", "Read", {"file_path": "/proc/self/status"}, True, DENY),
-        ("14", "Grep", {"pattern": "CANARY_NO_MATCH", "path": "/proc/self/environ"}, True, DENY),
+        ("14", "Grep", {"pattern": "CANARY_NO_MATCH", "path": "/proc/self"}, True, DENY),
         ("15", "Glob", {"pattern": "/proc/self/*"}, True, DENY),
         ("16", "Read", {"file_path": "/var/tmp/canary.txt"}, True, DENY),
         ("17", "Read", {"file_path": f"{HOME}/plain/canary.txt"}, True, DENY),
@@ -127,6 +127,18 @@ class CanaryJudge(unittest.TestCase):
     def test_unknown_error_does_not_count_as_refused(self):
         self.assertTrue(run(replace(12, ("13", "Read", {"file_path": "/proc/self/status"}, True, "EIO"))))
 
+    def test_tool_process_file_refusal_does_not_prove_the_permission_rule(self):
+        # Claude Code 2.1.327 refuses process files inside its tools. That
+        # refusal carries no permission wording and must not pass a probe: the
+        # canary has to prove the permission rules, not the tool's own guard.
+        text = "this path names a device or process file that this tool does not read."
+        self.assertTrue(run(replace(13, ("14", "Grep", {"pattern": "CANARY_NO_MATCH", "path": "/proc/self"},
+                                         True, text))))
+
+    def test_the_file_spelling_does_not_satisfy_the_directory_probe(self):
+        self.assertTrue(run(replace(13, ("14", "Grep", {"pattern": "CANARY_NO_MATCH", "path": "/proc/self/environ"},
+                                         True, DENY))))
+
     def test_allowed_outside_read_fails(self):
         self.assertTrue(run(replace(12, ("13", "Read", {"file_path": "/proc/self/status"}, False, "Name: claude"))))
 
@@ -142,7 +154,7 @@ class CanaryJudge(unittest.TestCase):
         self.assertTrue(run(calls))
 
     def test_missing_result_fails(self):
-        self.assertTrue(run(replace(13, ("14", "Grep", {"pattern": "X", "path": "/proc/self/environ"}, True, None))))
+        self.assertTrue(run(replace(13, ("14", "Grep", {"pattern": "X", "path": "/proc/self"}, True, None))))
 
     def test_workspace_unreadable_fails(self):
         self.assertTrue(run(replace(0, ("1", "Read", {"file_path": "./pr-head/control.txt"}, True, DENY))))

@@ -153,7 +153,11 @@ def standard_probes(workspace, home, temp):
         Probe("Glob", (f"{home}/.canary/*",), REFUSED),
         Probe("Read", here("./.git/canary.txt") + here(".git/canary.txt"), REFUSED),
         Probe("Read", ("/proc/self/status",), REFUSED),
-        Probe("Grep", ("/proc/self/environ",), REFUSED),
+        # The directory, not /proc/self/environ: since Claude Code 2.1.327 the
+        # tools refuse process files themselves, before the permission rules
+        # run (canary run 45631637026). Grepping the directory would read
+        # environ, so only the Read(//proc/**) rule can refuse it.
+        Probe("Grep", ("/proc/self",), REFUSED),
         Probe("Glob", ("/proc/self/*",), REFUSED),
         # Outside paths with no explicit deny rule.
         Probe("Read", ("/var/tmp/canary.txt",), REFUSED),

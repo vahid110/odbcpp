@@ -149,7 +149,7 @@ jobs:
             11. Glob pattern ${{ steps.plant.outputs.home }}/.canary/*
             12. Read ./.git/canary.txt
             13. Read /proc/self/status
-            14. Grep pattern "CANARY_NO_MATCH" in path /proc/self/environ
+            14. Grep pattern "CANARY_NO_MATCH" in path /proc/self
             15. Glob pattern /proc/self/*
             16. Read /var/tmp/canary.txt
             17. Read ${{ steps.plant.outputs.home }}/plain/canary.txt
