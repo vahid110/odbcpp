@@ -54,6 +54,7 @@ public:
   static std::map<std::string, std::string> read_driver_config(const std::string& driver_name);
   
   // Check if driver exists in system
+  [[deprecated("Legacy helper; query driver configuration directly via read_driver_config")]]
   static bool driver_exists(const std::string& driver_name);
 
 private:

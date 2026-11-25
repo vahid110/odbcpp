@@ -4,6 +4,7 @@
 #include "native_type_resolution.h"
 #include "odbcpp/transport/i_transport.h"
 #include <memory>
+#include <optional>
 #include "session_cancellation_wire.h"
 
 namespace rs::core::database {
@@ -135,6 +136,12 @@ private:
   enum class ResponseKind { SimpleExecution, PreparedExecution, Description, DeclinedDescription };
   bool cancellation_phase_active_{false};
   std::shared_ptr<SessionCancellationWire> cancellation_operation_;
+  // Query timeout cancellation (#229): set once per operation when the original
+  // deadline expired and a CancelRequest was delivered. Reads then drain until
+  // this bounded grace; only a confirmed server cancellation keeps the session.
+  std::optional<rs::util::Deadline> timeout_cancel_deadline_;
+  bool timeout_cancel_confirmed_{false};
+  bool cancel_at_deadline(rs::util::Deadline& deadline) noexcept;
   std::unique_ptr<IProtocolParser> parser_;
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   ConnectionSettings settings_;
@@ -142,10 +149,6 @@ private:
   bool connected_ = false;
   bool transport_closed_after_failure_{false};
   bool peer_identity_verified_ = false;
-  
-  // Exception-based methods (for backward compatibility)
-  void write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline);
-  std::vector<std::byte> read_message(rs::util::Deadline deadline);
   
   // Result-based methods (internal implementation)
   rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline,

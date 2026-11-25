@@ -80,8 +80,8 @@ class PgCancellation final : public SessionCancellationWire {
   PgCancellation(std::unique_ptr<ITransport> peer, const std::array<std::byte, 8>& key,
       std::shared_ptr<rs::core::transport::CancellationWait> wait,
       Deadline original, std::uint64_t generation, bool tls, std::string hostname)
-      : peer_(std::move(peer)), key_(key), wait_(std::move(wait)), original_(original), generation_(generation),
-        tls_(tls), hostname_(std::move(hostname)) {}
+      : peer_(std::move(peer)), key_(key), wait_(std::move(wait)), original_(original), limit_(original),
+        generation_(generation), tls_(tls), hostname_(std::move(hostname)) {}
 
   std::shared_ptr<rs::core::transport::CancellationWait> wait_control() const noexcept override { return wait_; }
   bool enter_resolver() noexcept override {
@@ -123,11 +123,11 @@ class PgCancellation final : public SessionCancellationWire {
     phase_ = Phase::Finished;
     changed_.notify_all();
     if (claimed_ && !secondary_done_) {
-      if (!changed_.wait_until(lock, wait_->effective(original_),
+      if (!changed_.wait_until(lock, wait_->effective(limit_),
           [&] { return secondary_done_; })) uncertain_ = true;
     }
     confirmed_ = claimed_ && legal_ready && cancelled_error_ && secondary_ok_ &&
-        Deadline::clock::now() < wait_->effective(original_);
+        Deadline::clock::now() < wait_->effective(limit_);
     // A normal completion does not prove an escaped CancelRequest harmless to
     // the next operation. Quarantine and retire, even with owning normal rows.
     retire_ = claimed_ && (uncertain_ || (escaped_ && !confirmed_));
@@ -139,7 +139,7 @@ class PgCancellation final : public SessionCancellationWire {
     phase_ = Phase::Finished;
     changed_.notify_all();
     if (claimed_ && !secondary_done_ &&
-        !changed_.wait_until(lock, wait_->effective(original_), [&] { return secondary_done_; })) {
+        !changed_.wait_until(lock, wait_->effective(limit_), [&] { return secondary_done_; })) {
       uncertain_ = true;
       retire_ = true;
     }
@@ -155,7 +155,9 @@ class PgCancellation final : public SessionCancellationWire {
       // This query belongs to the main owner's unsupported type discovery.
       if (phase_ == Phase::Resolver) return false;
       if (error_before_claim_) return false;
-      if (claimed_) return secondary_done_ && secondary_ok_;
+      // The driver's own timeout CancelRequest already ends this request: an
+      // application cancel racing it is honoured, never a second packet.
+      if (claimed_) return timeout_claim_ || (secondary_done_ && secondary_ok_);
       if (!wait_->freeze(original_, Deadline::clock::now())) return false;
       claimed_ = true;
       const auto cutoff = wait_->effective(original_);
@@ -206,9 +208,50 @@ class PgCancellation final : public SessionCancellationWire {
       return false;
     }
   }
+  bool request_at_timeout(Deadline grace) noexcept override {
+    std::unique_lock lock(mutex_, std::defer_lock);
+    try {
+      lock.lock();
+      // Only a request this owner fully dispatched and is still reading. An
+      // application claim, an observed error or a finished/sealed operation
+      // keeps the existing timeout retirement without any packet.
+      if (!generation_ || sealed_ || claimed_ || error_before_claim_ || phase_ != Phase::Running) return false;
+      const auto now = Deadline::clock::now();
+      if (now < original_ || grace <= now || !wait_->freeze(grace, now)) return false;
+      claimed_ = timeout_claim_ = true;
+      limit_ = grace;
+      const auto cutoff = wait_->effective(limit_);
+      lock.unlock();
+      const bool ok = exchange(cutoff);
+      peer_->close();
+      lock.lock();
+      secondary_done_ = true;
+      secondary_ok_ = ok;
+      uncertain_ = !ok;
+      if (!ok) retire_ = true;
+      changed_.notify_all();
+      return ok;
+    } catch (...) {
+      peer_->close();
+      if (!lock.owns_lock()) lock.lock();
+      secondary_done_ = true;
+      uncertain_ = retire_ = true;
+      changed_.notify_all();
+      return false;
+    }
+  }
+  bool timeout_cancelled() const noexcept override {
+    std::lock_guard lock(mutex_);
+    return timeout_claim_ && confirmed_;
+  }
  private:
   enum class Phase { BeforeWire, Writing, Running, Finished, Resolver };
-  CancellationOutcome outcome() const noexcept { return {claimed_, confirmed_, retire_}; }
+  // A timeout claim belongs to the driver. The application sees a timeout, not
+  // an SQLCancel outcome, so its result or diagnostic is never suppressed; the
+  // retirement decision is shared.
+  CancellationOutcome outcome() const noexcept {
+    return {claimed_ && !timeout_claim_, confirmed_ && !timeout_claim_, retire_};
+  }
   bool send_all(std::span<const std::byte> bytes, Deadline cutoff) {
     while (!bytes.empty()) {
       if (Deadline::clock::now() >= cutoff) return false;
@@ -257,15 +300,16 @@ class PgCancellation final : public SessionCancellationWire {
   ProtectedKey key_;
   std::shared_ptr<rs::core::transport::CancellationWait> wait_;
   Deadline original_;
+  Deadline limit_;
   const std::uint64_t generation_;
   bool tls_;
   std::string hostname_;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable changed_;
   Phase phase_{Phase::BeforeWire};
   bool sealed_{false}, claimed_{false}, secondary_done_{false}, secondary_ok_{false}, local_after_ready_{false};
   bool error_seen_{false}, error_before_claim_{false}, cancelled_error_{false}, escaped_{false};
-  bool uncertain_{false}, confirmed_{false}, retire_{false};
+  bool uncertain_{false}, confirmed_{false}, retire_{false}, timeout_claim_{false};
 };
 } // namespace
 

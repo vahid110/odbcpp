@@ -67,6 +67,12 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Column binding example and documentation
 - Development roadmap and changelog
 
+### Deprecated
+- Deprecated uncalled legacy helper functions across driver headers (`DatabaseFactory::detect_from_url`/`detect_from_port`, `DSNReader::driver_exists`, and `ODBCStatement::has_results`/`get_column_count`) with `[[deprecated]]` annotations in preparation for future removal (#249, #260).
+
+### Removed
+- Pruned uncalled private helper functions across private driver components: `GenericDatabaseConnection::write_all`/`read_message` and `PgProtocolParser::decode_auth` (#249, #260).
+
 ### Changed
 - Preserved PostgreSQL and Amazon Redshift native syntax error SQLSTATE `42601` rather than collapsing to generic caller fallback (`42000` or `HY000`) for rejected prepared multi-statement batches and server-side syntax errors, matching native and Simba vendor driver diagnostics (#226). Applications running in ODBC 2.x mode receive native `42601` directly without Driver Manager translation to `37000`.
 - Public SDK source/binary compatibility break: `BackendCapabilities::outer_joins` is replaced by detailed `sql.join_*` declarations and the capability aggregate layout changes. Out-of-tree providers must migrate their declarations and all SDK consumers must recompile.
@@ -78,7 +84,7 @@ source history, see [main commits](https://github.com/vahid110/odbcpp/commits/ma
 - Verified TLS without `SSLCAFILE`/`SSLCADIR` now uses the operating-system trust store instead of the crypto provider's compiled default verify paths
 - Installation now includes the shared ODBC driver library
 - ODBC login and query timeouts now drive transport deadlines and report HYT01/HYT00
-- Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream
+- Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream. A query timeout on a single statement now first asks the server to cancel it, waiting at most 2 seconds after the deadline. The call returns `HYT00` in every case. The connection stays usable only when the server confirms the cancellation (native `57014`); otherwise it closes as before. Even a confirmed cancellation does not prove the statement had no effect: work it already committed, or work outside the transaction, can remain. The driver never retries a timed-out statement. See [query timeouts](docs/application-api.md#query-timeouts-and-uncertain-outcomes).
 - SQLGetData now reports the remaining length before each chunk and returns SQL_NO_DATA after exhaustion
 - Continuous integration now builds the native POSTGRESQL target on Linux and Windows
 - Result conversions use PostgreSQL column metadata instead of assuming SQL_VARCHAR
