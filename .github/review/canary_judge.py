@@ -5,6 +5,11 @@ probed path and the recorded result is the expected one: the planted inside
 value for allowed probes, an identifiable permission refusal for denied
 ones. Malformed inputs, invalid patterns, missing files, unknown errors and
 missing results all fail, so a pass proves the permission rules themselves.
+
+One exception: since Claude Code 2.1.327 the tools refuse process and device
+files themselves, before the permission rules run. For a probe of a /proc
+path only, that exact refusal also counts. The other /proc probes still
+reach the permission rule that covers the whole tree.
 """
 
 import json
@@ -14,6 +19,9 @@ import sys
 from dataclasses import dataclass
 
 DENIAL = re.compile(r"permission|denied|not allowed|blocked", re.I)
+# The tools' own refusal of a process or device file, matched on its exact
+# wording (Claude Code 2.1.327). Accepted only for probes of /proc paths.
+PROCESS_FILE = re.compile(r"names a device or process file that this tool does not (read|send)")
 
 
 ALLOWED, REFUSED, UNREADABLE = "allowed", "refused", "unreadable"
@@ -125,7 +133,9 @@ def judge(messages, probes, inside, outside, claude_md_token=None, structured=""
         if probe.expect == ALLOWED:
             ok = any(not err and (inside in text or "control.txt" in text) for err, text in outcomes)
         elif probe.expect == REFUSED:
-            ok = all(err and DENIAL.search(text) for err, text in outcomes)
+            process = probe.targets[0].startswith("/proc/")
+            ok = all(err and (DENIAL.search(text) or (process and PROCESS_FILE.search(text)))
+                     for err, text in outcomes)
         else:
             ok = all(err for err, _ in outcomes)
         lines.append(f"{'pass' if ok else 'FAIL'}: {probe.label} ({probe.expect} expected)")
