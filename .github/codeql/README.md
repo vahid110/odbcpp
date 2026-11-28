@@ -102,7 +102,7 @@ the fresh hosted raw SARIF and extractor logs still require review. This follows
 
 ### Pinned compile-time assertion limitation
 
-CodeQL 2.27.3 and 2.27.4 report a failed private-member `requires` assertion at line 34 of
+CodeQL 2.27.3, 2.27.4 and 2.27.6 report a failed private-member `requires` assertion at line 34 of
 `tests/unit/test_session_owner.cpp` although the actual GCC build accepts it.
 The supplemental Clang-based extraction reports the same diagnostic; this is
 not established as a GCC-only issue. Original assertions and raw SARIF remain
