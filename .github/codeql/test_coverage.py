@@ -212,6 +212,14 @@ class ActualBuildEvidence(unittest.TestCase):
         self.assertTrue(report["passed"], report["errors"])
         self.assertEqual(report["accepted_extractor_limitations"][0]["codeql_version"], "2.27.4")
 
+    def test_reviewed_2_27_6_session_assertion_records_actual_version(self):
+        # Run 46127108838 (#269): identical diagnostic, buckets, line and warning.
+        runs = self.known_assertion()
+        runs[0]["tool"]["driver"]["semanticVersion"] = "2.27.6"
+        report = self.validate(runs)
+        self.assertTrue(report["passed"], report["errors"])
+        self.assertEqual(report["accepted_extractor_limitations"][0]["codeql_version"], "2.27.6")
+
     def test_assertion_disposition_rejects_source_header_version_and_message_drift(self):
         for mutation in ("source", "header", "version", "message", "line", "warning-count"):
             with self.subTest(mutation=mutation):

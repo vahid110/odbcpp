@@ -48,7 +48,7 @@ STATIC_ASSERT_BINDINGS = {
 def accepted_static_assert(runs, metrics, expected, extracted, commands, root, build):
     """Recognize one reviewed extractor limitation, never a general error budget."""
     version = runs[0]["tool"]["driver"].get("semanticVersion")
-    if (version not in ("2.27.3", "2.27.4") or
+    if (version not in ("2.27.3", "2.27.4", "2.27.6") or
             type(metrics.get("compiler errors")) is not int or
             type(metrics.get("syntax errors")) is not int or
             metrics.get("compiler errors") != 2 or metrics.get("syntax errors") != 0 or
